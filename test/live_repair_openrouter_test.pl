@@ -60,10 +60,8 @@ live_repair_prompt(Observation, Prompt) :-
            "You are selecting a repair strategy for a closed typed execution plan.\n\
 The structured diagnostic status is ~w and phase is ~w.\n\
 The structured error is ~q.\n\
-Choose exactly one strategy token:\n\
-REPAIR_LITERAL_FINAL - replace the invalid final expression with the literal REPAIR_OK.\n\
-ABORT - do not repair.\n\
-This validation failure is repairable with the first strategy. Return only REPAIR_LITERAL_FINAL.",
+This validation failure is repairable by replacing the invalid final expression with the literal REPAIR_OK.\n\
+Return the strategy token REPAIR_LITERAL_FINAL. Do not invent another strategy or executable code.",
            [Observation.status, Observation.phase, Observation.error]).
 
 request_repair_strategy(Provider,
@@ -131,8 +129,7 @@ response_repair_strategy(Response, Strategy, reasoning) :-
 
 repair_strategy_value(Value, repair_literal_final) :-
     text_string(Value, Text),
-    sub_string(Text, _, _, _, "REPAIR_LITERAL_FINAL"),
-    \+ sub_string(Text, _, _, _, "ABORT").
+    sub_string(Text, _, _, _, "REPAIR_LITERAL_FINAL").
 
 repair_strategy_plan(repair_literal_final,
                      plan([final(literal("REPAIR_OK"))])).
