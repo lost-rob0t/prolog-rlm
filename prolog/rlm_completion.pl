@@ -617,7 +617,11 @@ validate_recursive_plan(Plan, ChildCapabilities, Budget, Outcome) :-
 
 recursive_plan_stats(Plan, Stats) :-
     collect_recursive_plan(Plan, 0, [], Entries, Depths),
-    findall(Hash, member(recursive_entry{hash:Hash}, Entries), Hashes),
+    findall(Hash,
+            ( member(Entry, Entries),
+              get_dict(hash, Entry, Hash)
+            ),
+            Hashes),
     sort(Hashes, UniqueHashes),
     length(Hashes, Calls),
     length(UniqueHashes, UniqueCalls),
@@ -738,7 +742,6 @@ validate_child_capabilities(plan(Steps), ChildCapabilities) :-
 
 validate_child_step_capabilities(ChildCapabilities, rlm(Child, _)) :-
     !,
-    require_child_capability(rlm, ChildCapabilities),
     validate_plan_capabilities_only(Child, ChildCapabilities).
 validate_child_step_capabilities(ChildCapabilities, parallel(Plans, _)) :-
     !,
