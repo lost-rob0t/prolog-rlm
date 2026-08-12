@@ -14,6 +14,16 @@ base_options(Planner, Options) :-
                 child_capabilities(ChildCaps)
               ].
 
+expect_ok(ok(Result), Result) :- !.
+expect_ok(Outcome, _) :-
+    throw(error(unexpected_completion_outcome(Outcome),
+                context(rlm_completion_test, expected_ok))).
+
+expect_error(error(Error), Error) :- !.
+expect_error(Outcome, _) :-
+    throw(error(unexpected_completion_outcome(Outcome),
+                context(rlm_completion_test, expected_error))).
+
 test(direct_non_recursive_completion,
      [setup(completion_test_support:reset_calls)]) :-
     base_options(completion_test_support:direct_planner, Options),
@@ -21,7 +31,7 @@ test(direct_non_recursive_completion,
                    text("opaque context body"),
                    Options,
                    Outcome),
-    assertion(Outcome = ok(Result)),
+    expect_ok(Outcome, Result),
     assertion(Result.value == "direct-ok"),
     assertion(Result.recursion.recursive_calls =:= 0),
     assertion(Result.recursion.max_depth =:= 0),
@@ -36,7 +46,7 @@ test(recursion_hard_max_rejects_depth_two,
            [budget(_{max_recursion_depth:1})],
            Options),
     rlm_completion("too deep", text("ctx"), Options, Outcome),
-    assertion(Outcome = error(Error)),
+    expect_error(Outcome, Error),
     assertion(Error.phase == validate),
     assertion(Error.kind == recursive_plan_rejected),
     assertion(Error.detail = recursion_depth_exceeded(2, 1)).
@@ -46,7 +56,7 @@ test(duplicate_recursive_call_rejected,
     base_options(completion_test_support:duplicate_recursive_planner,
                  Options),
     rlm_completion("duplicate", text("ctx"), Options, Outcome),
-    assertion(Outcome = error(Error)),
+    expect_error(Outcome, Error),
     assertion(Error.phase == validate),
     assertion(Error.kind == recursive_plan_rejected),
     assertion(Error.detail == duplicate_recursive_call).
@@ -60,7 +70,7 @@ test(child_capabilities_cannot_reuse_parent_tool,
                 child_capabilities(Child)
               ],
     rlm_completion("narrow child", text("ctx"), Options, Outcome),
-    assertion(Outcome = error(Error)),
+    expect_error(Outcome, Error),
     assertion(Error.phase == validate),
     assertion(Error.kind == recursive_plan_rejected),
     assertion(Error.detail == child_capability_denied(tool(secret_tool))).
@@ -74,7 +84,7 @@ test(planner_retry_cannot_exceed_model_call_budget,
            ],
            Options),
     rlm_completion("invalid planner", text("ctx"), Options, Outcome),
-    assertion(Outcome = error(Error)),
+    expect_error(Outcome, Error),
     assertion(Error.phase == planner),
     assertion(Error.kind == model_call_budget_exhausted),
     completion_test_support:planner_calls(Calls),
@@ -87,7 +97,7 @@ test(cancelled_token_stops_before_planner_side_effect,
     base_options(completion_test_support:direct_planner, Base),
     append(Base, [cancel_token(Token)], Options),
     rlm_completion("cancel me", text("ctx"), Options, Outcome),
-    assertion(Outcome = error(Error)),
+    expect_error(Outcome, Error),
     assertion(Error.kind == cancelled),
     completion_test_support:planner_calls(Calls),
     assertion(Calls =:= 0).
@@ -97,7 +107,7 @@ test(llm_query_supports_bounded_injected_model,
     llm_query("hello",
               [model_handler(completion_test_support:fake_model)],
               Outcome),
-    assertion(Outcome = ok(Result)),
+    expect_ok(Outcome, Result),
     assertion(Result.response.text == "FAKE_MODEL_OK"),
     assertion(Result.usage.model_calls =:= 1),
     assertion(Result.usage.total_tokens =:= 3),
@@ -112,7 +122,7 @@ test(rlm_query_rejects_depth_above_hard_max) :-
                 model_handler(completion_test_support:fake_model)
               ],
               Outcome),
-    assertion(Outcome = error(Error)),
+    expect_error(Outcome, Error),
     assertion(Error.kind == completion_fault),
     assertion(Error.detail = recursion_depth_exceeded(1, 0)).
 
@@ -124,7 +134,7 @@ test(rlm_query_depth_one_uses_model,
                 depth(1)
               ],
               Outcome),
-    assertion(Outcome = ok(Result)),
+    expect_ok(Outcome, Result),
     assertion(Result.depth =:= 1),
     assertion(Result.response.text == "FAKE_MODEL_OK"),
     completion_test_support:model_calls(Calls),
