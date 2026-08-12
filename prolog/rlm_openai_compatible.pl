@@ -118,7 +118,7 @@ execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
     http_options(Key, Timeout, Status, HttpOptions),
     catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),
           Exception,
-          true),
+          transport_exception_handler(Exception)),
     (   var(Exception)
     ->  normalize_openai_chat_response(Provider, RequestedModel, Status,
                                        Reply, Outcome)
@@ -129,6 +129,17 @@ execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
                                        exception:SafeException,
                                        response_received:false})
     ).
+
+transport_exception_handler(error(rlm_cancelled(Token), Context)) :-
+    !,
+    throw(error(rlm_cancelled(Token), Context)).
+transport_exception_handler(time_limit_exceeded) :-
+    !,
+    throw(time_limit_exceeded).
+transport_exception_handler(time_limit_exceeded(Context)) :-
+    !,
+    throw(time_limit_exceeded(Context)).
+transport_exception_handler(_).
 
 http_options(none, Timeout, Status,
              [ timeout(Timeout),

@@ -754,11 +754,14 @@ validate_child_step_capabilities(ChildCapabilities, rlm(Child, _)) :-
     validate_plan_capabilities_only(Child, ChildCapabilities).
 validate_child_step_capabilities(ChildCapabilities, parallel(Plans, _)) :-
     !,
-    maplist(validate_child_plan_caps(ChildCapabilities), Plans).
+    maplist(scan_child_capability_plan(ChildCapabilities), Plans).
 validate_child_step_capabilities(ChildCapabilities, retry(_, Plan, _)) :-
     !,
-    validate_child_plan_caps(ChildCapabilities, Plan).
+    scan_child_capability_plan(ChildCapabilities, Plan).
 validate_child_step_capabilities(_, _).
+
+scan_child_capability_plan(ChildCapabilities, plan(Steps)) :-
+    maplist(validate_child_step_capabilities(ChildCapabilities), Steps).
 
 validate_child_plan_caps(ChildCapabilities, Plan) :-
     validate_plan_capabilities_only(Plan, ChildCapabilities).
@@ -1073,7 +1076,9 @@ response_event(Response, Depth, Reason, ProviderFallback,
                            selected_model:Selected,
                            http_status:Status,
                            usage:Usage}) :-
-    term_hash(Response, Hash),
+    term_string(Response, StableText,
+                [quoted(true), numbervars(true)]),
+    term_hash(StableText, Hash),
     format(atom(Id), 'model_~d', [Hash]),
     dict_default(provider, Response, ProviderFallback, Provider),
     dict_default(selected_model, Response, unknown, Selected),
