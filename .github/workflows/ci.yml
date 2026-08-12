@@ -91,7 +91,7 @@ jobs:
           cat /tmp/openrouter-live.log
 
           if [ "$status" -eq 0 ]; then
-            evidence="$(grep -E '^(provider|requested_model|selected_model|http_status|response_received|usage_present):' /tmp/openrouter-live.log | tr '\n' ' ')"
+            evidence="$(grep -E '^(provider|requested_model|selected_model|http_status|response_received|usage_present|expected_token_present):' /tmp/openrouter-live.log | tr '\n' ' ')"
             evidence="${evidence//'%'/'%25'}"
             echo "::notice title=REAL OpenRouter evidence::${evidence}"
           else
