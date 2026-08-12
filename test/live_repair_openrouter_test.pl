@@ -27,7 +27,7 @@ test(real_openrouter_repairs_structured_validation_failure) :-
                 [],
                 Options,
                 _{},
-                live_repair_openrouter_test:openrouter_repair,
+                openrouter_repair,
                 Outcome),
     require_live_repair_success(Outcome, Result),
     validate_live_repair_result(Result),
