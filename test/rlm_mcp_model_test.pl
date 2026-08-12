@@ -60,7 +60,7 @@ test(prompt_normalization) :-
               arguments:[_{name:"text", required:true}]},
     mcp_prompt_normalize(Input, ok(Prompt)),
     assertion(Prompt.name == review),
-    assertion(Prompt.arguments = [Argument]),
+    Prompt.arguments = [Argument],
     assertion(Argument.name == "text").
 
 test(text_and_image_content_normalization) :-
@@ -72,6 +72,16 @@ test(text_and_image_content_normalization) :-
                           ok(Image)),
     assertion(Image.type == image),
     assertion(Image.mime_type == "image/png").
+
+test(notification_normalization_is_version_neutral) :-
+    mcp_notification_normalize(resource_updated("file:///a"),
+                               ok(Notification)),
+    assertion(Notification.type == resource_updated),
+    assertion(Notification.uri == "file:///a"),
+    assertion(ground(Notification)),
+    term_string(Notification, Text),
+    assertion(\+ sub_string(Text, _, _, _, "notifications/")),
+    assertion(\+ sub_string(Text, _, _, _, "2025-11-25")).
 
 test(invalid_command_fails_structurally) :-
     mcp_command_normalize(jsonrpc("tools/list"), error(Error)),
