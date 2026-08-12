@@ -25,7 +25,17 @@
             agent_children/3,
             agent_cancel/4,
             agent_trace/2,
-            agent_tool_handler/4
+            agent_tool_handler/4,
+            default_graph_options/1,
+            graph_compile/4,
+            graph_backend_open/2,
+            graph_backend_close/1,
+            graph_run/4,
+            graph_resume/6,
+            graph_checkpoint/3,
+            graph_history/3,
+            graph_cancellation_token/1,
+            graph_cancel/1
           ]).
 
 /** <module> prolog-rlm entrypoint
@@ -69,7 +79,19 @@ Load this module to initialize the public runtime namespaces.
                 agent_trace/2,
                 agent_tool_handler/4
               ]).
-:- use_module(rlm_graph).
+:- use_module(rlm_graph,
+              [ rlm_graph_ready/0,
+                default_graph_options/1,
+                graph_compile/4,
+                graph_backend_open/2,
+                graph_backend_close/1,
+                graph_run/4,
+                graph_resume/6,
+                graph_checkpoint/3,
+                graph_history/3,
+                graph_cancellation_token/1,
+                graph_cancel/1
+              ]).
 :- use_module(rlm_mcp).
 
 rlm_version('0.1.0-dev').
