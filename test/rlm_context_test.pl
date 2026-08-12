@@ -101,8 +101,7 @@ test(reduce_rejects_arbitrary_callable) :-
 test(invalid_partition_size_is_structured) :-
     context_register(text("abcdef"), [], ok(Ref)),
     Handle = Ref.handle,
-    context_partition(Handle, fixed(0), [], Outcome),
-    assertion(Outcome = error(Error)),
+    context_partition(Handle, fixed(0), [], error(Error)),
     assertion(Error.kind == invalid_argument),
     context_delete(Handle, ok(_)).
 
