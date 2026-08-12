@@ -10,6 +10,7 @@
 :- consult(rlm_completion_hardening_test).
 :- consult(rlm_outcome_test).
 :- consult(rlm_agent_test).
+:- consult(rlm_graph_test).
 
 main(_) :-
     (   run_tests
