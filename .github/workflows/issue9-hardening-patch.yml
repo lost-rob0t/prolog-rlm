@@ -20,8 +20,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply reviewed runtime hardening
-        shell: python
+        shell: bash
         run: |
+          python - <<'PY'
           from pathlib import Path
 
           def replace_once(path, old, new):
@@ -33,87 +34,29 @@ jobs:
 
           replace_once(
               "prolog/rlm_completion.pl",
-              """    term_hash(Response, Hash),
-    format(atom(Id), 'model_~d', [Hash]),
-""",
-              """    term_string(Response, StableText,
-                [quoted(true), numbervars(true)]),
-    term_hash(StableText, Hash),
-    format(atom(Id), 'model_~d', [Hash]),
-""")
+              "    term_hash(Response, Hash),\n    format(atom(Id), 'model_~d', [Hash]),\n",
+              "    term_string(Response, StableText,\n                [quoted(true), numbervars(true)]),\n    term_hash(StableText, Hash),\n    format(atom(Id), 'model_~d', [Hash]),\n")
 
           replace_once(
               "prolog/rlm_completion.pl",
-              """validate_child_step_capabilities(ChildCapabilities, parallel(Plans, _)) :-
-    !,
-    maplist(validate_child_plan_caps(ChildCapabilities), Plans).
-validate_child_step_capabilities(ChildCapabilities, retry(_, Plan, _)) :-
-    !,
-    validate_child_plan_caps(ChildCapabilities, Plan).
-validate_child_step_capabilities(_, _).
-
-validate_child_plan_caps(ChildCapabilities, Plan) :-
-    validate_plan_capabilities_only(Plan, ChildCapabilities).
-""",
-              """validate_child_step_capabilities(ChildCapabilities, parallel(Plans, _)) :-
-    !,
-    maplist(scan_child_capability_plan(ChildCapabilities), Plans).
-validate_child_step_capabilities(ChildCapabilities, retry(_, Plan, _)) :-
-    !,
-    scan_child_capability_plan(ChildCapabilities, Plan).
-validate_child_step_capabilities(_, _).
-
-scan_child_capability_plan(ChildCapabilities, plan(Steps)) :-
-    maplist(validate_child_step_capabilities(ChildCapabilities), Steps).
-
-validate_child_plan_caps(ChildCapabilities, Plan) :-
-    validate_plan_capabilities_only(Plan, ChildCapabilities).
-""")
+              "validate_child_step_capabilities(ChildCapabilities, parallel(Plans, _)) :-\n    !,\n    maplist(validate_child_plan_caps(ChildCapabilities), Plans).\nvalidate_child_step_capabilities(ChildCapabilities, retry(_, Plan, _)) :-\n    !,\n    validate_child_plan_caps(ChildCapabilities, Plan).\nvalidate_child_step_capabilities(_, _).\n\nvalidate_child_plan_caps(ChildCapabilities, Plan) :-\n    validate_plan_capabilities_only(Plan, ChildCapabilities).\n",
+              "validate_child_step_capabilities(ChildCapabilities, parallel(Plans, _)) :-\n    !,\n    maplist(scan_child_capability_plan(ChildCapabilities), Plans).\nvalidate_child_step_capabilities(ChildCapabilities, retry(_, Plan, _)) :-\n    !,\n    scan_child_capability_plan(ChildCapabilities, Plan).\nvalidate_child_step_capabilities(_, _).\n\nscan_child_capability_plan(ChildCapabilities, plan(Steps)) :-\n    maplist(validate_child_step_capabilities(ChildCapabilities), Steps).\n\nvalidate_child_plan_caps(ChildCapabilities, Plan) :-\n    validate_plan_capabilities_only(Plan, ChildCapabilities).\n")
 
           replace_once(
               "prolog/rlm_openai_compatible.pl",
-              """    catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),
-          Exception,
-          true),
-""",
-              """    catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),
-          Exception,
-          transport_exception_handler(Exception)),
-""")
+              "    catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),\n          Exception,\n          true),\n",
+              "    catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),\n          Exception,\n          transport_exception_handler(Exception)),\n")
 
           replace_once(
               "prolog/rlm_openai_compatible.pl",
-              """http_options(none, Timeout, Status,
-""",
-              """transport_exception_handler(error(rlm_cancelled(Token), Context)) :-
-    !,
-    throw(error(rlm_cancelled(Token), Context)).
-transport_exception_handler(time_limit_exceeded) :-
-    !,
-    throw(time_limit_exceeded).
-transport_exception_handler(time_limit_exceeded(Context)) :-
-    !,
-    throw(time_limit_exceeded(Context)).
-transport_exception_handler(_).
-
-http_options(none, Timeout, Status,
-""")
+              "http_options(none, Timeout, Status,\n",
+              "transport_exception_handler(error(rlm_cancelled(Token), Context)) :-\n    !,\n    throw(error(rlm_cancelled(Token), Context)).\ntransport_exception_handler(time_limit_exceeded) :-\n    !,\n    throw(time_limit_exceeded).\ntransport_exception_handler(time_limit_exceeded(Context)) :-\n    !,\n    throw(time_limit_exceeded(Context)).\ntransport_exception_handler(_).\n\nhttp_options(none, Timeout, Status,\n")
 
           replace_once(
               "prolog/rlm_plan.pl",
-              """execution_exception(plan_execution(Fault), error(Error)) :-
-    !,
-    execution_fault(Fault, Error).
-execution_exception(Exception, error(Error)) :-
-""",
-              """execution_exception(plan_execution(Fault), error(Error)) :-
-    !,
-    execution_fault(Fault, Error).
-execution_exception(error(rlm_cancelled(Token), Context), _) :-
-    !,
-    throw(error(rlm_cancelled(Token), Context)).
-execution_exception(Exception, error(Error)) :-
-""")
+              "execution_exception(plan_execution(Fault), error(Error)) :-\n    !,\n    execution_fault(Fault, Error).\nexecution_exception(Exception, error(Error)) :-\n",
+              "execution_exception(plan_execution(Fault), error(Error)) :-\n    !,\n    execution_fault(Fault, Error).\nexecution_exception(error(rlm_cancelled(Token), Context), _) :-\n    !,\n    throw(error(rlm_cancelled(Token), Context)).\nexecution_exception(Exception, error(Error)) :-\n")
+          PY
 
       - name: Commit hardening
         run: |
