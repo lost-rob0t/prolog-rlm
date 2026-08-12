@@ -1,5 +1,6 @@
 :- begin_tests(live_tool_openrouter).
 
+:- use_module(library(http/json)).
 :- use_module('../prolog/rlm_chain').
 :- use_module('../prolog/rlm_plan').
 :- use_module('../prolog/rlm_tool').
@@ -28,18 +29,13 @@ register_live_project_tool(Registry) :-
 run_live_tool_case(Registry) :-
     default_openrouter_model(RequestedModel),
     openrouter_provider(RequestedModel, Provider),
-    live_tool_planner_prompt(Prompt),
-    Request = model_request{
-                  messages:[message{role:user, content:Prompt}],
-                  options:_{max_tokens:640}
-              },
-    request_required_live_tool_plan(Provider,
+    live_tool_request(Request),
+    request_required_live_tool_call(Provider,
                                     Request,
-                                    2,
+                                    3,
                                     1,
                                     Response,
                                     Plan,
-                                    PlanChannel,
                                     Attempt),
     Caps = [tool(project_read)],
     tool_registry_runtime_tools(Registry, Caps, RuntimeTools),
@@ -57,75 +53,121 @@ run_live_tool_case(Registry) :-
     validate_live_tool_result(Result),
     log_live_tool_evidence(RequestedModel,
                            Response,
-                           PlanChannel,
                            Attempt,
                            Result).
 
-request_required_live_tool_plan(Provider, Request, Remaining, Attempt,
-                                Response, Plan, PlanChannel, UsedAttempt) :-
+live_tool_request(
+    model_request{
+        messages:[message{
+                      role:user,
+                      content:"Use the project_read tool exactly once to read test/fixtures/tool-readable.txt. Do not answer from memory."
+                  }],
+        options:_{max_tokens:256,
+                  temperature:0,
+                  tool_choice:"required",
+                  tools:[_{type:"function",
+                           function:_{name:"project_read",
+                                      description:"Read one file from the trusted project root.",
+                                      parameters:_{type:"object",
+                                                   properties:_{path:_{type:"string",
+                                                                       description:"Project-relative file path"}},
+                                                   required:["path"],
+                                                   additionalProperties:false}}}]}
+    }).
+
+request_required_live_tool_call(Provider,
+                                Request,
+                                Remaining,
+                                Attempt,
+                                Response,
+                                Plan,
+                                UsedAttempt) :-
     model_complete(Provider, Request, ProviderOutcome),
     require_live_tool_provider_success(ProviderOutcome, Candidate),
-    (   response_tool_plan(Candidate, Plan0, Channel0),
-        required_live_tool_plan(Plan0)
+    (   response_project_read_plan(Candidate, Plan0)
     ->  Response = Candidate,
         Plan = Plan0,
-        PlanChannel = Channel0,
         UsedAttempt = Attempt
     ;   log_rejected_live_tool_attempt(Candidate, Attempt),
-        retry_live_tool_plan(Provider,
+        retry_live_tool_call(Provider,
                              Request,
                              Remaining,
                              Attempt,
                              Response,
                              Plan,
-                             PlanChannel,
                              UsedAttempt)
     ).
 
-required_live_tool_plan(
-    plan([tool(project_read, object(Pairs), file),
-          final(field(var(file), status))])) :-
-    Pairs = [path-literal("test/fixtures/tool-readable.txt")].
+response_project_read_plan(Response,
+                           plan([tool(project_read,
+                                      object([path-literal(Path)]),
+                                      file),
+                                 final(field(var(file), status))])) :-
+    get_dict(tool_calls, Response, Calls),
+    member(Call, Calls),
+    is_dict(Call),
+    get_dict(function, Call, Function),
+    is_dict(Function),
+    get_dict(name, Function, Name0),
+    normalize_tool_name(Name0, project_read),
+    get_dict(arguments, Function, Arguments0),
+    tool_arguments_dict(Arguments0, Arguments),
+    get_dict(path, Arguments, Path),
+    Path == "test/fixtures/tool-readable.txt",
+    !.
 
-retry_live_tool_plan(Provider, Request, Remaining, Attempt,
-                     Response, Plan, PlanChannel, UsedAttempt) :-
+normalize_tool_name(Name, Atom) :-
+    atom(Name),
+    !,
+    Atom = Name.
+normalize_tool_name(Name, Atom) :-
+    string(Name),
+    atom_string(Atom, Name).
+
+tool_arguments_dict(Arguments, Arguments) :-
+    is_dict(Arguments),
+    !.
+tool_arguments_dict(Arguments0, Arguments) :-
+    string(Arguments0),
+    !,
+    atom_string(Atom, Arguments0),
+    catch(atom_json_dict(Atom, Arguments, []), _, fail),
+    is_dict(Arguments).
+tool_arguments_dict(Arguments0, Arguments) :-
+    atom(Arguments0),
+    catch(atom_json_dict(Arguments0, Arguments, []), _, fail),
+    is_dict(Arguments).
+
+retry_live_tool_call(Provider, Request, Remaining, Attempt,
+                     Response, Plan, UsedAttempt) :-
     Remaining > 1,
     !,
     NextRemaining is Remaining-1,
     NextAttempt is Attempt+1,
-    request_required_live_tool_plan(Provider,
+    request_required_live_tool_call(Provider,
                                     Request,
                                     NextRemaining,
                                     NextAttempt,
                                     Response,
                                     Plan,
-                                    PlanChannel,
                                     UsedAttempt).
-retry_live_tool_plan(_, _, _, _, _, _, _, _) :-
-    throw(error(live_tool_plan_shape_failure,
+retry_live_tool_call(_, _, _, _, _, _, _) :-
+    throw(error(live_tool_call_shape_failure,
                 context(live_tool_openrouter_test,
-                        'real model responses did not contain the required two-step project-tool plan'))).
+                        'real OpenRouter responses did not select project_read with the required fixture path'))).
 
 log_rejected_live_tool_attempt(Response, Attempt) :-
-    format('real_tool_plan_attempt: ~d~n', [Attempt]),
-    format('real_tool_plan_attempt_http_status: ~d~n',
+    format('real_tool_call_attempt: ~d~n', [Attempt]),
+    format('real_tool_call_attempt_http_status: ~d~n',
            [Response.metadata.http_status]),
-    format('real_tool_plan_attempt_selected_model: ~w~n',
+    format('real_tool_call_attempt_selected_model: ~w~n',
            [Response.selected_model]),
-    format('real_tool_plan_attempt_required_shape: false~n', []).
-
-live_tool_planner_prompt(
-"Return ONLY one JSON object. No markdown and no explanation.\n\
-Select a typed plan that invokes the trusted project_read tool on the path test/fixtures/tool-readable.txt and then returns the tool status.\n\
-Use exactly two operations: tool project_read, then final.\n\
-The JSON must have this exact shape and binding name:\n\
-{\"steps\":[\
-{\"op\":\"tool\",\"name\":\"project_read\",\"args\":{\"path\":\"test/fixtures/tool-readable.txt\"},\"bind\":\"file\"},\
-{\"op\":\"final\",\"value\":{\"ref\":\"field\",\"value\":{\"ref\":\"var\",\"name\":\"file\"},\"key\":\"status\"}}]}" ).
+    format('real_tool_call_attempt_required_shape: false~n', []).
 
 require_live_tool_credential :-
     (   getenv('OPENROUTER_API_KEY', Key),
-        Key \== '', Key \== ""
+        Key \== '',
+        Key \== ""
     ->  true
     ;   throw(error(missing_live_credential('OPENROUTER_API_KEY'),
                     context(live_tool_openrouter_test,
@@ -137,22 +179,7 @@ require_live_tool_provider_success(ok(Response), Response) :-
 require_live_tool_provider_success(error(Error), _) :-
     throw(error(live_tool_provider_failure(Error),
                 context(live_tool_openrouter_test,
-                        'real OpenRouter tool-planner request failed'))).
-
-response_tool_plan(Response, Plan, text) :-
-    get_dict(text, Response, Text),
-    live_nonempty_string(Text),
-    plan_parse(Text, ok(Plan)),
-    !.
-response_tool_plan(Response, Plan, reasoning) :-
-    get_dict(reasoning, Response, Reasoning),
-    live_nonempty_string(Reasoning),
-    plan_parse(Reasoning, ok(Plan)),
-    !.
-
-live_nonempty_string(Value) :-
-    string(Value),
-    Value \== "".
+                        'real OpenRouter native tool request failed'))).
 
 require_live_tool_execution_success(ok(Result), Result) :-
     !.
@@ -167,13 +194,16 @@ validate_live_tool_result(Result) :-
     assertion(Envelope.authorization == allowed),
     assertion(Envelope.status == ok),
     assertion(Envelope.value.truncated == false),
-    assertion(sub_string(Envelope.value.content, _, _, _,
+    assertion(sub_string(Envelope.value.content,
+                         _,
+                         _,
+                         _,
                          "PROLOG_RLM_TOOL_OK")),
     Result.transitions = [ToolTransition, FinalTransition],
     assertion(ToolTransition.operation == tool(project_read)),
     assertion(FinalTransition.operation == final).
 
-log_live_tool_evidence(RequestedModel, Response, PlanChannel, Attempt, Result) :-
+log_live_tool_evidence(RequestedModel, Response, Attempt, Result) :-
     get_dict(file, Result.vars, Envelope),
     length(Result.transitions, TransitionCount),
     format('real_tool_provider: openrouter~n', []),
@@ -181,8 +211,9 @@ log_live_tool_evidence(RequestedModel, Response, PlanChannel, Attempt, Result) :
     format('real_tool_selected_model: ~w~n', [Response.selected_model]),
     format('real_tool_http_status: ~d~n', [Response.metadata.http_status]),
     format('real_tool_response_received: true~n', []),
+    format('real_tool_selection_channel: native_tool_call~n', []),
     format('real_tool_plan_parsed: true~n', []),
-    format('real_tool_plan_output_channel: ~w~n', [PlanChannel]),
+    format('real_tool_plan_output_channel: native_tool_call~n', []),
     format('real_tool_plan_attempt_used: ~d~n', [Attempt]),
     format('real_tool_invoked: true~n', []),
     format('real_tool_authorization: ~w~n', [Envelope.authorization]),
