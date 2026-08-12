@@ -47,8 +47,7 @@ and are never fallback targets.
               ]).
 :- use_module(rlm_openai_compatible,
               [ openai_compatible_complete/4,
-                openai_compatible_stream/5,
-                normalize_openai_chat_response/5
+                openai_compatible_stream/5
               ]).
 
 rlm_chain_ready.
