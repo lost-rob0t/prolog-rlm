@@ -221,7 +221,8 @@ typed_spawn_json_case(Runtime) :-
     Caps = [tool(spawn_agent), tool(read)],
     Options = [tools([tool(spawn_agent,
                            rlm_agent:agent_tool_handler(Runtime, Root))])],
-    plan_run(Json, Caps, Options, _{}, ok(Result)),
+    plan_run(Json, Caps, Options, _{}, Outcome),
+    require_plan_success(typed_spawn_agent_json, Outcome, Result),
     Result.value = Child,
     agent_status(Runtime, Child, ok(Status)),
     assertion(Status.capabilities == [tool(read)]),
@@ -247,6 +248,12 @@ spawn_capability_denied_case(Runtime) :-
     assertion(Error.kind == capability_denied),
     agent_children(Runtime, Root, Children),
     assertion(Children == []).
+
+require_plan_success(_, ok(Result), Result) :- !.
+require_plan_success(Label, Outcome, _) :-
+    throw(error(agent_plan_acceptance_failure(Label, Outcome),
+                context(plunit_rlm_agent,
+                        'typed agent plan did not complete successfully'))).
 
 with_runtime(Options, Goal) :-
     setup_call_cleanup(
