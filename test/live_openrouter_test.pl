@@ -39,13 +39,31 @@ validate_live_response(RequestedModel, Response) :-
     assertion(Response.requested_model == RequestedModel),
     SelectedModel = Response.selected_model,
     assertion(nonempty_textlike(SelectedModel)),
-    Text = Response.text,
-    assertion(string(Text)),
-    assertion(Text \== ""),
+    assertion(assistant_output_present(Response)),
     assertion(Response.metadata.provider == openrouter),
     assertion(Response.metadata.http_status =:= 200),
     assertion(Response.metadata.response_received == true),
     validate_usage(Response.usage).
+
+assistant_output_present(Response) :-
+    get_dict(text, Response, Text),
+    string(Text),
+    Text \== "",
+    !.
+assistant_output_present(Response) :-
+    get_dict(tool_calls, Response, ToolCalls),
+    is_list(ToolCalls),
+    ToolCalls \== [],
+    !.
+assistant_output_present(Response) :-
+    get_dict(reasoning, Response, Reasoning),
+    string(Reasoning),
+    Reasoning \== "",
+    !.
+assistant_output_present(Response) :-
+    get_dict(reasoning_details, Response, Details),
+    is_list(Details),
+    Details \== [].
 
 validate_usage(Usage) :-
     assertion(memberchk(Usage.present, [true, false])),
@@ -71,19 +89,44 @@ nonempty_textlike(Value) :-
     Value \== ''.
 
 expected_token_present(Text, Present) :-
-    (   sub_string(Text, _, _, _, "PROLOG_RLM_OPENROUTER_OK")
+    (   string(Text),
+        sub_string(Text, _, _, _, "PROLOG_RLM_OPENROUTER_OK")
+    ->  Present = true
+    ;   Present = false
+    ).
+
+text_present(Response, Present) :-
+    (   get_dict(text, Response, Text),
+        string(Text),
+        Text \== ""
+    ->  Present = true
+    ;   Present = false
+    ).
+
+reasoning_present(Response, Present) :-
+    (   get_dict(reasoning, Response, Reasoning),
+        string(Reasoning),
+        Reasoning \== ""
+    ->  Present = true
+    ;   get_dict(reasoning_details, Response, Details),
+        is_list(Details),
+        Details \== []
     ->  Present = true
     ;   Present = false
     ).
 
 log_safe_evidence(RequestedModel, Response) :-
     expected_token_present(Response.text, TokenPresent),
+    text_present(Response, TextPresent),
+    reasoning_present(Response, ReasoningPresent),
     format('provider: openrouter~n', []),
     format('requested_model: ~w~n', [RequestedModel]),
     format('selected_model: ~w~n', [Response.selected_model]),
     format('http_status: ~d~n', [Response.metadata.http_status]),
     format('response_received: true~n', []),
     format('usage_present: ~w~n', [Response.usage.present]),
+    format('text_present: ~w~n', [TextPresent]),
+    format('reasoning_present: ~w~n', [ReasoningPresent]),
     format('expected_token_present: ~w~n', [TokenPresent]).
 
 :- end_tests(live_openrouter).
