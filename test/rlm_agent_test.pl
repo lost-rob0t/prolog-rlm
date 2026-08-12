@@ -102,14 +102,16 @@ child_crash_case(Runtime) :-
     agent_pump(Runtime, Child, [], ok(_)),
     pump_until_message(Runtime, Child, 20),
     agent_status(Runtime, Child, ok(ChildStatus)),
-    assertion(ChildStatus.status = failed(_)),
+    get_dict(status, ChildStatus, ChildState),
+    ChildState = failed(_),
     pump_until_message(Runtime, Parent, 20),
     agent_status(Runtime, Parent, ok(ParentStatus)),
-    assertion(ParentStatus.last_result = child_result{child:agent(_),
-                                                      result:error(_)}),
+    get_dict(last_result, ParentStatus, ParentLast),
+    ParentLast = child_result{child:agent(_), result:error(_)},
     agent_trace(Runtime, Trace),
-    assertion(( member(Event, Trace),
-                Event.type == child_failure )).
+    member(Event, Trace),
+    get_dict(type, Event, child_failure),
+    !.
 
 test(parent_cancellation_propagates_to_child_work) :-
     with_runtime([worker_count(1),
