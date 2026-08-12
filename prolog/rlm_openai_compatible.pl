@@ -14,7 +14,7 @@ chat-completions providers. Credentials are resolved only while executing a
 request and are never returned in provider terms, results, errors, or traces.
 
 Streaming uses `http_open/3` directly and consumes server-sent events from the
-response stream as they arrive.  It never simulates streaming by splitting a
+response stream as they arrive. It never simulates streaming by splitting a
 completed response.
 */
 
@@ -95,8 +95,8 @@ http_options(Key, Timeout, Status,
 %!                           +EventHandler, -Outcome) is det.
 %
 %   Execute an OpenAI-compatible chat-completions request with `stream:true`.
-%   `EventHandler` is called synchronously and incrementally for canonical
-%   `stream_event{}` terms as SSE data arrives.  The final outcome is
+%   `EventHandler` is called synchronously and incrementally for canonical,
+%   ground `stream_event{}` terms as SSE data arrives. The final outcome is
 %   `ok(stream_result{response:ModelResponse, events:Events})`.
 
 openai_compatible_stream(Provider, Config, Request, EventHandler, Outcome) :-
@@ -132,8 +132,8 @@ stream_payload(error(Error), _, _, _, _, _, _, error(Error)) :-
     !.
 stream_payload(ok(Payload0), Provider, Endpoint, Credential,
                RequestedModel, Timeout, EventHandler, Outcome) :-
-    put_dict(_{stream:true,
-               stream_options:_{include_usage:true}},
+    put_dict(stream_request{stream:true,
+                            stream_options:stream_options{include_usage:true}},
              Payload0,
              Payload),
     resolve_credential(Provider, Credential, CredentialOutcome),
@@ -228,7 +228,7 @@ stream_http_error(Provider, Status, Body, Outcome) :-
 %!  openai_compatible_parse_sse_lines(+Provider, +RequestedModel, +Lines,
 %!                                    +EventHandler, -Outcome) is det.
 %
-%   Deterministic parser entry point for conformance tests.  It consumes the
+%   Deterministic parser entry point for conformance tests. It consumes the
 %   same SSE line parser used by the network transport, including `[DONE]`,
 %   usage chunks, tool-call deltas and final response aggregation.
 
@@ -335,13 +335,33 @@ process_sse_data("", _, State, State, false) :-
     !.
 process_sse_data(Data, EventHandler, State0, State, false) :-
     atom_string(Atom, Data),
-    catch(atom_json_dict(Atom, Chunk, []),
+    catch(atom_json_dict(Atom, RawChunk, []),
           Exception,
           throw(openai_stream_fault(invalid_json(Exception)))),
-    (   is_dict(Chunk)
-    ->  process_stream_chunk(Chunk, EventHandler, State0, State)
-    ;   throw(openai_stream_fault(non_object_chunk(Chunk)))
+    (   is_dict(RawChunk)
+    ->  canonical_stream_value(RawChunk, Chunk),
+        process_stream_chunk(Chunk, EventHandler, State0, State)
+    ;   throw(openai_stream_fault(non_object_chunk(RawChunk)))
     ).
+
+canonical_stream_value(Value0, Value) :-
+    is_dict(Value0),
+    !,
+    dict_pairs(Value0, _, Pairs0),
+    maplist(canonical_stream_pair, Pairs0, Pairs),
+    dict_pairs(Value, stream_data, Pairs).
+canonical_stream_value(Values0, Values) :-
+    is_list(Values0),
+    !,
+    maplist(canonical_stream_value, Values0, Values).
+canonical_stream_value(Value, Value) :-
+    ground(Value),
+    !.
+canonical_stream_value(Value, _) :-
+    throw(openai_stream_fault(non_ground_json_value(Value))).
+
+canonical_stream_pair(Key-Value0, Key-Value) :-
+    canonical_stream_value(Value0, Value).
 
 process_stream_chunk(Chunk, EventHandler, State0, State) :-
     update_stream_envelope(Chunk, State0, State1),
@@ -373,7 +393,7 @@ process_stream_choices([Choice|Choices], EventHandler, State0, State) :-
 
 process_stream_choice(Choice, EventHandler, State0, State) :-
     dict_default(index, Choice, 0, ChoiceIndex),
-    dict_default(delta, Choice, _{}, Delta),
+    dict_default(delta, Choice, stream_data{}, Delta),
     (   is_dict(Delta)
     ->  true
     ;   throw(openai_stream_fault(invalid_delta(Delta)))
@@ -516,7 +536,7 @@ update_tool_state(Call, Tool0, Tool) :-
         append_stream_piece(Name0, Tool2.name, Name),
         dict_default(arguments, Function, null, Arguments0),
         append_stream_piece(Arguments0, Tool2.arguments, Arguments),
-        put_dict(_{name:Name, arguments:Arguments}, Tool2, Tool)
+        put_dict(tool_update{name:Name, arguments:Arguments}, Tool2, Tool)
     ;   Tool = Tool2
     ).
 
@@ -533,7 +553,8 @@ append_stream_piece(Piece0, Existing, Combined) :-
 
 process_stream_finish(ChoiceIndex, Choice, EventHandler, State0, State) :-
     (   get_dict(finish_reason, Choice, Finish),
-        Finish \== null
+        Finish \== null,
+        Finish \== State0.finish_reason
     ->  put_dict(finish_reason, State0, Finish, State1),
         Event = stream_event{type:finish,
                              choice_index:ChoiceIndex,
@@ -552,6 +573,10 @@ process_stream_usage(Chunk, EventHandler, State0, State) :-
     ).
 
 emit_stream_event(EventHandler, Event, State0, State) :-
+    (   ground(Event)
+    ->  true
+    ;   throw(openai_stream_fault(non_ground_event(Event)))
+    ),
     (   call(EventHandler, Event)
     ->  put_dict(events_rev, State0, [Event|State0.events_rev], State)
     ;   throw(openai_stream_fault(event_handler_failed(Event)))
@@ -611,11 +636,11 @@ tool_states_calls(States, Calls) :-
 
 tool_state_pair(Tool, Index-Call) :-
     Index = Tool.index,
-    Function = _{name:Tool.name, arguments:Tool.arguments},
-    Call = _{index:Tool.index,
-             id:Tool.id,
-             type:Tool.type,
-             function:Function}.
+    Function = tool_function{name:Tool.name, arguments:Tool.arguments},
+    Call = tool_call{index:Tool.index,
+                     id:Tool.id,
+                     type:Tool.type,
+                     function:Function}.
 
 stream_text(Value, Value) :- string(Value), !.
 stream_text(Value, Text) :- atom(Value), !, atom_string(Value, Text).
@@ -944,7 +969,7 @@ request_payload(Request, RequestedModel, Outcome) :-
         maplist(message_payload, Messages0, Messages),
         request_options(Request, RequestOptions),
         allowed_generation_options(RequestOptions, GenerationOptions),
-        put_dict(_{model:RequestedModel, messages:Messages},
+        put_dict(request_payload{model:RequestedModel, messages:Messages},
                  GenerationOptions, Payload),
         Outcome = ok(Payload)
     ).
@@ -1000,7 +1025,7 @@ valid_message_content(Content) :-
 message_payload(Message, Payload) :-
     get_dict(role, Message, Role),
     get_dict(content, Message, Content),
-    Base = _{role:Role, content:Content},
+    Base = message_payload{role:Role, content:Content},
     copy_optional_message_fields([name,
                                   tool_call_id,
                                   tool_calls,
@@ -1019,7 +1044,7 @@ copy_optional_message_fields([Key|Keys], Message, Payload0, Payload) :-
 request_options(Request, Options) :-
     (   get_dict(options, Request, Candidate), is_dict(Candidate)
     ->  Options = Candidate
-    ;   Options = _{}
+    ;   Options = generation_options{}
     ).
 
 allowed_generation_options(Options, Allowed) :-
@@ -1033,7 +1058,7 @@ allowed_generation_options(Options, Allowed) :-
             tool_choice,
             response_format,
             reasoning],
-    include_present_keys(Keys, Options, _{}, Allowed).
+    include_present_keys(Keys, Options, generation_options{}, Allowed).
 
 include_present_keys([], _, Allowed, Allowed).
 include_present_keys([Key|Keys], Source, Allowed0, Allowed) :-
