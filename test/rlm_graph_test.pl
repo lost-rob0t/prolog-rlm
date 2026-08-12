@@ -81,8 +81,9 @@ test(branching_and_bounded_loop_execute_deterministically) :-
           assertion(Result.visits.increment =:= 3),
           assertion(Result.visits.decide =:= 3),
           assertion(Result.visits.finish =:= 1),
-          assertion(member(Event, Result.history)),
-          assertion(Event.type == run_completed)
+          member(Event, Result.history),
+          get_dict(type, Event, run_completed),
+          !
         ),
         graph_backend_close(Backend)).
 

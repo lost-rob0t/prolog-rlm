@@ -5,7 +5,7 @@
             graph_backend_open/2,
             graph_backend_close/1,
             graph_run/4,
-            graph_resume/5,
+            graph_resume/6,
             graph_checkpoint/3,
             graph_history/3,
             graph_cancellation_token/1,
@@ -535,7 +535,10 @@ unregister_graph_thread(none) :- !.
 unregister_graph_thread(Token) :-
     thread_self(Thread),
     with_mutex(rlm_graph_cancel,
-               retractall(graph_cancel_thread(Token, Thread))).
+               (   retract(graph_cancel_thread(Token, Thread))
+               ->  true
+               ;   true
+               )).
 
 /* -------------------------------------------------------------------------
  * Execution and resume
@@ -642,7 +645,7 @@ graph_resume_execution(Compiled, Config, Token, ResumeValue, Snapshot0,
                  Snapshot1,
                  Outcome).
 
-execute_loop(Compiled, Config, Token, _, Snapshot0, Outcome) :-
+execute_loop(Compiled, Config, _Token, _, Snapshot0, Outcome) :-
     Snapshot0.current == end,
     !,
     put_dict(status, Snapshot0, completed, Completed0),
