@@ -1,5 +1,7 @@
 :- module(rlm_openai_compatible,
           [ openai_compatible_complete/4,
+            openai_compatible_stream/5,
+            openai_compatible_parse_sse_lines/5,
             normalize_openai_chat_response/5,
             redact_secret/3,
             classify_provider_exception/2
@@ -10,12 +12,24 @@
 Production HTTPS transport and response normalization for OpenAI-compatible
 chat-completions providers. Credentials are resolved only while executing a
 request and are never returned in provider terms, results, errors, or traces.
+
+Streaming uses `http_open/3` directly and consumes server-sent events from the
+response stream as they arrive.  It never simulates streaming by splitting a
+completed response.
 */
 
 :- use_module(library(http/http_client)).
+:- use_module(library(http/http_open)).
 :- use_module(library(http/http_json)).
 :- use_module(library(http/http_ssl_plugin)).
+:- use_module(library(http/json)).
+:- use_module(library(readutil)).
 :- use_module(library(lists)).
+:- use_module(library(pairs)).
+
+/* -------------------------------------------------------------------------
+ * Non-streaming completion
+ * ---------------------------------------------------------------------- */
 
 openai_compatible_complete(Provider, Config, Request, Outcome) :-
     provider_config(Provider, Config, ConfigOutcome),
@@ -36,6 +50,607 @@ complete_payload(ok(Payload), Provider, Endpoint, Credential,
     resolve_credential(Provider, Credential, CredentialOutcome),
     execute_credentialed(CredentialOutcome, Provider, Endpoint,
                          RequestedModel, Timeout, Payload, Outcome).
+
+execute_credentialed(error(Error), _, _, _, _, _, error(Error)) :-
+    !.
+execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
+                     Payload, Outcome) :-
+    http_options(Key, Timeout, Status, HttpOptions),
+    catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),
+          Exception,
+          transport_exception_handler(Exception)),
+    (   var(Exception)
+    ->  normalize_openai_chat_response(Provider, RequestedModel, Status,
+                                       Reply, Outcome)
+    ;   classify_provider_exception(Exception, Kind),
+        safe_exception_text(Exception, Key, SafeException),
+        Outcome = error(provider_error{provider:Provider,
+                                       kind:Kind,
+                                       exception:SafeException,
+                                       response_received:false})
+    ).
+
+http_options(none, Timeout, Status,
+             [ timeout(Timeout),
+               status_code(Status),
+               json_object(dict),
+               request_header('Accept'='application/json'),
+               user_agent('prolog-rlm/0.1')
+             ]) :-
+    !.
+http_options(Key, Timeout, Status,
+             [ authorization(bearer(Key)),
+               timeout(Timeout),
+               status_code(Status),
+               json_object(dict),
+               request_header('Accept'='application/json'),
+               user_agent('prolog-rlm/0.1')
+             ]).
+
+/* -------------------------------------------------------------------------
+ * True SSE streaming
+ * ---------------------------------------------------------------------- */
+
+%!  openai_compatible_stream(+Provider, +Config, +Request,
+%!                           +EventHandler, -Outcome) is det.
+%
+%   Execute an OpenAI-compatible chat-completions request with `stream:true`.
+%   `EventHandler` is called synchronously and incrementally for canonical
+%   `stream_event{}` terms as SSE data arrives.  The final outcome is
+%   `ok(stream_result{response:ModelResponse, events:Events})`.
+
+openai_compatible_stream(Provider, Config, Request, EventHandler, Outcome) :-
+    (   callable(EventHandler)
+    ->  provider_config(Provider, Config, ConfigOutcome),
+        stream_from_config(ConfigOutcome,
+                           Provider,
+                           Request,
+                           EventHandler,
+                           Outcome)
+    ;   Outcome = error(provider_error{provider:client,
+                                       kind:validation_error,
+                                       field:event_handler,
+                                       message:"stream event handler must be callable",
+                                       response_received:false})
+    ).
+
+stream_from_config(error(Error), _, _, _, error(Error)) :-
+    !.
+stream_from_config(ok(Endpoint, Credential, RequestedModel, Timeout),
+                   Provider, Request, EventHandler, Outcome) :-
+    request_payload(Request, RequestedModel, PayloadOutcome),
+    stream_payload(PayloadOutcome,
+                   Provider,
+                   Endpoint,
+                   Credential,
+                   RequestedModel,
+                   Timeout,
+                   EventHandler,
+                   Outcome).
+
+stream_payload(error(Error), _, _, _, _, _, _, error(Error)) :-
+    !.
+stream_payload(ok(Payload0), Provider, Endpoint, Credential,
+               RequestedModel, Timeout, EventHandler, Outcome) :-
+    put_dict(_{stream:true,
+               stream_options:_{include_usage:true}},
+             Payload0,
+             Payload),
+    resolve_credential(Provider, Credential, CredentialOutcome),
+    execute_stream_credentialed(CredentialOutcome,
+                                Provider,
+                                Endpoint,
+                                RequestedModel,
+                                Timeout,
+                                Payload,
+                                EventHandler,
+                                Outcome).
+
+execute_stream_credentialed(error(Error), _, _, _, _, _, _, error(Error)) :-
+    !.
+execute_stream_credentialed(ok(Key), Provider, Endpoint, RequestedModel,
+                            Timeout, Payload, EventHandler, Outcome) :-
+    stream_http_options(Key, Timeout, Status, Payload, HttpOptions),
+    catch(setup_call_cleanup(
+              http_open(Endpoint, In, HttpOptions),
+              stream_http_result(Status,
+                                 In,
+                                 Provider,
+                                 RequestedModel,
+                                 EventHandler,
+                                 StreamOutcome),
+              close(In)),
+          Exception,
+          transport_exception_handler(Exception)),
+    (   var(Exception)
+    ->  Outcome = StreamOutcome
+    ;   classify_provider_exception(Exception, Kind),
+        safe_exception_text(Exception, Key, SafeException),
+        Outcome = error(provider_error{provider:Provider,
+                                       kind:Kind,
+                                       exception:SafeException,
+                                       response_received:false})
+    ).
+
+stream_http_options(none, Timeout, Status, Payload,
+                    [ post(json(Payload)),
+                      timeout(Timeout),
+                      status_code(Status),
+                      request_header('Accept'='text/event-stream'),
+                      user_agent('prolog-rlm/0.1')
+                    ]) :-
+    !.
+stream_http_options(Key, Timeout, Status, Payload,
+                    [ post(json(Payload)),
+                      authorization(bearer(Key)),
+                      timeout(Timeout),
+                      status_code(Status),
+                      request_header('Accept'='text/event-stream'),
+                      user_agent('prolog-rlm/0.1')
+                    ]).
+
+stream_http_result(Status, In, Provider, RequestedModel, EventHandler,
+                   Outcome) :-
+    (   integer(Status), Status >= 200, Status < 300
+    ->  stream_state_new(Provider, RequestedModel, Status, State0),
+        catch(consume_sse_stream(In,
+                                 EventHandler,
+                                 State0,
+                                 State),
+              Exception,
+              stream_parser_exception(Provider,
+                                      Status,
+                                      Exception,
+                                      ParseOutcome)),
+        (   var(ParseOutcome)
+        ->  finalize_stream_state(State, Outcome)
+        ;   Outcome = ParseOutcome
+        )
+    ;   read_string(In, _, Body),
+        stream_http_error(Provider, Status, Body, Outcome)
+    ).
+
+stream_http_error(Provider, Status, Body, Outcome) :-
+    (   string(Body), Body \== "",
+        catch(( atom_string(Atom, Body),
+                atom_json_dict(Atom, Raw, []) ),
+              _,
+              fail),
+        is_dict(Raw)
+    ->  normalize_http_error(Provider, Status, Raw, Outcome)
+    ;   Outcome = error(provider_error{provider:Provider,
+                                       kind:http_error,
+                                       http_status:Status,
+                                       message:"provider returned a non-success streaming HTTP response",
+                                       response_received:true})
+    ).
+
+%!  openai_compatible_parse_sse_lines(+Provider, +RequestedModel, +Lines,
+%!                                    +EventHandler, -Outcome) is det.
+%
+%   Deterministic parser entry point for conformance tests.  It consumes the
+%   same SSE line parser used by the network transport, including `[DONE]`,
+%   usage chunks, tool-call deltas and final response aggregation.
+
+openai_compatible_parse_sse_lines(Provider,
+                                  RequestedModel,
+                                  Lines,
+                                  EventHandler,
+                                  Outcome) :-
+    (   is_list(Lines), callable(EventHandler)
+    ->  stream_state_new(Provider, RequestedModel, 200, State0),
+        catch(consume_sse_lines(Lines,
+                                EventHandler,
+                                State0,
+                                State),
+              Exception,
+              stream_parser_exception(Provider,
+                                      200,
+                                      Exception,
+                                      ParseOutcome)),
+        (   var(ParseOutcome)
+        ->  finalize_stream_state(State, Outcome)
+        ;   Outcome = ParseOutcome
+        )
+    ;   Outcome = error(provider_error{provider:client,
+                                       kind:validation_error,
+                                       field:sse_lines,
+                                       message:"SSE lines must be a list and event handler callable",
+                                       response_received:false})
+    ).
+
+stream_state_new(Provider, RequestedModel, Status,
+                 stream_state{provider:Provider,
+                              requested_model:RequestedModel,
+                              http_status:Status,
+                              response_id:null,
+                              selected_model:RequestedModel,
+                              role:assistant,
+                              text:"",
+                              reasoning:"",
+                              reasoning_details:[],
+                              tool_states:[],
+                              finish_reason:null,
+                              usage:usage{present:false,
+                                          prompt_tokens:null,
+                                          completion_tokens:null,
+                                          total_tokens:null,
+                                          cost:null},
+                              events_rev:[],
+                              done:false}).
+
+consume_sse_stream(In, EventHandler, State0, State) :-
+    read_line_to_string(In, Line),
+    (   Line == end_of_file
+    ->  State = State0
+    ;   consume_sse_line(Line,
+                         EventHandler,
+                         State0,
+                         State1,
+                         Stop),
+        (   Stop == true
+        ->  State = State1
+        ;   consume_sse_stream(In, EventHandler, State1, State)
+        )
+    ).
+
+consume_sse_lines([], _, State, State).
+consume_sse_lines([Line|Lines], EventHandler, State0, State) :-
+    consume_sse_line(Line, EventHandler, State0, State1, Stop),
+    (   Stop == true
+    ->  State = State1
+    ;   consume_sse_lines(Lines, EventHandler, State1, State)
+    ).
+
+consume_sse_line(Line0, EventHandler, State0, State, Stop) :-
+    line_string(Line0, Line),
+    (   sse_data_line(Line, Data)
+    ->  process_sse_data(Data, EventHandler, State0, State, Stop)
+    ;   State = State0,
+        Stop = false
+    ).
+
+line_string(Line, Line) :- string(Line), !.
+line_string(Line, Text) :- atom(Line), !, atom_string(Line, Text).
+line_string(Line, _) :- throw(openai_stream_fault(invalid_sse_line(Line))).
+
+sse_data_line(Line, Data) :-
+    sub_string(Line, 0, 5, _, "data:"),
+    !,
+    sub_string(Line, 5, _, 0, Rest),
+    strip_single_space(Rest, Data).
+
+strip_single_space(Rest, Data) :-
+    (   sub_string(Rest, 0, 1, _, " ")
+    ->  sub_string(Rest, 1, _, 0, Data)
+    ;   Data = Rest
+    ).
+
+process_sse_data("[DONE]", EventHandler, State0, State, true) :-
+    !,
+    Event = stream_event{type:done},
+    emit_stream_event(EventHandler, Event, State0, State1),
+    put_dict(done, State1, true, State).
+process_sse_data("", _, State, State, false) :-
+    !.
+process_sse_data(Data, EventHandler, State0, State, false) :-
+    atom_string(Atom, Data),
+    catch(atom_json_dict(Atom, Chunk, []),
+          Exception,
+          throw(openai_stream_fault(invalid_json(Exception)))),
+    (   is_dict(Chunk)
+    ->  process_stream_chunk(Chunk, EventHandler, State0, State)
+    ;   throw(openai_stream_fault(non_object_chunk(Chunk)))
+    ).
+
+process_stream_chunk(Chunk, EventHandler, State0, State) :-
+    update_stream_envelope(Chunk, State0, State1),
+    dict_default(choices, Chunk, [], Choices0),
+    (   is_list(Choices0)
+    ->  Choices = Choices0
+    ;   throw(openai_stream_fault(invalid_choices(Choices0)))
+    ),
+    process_stream_choices(Choices, EventHandler, State1, State2),
+    process_stream_usage(Chunk, EventHandler, State2, State).
+
+update_stream_envelope(Chunk, State0, State) :-
+    (   get_dict(id, Chunk, Id), Id \== null
+    ->  put_dict(response_id, State0, Id, State1)
+    ;   State1 = State0
+    ),
+    (   get_dict(model, Chunk, Model), Model \== null
+    ->  put_dict(selected_model, State1, Model, State)
+    ;   State = State1
+    ).
+
+process_stream_choices([], _, State, State).
+process_stream_choices([Choice|Choices], EventHandler, State0, State) :-
+    (   is_dict(Choice)
+    ->  process_stream_choice(Choice, EventHandler, State0, State1)
+    ;   throw(openai_stream_fault(invalid_choice(Choice)))
+    ),
+    process_stream_choices(Choices, EventHandler, State1, State).
+
+process_stream_choice(Choice, EventHandler, State0, State) :-
+    dict_default(index, Choice, 0, ChoiceIndex),
+    dict_default(delta, Choice, _{}, Delta),
+    (   is_dict(Delta)
+    ->  true
+    ;   throw(openai_stream_fault(invalid_delta(Delta)))
+    ),
+    process_stream_role(Delta, State0, State1),
+    process_stream_text(ChoiceIndex, Delta, EventHandler, State1, State2),
+    process_stream_reasoning(ChoiceIndex,
+                             Delta,
+                             EventHandler,
+                             State2,
+                             State3),
+    process_stream_reasoning_details(ChoiceIndex,
+                                     Delta,
+                                     EventHandler,
+                                     State3,
+                                     State4),
+    process_stream_tool_calls(ChoiceIndex,
+                              Delta,
+                              EventHandler,
+                              State4,
+                              State5),
+    process_stream_finish(ChoiceIndex,
+                          Choice,
+                          EventHandler,
+                          State5,
+                          State).
+
+process_stream_role(Delta, State0, State) :-
+    (   get_dict(role, Delta, Role), Role \== null
+    ->  put_dict(role, State0, Role, State)
+    ;   State = State0
+    ).
+
+process_stream_text(ChoiceIndex, Delta, EventHandler, State0, State) :-
+    (   get_dict(content, Delta, Content0),
+        Content0 \== null
+    ->  stream_text(Content0, Content),
+        (   Content == ""
+        ->  State = State0
+        ;   string_concat(State0.text, Content, Text),
+            put_dict(text, State0, Text, State1),
+            Event = stream_event{type:text,
+                                 choice_index:ChoiceIndex,
+                                 delta:Content},
+            emit_stream_event(EventHandler, Event, State1, State)
+        )
+    ;   State = State0
+    ).
+
+process_stream_reasoning(ChoiceIndex, Delta, EventHandler, State0, State) :-
+    (   get_dict(reasoning, Delta, Reasoning0),
+        Reasoning0 \== null
+    ->  stream_text(Reasoning0, Reasoning),
+        (   Reasoning == ""
+        ->  State = State0
+        ;   string_concat(State0.reasoning, Reasoning, Combined),
+            put_dict(reasoning, State0, Combined, State1),
+            Event = stream_event{type:reasoning,
+                                 choice_index:ChoiceIndex,
+                                 delta:Reasoning},
+            emit_stream_event(EventHandler, Event, State1, State)
+        )
+    ;   State = State0
+    ).
+
+process_stream_reasoning_details(ChoiceIndex,
+                                 Delta,
+                                 EventHandler,
+                                 State0,
+                                 State) :-
+    (   get_dict(reasoning_details, Delta, Details),
+        is_list(Details), Details \== []
+    ->  append(State0.reasoning_details, Details, Combined),
+        put_dict(reasoning_details, State0, Combined, State1),
+        Event = stream_event{type:reasoning,
+                             choice_index:ChoiceIndex,
+                             details:Details},
+        emit_stream_event(EventHandler, Event, State1, State)
+    ;   State = State0
+    ).
+
+process_stream_tool_calls(ChoiceIndex, Delta, EventHandler, State0, State) :-
+    (   get_dict(tool_calls, Delta, Calls),
+        is_list(Calls), Calls \== []
+    ->  process_tool_call_deltas(Calls,
+                                 ChoiceIndex,
+                                 EventHandler,
+                                 State0,
+                                 State)
+    ;   State = State0
+    ).
+
+process_tool_call_deltas([], _, _, State, State).
+process_tool_call_deltas([Call|Calls], ChoiceIndex, EventHandler,
+                         State0, State) :-
+    (   is_dict(Call)
+    ->  dict_default(index, Call, 0, ToolIndex),
+        aggregate_tool_call(Call, ToolIndex, State0, State1),
+        Event = stream_event{type:tool_call,
+                             choice_index:ChoiceIndex,
+                             tool_index:ToolIndex,
+                             delta:Call},
+        emit_stream_event(EventHandler, Event, State1, State2)
+    ;   throw(openai_stream_fault(invalid_tool_call_delta(Call)))
+    ),
+    process_tool_call_deltas(Calls,
+                             ChoiceIndex,
+                             EventHandler,
+                             State2,
+                             State).
+
+aggregate_tool_call(Call, ToolIndex, State0, State) :-
+    take_tool_state(ToolIndex,
+                    State0.tool_states,
+                    Tool0,
+                    Rest),
+    update_tool_state(Call, Tool0, Tool),
+    put_dict(tool_states, State0, [Tool|Rest], State).
+
+take_tool_state(Index, [],
+                tool_state{index:Index,
+                           id:null,
+                           type:"function",
+                           name:"",
+                           arguments:""},
+                []).
+take_tool_state(Index, [Tool|Tools], Found, Rest) :-
+    (   Tool.index =:= Index
+    ->  Found = Tool,
+        Rest = Tools
+    ;   take_tool_state(Index, Tools, Found, Tail),
+        Rest = [Tool|Tail]
+    ).
+
+update_tool_state(Call, Tool0, Tool) :-
+    update_tool_scalar(Call, id, Tool0, Tool1),
+    update_tool_scalar(Call, type, Tool1, Tool2),
+    (   get_dict(function, Call, Function), is_dict(Function)
+    ->  dict_default(name, Function, null, Name0),
+        append_stream_piece(Name0, Tool2.name, Name),
+        dict_default(arguments, Function, null, Arguments0),
+        append_stream_piece(Arguments0, Tool2.arguments, Arguments),
+        put_dict(_{name:Name, arguments:Arguments}, Tool2, Tool)
+    ;   Tool = Tool2
+    ).
+
+update_tool_scalar(Call, Key, Tool0, Tool) :-
+    (   get_dict(Key, Call, Value), Value \== null
+    ->  put_dict(Key, Tool0, Value, Tool)
+    ;   Tool = Tool0
+    ).
+
+append_stream_piece(null, Existing, Existing) :- !.
+append_stream_piece(Piece0, Existing, Combined) :-
+    stream_text(Piece0, Piece),
+    string_concat(Existing, Piece, Combined).
+
+process_stream_finish(ChoiceIndex, Choice, EventHandler, State0, State) :-
+    (   get_dict(finish_reason, Choice, Finish),
+        Finish \== null
+    ->  put_dict(finish_reason, State0, Finish, State1),
+        Event = stream_event{type:finish,
+                             choice_index:ChoiceIndex,
+                             finish_reason:Finish},
+        emit_stream_event(EventHandler, Event, State1, State)
+    ;   State = State0
+    ).
+
+process_stream_usage(Chunk, EventHandler, State0, State) :-
+    (   get_dict(usage, Chunk, RawUsage), is_dict(RawUsage)
+    ->  normalize_usage(Chunk, Usage),
+        put_dict(usage, State0, Usage, State1),
+        Event = stream_event{type:usage, usage:Usage},
+        emit_stream_event(EventHandler, Event, State1, State)
+    ;   State = State0
+    ).
+
+emit_stream_event(EventHandler, Event, State0, State) :-
+    (   call(EventHandler, Event)
+    ->  put_dict(events_rev, State0, [Event|State0.events_rev], State)
+    ;   throw(openai_stream_fault(event_handler_failed(Event)))
+    ).
+
+finalize_stream_state(State, Outcome) :-
+    (   State.done == true
+    ->  finalize_stream_done(State, Outcome)
+    ;   Outcome = error(provider_error{provider:State.provider,
+                                       kind:invalid_stream,
+                                       http_status:State.http_status,
+                                       detail:missing_done,
+                                       message:"stream ended before the [DONE] sentinel",
+                                       response_received:true})
+    ).
+
+finalize_stream_done(State, Outcome) :-
+    tool_states_calls(State.tool_states, ToolCalls),
+    (   assistant_payload_present(State.text,
+                                  ToolCalls,
+                                  State.reasoning,
+                                  State.reasoning_details)
+    ->  Assistant = message{role:State.role,
+                            content:State.text,
+                            tool_calls:ToolCalls,
+                            reasoning:State.reasoning,
+                            reasoning_details:State.reasoning_details},
+        Metadata = provider_metadata{provider:State.provider,
+                                     http_status:State.http_status,
+                                     response_received:true,
+                                     streaming:true},
+        Response = model_response{provider:State.provider,
+                                  requested_model:State.requested_model,
+                                  selected_model:State.selected_model,
+                                  response_id:State.response_id,
+                                  assistant:Assistant,
+                                  text:State.text,
+                                  tool_calls:ToolCalls,
+                                  reasoning:State.reasoning,
+                                  reasoning_details:State.reasoning_details,
+                                  finish_reason:State.finish_reason,
+                                  usage:State.usage,
+                                  metadata:Metadata},
+        reverse(State.events_rev, Events),
+        Outcome = ok(stream_result{response:Response, events:Events})
+    ;   Outcome = error(provider_error{provider:State.provider,
+                                       kind:invalid_stream,
+                                       http_status:State.http_status,
+                                       message:"stream completed without assistant content, reasoning, or tool calls",
+                                       response_received:true})
+    ).
+
+tool_states_calls(States, Calls) :-
+    maplist(tool_state_pair, States, Pairs0),
+    keysort(Pairs0, Pairs),
+    pairs_values(Pairs, Calls).
+
+tool_state_pair(Tool, Index-Call) :-
+    Index = Tool.index,
+    Function = _{name:Tool.name, arguments:Tool.arguments},
+    Call = _{index:Tool.index,
+             id:Tool.id,
+             type:Tool.type,
+             function:Function}.
+
+stream_text(Value, Value) :- string(Value), !.
+stream_text(Value, Text) :- atom(Value), !, atom_string(Value, Text).
+stream_text(Value, _) :- throw(openai_stream_fault(invalid_text_delta(Value))).
+
+stream_parser_exception(_, _, error(rlm_cancelled(Token), Context), _) :-
+    !,
+    throw(error(rlm_cancelled(Token), Context)).
+stream_parser_exception(_, _, time_limit_exceeded, _) :-
+    !,
+    throw(time_limit_exceeded).
+stream_parser_exception(_, _, time_limit_exceeded(Context), _) :-
+    !,
+    throw(time_limit_exceeded(Context)).
+stream_parser_exception(Provider, Status, openai_stream_fault(Detail),
+                        error(Error)) :-
+    !,
+    Error = provider_error{provider:Provider,
+                           kind:invalid_stream,
+                           http_status:Status,
+                           detail:Detail,
+                           message:"provider stream could not be normalized",
+                           response_received:true}.
+stream_parser_exception(Provider, Status, Exception, error(Error)) :-
+    safe_exception_text(Exception, none, Safe),
+    Error = provider_error{provider:Provider,
+                           kind:invalid_stream,
+                           http_status:Status,
+                           exception:Safe,
+                           message:"provider stream parser raised an exception",
+                           response_received:true}.
+
+/* -------------------------------------------------------------------------
+ * Provider configuration and control exceptions
+ * ---------------------------------------------------------------------- */
 
 provider_config(Provider, Config, Outcome) :-
     (   is_list(Config)
@@ -111,25 +726,6 @@ resolve_credential(Provider, env(Name), Outcome) :-
                                        response_received:false})
     ).
 
-execute_credentialed(error(Error), _, _, _, _, _, error(Error)) :-
-    !.
-execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
-                     Payload, Outcome) :-
-    http_options(Key, Timeout, Status, HttpOptions),
-    catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),
-          Exception,
-          transport_exception_handler(Exception)),
-    (   var(Exception)
-    ->  normalize_openai_chat_response(Provider, RequestedModel, Status,
-                                       Reply, Outcome)
-    ;   classify_provider_exception(Exception, Kind),
-        safe_exception_text(Exception, Key, SafeException),
-        Outcome = error(provider_error{provider:Provider,
-                                       kind:Kind,
-                                       exception:SafeException,
-                                       response_received:false})
-    ).
-
 transport_exception_handler(error(rlm_cancelled(Token), Context)) :-
     !,
     throw(error(rlm_cancelled(Token), Context)).
@@ -141,22 +737,9 @@ transport_exception_handler(time_limit_exceeded(Context)) :-
     throw(time_limit_exceeded(Context)).
 transport_exception_handler(_).
 
-http_options(none, Timeout, Status,
-             [ timeout(Timeout),
-               status_code(Status),
-               json_object(dict),
-               request_header('Accept'='application/json'),
-               user_agent('prolog-rlm/0.1')
-             ]) :-
-    !.
-http_options(Key, Timeout, Status,
-             [ authorization(bearer(Key)),
-               timeout(Timeout),
-               status_code(Status),
-               json_object(dict),
-               request_header('Accept'='application/json'),
-               user_agent('prolog-rlm/0.1')
-             ]).
+/* -------------------------------------------------------------------------
+ * Completed-response normalization
+ * ---------------------------------------------------------------------- */
 
 normalize_openai_chat_response(Provider, RequestedModel, HttpInfo, Raw,
                                Outcome) :-
@@ -349,6 +932,10 @@ normalize_content(Content, String) :-
 normalize_content(Content, String) :-
     term_string(Content, String, [quoted(true), numbervars(true)]).
 
+/* -------------------------------------------------------------------------
+ * Request normalization
+ * ---------------------------------------------------------------------- */
+
 request_payload(Request, RequestedModel, Outcome) :-
     validate_request(Request, Validation),
     (   Validation = error(Error)
@@ -455,6 +1042,10 @@ include_present_keys([Key|Keys], Source, Allowed0, Allowed) :-
     ;   Allowed1 = Allowed0
     ),
     include_present_keys(Keys, Source, Allowed1, Allowed).
+
+/* -------------------------------------------------------------------------
+ * Generic helpers, exception classification and redaction
+ * ---------------------------------------------------------------------- */
 
 config_value(Key, Config, Default, Value) :-
     (   member(Entry, Config), Entry =.. [Key, Found]
