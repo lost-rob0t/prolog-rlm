@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install SWI-Prolog
         run: |
@@ -33,4 +35,9 @@ jobs:
         run: swipl -q -s test/run_tests.pl
 
       - name: Check whitespace errors
-        run: git diff --check HEAD~1 HEAD || git diff --check
+        run: |
+          if [ -n "${{ github.base_ref }}" ]; then
+            git diff --check "origin/${{ github.base_ref }}...HEAD"
+          else
+            git diff --check HEAD^ HEAD
+          fi
