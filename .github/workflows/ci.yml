@@ -56,6 +56,16 @@ jobs:
           fi
           exit "$status"
 
+      - name: Verify persistent graph resume across fresh SWI processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          restart_dir="$(mktemp -d)"
+          trap 'rm -rf "$restart_dir"' EXIT
+          checkpoint="$restart_dir/graph-checkpoint.db"
+          swipl -q -s test/graph_restart_phase1.pl -- "$checkpoint"
+          swipl -q -s test/graph_restart_phase2.pl -- "$checkpoint"
+
       - name: Check whitespace errors
         run: |
           if [ -n "${{ github.base_ref }}" ]; then
