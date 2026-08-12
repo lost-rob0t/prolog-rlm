@@ -1,0 +1,66 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-007-langchain-langgraph-port
+:END:
+#+title: RLM-RESEARCH-007 LangChain and LangGraph Semantics to Reimplement
+#+status: DONE
+#+filetags: :langchain:langgraph:prolog:port:agents:
+
+* Research Question
+
+Which LangChain/LangGraph concepts are worth reimplementing as embedded Prolog libraries, and which framework surface should be rejected as unnecessary compatibility burden?
+
+* Primary Sources
+
+- LangChain agents: https://docs.langchain.com/oss/python/langchain/agents
+- LangGraph overview: https://docs.langchain.com/oss/python/langgraph/overview
+- LangChain-Prolog: https://langchain-prolog.readthedocs.io/en/stable/
+
+Retrieved 2026-08-11.
+
+* Findings
+
+The useful LangChain layer is small relative to the total ecosystem: normalized messages, model/provider abstraction, tool schemas/invocation, structured output, middleware/hooks, retries, streaming, and usage metadata.
+
+The useful LangGraph layer is durable orchestration: explicit state, nodes, conditional edges, reducers, subgraphs, checkpointing, interrupts, replay/history, streaming, parallel branches, and cancellation.
+
+LangChain-Prolog is useful evidence that Prolog can integrate with current agent stacks, but its Python-first host architecture is the inverse of this project. prolog-rlm should not depend on Python/Janus for its core runtime.
+
+* Port Rule
+
+Reimplement behavior from public interfaces/documentation unless a direct source port has an explicit license/API compatibility review. Do not chase drop-in Python API compatibility.
+
+* rlm_chain Minimum
+
+- messages/prompts;
+- providers;
+- structured output;
+- tool definitions and validation;
+- middleware/hooks;
+- retry/backoff;
+- streaming events;
+- usage/cost accounting.
+
+Do not build dozens of vendor-specific integrations before the provider protocol is stable.
+
+* rlm_graph Minimum
+
+- state schema/validation;
+- node/edge definitions;
+- conditional transitions;
+- reducers;
+- graph compile/validate;
+- bounded loops;
+- subgraphs;
+- checkpoints/resume;
+- interrupts;
+- event stream;
+- history/replay;
+- cancellation.
+
+* Prolog Advantage
+
+Nodes and edges are naturally relations; state validation can be predicates; conditional routing is ordinary rule evaluation; reducers can be explicit predicates; graph compilation can detect unreachable nodes and invalid transitions before execution.
+
+* Acceptance Evidence
+
+Build one research agent graph with a conditional retry edge, checkpoint, interrupt/resume point, and a subgraph using only embedded Prolog modules and no Python runtime.

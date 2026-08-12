@@ -1,0 +1,58 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-008-adaptive-recursion
+:END:
+#+title: RLM-RESEARCH-008 Adaptive Recursion Policy
+#+status: DONE
+#+filetags: :rlm:recursion:cost:latency:routing:reflection:
+
+* Research Question
+
+Should recursive depth be treated as a static quality knob, or should prolog-rlm route recursively only when the expected value of decomposition justifies the cost?
+
+* Primary Sources
+
+- RLM paper: https://arxiv.org/abs/2512.24601
+- RLM minimal implementation: https://github.com/alexzhang13/rlm-minimal
+- RLM depth reproduction: https://arxiv.org/abs/2603.02615
+- lambda-RLM: https://arxiv.org/abs/2603.20105
+- Self-Reflective Program Search for Long Context: https://arxiv.org/abs/2603.15653
+
+Retrieved 2026-08-11.
+
+* Findings
+
+The minimal RLM deliberately demonstrates depth 1. Independent depth reproduction reports that extra recursion can greatly increase token use and latency and can reduce task performance when decomposition is unnecessary or poorly routed. lambda-RLM also treats recursion as something that should have explicit cost/termination structure.
+
+Self-Reflective Program Search provides complementary evidence: program-selection quality matters at least as much as recursion itself. It evaluates candidate context-interaction programs using uncertainty-related signals and reports improvements over ordinary RLM under fixed time budgets. The implementation lesson is that prolog-rlm should invest in plan selection/evaluation rather than assuming a deeper recursion tree is automatically better.
+
+Therefore maximum recursion depth is a safety ceiling, not a strategy.
+
+* Proposed Policy
+
+Represent routing as an explicit decision among:
+
+- deterministic Prolog/context operation;
+- direct model continuation;
+- cheap/submodel call;
+- depth-1 RLM call over selected context;
+- delegated tool-capable subagent;
+- alternate candidate plan followed by evaluation.
+
+Every recursive call records parent, child, reason, estimated utility/cost, actual usage, and depth.
+
+Default production policy should permit depth 1. Depth >1 remains experimental until benchmark evidence supports it under fixed budgets.
+
+A later planner may generate multiple candidate symbolic plans and score them using deterministic feasibility checks plus bounded model/reflection signals. Candidate search itself must consume an explicit planning budget.
+
+* Duplicate and Cycle Control
+
+Canonicalize subproblem/context identifiers enough to detect obvious repeated recursive calls. Prevent parent/child cycles that do not change task/context state. Allow explicit retry only through a bounded retry policy.
+
+* Acceptance Evidence
+
+- benchmark depth 0/1/2 on the same fixtures and budgets;
+- report quality, tokens, calls, latency and dollars where available;
+- demonstrate trivial retrieval routes without recursive call;
+- demonstrate a decomposable long-context task routes to depth 1;
+- compare single generated plan with bounded multi-candidate plan selection;
+- prove configured hard maximum still terminates pathological plans.

@@ -1,0 +1,61 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-003-typed-symbolic-execution
+:END:
+#+title: RLM-RESEARCH-003 Typed Symbolic Execution for Model Plans
+#+status: DONE
+#+filetags: :rlm:lambda-rlm:plans:safety:prolog:
+
+* Research Question
+
+What should replace unrestricted model-written REPL code in a Prolog RLM while preserving model-selected decomposition?
+
+* Primary Sources
+
+- lambda-RLM paper: https://arxiv.org/abs/2603.20105
+- lambda-RLM implementation: https://github.com/lambda-calculus-LLM/lambda-RLM
+- upstream RLM implementation: https://github.com/alexzhang13/rlm
+- Harnesses are Compositional Generalizers: https://alexzhang13.github.io/blog/2026/harness/
+
+Retrieved 2026-08-11.
+
+* Findings
+
+lambda-RLM replaces open-ended recursive code generation with a typed symbolic runtime and a small operator set such as SPLIT, MAP, FILTER, REDUCE, CONCAT, and CROSS. The project reports better accuracy in 29/36 model-task comparisons, lower latency in its experiments, and stronger termination/cost reasoning than an unrestricted REPL loop.
+
+This is strong evidence for moving control-flow validation out of the model-generated source language.
+
+However, a completely fixed decomposition library can become a new hand-written task strategy. The RLM/harness value comes partly from allowing the model to decide what decomposition is semantically useful.
+
+* Prolog Adaptation
+
+Adopt the typed-runtime principle, not a literal lambda-RLM port.
+
+The model should produce or choose a Prolog term representing a plan. The runtime validates the term against:
+
+- known constructors;
+- argument schemas/types;
+- capability set;
+- remaining budget;
+- recursion/concurrency constraints;
+- allowed side effects.
+
+Candidate operators include =context/1=, =model/1=, =rlm/1=, =tool/1=, =spawn/2=, =parallel/1=, =retry/2=, =checkpoint/1=, and =final/1=.
+
+The plan interpreter may compile these terms to ordinary internal predicates after validation. Do not expose unrestricted =call/1= over arbitrary model terms.
+
+* Capability Principle
+
+A child plan/agent receives a subset of the parent's capabilities unless explicitly delegated more by trusted host code. Recursive inference alone must not expand authority.
+
+* Rejected Alternative
+
+A lexical denylist around arbitrary generated Prolog source is not sufficient as the primary security/control boundary. It is useful as defense in depth only.
+
+* Acceptance Evidence
+
+- malformed plan rejected before side effects;
+- unknown operator rejected;
+- missing capability rejected;
+- recursive plan stops at budget;
+- deterministic interpreter test with fake provider;
+- real provider can produce a valid plan that executes one context operation, one tool call, and a final result.
