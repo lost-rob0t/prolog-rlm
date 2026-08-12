@@ -6,36 +6,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  issue11-source-patch:
-    name: One-shot issue11 source patch
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/feature/issue-11-agent-supervision' &&
-      github.event.head_commit.message == 'Apply issue11 source patch'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Apply reviewed source patch
-        run: python3 scripts/issue11_source_patch.py
-
-      - name: Commit source patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --check
-          git config user.name "nsaspy"
-          git config user.email "104283403+lost-rob0t@users.noreply.github.com"
-          git add prolog/rlm_plan.pl prolog/rlm_agent.pl
-          git commit -m "Integrate supervised spawn_agent plans"
-          git push origin HEAD:${GITHUB_REF_NAME}
-
   unit-tests:
     name: Deterministic unit and load checks
     runs-on: ubuntu-latest
