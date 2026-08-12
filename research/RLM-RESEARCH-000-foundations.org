@@ -1,0 +1,106 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-foundations-000
+:END:
+#+title: RLM-RESEARCH-000 Recursive Language Model Foundations
+#+description: Establish the defining properties of Recursive Language Models that a Prolog implementation must preserve.
+#+status: DONE
+#+filetags: :prolog:rlm:research:architecture:long-context:recursion:
+#+todo: TODO RESEARCHING REVIEW BLOCKED | DONE REJECTED
+
+* Research Question
+
+What makes a system an RLM, and which properties are essential enough that =prolog-rlm= must preserve them rather than merely building another agent framework?
+
+* Sources
+
+- Alex L. Zhang, “Recursive Language Models,” retrieved 2026-08-11: https://alexzhang13.github.io/blog/2025/rlm/
+- Official RLM implementation, retrieved 2026-08-11: https://github.com/alexzhang13/rlm
+- Minimal RLM implementation, retrieved 2026-08-11: https://github.com/alexzhang13/rlm-minimal
+
+* Findings
+
+The RLM formulation treats a language-model call as a text-to-text interface while changing how the model interacts with context internally.
+
+The defining behavior is context-centric rather than task-centric decomposition. The root language model does not need the entire associated context copied directly into its prompt. Instead, the context is stored in an environment and exposed as an object that the model can inspect and transform.
+
+The reference formulation gives the root model access to a programmable REPL. From that environment it can:
+
+- peek at small parts of the context;
+- search or grep for likely relevant regions;
+- partition context into subsets;
+- transform or summarize subsets;
+- map recursive model calls across partitions;
+- use intermediate variables/results to construct the final answer.
+
+The environment can call a language model over a derived sub-context. This recursive/sub-call facility is essential: the paper reports an ablation where removing sub-calls reduces performance on tasks requiring semantic work over partitions.
+
+The initial published experiments only require recursive depth 1. Deeper recursion is part of the general formulation but is not necessary for the first implementation.
+
+The official implementation has evolved beyond the initial blog implementation and now supports multiple execution environments, recursive sub-RLM calls, batched calls, persistence, compaction, concurrency bounds, and several sandbox options. This confirms that the environment abstraction and execution control are architectural concerns rather than incidental Python details.
+
+* Invariants for prolog-rlm
+
+A first Prolog implementation should preserve these invariants:
+
+1. The public operation behaves like a model completion: query/context in, text/result out.
+2. Large context is an object in the execution environment, not automatically copied wholesale into every root-model call.
+3. The root model chooses how to inspect/decompose context at inference time.
+4. The environment exposes deterministic computation over context.
+5. The environment can launch model calls over model-selected derived context.
+6. Recursive/sub-call results return to the parent environment as data.
+7. The runtime records and enforces budgets around iterations, recursion, time, concurrency, tokens, and cost.
+8. A final-answer contract terminates the loop and separates intermediate execution from the user-visible result.
+
+* What is not sufficient
+
+The following alone should not be called an RLM implementation:
+
+- ordinary retrieval-augmented generation with a fixed retriever;
+- a fixed map/reduce summarization pipeline;
+- a static LangGraph workflow that always decomposes context the same way;
+- Prolog recursion or backtracking with no recursive language-model calls;
+- a general tool-using agent that decomposes tasks but does not treat context as the primary manipulable object.
+
+Those techniques may be components of =prolog-rlm=, but they do not independently preserve the RLM inference strategy.
+
+* Prolog Implementation Consequences
+
+The direct translation is not “rewrite Python syntax in Prolog.” The architectural mapping is:
+
+| RLM concept | Prolog candidate |
+|-------------+------------------|
+| REPL environment | controlled Prolog query/evaluation loop |
+| context variable | opaque context handle, term store, stream, indexed facts, or external store |
+| Python slicing/search | context predicates |
+| Python helper functions | allowed Prolog predicates |
+| =llm_query(...)= | =llm_query/...= predicate |
+| recursive =rlm_query(...)= | =rlm_query/...= predicate with child budget/environment |
+| notebook variables | environment state / named result bindings |
+| FINAL / FINAL_VAR | explicit final result term/protocol |
+| execution log | structured Prolog trace terms |
+
+The root model should receive documentation for a small, intentionally bounded Prolog interface instead of arbitrary access to the host Prolog process.
+
+* Open Questions
+
+- What is the smallest goal language that remains expressive enough for useful context analysis?
+- Should model-produced code be parsed as ordinary Prolog clauses/goals, a restricted DSL represented as Prolog terms, or both?
+- Which context representation gives the best tradeoff between huge-input scalability and native Prolog querying?
+- How should concurrent recursive calls interact with logical purity and mutable runtime accounting?
+- Does a Prolog environment cause models trained primarily on Python tool use to choose worse decomposition strategies without adaptation or examples?
+
+* Acceptance Evidence
+
+This foundation is implemented when a test can demonstrate all of the following:
+
+- a context too large to place directly into the root prompt is registered in the Prolog environment;
+- the root model receives only the query plus context metadata/tool instructions;
+- the model inspects at least two selected regions through Prolog context predicates;
+- the model launches at least one sub-LM call over a derived context subset;
+- the parent receives the sub-call result as data;
+- the completion terminates through an explicit final-result contract;
+- the trace records the inspected regions, sub-call, usage, and termination reason.
+
+* Citations
+
+The primary conceptual source is Zhang et al.'s RLM blog and associated official implementation listed above. Future revisions should add the full paper and benchmark details when those details materially affect implementation choices.

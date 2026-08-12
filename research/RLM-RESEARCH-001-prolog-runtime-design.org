@@ -1,0 +1,178 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-runtime-design-001
+:END:
+#+title: RLM-RESEARCH-001 Prolog Runtime and Embedded Agent Libraries
+#+description: Map the RLM execution environment, LangChain-style abstractions, and LangGraph-style orchestration onto native Prolog libraries.
+#+status: RESEARCHING
+#+filetags: :prolog:rlm:research:runtime:langchain:langgraph:graphs:
+#+todo: TODO RESEARCHING REVIEW BLOCKED | DONE REJECTED
+
+* Research Question
+
+How should =prolog-rlm= replace the Python REPL and Python agent-framework dependency stack with a Prolog-native runtime while retaining the useful abstractions required for model calls, tools, streaming, state graphs, and durable execution?
+
+* Sources
+
+- Alex L. Zhang, “Recursive Language Models,” retrieved 2026-08-11: https://alexzhang13.github.io/blog/2025/rlm/
+- Official RLM implementation, retrieved 2026-08-11: https://github.com/alexzhang13/rlm
+- LangChain overview, retrieved 2026-08-11: https://docs.langchain.com/oss/python/langchain/overview
+- LangGraph overview, retrieved 2026-08-11: https://docs.langchain.com/oss/python/langgraph/overview
+- LangGraph Graph API overview, retrieved 2026-08-11: https://docs.langchain.com/oss/python/langgraph/graph-api
+
+* Source Findings
+
+LangChain currently presents itself as the higher-level framework layer for model/tool integrations and agent construction. LangGraph is the lower-level orchestration/runtime layer for stateful workflows.
+
+LangGraph's public graph model is especially small at the conceptual core:
+
+- state: the current shared application snapshot;
+- nodes: functions that consume state and produce updates;
+- edges: fixed or conditional transitions deciding what executes next.
+
+The surrounding runtime adds features such as durable execution, persistence/checkpointing, streaming, human-in-the-loop interrupts, memory, and execution inspection.
+
+The RLM reference implementation separately requires model-provider abstraction, execution environments, recursive calls, concurrency/budget controls, and traces.
+
+These concerns overlap enough that =prolog-rlm= should not grow one-off provider/tool/graph abstractions inside the RLM engine. They should be reusable embedded Prolog libraries.
+
+* Proposed Library Boundary
+
+** =library/rlm_chain/=
+
+Purpose: model and tool integration primitives.
+
+Candidate modules:
+
+- =rlm_chain_messages= — normalized message terms;
+- =rlm_chain_models= — provider-neutral completion/streaming predicates;
+- =rlm_chain_prompts= — prompt templates and binding;
+- =rlm_chain_tools= — tool schemas, validation, invocation, and results;
+- =rlm_chain_structured= — structured output decoding/validation;
+- =rlm_chain_runnable= — composable predicate pipelines;
+- =rlm_chain_retry= — retry/backoff policy;
+- =rlm_chain_events= — streaming/callback event terms;
+- =rlm_chain_trace= — trace and usage events.
+
+This layer should remain useful without the RLM runtime.
+
+** =library/rlm_graph/=
+
+Purpose: stateful graph execution.
+
+Candidate modules:
+
+- =rlm_graph_state= — state schema/validation/update semantics;
+- =rlm_graph_build= — node/edge declarations and compilation;
+- =rlm_graph_run= — graph execution loop;
+- =rlm_graph_reducer= — deterministic merge/reducer semantics;
+- =rlm_graph_checkpoint= — checkpoint interface;
+- =rlm_graph_interrupt= — pause/resume and human-in-the-loop contracts;
+- =rlm_graph_stream= — graph event stream;
+- =rlm_graph_trace= — state transition history;
+- =rlm_graph_subgraph= — nested graph invocation.
+
+This layer should depend on ordinary Prolog data and predicates, not require a model provider.
+
+** RLM engine
+
+Purpose: implement the RLM inference strategy using the two lower-level libraries.
+
+Candidate modules:
+
+- =rlm_context= — register and inspect context;
+- =rlm_environment= — bounded model-visible execution environment;
+- =rlm_supervisor= — budgets, cancellation, recursion and child execution;
+- =rlm_completion= — public model-like completion interface;
+- =rlm_trace= — RLM-specific trajectory terms.
+
+* Prolog Graph Mapping
+
+A useful Prolog graph API should preserve explicit state transitions instead of hiding all mutation inside dynamic predicates.
+
+Conceptual shape:
+
+#+begin_src prolog
+node(classify, classify_node).
+node(research, research_node).
+node(answer, answer_node).
+
+edge(start, classify).
+conditional_edge(classify, route_after_classification).
+edge(research, answer).
+edge(answer, end).
+
+classify_node(State0, State) :-
+    ... .
+
+route_after_classification(State, Next) :-
+    ... .
+#+end_src
+
+The exact syntax is unsettled. The important property is that graph structure is data/queryable metadata while node logic remains ordinary predicates.
+
+This allows Prolog to inspect the graph itself, validate reachability, detect impossible transitions, and potentially reason about execution plans before running them.
+
+* RLM Environment Design
+
+The model-visible environment should not be the unrestricted host toplevel.
+
+A safer design is a capability-bounded goal evaluator:
+
+1. Parse model output into a goal or command term.
+2. Validate every callable predicate against an allow-list/capability set.
+3. Execute under inference/time/output limits.
+4. Capture a normalized result term.
+5. Append a trace event.
+6. Return a bounded textual rendering to the model.
+
+Context operations and recursive model-call predicates are capabilities. Shell, process, arbitrary file mutation, foreign calls, and unrestricted meta-call are absent unless explicitly introduced by a host application.
+
+* Concurrency
+
+The official RLM implementation supports bounded parallel/batched sub-calls. Prolog implementations should eventually support the same class of optimization, but concurrency must remain subordinate to deterministic accounting.
+
+Potential execution model:
+
+- supervisor owns completion budget;
+- child RLM/LM calls receive immutable child-budget slices;
+- child completions report usage and result messages back to the supervisor;
+- supervisor merges usage and trace events;
+- cancellation propagates from parent to descendants.
+
+An actor-style supervisor may be appropriate for this layer, but that is an implementation option rather than an RLM requirement and must be benchmarked against simpler thread/message-queue designs.
+
+* Clean-room / Porting Boundary
+
+The project goal explicitly includes porting the useful LangChain and LangGraph concepts to Prolog, but the implementation strategy should be deliberate:
+
+- inventory public behavior and contracts first;
+- audit upstream licenses for any source-derived work;
+- prefer small Prolog-native APIs over line-for-line translation;
+- keep modules embedded in this repository initially;
+- avoid Python IPC as the normal implementation path;
+- add compatibility aliases only where they genuinely help migration or examples.
+
+The objective is functional capability in idiomatic Prolog, not preserving Python object-oriented structure.
+
+* Open Questions
+
+- SWI-Prolog-only first, or an ISO-friendly core with SWI-specific adapters?
+- Dicts, ordinary compound terms, or a pluggable state representation for graph state?
+- How should reducers behave under parallel branches and failure/backtracking?
+- Should graph node predicates be deterministic by contract?
+- Which checkpoint stores should ship initially?
+- What exact subset of LangChain functionality is necessary before RLM core development benefits from =rlm_chain=?
+- Should model-generated environment commands be raw Prolog syntax or a smaller command DSL encoded as Prolog terms?
+- Can graph execution itself be expressed relationally without making runtime behavior surprising or difficult to bound?
+
+* Acceptance Evidence
+
+This research item can move to DONE when prototypes establish:
+
+- one provider-neutral model predicate with a deterministic fake provider test;
+- one three-node Prolog state graph with a conditional edge and trace;
+- one checkpoint/resume test;
+- one bounded environment command execution test;
+- one depth-1 RLM call using the chain/model abstraction;
+- one parallel sub-call experiment with deterministic usage accounting;
+- a written license/API inventory for the LangChain/LangGraph functionality actually selected for implementation.
