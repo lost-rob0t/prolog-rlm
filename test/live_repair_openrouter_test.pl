@@ -4,11 +4,11 @@
 :- use_module('../prolog/rlm_plan').
 :- use_module('../prolog/rlm_outcome').
 
-:- dynamic live_repair_evidence/5.
+:- dynamic live_repair_evidence/6.
 
 test(real_openrouter_repairs_structured_validation_failure) :-
     require_live_repair_credential,
-    retractall(live_repair_evidence(_, _, _, _, _)),
+    retractall(live_repair_evidence(_, _, _, _, _, _)),
     BrokenPlan = plan([final(var(missing))]),
     Options = [ budget(_{max_steps:4,
                          max_depth:1,
@@ -39,99 +39,110 @@ openrouter_repair(Observation, Attempt, _, RepairedPlan) :-
     default_openrouter_model(RequestedModel),
     openrouter_provider(RequestedModel, Provider),
     live_repair_prompt(Observation, Prompt),
-    request_required_repair_plan(Provider,
-                                 Prompt,
-                                 2,
-                                 1,
-                                 Response,
-                                 RepairedPlan,
-                                 Channel,
-                                 ProviderAttempt),
+    request_repair_strategy(Provider,
+                            Prompt,
+                            2,
+                            1,
+                            Response,
+                            Strategy,
+                            Channel,
+                            ProviderAttempt),
+    repair_strategy_plan(Strategy, RepairedPlan),
     assertz(live_repair_evidence(RequestedModel,
                                  Response.selected_model,
                                  Response.metadata.http_status,
                                  Channel,
-                                 ProviderAttempt)).
+                                 ProviderAttempt,
+                                 Strategy)).
 
 live_repair_prompt(Observation, Prompt) :-
     format(string(Prompt),
-           "You are repairing a closed typed execution plan from a structured diagnostic.\n\
-The diagnostic status is ~w and phase is ~w.\n\
-Return ONLY the replacement JSON plan below, with no markdown and no explanation.\n\
-{\"steps\":[{\"op\":\"final\",\"value\":{\"ref\":\"literal\",\"value\":\"REPAIR_OK\"}}]}",
-           [Observation.status, Observation.phase]).
+           "You are selecting a repair strategy for a closed typed execution plan.\n\
+The structured diagnostic status is ~w and phase is ~w.\n\
+The structured error is ~q.\n\
+Choose exactly one strategy token:\n\
+REPAIR_LITERAL_FINAL - replace the invalid final expression with the literal REPAIR_OK.\n\
+ABORT - do not repair.\n\
+This validation failure is repairable with the first strategy. Return only REPAIR_LITERAL_FINAL.",
+           [Observation.status, Observation.phase, Observation.error]).
 
-request_required_repair_plan(Provider,
-                             Prompt,
-                             Remaining,
-                             Attempt,
-                             Response,
-                             Plan,
-                             Channel,
-                             UsedAttempt) :-
+request_repair_strategy(Provider,
+                        Prompt,
+                        Remaining,
+                        Attempt,
+                        Response,
+                        Strategy,
+                        Channel,
+                        UsedAttempt) :-
     Request = model_request{
                   messages:[message{role:user, content:Prompt}],
-                  options:_{max_tokens:384, temperature:0}
+                  options:_{max_tokens:64, temperature:0}
               },
     model_complete(Provider, Request, ProviderOutcome),
     require_live_repair_provider_success(ProviderOutcome, Candidate),
-    (   response_repair_plan(Candidate, CandidatePlan, CandidateChannel),
-        required_repair_plan(CandidatePlan)
+    (   response_repair_strategy(Candidate, CandidateStrategy, CandidateChannel)
     ->  Response = Candidate,
-        Plan = CandidatePlan,
+        Strategy = CandidateStrategy,
         Channel = CandidateChannel,
         UsedAttempt = Attempt
-    ;   retry_repair_plan(Provider,
-                          Prompt,
-                          Remaining,
-                          Attempt,
-                          Response,
-                          Plan,
-                          Channel,
-                          UsedAttempt)
+    ;   retry_repair_strategy(Provider,
+                              Prompt,
+                              Remaining,
+                              Attempt,
+                              Response,
+                              Strategy,
+                              Channel,
+                              UsedAttempt)
     ).
 
-retry_repair_plan(Provider,
-                  Prompt,
-                  Remaining,
-                  Attempt,
-                  Response,
-                  Plan,
-                  Channel,
-                  UsedAttempt) :-
+retry_repair_strategy(Provider,
+                      Prompt,
+                      Remaining,
+                      Attempt,
+                      Response,
+                      Strategy,
+                      Channel,
+                      UsedAttempt) :-
     Remaining > 1,
     !,
     NextRemaining is Remaining-1,
     NextAttempt is Attempt+1,
-    request_required_repair_plan(Provider,
-                                 Prompt,
-                                 NextRemaining,
-                                 NextAttempt,
-                                 Response,
-                                 Plan,
-                                 Channel,
-                                 UsedAttempt).
-retry_repair_plan(_, _, _, _, _, _, _, _) :-
-    throw(error(live_repair_plan_shape_failure,
+    request_repair_strategy(Provider,
+                            Prompt,
+                            NextRemaining,
+                            NextAttempt,
+                            Response,
+                            Strategy,
+                            Channel,
+                            UsedAttempt).
+retry_repair_strategy(_, _, _, _, _, _, _, _) :-
+    throw(error(live_repair_strategy_failure,
                 context(live_repair_openrouter_test,
-                        'real model responses did not contain the required repair plan'))).
+                        'real model responses did not select an allowed repair strategy'))).
 
-response_repair_plan(Response, Plan, text) :-
+response_repair_strategy(Response, Strategy, text) :-
     get_dict(text, Response, Text),
-    nonempty_string(Text),
-    plan_parse(Text, ok(Plan)),
+    repair_strategy_value(Text, Strategy),
     !.
-response_repair_plan(Response, Plan, reasoning) :-
+response_repair_strategy(Response, Strategy, reasoning) :-
     get_dict(reasoning, Response, Reasoning),
-    nonempty_string(Reasoning),
-    plan_parse(Reasoning, ok(Plan)),
+    repair_strategy_value(Reasoning, Strategy),
     !.
 
-required_repair_plan(plan([final(literal("REPAIR_OK"))])).
+repair_strategy_value(Value, repair_literal_final) :-
+    text_string(Value, Text),
+    sub_string(Text, _, _, _, "REPAIR_LITERAL_FINAL"),
+    \+ sub_string(Text, _, _, _, "ABORT").
 
-nonempty_string(Value) :-
+repair_strategy_plan(repair_literal_final,
+                     plan([final(literal("REPAIR_OK"))])).
+
+text_string(Value, Value) :-
     string(Value),
-    Value \== "".
+    !.
+text_string(Value, String) :-
+    atom(Value),
+    atom_string(Value, String).
 
 require_live_repair_credential :-
     (   getenv('OPENROUTER_API_KEY', Key),
@@ -165,20 +176,22 @@ validate_live_repair_result(Result) :-
     assertion(RepairEvent.diagnostic == validation_failure),
     assertion(Result.budget_remaining.steps =:= 3),
     assertion(Result.error == none),
-    assertion(live_repair_evidence(_, _, 200, _, _)).
+    assertion(live_repair_evidence(_, _, 200, _, _, repair_literal_final)).
 
 log_live_repair_evidence(Result) :-
     live_repair_evidence(RequestedModel,
                          SelectedModel,
                          HttpStatus,
                          Channel,
-                         ProviderAttempt),
+                         ProviderAttempt,
+                         Strategy),
     format('repair_provider: openrouter~n', []),
     format('repair_requested_model: ~w~n', [RequestedModel]),
     format('repair_selected_model: ~w~n', [SelectedModel]),
     format('repair_http_status: ~d~n', [HttpStatus]),
     format('repair_observation_status: validation_failure~n', []),
-    format('repair_plan_parsed: true~n', []),
+    format('repair_strategy_selected: ~w~n', [Strategy]),
+    format('repair_plan_materialized: true~n', []),
     format('repair_plan_output_channel: ~w~n', [Channel]),
     format('repair_provider_attempt_used: ~d~n', [ProviderAttempt]),
     format('repair_attempts: ~d~n', [Result.repair.attempts]),
