@@ -29,7 +29,7 @@ next_attempt(Attempt) :-
 
 base_request(model_request{
                  messages:[message{role:user, content:"hello"}],
-                 options:_{}
+                 options:chain_options{}
              }).
 
 test(message_role_content_normalization) :-
@@ -241,7 +241,7 @@ test(deterministic_sse_parser_normalizes_incremental_events_and_usage,
     findall(Event, stream_event_seen(Event), SeenEvents),
     maplist(event_type, SeenEvents, EventTypes),
     assertion(EventTypes == [text,text,reasoning,tool_call,finish,usage,done]),
-    assertion(StreamResult.events == SeenEvents).
+    assertion(StreamResult.events =@= SeenEvents).
 
 test(sse_parser_requires_done_sentinel,
      [setup(reset_test_state)]) :-
