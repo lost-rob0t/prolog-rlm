@@ -31,11 +31,16 @@ run_live_tool_case(Registry) :-
     live_tool_planner_prompt(Prompt),
     Request = model_request{
                   messages:[message{role:user, content:Prompt}],
-                  options:_{max_tokens:320}
+                  options:_{max_tokens:640}
               },
-    model_complete(Provider, Request, ProviderOutcome),
-    require_live_tool_provider_success(ProviderOutcome, Response),
-    response_tool_plan(Response, Plan, PlanChannel),
+    request_parseable_live_tool_plan(Provider,
+                                     Request,
+                                     2,
+                                     1,
+                                     Response,
+                                     Plan,
+                                     PlanChannel,
+                                     Attempt),
     Caps = [tool(project_read)],
     tool_registry_runtime_tools(Registry, Caps, RuntimeTools),
     Runtime = [tools(RuntimeTools),
@@ -50,7 +55,58 @@ run_live_tool_case(Registry) :-
     plan_run(Plan, Caps, Runtime, _{}, PlanOutcome),
     require_live_tool_execution_success(PlanOutcome, Result),
     validate_live_tool_result(Result),
-    log_live_tool_evidence(RequestedModel, Response, PlanChannel, Result).
+    log_live_tool_evidence(RequestedModel,
+                           Response,
+                           PlanChannel,
+                           Attempt,
+                           Result).
+
+request_parseable_live_tool_plan(Provider, Request, Remaining, Attempt,
+                                 Response, Plan, PlanChannel, UsedAttempt) :-
+    model_complete(Provider, Request, ProviderOutcome),
+    require_live_tool_provider_success(ProviderOutcome, Candidate),
+    (   response_tool_plan(Candidate, Plan0, Channel0)
+    ->  Response = Candidate,
+        Plan = Plan0,
+        PlanChannel = Channel0,
+        UsedAttempt = Attempt
+    ;   log_unparseable_live_tool_attempt(Candidate, Attempt),
+        retry_live_tool_plan(Provider,
+                             Request,
+                             Remaining,
+                             Attempt,
+                             Response,
+                             Plan,
+                             PlanChannel,
+                             UsedAttempt)
+    ).
+
+retry_live_tool_plan(Provider, Request, Remaining, Attempt,
+                     Response, Plan, PlanChannel, UsedAttempt) :-
+    Remaining > 1,
+    !,
+    NextRemaining is Remaining-1,
+    NextAttempt is Attempt+1,
+    request_parseable_live_tool_plan(Provider,
+                                     Request,
+                                     NextRemaining,
+                                     NextAttempt,
+                                     Response,
+                                     Plan,
+                                     PlanChannel,
+                                     UsedAttempt).
+retry_live_tool_plan(_, _, _, _, _, _, _, _) :-
+    throw(error(live_tool_plan_parse_failure,
+                context(live_tool_openrouter_test,
+                        'real model responses did not contain a valid project-tool typed plan'))).
+
+log_unparseable_live_tool_attempt(Response, Attempt) :-
+    format('real_tool_plan_attempt: ~d~n', [Attempt]),
+    format('real_tool_plan_attempt_http_status: ~d~n',
+           [Response.metadata.http_status]),
+    format('real_tool_plan_attempt_selected_model: ~w~n',
+           [Response.selected_model]),
+    format('real_tool_plan_attempt_parseable: false~n', []).
 
 live_tool_planner_prompt(
 "Return ONLY one JSON object. No markdown and no explanation.\n\
@@ -87,10 +143,6 @@ response_tool_plan(Response, Plan, reasoning) :-
     live_nonempty_string(Reasoning),
     plan_parse(Reasoning, ok(Plan)),
     !.
-response_tool_plan(_, _, _) :-
-    throw(error(live_tool_plan_parse_failure,
-                context(live_tool_openrouter_test,
-                        'real model response did not contain a valid project-tool typed plan'))).
 
 live_nonempty_string(Value) :-
     string(Value),
@@ -115,7 +167,7 @@ validate_live_tool_result(Result) :-
     assertion(ToolTransition.operation == tool(project_read)),
     assertion(FinalTransition.operation == final).
 
-log_live_tool_evidence(RequestedModel, Response, PlanChannel, Result) :-
+log_live_tool_evidence(RequestedModel, Response, PlanChannel, Attempt, Result) :-
     get_dict(file, Result.vars, Envelope),
     length(Result.transitions, TransitionCount),
     format('real_tool_provider: openrouter~n', []),
@@ -125,6 +177,7 @@ log_live_tool_evidence(RequestedModel, Response, PlanChannel, Result) :-
     format('real_tool_response_received: true~n', []),
     format('real_tool_plan_parsed: true~n', []),
     format('real_tool_plan_output_channel: ~w~n', [PlanChannel]),
+    format('real_tool_plan_attempt_used: ~d~n', [Attempt]),
     format('real_tool_invoked: true~n', []),
     format('real_tool_authorization: ~w~n', [Envelope.authorization]),
     format('real_tool_status: ~w~n', [Envelope.status]),
