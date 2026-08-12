@@ -14,7 +14,7 @@ test(real_openrouter_streaming_request,
                                 role:user,
                                 content:"Reply with exactly STREAM_OK and nothing else."
                             }],
-                  options:_{max_tokens:32,
+                  options:_{max_tokens:256,
                             temperature:0}
               },
     chain_stream(Provider,
@@ -55,12 +55,17 @@ validate_stream_result(RequestedModel, Result) :-
     assertion(Response.metadata.streaming == true),
     assertion(string(Response.text)),
     assertion(Response.text \== ""),
+    assertion(sub_string(Response.text, _, _, _, "STREAM_OK")),
+    assertion(Response.finish_reason \== "length"),
     assertion(is_list(Result.stream_events)),
     assertion(Result.stream_events \== []),
+    assertion(ground(Result.stream_events)),
     findall(Event, live_stream_event(Event), Delivered),
     assertion(Delivered == Result.stream_events),
-    assertion(member(Event, Delivered)),
-    assertion(Event.type == text),
+    findall(Event,
+            (member(Event, Delivered), incremental_event(Event)),
+            Incremental),
+    assertion(Incremental \== []),
     assertion(last(Delivered, DoneEvent)),
     assertion(DoneEvent.type == done),
     validate_stream_usage(Response.usage).
@@ -108,6 +113,7 @@ log_stream_evidence(RequestedModel, Result) :-
     format('stream_response_received: true~n', []),
     format('stream_incremental_event_count: ~d~n', [IncrementalCount]),
     format('stream_done: ~w~n', [DonePresent]),
+    format('stream_finish_reason: ~w~n', [Response.finish_reason]),
     format('stream_usage_present: ~w~n', [Response.usage.present]),
     format('stream_final_text_present: ~w~n', [TextPresent]).
 
