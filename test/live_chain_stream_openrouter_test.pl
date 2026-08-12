@@ -66,7 +66,7 @@ validate_stream_result(RequestedModel, Result) :-
             (member(Event, Delivered), incremental_event(Event)),
             Incremental),
     assertion(Incremental \== []),
-    assertion(last(Delivered, DoneEvent)),
+    last(Delivered, DoneEvent),
     assertion(DoneEvent.type == done),
     validate_stream_usage(Response.usage).
 
