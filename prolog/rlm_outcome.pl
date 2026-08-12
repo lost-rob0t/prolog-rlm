@@ -286,8 +286,8 @@ predicate_inspect(Callable0, Inspection) :-
     strip_module(Callable0, Module, Callable),
     callable(Callable),
     functor(Callable, Name, Arity),
-    Head =.. [Name|Args],
     length(Args, Arity),
+    Head =.. [Name|Args],
     Qualified = Module:Head,
     findall(Property,
             inspectable_predicate_property(Qualified, Property),
@@ -331,8 +331,9 @@ plan_success_trace(Result, Limits, Trace) :-
     bounded_transition_trace(Result.transitions, success, Limits, Trace).
 
 bounded_transition_trace(Transitions, Status, Limits, Trace) :-
+    ChildLimit is max(0, Limits.trace_max_nodes-1),
     take_prefix(Transitions,
-                Limits.trace_max_nodes,
+                ChildLimit,
                 Selected,
                 NodeTruncated),
     maplist(transition_node, Selected, Children),
@@ -687,16 +688,16 @@ required_capability_in_step(context(_, Action, _), Capability) :-
     context_action_capability(Action, Capability).
 required_capability_in_step(model(Provider, _, _, _), model(Provider)).
 required_capability_in_step(tool(Name, _, _), tool(Name)).
-required_capability_in_step(rlm(Plan, _), rlm).
+required_capability_in_step(rlm(_, _), rlm).
 required_capability_in_step(rlm(Plan, _), Capability) :-
     plan_required_capabilities(Plan, Nested),
     member(Capability, Nested).
-required_capability_in_step(parallel(Plans, _), parallel).
+required_capability_in_step(parallel(_, _), parallel).
 required_capability_in_step(parallel(Plans, _), Capability) :-
     member(Plan, Plans),
     plan_required_capabilities(Plan, Nested),
     member(Capability, Nested).
-required_capability_in_step(retry(_, Plan, _), retry).
+required_capability_in_step(retry(_, _, _), retry).
 required_capability_in_step(retry(_, Plan, _), Capability) :-
     plan_required_capabilities(Plan, Nested),
     member(Capability, Nested).
@@ -763,7 +764,7 @@ option_value(Name, Options, Default, Value) :-
 remaining_wall_time(Start, Limit, Remaining) :-
     get_time(Now),
     Elapsed is Now-Start,
-    Remaining is max(0.001, Limit-Elapsed).
+    Remaining is max(0.0, Limit-Elapsed).
 
 error_transitions(Error, Transitions) :-
     (   is_dict(Error), get_dict(transitions, Error, Found), is_list(Found)
