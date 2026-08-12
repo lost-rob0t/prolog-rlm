@@ -149,7 +149,8 @@ require_live_repair_provider_success(error(Error), _) :-
                         'real OpenRouter repair request failed'))).
 
 require_live_repair_success(Outcome, Result) :-
-    (   Outcome = execution_outcome{status:success}
+    (   is_dict(Outcome),
+        get_dict(status, Outcome, success)
     ->  Result = Outcome
     ;   throw(error(live_repair_execution_failure(Outcome),
                     context(live_repair_openrouter_test,
