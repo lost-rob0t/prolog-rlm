@@ -5,8 +5,13 @@
             boom_tool/2,
             repair_failed_tool/4,
             repair_to_literal/4,
+            slow_repair/4,
+            reset_repair_marker/0,
+            repair_completed/0,
             deep/1
           ]).
+
+:- dynamic repair_completed/0.
 
 fail_tool(_, _) :-
     throw(error(test_tool_failure,
@@ -34,6 +39,14 @@ repair_to_literal(Observation, Attempt, _, RepairedPlan) :-
               [validation_failure, capability_denied]),
     Attempt =:= 1,
     RepairedPlan = plan([final(literal("literal-repair-ok"))]).
+
+slow_repair(_, 1, _, RepairedPlan) :-
+    sleep(0.2),
+    assertz(repair_completed),
+    RepairedPlan = plan([final(literal("too-late"))]).
+
+reset_repair_marker :-
+    retractall(repair_completed).
 
 deep(0) :- !.
 deep(N) :-
