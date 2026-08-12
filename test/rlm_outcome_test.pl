@@ -185,4 +185,21 @@ test(validation_failure_can_be_repaired_without_spending_execution_budget) :-
     assertion(Outcome.value == "literal-repair-ok"),
     assertion(Outcome.budget_remaining.steps =:= 1).
 
+test(repair_callback_obeys_original_wall_time,
+     [setup(outcome_test_support:reset_repair_marker)]) :-
+    Plan = plan([final(var(missing))]),
+    Options = [ budget(_{max_steps:2, time_limit:0.05}),
+                outcome_limits(_{max_repairs:1,
+                                  repair_time_limit:1.0})
+              ],
+    plan_repair(Plan,
+                [],
+                Options,
+                _{},
+                outcome_test_support:slow_repair,
+                Outcome),
+    assertion(Outcome.status == timeout),
+    assertion(Outcome.phase == repair),
+    assertion(\+ outcome_test_support:repair_completed).
+
 :- end_tests(rlm_outcome).
