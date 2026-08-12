@@ -121,7 +121,7 @@ jobs:
           cat /tmp/openrouter-repair.log
 
           if [ "$status" -eq 0 ]; then
-            evidence="$(grep -E '^(repair_provider|repair_requested_model|repair_selected_model|repair_http_status|repair_observation_status|repair_plan_parsed|repair_plan_output_channel|repair_provider_attempt_used|repair_attempts|repair_original_budget_preserved|repair_final_ok):' /tmp/openrouter-repair.log | tr '\n' ' ')"
+            evidence="$(grep -E '^(repair_provider|repair_requested_model|repair_selected_model|repair_http_status|repair_observation_status|repair_strategy_selected|repair_plan_materialized|repair_plan_output_channel|repair_provider_attempt_used|repair_attempts|repair_original_budget_preserved|repair_final_ok):' /tmp/openrouter-repair.log | tr '\n' ' ')"
             evidence="${evidence//'%'/'%25'}"
             echo "::notice title=REAL OpenRouter repair evidence::${evidence}"
           else
