@@ -5,6 +5,9 @@
             child_tool_planner/2,
             invalid_planner/2,
             fake_model/2,
+            slow_model/2,
+            token_heavy_model/2,
+            costly_model/2,
             reset_calls/0,
             planner_calls/1,
             model_calls/1
@@ -79,20 +82,51 @@ fake_model(_, ok(Response)) :-
     bump_model,
     fake_response("FAKE_MODEL_OK", Response).
 
-fake_response(Text,
-              model_response{provider:fake,
-                             requested_model:fake,
-                             selected_model:fake,
-                             text:Text,
-                             reasoning:"",
-                             tool_calls:[],
-                             finish_reason:stop,
-                             usage:usage{present:true,
-                                         prompt_tokens:2,
-                                         completion_tokens:1,
-                                         total_tokens:3,
-                                         cost:0.0},
-                             metadata:metadata{http_status:200,
-                                               response_received:true}}).
+slow_model(_, ok(Response)) :-
+    bump_model,
+    sleep(5),
+    fake_response("SLOW_MODEL_OK", Response).
+
+token_heavy_model(_, ok(Response)) :-
+    bump_model,
+    fake_response_with_usage("TOKEN_HEAVY",
+                             40,
+                             20,
+                             60,
+                             0.0,
+                             Response).
+
+costly_model(_, ok(Response)) :-
+    bump_model,
+    fake_response_with_usage("COSTLY_MODEL",
+                             2,
+                             1,
+                             3,
+                             0.5,
+                             Response).
+
+fake_response(Text, Response) :-
+    fake_response_with_usage(Text, 2, 1, 3, 0.0, Response).
+
+fake_response_with_usage(
+    Text,
+    PromptTokens,
+    CompletionTokens,
+    TotalTokens,
+    Cost,
+    model_response{provider:fake,
+                   requested_model:fake,
+                   selected_model:fake,
+                   text:Text,
+                   reasoning:"",
+                   tool_calls:[],
+                   finish_reason:stop,
+                   usage:usage{present:true,
+                               prompt_tokens:PromptTokens,
+                               completion_tokens:CompletionTokens,
+                               total_tokens:TotalTokens,
+                               cost:Cost},
+                   metadata:metadata{http_status:200,
+                                     response_received:true}}).
 
 :- initialization(reset_calls).
