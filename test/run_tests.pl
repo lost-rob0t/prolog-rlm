@@ -4,6 +4,7 @@
 :- consult(bootstrap_test).
 :- consult(rlm_chain_test).
 :- consult(rlm_context_test).
+:- consult(rlm_plan_test).
 
 main(_) :-
     (   run_tests
