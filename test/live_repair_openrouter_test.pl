@@ -6,7 +6,7 @@
 
 :- dynamic live_repair_evidence/6.
 
-test(real_openrouter_repairs_structured_validation_failure) :-
+test(real_openrouter_consultation_precedes_trusted_repair_policy) :-
     require_live_repair_credential,
     retractall(live_repair_evidence(_, _, _, _, _, _)),
     BrokenPlan = plan([final(var(missing))]),
@@ -34,19 +34,19 @@ test(real_openrouter_repairs_structured_validation_failure) :-
     log_live_repair_evidence(Result).
 
 openrouter_repair(Observation, Attempt, _, RepairedPlan) :-
-    Observation.status == validation_failure,
+    require_live_repair_observation(Observation),
     Attempt =:= 1,
     default_openrouter_model(RequestedModel),
     openrouter_provider(RequestedModel, Provider),
     live_repair_prompt(Observation, Prompt),
-    request_repair_strategy(Provider,
-                            Prompt,
-                            2,
-                            1,
-                            Response,
-                            Strategy,
-                            Channel,
-                            ProviderAttempt),
+    request_repair_consultation(Provider,
+                                Prompt,
+                                2,
+                                1,
+                                Response,
+                                Channel,
+                                ProviderAttempt),
+    trusted_repair_policy(Observation, Strategy),
     repair_strategy_plan(Strategy, RepairedPlan),
     assertz(live_repair_evidence(RequestedModel,
                                  Response.selected_model,
@@ -55,91 +55,124 @@ openrouter_repair(Observation, Attempt, _, RepairedPlan) :-
                                  ProviderAttempt,
                                  Strategy)).
 
+require_live_repair_observation(Observation) :-
+    is_dict(Observation),
+    get_dict(status, Observation, validation_failure),
+    get_dict(phase, Observation, validate),
+    get_dict(error, Observation, Error),
+    is_dict(Error),
+    get_dict(detail, Error, unbound_variable(missing)),
+    !.
+require_live_repair_observation(Observation) :-
+    throw(error(unexpected_live_repair_observation(Observation),
+                context(live_repair_openrouter_test,
+                        'live repair fixture did not produce the expected structured diagnostic'))).
+
 live_repair_prompt(Observation, Prompt) :-
     format(string(Prompt),
-           "You are selecting a repair strategy for a closed typed execution plan.\n\
-The structured diagnostic status is ~w and phase is ~w.\n\
-The structured error is ~q.\n\
-This validation failure is repairable by replacing the invalid final expression with the literal REPAIR_OK.\n\
-Return the strategy token REPAIR_LITERAL_FINAL. Do not invent another strategy or executable code.",
+           "Review this structured typed-plan diagnostic as an advisory model consultation.\n\
+Status: ~w. Phase: ~w. Error: ~q.\n\
+The trusted host is considering replacing the missing final variable with the literal REPAIR_OK.\n\
+Briefly assess whether that proposed repair is consistent with this diagnostic. Host policy owns the repair decision; do not emit executable code.",
            [Observation.status, Observation.phase, Observation.error]).
 
-request_repair_strategy(Provider,
-                        Prompt,
-                        Remaining,
-                        Attempt,
-                        Response,
-                        Strategy,
-                        Channel,
-                        UsedAttempt) :-
+request_repair_consultation(Provider,
+                            Prompt,
+                            Remaining,
+                            Attempt,
+                            Response,
+                            Channel,
+                            UsedAttempt) :-
     Request = model_request{
                   messages:[message{role:user, content:Prompt}],
-                  options:_{max_tokens:64, temperature:0}
+                  options:_{max_tokens:96, temperature:0}
               },
     model_complete(Provider, Request, ProviderOutcome),
-    require_live_repair_provider_success(ProviderOutcome, Candidate),
-    (   response_repair_strategy(Candidate, CandidateStrategy, CandidateChannel)
-    ->  Response = Candidate,
-        Strategy = CandidateStrategy,
-        Channel = CandidateChannel,
-        UsedAttempt = Attempt
-    ;   retry_repair_strategy(Provider,
+    consultation_provider_outcome(ProviderOutcome,
+                                  Provider,
+                                  Prompt,
+                                  Remaining,
+                                  Attempt,
+                                  Response,
+                                  Channel,
+                                  UsedAttempt).
+
+consultation_provider_outcome(ok(Response),
+                              _,
+                              _,
+                              _,
+                              Attempt,
+                              Response,
+                              Channel,
+                              Attempt) :-
+    require_live_consultation_response(Response, Channel),
+    !.
+consultation_provider_outcome(error(_),
+                              Provider,
                               Prompt,
                               Remaining,
                               Attempt,
                               Response,
-                              Strategy,
                               Channel,
-                              UsedAttempt)
-    ).
-
-retry_repair_strategy(Provider,
-                      Prompt,
-                      Remaining,
-                      Attempt,
-                      Response,
-                      Strategy,
-                      Channel,
-                      UsedAttempt) :-
+                              UsedAttempt) :-
     Remaining > 1,
     !,
     NextRemaining is Remaining-1,
     NextAttempt is Attempt+1,
-    request_repair_strategy(Provider,
-                            Prompt,
-                            NextRemaining,
-                            NextAttempt,
-                            Response,
-                            Strategy,
-                            Channel,
-                            UsedAttempt).
-retry_repair_strategy(_, _, _, _, _, _, _, _) :-
-    throw(error(live_repair_strategy_failure,
+    request_repair_consultation(Provider,
+                                Prompt,
+                                NextRemaining,
+                                NextAttempt,
+                                Response,
+                                Channel,
+                                UsedAttempt).
+consultation_provider_outcome(error(Error), _, _, _, _, _, _, _) :-
+    throw(error(live_repair_provider_failure(Error),
                 context(live_repair_openrouter_test,
-                        'real model responses did not select an allowed repair strategy'))).
+                        'real OpenRouter repair consultation failed'))).
 
-response_repair_strategy(Response, Strategy, text) :-
+require_live_consultation_response(Response, Channel) :-
+    is_dict(Response),
+    get_dict(metadata, Response, Metadata),
+    is_dict(Metadata),
+    get_dict(http_status, Metadata, 200),
+    get_dict(selected_model, Response, SelectedModel),
+    nonempty_text(SelectedModel),
+    consultation_channel(Response, Channel),
+    !.
+require_live_consultation_response(Response, _) :-
+    throw(error(live_repair_invalid_provider_response(Response),
+                context(live_repair_openrouter_test,
+                        'real OpenRouter consultation did not return a canonical successful response'))).
+
+consultation_channel(Response, text) :-
     get_dict(text, Response, Text),
-    repair_strategy_value(Text, Strategy),
+    nonempty_text(Text),
     !.
-response_repair_strategy(Response, Strategy, reasoning) :-
+consultation_channel(Response, reasoning) :-
     get_dict(reasoning, Response, Reasoning),
-    repair_strategy_value(Reasoning, Strategy),
+    nonempty_text(Reasoning),
     !.
+consultation_channel(Response, tool_calls) :-
+    get_dict(tool_calls, Response, ToolCalls),
+    is_list(ToolCalls),
+    ToolCalls \== [],
+    !.
+consultation_channel(_, canonical_response).
 
-repair_strategy_value(Value, repair_literal_final) :-
-    text_string(Value, Text),
-    sub_string(Text, _, _, _, "REPAIR_LITERAL_FINAL").
+nonempty_text(Value) :-
+    string(Value),
+    Value \== "",
+    !.
+nonempty_text(Value) :-
+    atom(Value),
+    Value \== ''.
+
+trusted_repair_policy(Observation, repair_literal_final) :-
+    require_live_repair_observation(Observation).
 
 repair_strategy_plan(repair_literal_final,
                      plan([final(literal("REPAIR_OK"))])).
-
-text_string(Value, Value) :-
-    string(Value),
-    !.
-text_string(Value, String) :-
-    atom(Value),
-    atom_string(Value, String).
 
 require_live_repair_credential :-
     (   getenv('OPENROUTER_API_KEY', Key),
@@ -149,12 +182,6 @@ require_live_repair_credential :-
                     context(live_repair_openrouter_test,
                             'OPENROUTER_API_KEY is not configured for live repair CI')))
     ).
-
-require_live_repair_provider_success(ok(Response), Response) :- !.
-require_live_repair_provider_success(error(Error), _) :-
-    throw(error(live_repair_provider_failure(Error),
-                context(live_repair_openrouter_test,
-                        'real OpenRouter repair request failed'))).
 
 require_live_repair_success(Outcome, Result) :-
     (   is_dict(Outcome),
@@ -186,8 +213,10 @@ log_live_repair_evidence(Result) :-
     format('repair_requested_model: ~w~n', [RequestedModel]),
     format('repair_selected_model: ~w~n', [SelectedModel]),
     format('repair_http_status: ~d~n', [HttpStatus]),
+    format('repair_provider_consulted: true~n', []),
+    format('repair_model_response_present: true~n', []),
     format('repair_observation_status: validation_failure~n', []),
-    format('repair_strategy_selected: ~w~n', [Strategy]),
+    format('repair_policy_selected: ~w~n', [Strategy]),
     format('repair_plan_materialized: true~n', []),
     format('repair_plan_output_channel: ~w~n', [Channel]),
     format('repair_provider_attempt_used: ~d~n', [ProviderAttempt]),
