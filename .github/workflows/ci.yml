@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -30,10 +30,21 @@ jobs:
         run: swipl -q -s test/load_all.pl
 
       - name: Run deterministic PlUnit suite
+        shell: bash
         env:
           OPENROUTER_API_KEY: ""
           OPENROUTER_TEST_MODEL: ""
-        run: swipl -q -s test/run_tests.pl
+        run: |
+          set +e
+          swipl -q -s test/run_tests.pl > /tmp/prolog-rlm-plunit.log 2>&1
+          status=$?
+          cat /tmp/prolog-rlm-plunit.log
+          if [ "$status" -ne 0 ]; then
+            message="$(tail -n 60 /tmp/prolog-rlm-plunit.log | tr '\n' ' ')"
+            message="${message//'%'/'%25'}"
+            echo "::error title=Deterministic PlUnit failure::${message}"
+          fi
+          exit "$status"
 
       - name: Check whitespace errors
         run: |
@@ -56,7 +67,7 @@ jobs:
       OPENROUTER_TEST_MODEL: ${{ vars.OPENROUTER_TEST_MODEL }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install SWI-Prolog
         run: |
