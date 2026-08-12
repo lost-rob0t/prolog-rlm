@@ -64,11 +64,13 @@ capabilities_narrow_requested(ok(Requested), Parent, Outcome) :-
             Widening),
     (   Widening == []
     ->  Outcome = ok(Requested)
-    ;   Outcome = error(capability_error{kind:widening_denied,
-                                         requested:Requested,
-                                         parent:Parent,
-                                         unauthorized:Widening,
-                                         message:"child capabilities must be a subset of parent capabilities"})
+    ;   Outcome = error(capability_error{
+                            kind:widening_denied,
+                            requested:Requested,
+                            parent:Parent,
+                            unauthorized:Widening,
+                            message:"child capabilities must be a subset of parent capabilities"
+                        })
     ).
 
 must_be_capability_list(Value) :-
@@ -103,14 +105,18 @@ capability_name(Name) :-
 
 capability_exception(capability_fault(Fault), error(Error)) :-
     !,
-    Error = capability_error{kind:invalid_capabilities,
-                             detail:Fault,
-                             message:"capability set is invalid"}.
+    Error = capability_error{
+                kind:invalid_capabilities,
+                detail:Fault,
+                message:"capability set is invalid"
+            }.
 capability_exception(Exception, error(Error)) :-
     safe_exception(Exception, Safe),
-    Error = capability_error{kind:capability_error,
-                             exception:Safe,
-                             message:"capability processing failed"}.
+    Error = capability_error{
+                kind:capability_error,
+                exception:Safe,
+                message:"capability processing failed"
+            }.
 
 /* -------------------------------------------------------------------------
  * Registry
@@ -136,23 +142,25 @@ tool_register(Registry, Schema0, Handler, Outcome) :-
 tool_register_(Registry, Schema0, Handler, Outcome) :-
     registry_id(Registry, Id),
     normalize_tool_schema(Schema0, Schema),
-    callable(Handler),
-    !,
+    require_callable_handler(Handler),
     Name = Schema.name,
     with_mutex(rlm_tool_registry,
                register_unique(Id, Name, Schema, Handler, Outcome)).
-tool_register_(_, _, Handler,
-               error(tool_error{phase:register,
-                                kind:invalid_handler,
-                                handler_shape:Shape,
-                                message:"tool handler must be a trusted callable"})) :-
-    value_shape(Handler, Shape).
+
+require_callable_handler(Handler) :-
+    callable(Handler),
+    !.
+require_callable_handler(Handler) :-
+    value_shape(Handler, Shape),
+    throw(tool_fault(invalid_handler(Shape))).
 
 register_unique(Id, Name, _, _,
-                error(tool_error{phase:register,
-                                 kind:duplicate_tool,
-                                 tool:Name,
-                                 message:"tool name is already registered"})) :-
+                error(tool_error{
+                          phase:register,
+                          kind:duplicate_tool,
+                          tool:Name,
+                          message:"tool name is already registered"
+                      })) :-
     tool_registry_entry(Id, Name, _, _),
     !.
 register_unique(Id, Name, Schema, Handler, ok(Schema)) :-
@@ -160,10 +168,15 @@ register_unique(Id, Name, Schema, Handler, ok(Schema)) :-
 
 tool_discover(Registry, Schemas) :-
     registry_id(Registry, Id),
-    findall(Schema,
-            tool_registry_entry(Id, _, Schema, _),
-            Schemas0),
-    sort(2, @=<, Schemas0, Schemas).
+    findall(Name-Schema,
+            tool_registry_entry(Id, Name, Schema, _),
+            Pairs0),
+    keysort(Pairs0, Pairs),
+    pairs_schemas(Pairs, Schemas).
+
+pairs_schemas([], []).
+pairs_schemas([_-Schema|Pairs], [Schema|Schemas]) :-
+    pairs_schemas(Pairs, Schemas).
 
 tool_lookup(Registry, Name, Outcome) :-
     catch(tool_lookup_(Registry, Name, Outcome),
@@ -174,10 +187,12 @@ tool_lookup_(Registry, Name, Outcome) :-
     registry_id(Registry, Id),
     (   tool_registry_entry(Id, Name, Schema, _)
     ->  Outcome = ok(Schema)
-    ;   Outcome = error(tool_error{phase:lookup,
-                                   kind:unknown_tool,
-                                   tool:Name,
-                                   message:"tool is not registered"})
+    ;   Outcome = error(tool_error{
+                           phase:lookup,
+                           kind:unknown_tool,
+                           tool:Name,
+                           message:"tool is not registered"
+                       })
     ).
 
 /* -------------------------------------------------------------------------
@@ -192,11 +207,13 @@ tool_invoke(Registry, Capabilities, Name, Args, Options, Outcome, Trace) :-
           invoke_exception(Exception, CoreOutcome, Auth, Status, Bytes)),
     get_time(End),
     ElapsedMs is round((End-Start)*1000),
-    Trace = tool_trace{tool:Name,
-                       authorization:Auth,
-                       status:Status,
-                       output_bytes:Bytes,
-                       elapsed_ms:ElapsedMs},
+    Trace = tool_trace{
+                tool:Name,
+                authorization:Auth,
+                status:Status,
+                output_bytes:Bytes,
+                elapsed_ms:ElapsedMs
+            },
     attach_trace(CoreOutcome, Trace, Outcome).
 
 tool_invoke_(Registry, Capabilities, Name, Args, Options,
@@ -211,37 +228,64 @@ registry_entry(Registry, Name, Schema, Handler, Outcome) :-
     ->  Schema = Schema0,
         Handler = Handler0,
         Outcome = ok
-    ;   Outcome = error(tool_error{phase:lookup,
-                                   kind:unknown_tool,
-                                   tool:Name,
-                                   message:"tool is not registered"})
+    ;   Outcome = error(tool_error{
+                           phase:lookup,
+                           kind:unknown_tool,
+                           tool:Name,
+                           message:"tool is not registered"
+                       })
     ).
 
 invoke_after_lookup(error(Error), _, _, _, _, _, error(Error),
-                    denied, unknown_tool, 0) :- !.
+                    denied, unknown_tool, 0) :-
+    !.
 invoke_after_lookup(ok, Schema, Handler, Capabilities, Args, Options,
                     Outcome, Authorization, Status, Bytes) :-
-    Capability = Schema.capability,
-    (   capability_allowed(Capabilities, Capability)
-    ->  Authorization = allowed,
-        invoke_authorized(Schema, Handler, Args, Options,
-                          Outcome, Status, Bytes)
-    ;   Authorization = denied,
-        Status = capability_denied,
-        Bytes = 0,
-        Outcome = error(tool_error{phase:authorize,
-                                   kind:capability_denied,
-                                   tool:Schema.name,
-                                   capability:Capability,
-                                   message:"tool capability was not granted"})
+    authorize_tool(Capabilities, Schema.capability, AuthorizationOutcome),
+    invoke_after_authorization(AuthorizationOutcome, Schema, Handler, Args,
+                               Options, Outcome, Authorization, Status, Bytes).
+
+authorize_tool(Capabilities, Capability, Outcome) :-
+    capabilities_normalize(Capabilities, CapsOutcome),
+    authorize_normalized(CapsOutcome, Capability, Outcome).
+
+authorize_normalized(error(Error), _, error(Error)) :- !.
+authorize_normalized(ok(Caps), Capability, Outcome) :-
+    (   memberchk(Capability, Caps)
+    ->  Outcome = ok
+    ;   Outcome = denied
     ).
+
+invoke_after_authorization(error(Error), _, _, _, _, error(ToolError),
+                           denied, invalid_capabilities, 0) :-
+    !,
+    ToolError = tool_error{
+                    phase:authorize,
+                    kind:invalid_capabilities,
+                    cause:Error,
+                    message:"tool capability set is invalid"
+                }.
+invoke_after_authorization(denied, Schema, _, _, _, error(Error),
+                           denied, capability_denied, 0) :-
+    !,
+    Error = tool_error{
+                phase:authorize,
+                kind:capability_denied,
+                tool:Schema.name,
+                capability:Schema.capability,
+                message:"tool capability was not granted"
+            }.
+invoke_after_authorization(ok, Schema, Handler, Args, Options, Outcome,
+                           allowed, Status, Bytes) :-
+    invoke_authorized(Schema, Handler, Args, Options, Outcome, Status, Bytes).
 
 invoke_authorized(Schema, Handler, Args, Options, Outcome, Status, Bytes) :-
     validate_schema(Schema.arguments, Args, args, ArgsOutcome),
     invoke_after_args(ArgsOutcome, Schema, Handler, Args, Options,
                       Outcome, Status, Bytes).
 
-invoke_after_args(error(Error), _, _, _, _, error(Error), malformed_args, 0) :- !.
+invoke_after_args(error(Error), _, _, _, _, error(Error), malformed_args, 0) :-
+    !.
 invoke_after_args(ok, Schema, Handler, Args, Options, Outcome, Status, Bytes) :-
     effective_limits(Schema.limits, Options, Limits),
     call_tool_with_limit(Handler, Args, Limits.time_limit, CallOutcome),
@@ -249,28 +293,41 @@ invoke_after_args(ok, Schema, Handler, Args, Options, Outcome, Status, Bytes) :-
 
 call_tool_with_limit(Handler, Args, TimeLimit, Outcome) :-
     catch(call_with_time_limit(TimeLimit,
-                               ( call(Handler, Args, Value)
-                               -> Outcome = ok(Value)
-                               ;  Outcome = error(tool_error{phase:invoke,
-                                                             kind:handler_failed,
-                                                             message:"tool handler failed without returning a value"})
-                               )),
+                               call_tool_handler(Handler, Args, Outcome)),
           Exception,
           timed_tool_exception(Exception, Outcome)).
 
+call_tool_handler(Handler, Args, Outcome) :-
+    (   call(Handler, Args, Value)
+    ->  Outcome = ok(Value)
+    ;   Outcome = error(tool_error{
+                            phase:invoke,
+                            kind:handler_failed,
+                            message:"tool handler failed without returning a value"
+                        })
+    ).
+
 timed_tool_exception(time_limit_exceeded,
-                     error(tool_error{phase:invoke,
-                                      kind:timeout,
-                                      message:"tool invocation exceeded its wall-time limit"})) :- !.
+                     error(tool_error{
+                               phase:invoke,
+                               kind:timeout,
+                               message:"tool invocation exceeded its wall-time limit"
+                           })) :-
+    !.
 timed_tool_exception(time_limit_exceeded(_),
-                     error(tool_error{phase:invoke,
-                                      kind:timeout,
-                                      message:"tool invocation exceeded its wall-time limit"})) :- !.
+                     error(tool_error{
+                               phase:invoke,
+                               kind:timeout,
+                               message:"tool invocation exceeded its wall-time limit"
+                           })) :-
+    !.
 timed_tool_exception(Exception,
-                     error(tool_error{phase:invoke,
-                                      kind:handler_exception,
-                                      exception:Safe,
-                                      message:"tool handler raised an exception"})) :-
+                     error(tool_error{
+                               phase:invoke,
+                               kind:handler_exception,
+                               exception:Safe,
+                               message:"tool handler raised an exception"
+                           })) :-
     safe_exception(Exception, Safe).
 
 invoke_after_call(error(Error), _, _, error(Error), Status, 0) :-
@@ -281,7 +338,8 @@ invoke_after_call(ok(Value), Schema, Limits, Outcome, Status, Bytes) :-
     invoke_after_result(ResultOutcome, Value, Schema, Limits,
                         Outcome, Status, Bytes).
 
-invoke_after_result(error(Error), _, _, _, error(Error), invalid_result, 0) :- !.
+invoke_after_result(error(Error), _, _, _, error(Error), invalid_result, 0) :-
+    !.
 invoke_after_result(ok, Value, Schema, Limits, Outcome, Status, Bytes) :-
     value_bytes(Value, Bytes0),
     (   Bytes0 =< Limits.max_output_bytes
@@ -290,12 +348,14 @@ invoke_after_result(ok, Value, Schema, Limits, Outcome, Status, Bytes) :-
         Outcome = ok(Value)
     ;   Bytes = Bytes0,
         Status = oversized_output,
-        Outcome = error(tool_error{phase:normalize,
-                                   kind:oversized_output,
-                                   tool:Schema.name,
-                                   output_bytes:Bytes0,
-                                   limit:Limits.max_output_bytes,
-                                   message:"tool output exceeds its byte limit"})
+        Outcome = error(tool_error{
+                            phase:normalize,
+                            kind:oversized_output,
+                            tool:Schema.name,
+                            output_bytes:Bytes0,
+                            limit:Limits.max_output_bytes,
+                            message:"tool output exceeds its byte limit"
+                        })
     ).
 
 error_status(Error, Status) :-
@@ -305,15 +365,18 @@ error_status(Error, Status) :-
     ).
 
 attach_trace(ok(Value), Trace,
-             ok(tool_execution{value:Value, trace:Trace})) :- !.
+             ok(tool_execution{value:Value, trace:Trace})) :-
+    !.
 attach_trace(error(Error0), Trace, error(Error)) :-
     (   is_dict(Error0)
     ->  put_dict(trace, Error0, Trace, Error)
-    ;   Error = tool_error{phase:invoke,
-                           kind:tool_error,
-                           cause:Error0,
-                           trace:Trace,
-                           message:"tool invocation failed"}
+    ;   Error = tool_error{
+                    phase:invoke,
+                    kind:tool_error,
+                    cause:Error0,
+                    trace:Trace,
+                    message:"tool invocation failed"
+                }
     ).
 
 /* -------------------------------------------------------------------------
@@ -332,11 +395,13 @@ tool_registry_runtime_tools(Registry, Capabilities, Tools) :-
 registry_plan_handler(Registry, Capabilities, Name, Args, Envelope) :-
     tool_invoke(Registry, Capabilities, Name, Args, [], Outcome, Trace),
     (   Outcome = ok(Execution)
-    ->  Envelope = tool_result{value:Execution.value,
-                               authorization:Trace.authorization,
-                               status:Trace.status,
-                               output_bytes:Trace.output_bytes,
-                               elapsed_ms:Trace.elapsed_ms}
+    ->  Envelope = tool_result{
+                        value:Execution.value,
+                        authorization:Trace.authorization,
+                        status:Trace.status,
+                        output_bytes:Trace.output_bytes,
+                        elapsed_ms:Trace.elapsed_ms
+                    }
     ;   Outcome = error(Error),
         throw(error(rlm_tool(Error), _))
     ).
@@ -360,23 +425,34 @@ register_project_read_tool_(Registry, Root0, Options, Outcome) :-
     Handler = rlm_tool:project_read_handler(Root, MaxFileBytes),
     tool_register(Registry, Schema, Handler, Outcome).
 
-project_read_schema(MaxBytes, TimeLimit,
-                    tool_schema{name:project_read,
-                                description:"Read one UTF-8 regular file beneath an explicitly registered project root",
-                                capability:tool(project_read),
-                                arguments:_{type:object,
-                                            required:[path],
-                                            additional_properties:false,
-                                            properties:_{path:_{type:string}}},
-                                result:_{type:object,
-                                         required:[path,content,bytes,truncated],
-                                         additional_properties:false,
-                                         properties:_{path:_{type:string},
-                                                      content:_{type:string},
-                                                      bytes:_{type:integer},
-                                                      truncated:_{type:boolean}}},
-                                limits:tool_limits{time_limit:TimeLimit,
-                                                   max_output_bytes:MaxBytes}}).
+project_read_schema(MaxBytes, TimeLimit, Schema) :-
+    MaxOutputBytes is MaxBytes+1024,
+    Schema = tool_schema{
+                 name:project_read,
+                 description:"Read one UTF-8 regular file beneath an explicitly registered project root",
+                 capability:tool(project_read),
+                 arguments:_{
+                     type:object,
+                     required:[path],
+                     additional_properties:false,
+                     properties:_{path:_{type:string}}
+                 },
+                 result:_{
+                     type:object,
+                     required:[path,content,bytes,truncated],
+                     additional_properties:false,
+                     properties:_{
+                         path:_{type:string},
+                         content:_{type:string},
+                         bytes:_{type:integer},
+                         truncated:_{type:boolean}
+                     }
+                 },
+                 limits:tool_limits{
+                     time_limit:TimeLimit,
+                     max_output_bytes:MaxOutputBytes
+                 }
+             }.
 
 project_read_handler(Root, MaxFileBytes, Args, Result) :-
     get_dict(path, Args, Path0),
@@ -397,10 +473,12 @@ project_read_handler(Root, MaxFileBytes, Args, Result) :-
     setup_call_cleanup(open(Absolute, read, Stream, [encoding(utf8)]),
                        read_string(Stream, _, Content),
                        close(Stream)),
-    Result = json{path:Relative,
-                  content:Content,
-                  bytes:Size,
-                  truncated:false}.
+    Result = json{
+                 path:Relative,
+                 content:Content,
+                 bytes:Size,
+                 truncated:false
+             }.
 
 normalize_root(Root0, Root) :-
     absolute_file_name(Root0,
@@ -437,13 +515,17 @@ reject_symlink_components_([Segment|Segments], Parent) :-
     \+ read_link(Candidate, _, _),
     reject_symlink_components_(Segments, Candidate).
 
+path_within_root('/', Absolute) :-
+    sub_atom(Absolute, 0, 1, _, '/'),
+    !.
 path_within_root(Root, Absolute) :-
     atom_concat(Root, '/', Prefix),
     sub_atom(Absolute, 0, _, _, Prefix).
 
 strip_trailing_slash('/', '/') :- !.
 strip_trailing_slash(Path0, Path) :-
-    (   atom_concat(Path, '/', Path0), Path \== ''
+    (   atom_concat(Path, '/', Path0),
+        Path \== ''
     ->  true
     ;   Path = Path0
     ).
@@ -453,64 +535,86 @@ strip_trailing_slash(Path0, Path) :-
  * ---------------------------------------------------------------------- */
 
 normalize_tool_schema(Schema0, Schema) :-
-    is_dict(Schema0),
+    require_schema_container(Schema0),
     require_schema_key(Schema0, name, Name),
-    atom(Name),
+    require_tool_name(Name),
     require_schema_key(Schema0, capability, Capability),
     must_be_capability(Capability),
-    Capability == tool(Name),
+    require_matching_tool_capability(Name, Capability),
     require_schema_key(Schema0, arguments, Arguments),
     require_schema_key(Schema0, result, Result),
     validate_schema_definition(Arguments),
     validate_schema_definition(Result),
     schema_description(Schema0, Description),
     schema_limits(Schema0, Limits),
-    Schema = tool_schema{name:Name,
-                         description:Description,
-                         capability:Capability,
-                         arguments:Arguments,
-                         result:Result,
-                         limits:Limits}.
+    Schema = tool_schema{
+                 name:Name,
+                 description:Description,
+                 capability:Capability,
+                 arguments:Arguments,
+                 result:Result,
+                 limits:Limits
+             }.
+
+require_schema_container(Schema) :-
+    is_dict(Schema),
+    !.
+require_schema_container(Schema) :-
+    throw(tool_fault(invalid_schema_container(Schema))).
+
+require_tool_name(Name) :-
+    atom(Name),
+    Name \== '',
+    !.
+require_tool_name(Name) :-
+    throw(tool_fault(invalid_tool_name(Name))).
+
+require_matching_tool_capability(Name, tool(Name)) :-
+    !.
+require_matching_tool_capability(Name, Capability) :-
+    throw(tool_fault(tool_capability_mismatch(Name, Capability))).
 
 schema_description(Schema, Description) :-
-    (   get_dict(description, Schema, Value), text_string(Value, Text)
-    ->  Description = Text
+    (   get_dict(description, Schema, Value)
+    ->  (   text_string(Value, Description)
+        ->  true
+        ;   throw(tool_fault(invalid_description(Value)))
+        )
     ;   Description = ""
     ).
 
 schema_limits(Schema, Limits) :-
     (   get_dict(limits, Schema, Limits0)
-    ->  true
+    ->  require_limits_dict(Limits0)
     ;   Limits0 = _{}
     ),
     limit_value(time_limit, Limits0, 1.0, TimeLimit),
     limit_value(max_output_bytes, Limits0, 4096, MaxBytes),
     require_positive_number(TimeLimit, time_limit),
     require_positive_integer(MaxBytes, max_output_bytes),
-    Limits = tool_limits{time_limit:TimeLimit,
-                         max_output_bytes:MaxBytes}.
+    Limits = tool_limits{
+                 time_limit:TimeLimit,
+                 max_output_bytes:MaxBytes
+             }.
+
+require_limits_dict(Limits) :-
+    is_dict(Limits),
+    !.
+require_limits_dict(Limits) :-
+    throw(tool_fault(invalid_limits(Limits))).
 
 validate_schema_definition(Schema) :-
-    is_dict(Schema),
-    get_dict(type, Schema, Type),
-    memberchk(Type, [any,string,integer,number,boolean,list,object]),
-    !,
-    validate_schema_definition_type(Type, Schema).
-validate_schema_definition(Schema) :-
-    throw(tool_fault(invalid_schema(Schema))).
+    (   is_dict(Schema),
+        get_dict(type, Schema, Type),
+        memberchk(Type, [any,string,integer,number,boolean,list,object])
+    ->  validate_schema_definition_type(Type, Schema)
+    ;   throw(tool_fault(invalid_schema(Schema)))
+    ).
 
 validate_schema_definition_type(object, Schema) :-
     !,
-    (   get_dict(properties, Schema, Properties)
-    ->  is_dict(Properties),
-        dict_pairs(Properties, _, Pairs),
-        maplist(validate_property_schema, Pairs)
-    ;   true
-    ),
-    (   get_dict(required, Schema, Required)
-    ->  is_list(Required), maplist(atom, Required)
-    ;   true
-    ).
+    validate_object_schema_properties(Schema),
+    validate_object_schema_required(Schema).
 validate_schema_definition_type(list, Schema) :-
     !,
     (   get_dict(items, Schema, ItemSchema)
@@ -519,11 +623,33 @@ validate_schema_definition_type(list, Schema) :-
     ).
 validate_schema_definition_type(_, _).
 
+validate_object_schema_properties(Schema) :-
+    (   get_dict(properties, Schema, Properties)
+    ->  (   is_dict(Properties)
+        ->  dict_pairs(Properties, _, Pairs),
+            maplist(validate_property_schema, Pairs)
+        ;   throw(tool_fault(invalid_properties(Properties)))
+        )
+    ;   true
+    ).
+
+validate_object_schema_required(Schema) :-
+    (   get_dict(required, Schema, Required)
+    ->  (   is_list(Required),
+            maplist(atom, Required)
+        ->  true
+        ;   throw(tool_fault(invalid_required_fields(Required)))
+        )
+    ;   true
+    ).
+
 validate_property_schema(_-Schema) :-
     validate_schema_definition(Schema).
 
 validate_schema(Schema, Value, Path, Outcome) :-
-    catch(( validate_schema_value(Schema, Value, Path), Outcome = ok ),
+    catch(( validate_schema_value(Schema, Value, Path),
+            Outcome = ok
+          ),
           tool_fault(Fault),
           schema_fault(Path, Fault, Outcome)).
 
@@ -596,11 +722,13 @@ validate_additional_properties(Schema, Properties, Value, Path) :-
     ).
 
 schema_fault(Path, Fault,
-             error(tool_error{phase:schema,
-                              kind:schema_validation_failed,
-                              path:Path,
-                              detail:Fault,
-                              message:"tool value does not match its declared schema"})).
+             error(tool_error{
+                       phase:schema,
+                       kind:schema_validation_failed,
+                       path:Path,
+                       detail:Fault,
+                       message:"tool value does not match its declared schema"
+                   })).
 
 /* -------------------------------------------------------------------------
  * Helpers
@@ -619,8 +747,10 @@ require_schema_key(Dict, Key, Value) :-
     ).
 
 effective_limits(Spec, Options,
-                 tool_limits{time_limit:TimeLimit,
-                             max_output_bytes:MaxBytes}) :-
+                 tool_limits{
+                     time_limit:TimeLimit,
+                     max_output_bytes:MaxBytes
+                 }) :-
     option_value(time_limit, Options, Spec.time_limit, RequestedTime),
     option_value(max_output_bytes, Options, Spec.max_output_bytes,
                  RequestedBytes),
@@ -630,7 +760,8 @@ effective_limits(Spec, Options,
     MaxBytes is min(Spec.max_output_bytes, RequestedBytes).
 
 limit_value(Key, Dict, Default, Value) :-
-    (   is_dict(Dict), get_dict(Key, Dict, Found)
+    (   is_dict(Dict),
+        get_dict(Key, Dict, Found)
     ->  Value = Found
     ;   Value = Default
     ).
@@ -644,13 +775,15 @@ option_value(Name, Options, Default, Value) :-
     ).
 
 require_positive_integer(Value, _) :-
-    integer(Value), Value > 0,
+    integer(Value),
+    Value > 0,
     !.
 require_positive_integer(Value, Field) :-
     throw(tool_fault(invalid_positive_integer(Field, Value))).
 
 require_positive_number(Value, _) :-
-    number(Value), Value > 0,
+    number(Value),
+    Value > 0,
     !.
 require_positive_number(Value, Field) :-
     throw(tool_fault(invalid_positive_number(Field, Value))).
@@ -682,36 +815,46 @@ value_shape(Value, Shape) :-
 
 tool_api_exception(Phase, tool_fault(Fault), error(Error)) :-
     !,
-    Error = tool_error{phase:Phase,
-                       kind:invalid_tool_operation,
-                       detail:Fault,
-                       message:"tool operation is invalid"}.
+    Error = tool_error{
+                phase:Phase,
+                kind:invalid_tool_operation,
+                detail:Fault,
+                message:"tool operation is invalid"
+            }.
 tool_api_exception(Phase, Exception, error(Error)) :-
     safe_exception(Exception, Safe),
-    Error = tool_error{phase:Phase,
-                       kind:tool_runtime_error,
-                       exception:Safe,
-                       message:"tool operation failed"}.
+    Error = tool_error{
+                phase:Phase,
+                kind:tool_runtime_error,
+                exception:Safe,
+                message:"tool operation failed"
+            }.
 
 invoke_exception(tool_fault(Fault), error(Error), denied, invalid_tool, 0) :-
     !,
-    Error = tool_error{phase:invoke,
-                       kind:invalid_tool_operation,
-                       detail:Fault,
-                       message:"tool invocation is invalid"}.
+    Error = tool_error{
+                phase:invoke,
+                kind:invalid_tool_operation,
+                detail:Fault,
+                message:"tool invocation is invalid"
+            }.
 invoke_exception(capability_fault(Fault), error(Error), denied,
                  invalid_capabilities, 0) :-
     !,
-    Error = tool_error{phase:authorize,
-                       kind:invalid_capabilities,
-                       detail:Fault,
-                       message:"tool capability set is invalid"}.
+    Error = tool_error{
+                phase:authorize,
+                kind:invalid_capabilities,
+                detail:Fault,
+                message:"tool capability set is invalid"
+            }.
 invoke_exception(Exception, error(Error), denied, runtime_error, 0) :-
     safe_exception(Exception, Safe),
-    Error = tool_error{phase:invoke,
-                       kind:tool_runtime_error,
-                       exception:Safe,
-                       message:"tool invocation failed"}.
+    Error = tool_error{
+                phase:invoke,
+                kind:tool_runtime_error,
+                exception:Safe,
+                message:"tool invocation failed"
+            }.
 
 safe_exception(Exception, Safe) :-
     term_string(Exception, Safe, [quoted(true), numbervars(true)]).
