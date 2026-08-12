@@ -64,8 +64,8 @@ jobs:
             git diff --check HEAD^ HEAD
           fi
 
-  live-openrouter-core:
-    name: REAL OpenRouter core integration
+  live-openrouter:
+    name: REAL OpenRouter integration
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
@@ -88,7 +88,7 @@ jobs:
         shell: bash
         run: |
           if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-            echo "OPENROUTER_API_KEY is not configured for live core CI" >&2
+            echo "OPENROUTER_API_KEY is not configured for live integration CI" >&2
             exit 1
           fi
 
@@ -105,38 +105,12 @@ jobs:
             evidence="${evidence//'%'/'%25'}"
             echo "::notice title=REAL OpenRouter core evidence::${evidence}"
           else
-            echo "::error title=REAL OpenRouter core integration failed::Inspect the redacted PlUnit output above."
+            message="$(tail -n 40 /tmp/openrouter-core.log | tr '\n' ' ')"
+            message="${message//'%'/'%25'}"
+            echo "::error title=REAL OpenRouter core integration failed::${message}"
           fi
 
           exit "$status"
-
-  live-openrouter-repair:
-    name: REAL OpenRouter structured repair
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    runs-on: ubuntu-latest
-    env:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      OPENROUTER_TEST_MODEL: ${{ vars.OPENROUTER_TEST_MODEL }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Install SWI-Prolog
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes swi-prolog-nox
-
-      - name: Require live OpenRouter credential
-        shell: bash
-        run: |
-          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-            echo "OPENROUTER_API_KEY is not configured for live repair CI" >&2
-            exit 1
-          fi
 
       - name: Run REAL OpenRouter structured repair suite
         shell: bash
