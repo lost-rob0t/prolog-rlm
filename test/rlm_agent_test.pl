@@ -108,8 +108,8 @@ child_crash_case(Runtime) :-
     assertion(ParentStatus.last_result = child_result{child:agent(_),
                                                       result:error(_)}),
     agent_trace(Runtime, Trace),
-    assertion(member(Event, Trace)),
-    assertion(Event.type == child_failure).
+    assertion(( member(Event, Trace),
+                Event.type == child_failure )).
 
 test(parent_cancellation_propagates_to_child_work) :-
     with_runtime([worker_count(1),
