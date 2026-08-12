@@ -1,0 +1,58 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-009-durable-artifact-context
+:END:
+#+title: RLM-RESEARCH-009 Durable Artifact Context and Fresh Reasoning Roots
+#+status: RESEARCHING
+#+filetags: :rlm:context:memory:artifacts:blackboard:
+
+* Research Question
+
+How should long-running prolog-rlm agents preserve useful state without forcing every later model call to inherit an ever-growing transcript?
+
+* Primary Sources
+
+- RLM context-as-object design: https://alexzhang13.github.io/blog/2025/rlm/
+- Harnesses are Compositional Generalizers: https://alexzhang13.github.io/blog/2026/harness/
+- Chained Recursive Language Models: https://arxiv.org/abs/2608.05124
+- LangGraph persistence: https://docs.langchain.com/oss/python/langgraph/persistence
+
+Retrieved 2026-08-11.
+
+* Preliminary Findings
+
+RLM already separates large context from the prompt. The same principle should apply to agent memory: durable task state belongs in the runtime and should be projected into model context as needed.
+
+Chained/fresh-root approaches suggest that later reasoning stages can begin with a clean model context while sharing compact summaries, blackboards, or durable artifacts from prior roots. This avoids treating an accumulated transcript as the sole source of truth.
+
+* Proposed Prolog Model
+
+Represent persistent run knowledge as versioned artifacts/facts with provenance, for example:
+
+#+begin_src prolog
+artifact(Id, Kind, Version, Ref, Provenance).
+summary(Id, Scope, Text, SourceArtifacts).
+finding(Id, Claim, EvidenceRefs, Status).
+blackboard(Key, Version, Value, Provenance).
+#+end_src
+
+A context-pack builder chooses a bounded subset for each model call. The durable state remains authoritative; the generated prompt/context pack is disposable.
+
+* Persistence Boundary
+
+The initial adapter may use in-memory facts plus =library(persistency)= for local development. The public interface must remain backend-neutral so graph checkpoints/artifacts can later use a database or object store without rewriting agent logic.
+
+* Open Questions
+
+- artifact invalidation/version conflict semantics;
+- whether summaries are model-authored, deterministic, or both;
+- context-pack selection heuristics;
+- how to retain negative evidence/rejected branches without prompt bloat;
+- replay semantics when provider outputs are nondeterministic.
+
+* Acceptance Evidence
+
+- run three sequential reasoning roots where root 2/3 do not receive the full prior transcript;
+- later roots recover required facts from durable artifacts;
+- stale artifact versions are detectable;
+- checkpoint replay reconstructs runtime state without replaying chat text;
+- provenance connects final answer to artifact/evidence origins.

@@ -1,0 +1,89 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-006-mcp-dual-version-runtime
+:END:
+#+title: RLM-RESEARCH-006 MCP Dual-Version Runtime
+#+status: DONE
+#+filetags: :mcp:protocol:compatibility:tools:agents:
+
+* Research Question
+
+How can prolog-rlm maximize MCP interoperability across the widely deployed 2025-11-25 protocol and the breaking 2026-07-28 stateless protocol without contaminating the agent runtime with version-specific logic?
+
+* Primary Sources
+
+- MCP specification repository: https://github.com/modelcontextprotocol/modelcontextprotocol
+- 2025-11-25 lifecycle: https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle
+- 2025-11-25 transports: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+- 2026-07-28 release notes: https://blog.modelcontextprotocol.io/posts/2026-07-28/
+- 2026-07-28 schema: https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/2026-07-28/schema.ts
+
+Retrieved 2026-08-11.
+
+* Version Facts
+
+** 2025-11-25
+
+The client sends =initialize= with a requested protocol version and capabilities. The server answers with the selected version/capabilities. The client then sends =notifications/initialized=. HTTP requests after initialization include =MCP-Protocol-Version=. Servers may allocate =MCP-Session-Id= and clients must handle invalidated sessions by initializing again.
+
+** 2026-07-28
+
+The release deliberately breaks the old sessionful lifecycle. The core is stateless: =initialize= / =initialized= and =Mcp-Session-Id= are retired. Requests carry protocol/client/capability information per request. =server/discover= is available for capability/version discovery. HTTP also gains method/name routing headers. Unsupported protocol version responses can advertise supported versions so the client can retry.
+
+The 2026 release introduces a formal extensions model; Tasks is an extension. Sampling, Roots, and some older surfaces are deprecated for new implementations. Core model inference in prolog-rlm should therefore use direct providers rather than MCP Sampling.
+
+* Compatibility Architecture
+
+Create a canonical internal representation independent of wire version:
+
+#+begin_src prolog
+mcp_request(Method, Params, Meta).
+mcp_result(Result, Meta).
+mcp_error(Code, Message, Data, Meta).
+mcp_tool(Name, Description, InputSchema, OutputSchema, Meta).
+mcp_resource(Uri, Name, MimeType, Meta).
+mcp_prompt(Name, Description, Arguments, Meta).
+#+end_src
+
+Version adapters:
+
+- =rlm_mcp_v2025_11_25.pl= owns initialize/session/capability negotiation and old wire encoding;
+- =rlm_mcp_v2026_07_28.pl= owns discover/self-describing request metadata/stateless wire encoding;
+- shared tool/resource/prompt semantics normalize into canonical terms.
+
+The agent runtime calls only canonical operations.
+
+* Client Selection Policy
+
+1. If the endpoint has cached verified compatibility, use the best mutually supported version.
+2. Prefer =2026-07-28= when explicitly supported.
+3. On unsupported-version negotiation/discovery, retry with a mutually supported version.
+4. Fallback to =2025-11-25= and perform the sessionful initialize lifecycle.
+5. Record selected version and transport in the trace.
+
+Do not blindly send a 2026 request to an unknown legacy server if doing so would prevent clean legacy negotiation. Endpoint capability cache must be invalidatable.
+
+* Server Policy
+
+Where transport design permits, accept both versions at the same logical endpoint and route into the appropriate codec/lifecycle module before canonical dispatch. Do not share stale 2025 session assumptions with 2026 requests.
+
+* Maximum-Availability Tests
+
+Build a matrix:
+
+| prolog-rlm role | peer | expected |
+|-
+| client | 2025-only server | initialize and operate |
+| client | 2026-only server | discover/self-describing requests |
+| client | dual server | prefer 2026 |
+| server | 2025-only client | complete legacy lifecycle |
+| server | 2026-only client | stateless request handling |
+| server | dual client | accept selected supported version |
+
+* Acceptance Evidence
+
+- no version-specific conditions in =rlm_agent= or =rlm_graph=;
+- conformance fixtures for both schemas/lifecycles;
+- integration tests for old-only/new-only/dual peers;
+- selected protocol version appears in traces;
+- 2025 session invalidation recovery works;
+- 2026 unsupported-version retry works.

@@ -1,0 +1,53 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-004-prologmcp-repair-loop
+:END:
+#+title: RLM-RESEARCH-004 PrologMCP Structured Repair Loop
+#+status: DONE
+#+filetags: :prolog:mcp:debugging:repair:tracing:
+
+* Research Question
+
+Which PrologMCP ideas should be incorporated when Prolog itself owns the agent runtime rather than being exposed as a tool to an external Python agent?
+
+* Primary Sources
+
+- PrologMCP paper: https://arxiv.org/abs/2606.14935
+- PrologMCP implementation: https://github.com/dicelab-rhul/PrologMCP
+
+Retrieved 2026-08-11.
+
+* Findings
+
+PrologMCP exposes stateful SWI-Prolog sessions through MCP. Important operations include session creation, consult, goal execution, predicate inspection, diagnostics, PlUnit execution, structured tracing, source retrieval, predicate replacement, and session cleanup.
+
+Its =run_goal= protocol distinguishes success, logical failure, timeout, depth exhaustion, and exceptions. Its trace operation returns a structured call tree rather than interactive debugger text. This creates an effective generate -> execute -> inspect -> repair loop.
+
+The repository explicitly warns that its name-based sandbox is not a security boundary. This is important negative evidence for prolog-rlm.
+
+* Prolog Adaptation
+
+Invert the architecture. Prolog remains the host runtime, but preserve the structured execution protocol internally:
+
+#+begin_src prolog
+outcome(success, Bindings).
+outcome(failure).
+outcome(timeout).
+outcome(depth_exceeded).
+outcome(exception(Error)).
+#+end_src
+
+Add inspectable predicate/plan metadata, bounded traces, diagnostic source locations, and narrow repair actions. When a generated symbolic plan fails, return a structured observation to the model rather than raw stderr.
+
+Hot replacement of arbitrary runtime predicates is not required for the first slice. Repair should initially target model plans and declarative agent state, not live core runtime code.
+
+* MCP Implication
+
+prolog-rlm should later expose selected inspect/run/trace capabilities as an MCP server, while also consuming external MCP tools as a client.
+
+* Acceptance Evidence
+
+- every plan execution ends in one structured outcome;
+- logical failure is distinct from runtime exception;
+- timeout/depth exhaustion are distinguishable;
+- a failed plan can be repaired from a bounded structured diagnostic without reading process stderr;
+- traces have node/byte limits.

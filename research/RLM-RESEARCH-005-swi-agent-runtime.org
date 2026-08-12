@@ -1,0 +1,58 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-005-swi-agent-runtime
+:END:
+#+title: RLM-RESEARCH-005 SWI-Prolog Agent Runtime
+#+status: DONE
+#+filetags: :swi-prolog:engines:threads:agents:supervision:
+
+* Research Question
+
+How should prolog-rlm represent many logical agents and concurrent model/tool work without allocating an unbounded OS thread per agent?
+
+* Primary Sources
+
+- SWI engines/scalable agents: https://www.swi-prolog.org/pldoc/man?section=engine-examples
+- SWI engine agents: https://www.swi-prolog.org/pldoc/man?section=engine-agents
+- SWI thread communication: https://www.swi-prolog.org/pldoc/man?section=threadcom
+- SWI thread pools: https://www.swi-prolog.org/pldoc/doc_for?object=section(%27packages/threadpool.html%27)
+
+Retrieved 2026-08-11.
+
+* Findings
+
+SWI-Prolog engines provide isolated logical execution state and are explicitly discussed as a building block for scalable many-agent applications. Message queues carry arbitrary Prolog terms and can be bounded. Thread pools bound scarce execution resources.
+
+HTTP provider/tool calls are blocking external work and should be scheduled separately from logical agent state.
+
+* Proposed Runtime
+
+Represent each logical agent as an engine or explicit state machine. Use typed term messages:
+
+#+begin_src prolog
+request(RunId, CallId, Work).
+result(CallId, Result).
+spawn(Parent, Child, Spec, Capabilities).
+cancel(RunId, Reason).
+checkpoint(RunId, Label).
+budget_exhausted(RunId, Kind).
+#+end_src
+
+Use bounded worker pools for blocking model/MCP/tool requests. Use bounded queues/mailboxes for backpressure. A supervisor owns children and propagates cancellation.
+
+Do not expose raw engine/thread handles to the model. The model interacts through logical agent IDs and declared operations.
+
+* Supervision Invariants
+
+- children cannot outlive a cancelled run unless explicitly detached by trusted host code;
+- child capabilities are narrowed by default;
+- every external call has a timeout/deadline;
+- queue size and concurrent external calls are bounded;
+- final run cleanup removes engines, temporary context handles, outstanding requests, and non-durable mailboxes.
+
+* Acceptance Evidence
+
+- spawn at least 20 logical no-op agents without 20 dedicated long-lived OS threads;
+- bound external workers to configured concurrency;
+- demonstrate mailbox backpressure;
+- parent cancellation terminates child work;
+- structured run trace records spawn/request/result/cancel events.

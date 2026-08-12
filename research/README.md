@@ -1,50 +1,31 @@
-# Research records
+# prolog-rlm research
 
-This directory is the durable research notebook for `prolog-rlm`.
+This directory stores durable numbered architecture/research records. The structure is inspired by the useful research-record discipline in `starintel-auto-research`, but this repository is independent and uses its own naming and conclusions.
 
-The workflow is adapted from the useful parts of `starintel-auto-research`: research is kept as numbered, source-backed records with explicit questions, findings, implementation consequences, and unresolved work. This repository does **not** inherit StarIntel-specific architecture, names, approval fields, or runtime dependencies.
+Each record should contain:
 
-## Naming
-
-Use:
-
-```text
-RLM-RESEARCH-NNN-short-topic.org
-```
-
-Numbers are stable. Do not renumber old records when priorities change.
-
-## Required sections
-
-Each research record should contain:
-
-- Org properties with a stable `ID`;
-- title, description, status, and file tags;
-- research question;
-- sources with retrieval dates;
-- findings separated from speculation;
-- Prolog/RLM implementation mapping;
-- alternatives or rejected approaches where relevant;
+- stable ID and title;
+- explicit research question;
+- primary sources and retrieval dates;
+- findings separated from inference;
+- implementation implications;
+- rejected/avoided alternatives;
 - open questions;
-- acceptance evidence or experiments needed to settle the question;
-- citations/footnotes.
+- acceptance experiments or tests.
 
-Suggested status values:
+## Index
 
-```text
-TODO RESEARCHING REVIEW BLOCKED | DONE REJECTED
-```
+- `RLM-RESEARCH-000-foundations.org` — original RLM model and core invariants.
+- `RLM-RESEARCH-001-prolog-runtime-design.org` — mapping RLM execution onto Prolog.
+- `RLM-RESEARCH-002-agentic-harness.org` — RLM + harness + ReAct/CodeAct architecture boundary.
+- `RLM-RESEARCH-003-typed-symbolic-execution.org` — lambda-RLM and bounded executable plan language.
+- `RLM-RESEARCH-004-prologmcp-repair-loop.org` — structured Prolog execution, diagnostics, trace and repair.
+- `RLM-RESEARCH-005-swi-agent-runtime.org` — engines, queues, bounded workers and supervision.
+- `RLM-RESEARCH-006-mcp-dual-version-runtime.org` — compatibility architecture for MCP `2025-11-25` and `2026-07-28`.
+- `RLM-RESEARCH-007-langchain-langgraph-port.org` — minimum useful Prolog-native chain/graph semantics.
+- `RLM-RESEARCH-008-adaptive-recursion.org` — depth/cost evidence and adaptive recursion policy.
+- `RLM-RESEARCH-009-durable-artifact-context.org` — fresh reasoning roots, blackboards and durable task state.
 
-## Rules
+## Rule
 
-1. Prefer primary sources: papers, official repositories, official documentation, and source code.
-2. Record retrieval dates because RLM/LangChain/LangGraph implementations are changing quickly.
-3. Do not turn a research claim into architecture merely because it sounds plausible.
-4. Preserve negative results and rejected approaches.
-5. Keep implementation TODOs in `TODO.md`; use research files for evidence and design reasoning.
-6. When a research record materially changes architecture, link the resulting code/design decision back to the record.
-
-## Current records
-
-- `RLM-RESEARCH-000-foundations.org` — what an RLM is and which properties the Prolog implementation must preserve.
-- `RLM-RESEARCH-001-prolog-runtime-design.org` — initial mapping from the Python-REPL formulation to a Prolog execution environment.
+Research records are evidence, not executable specifications. Promote conclusions into README/TODO/code only when the record states a bounded implementation implication and an acceptance test.
