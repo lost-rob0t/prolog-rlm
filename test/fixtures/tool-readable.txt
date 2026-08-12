@@ -1,0 +1,2 @@
+PROLOG_RLM_TOOL_OK
+second line
