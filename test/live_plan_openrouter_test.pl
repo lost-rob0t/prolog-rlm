@@ -17,13 +17,14 @@ run_live_plan_case(Handle) :-
     default_openrouter_model(RequestedModel),
     openrouter_provider(RequestedModel, Provider),
     planner_prompt(Prompt),
-    Request = model_request{
-                  messages:[message{role:user, content:Prompt}],
-                  options:_{max_tokens:384}
-              },
-    model_complete(Provider, Request, ProviderOutcome),
-    require_live_plan_provider_success(ProviderOutcome, Response),
-    response_typed_plan(Response, Plan, PlanChannel),
+    real_typed_plan_attempt(1,
+                            2,
+                            Provider,
+                            Prompt,
+                            Response,
+                            Plan,
+                            PlanChannel,
+                            AttemptUsed),
     Caps = [context(search), tool(count_items)],
     Runtime = [providers([provider_ref(openrouter, Provider)]),
                tools([tool(count_items, plan_test_tools:count_items)]),
@@ -39,7 +40,45 @@ run_live_plan_case(Handle) :-
     plan_run(Plan, Caps, Runtime, _{context:Handle}, PlanOutcome),
     require_live_plan_execution_success(PlanOutcome, Result),
     validate_live_plan_result(Result),
-    log_live_plan_evidence(RequestedModel, Response, PlanChannel, Result).
+    log_live_plan_evidence(RequestedModel,
+                           Response,
+                           PlanChannel,
+                           AttemptUsed,
+                           Result).
+
+real_typed_plan_attempt(Attempt,
+                        MaxAttempts,
+                        Provider,
+                        Prompt,
+                        Response,
+                        Plan,
+                        PlanChannel,
+                        AttemptUsed) :-
+    Request = model_request{
+                  messages:[message{role:user, content:Prompt}],
+                  options:_{max_tokens:512}
+              },
+    model_complete(Provider, Request, ProviderOutcome),
+    require_live_plan_provider_success(ProviderOutcome, Candidate),
+    (   response_typed_plan(Candidate, CandidatePlan, CandidateChannel)
+    ->  Response = Candidate,
+        Plan = CandidatePlan,
+        PlanChannel = CandidateChannel,
+        AttemptUsed = Attempt
+    ;   Attempt < MaxAttempts
+    ->  Next is Attempt+1,
+        real_typed_plan_attempt(Next,
+                                MaxAttempts,
+                                Provider,
+                                Prompt,
+                                Response,
+                                Plan,
+                                PlanChannel,
+                                AttemptUsed)
+    ;   throw(error(live_plan_parse_failure,
+                    context(live_plan_openrouter_test,
+                            'real model responses did not contain a valid typed JSON plan')))
+    ).
 
 planner_prompt(
 "Return ONLY one JSON object. No markdown and no explanation.\n\
@@ -77,10 +116,6 @@ response_typed_plan(Response, Plan, reasoning) :-
     nonempty_string(Reasoning),
     plan_parse(Reasoning, ok(Plan)),
     !.
-response_typed_plan(_, _, _) :-
-    throw(error(live_plan_parse_failure,
-                context(live_plan_openrouter_test,
-                        'real model response did not contain a valid typed JSON plan'))).
 
 nonempty_string(Value) :-
     string(Value),
@@ -101,7 +136,11 @@ validate_live_plan_result(Result) :-
     assertion(ToolTransition.operation == tool(count_items)),
     assertion(FinalTransition.operation == final).
 
-log_live_plan_evidence(RequestedModel, Response, PlanChannel, Result) :-
+log_live_plan_evidence(RequestedModel,
+                       Response,
+                       PlanChannel,
+                       AttemptUsed,
+                       Result) :-
     length(Result.transitions, TransitionCount),
     format('plan_provider: openrouter~n', []),
     format('plan_requested_model: ~w~n', [RequestedModel]),
@@ -110,6 +149,7 @@ log_live_plan_evidence(RequestedModel, Response, PlanChannel, Result) :-
     format('plan_response_received: true~n', []),
     format('plan_parsed: true~n', []),
     format('plan_output_channel: ~w~n', [PlanChannel]),
+    format('plan_attempt_used: ~d~n', [AttemptUsed]),
     format('plan_context_executed: true~n', []),
     format('plan_tool_executed: true~n', []),
     format('plan_final_ok: true~n', []),
