@@ -83,4 +83,19 @@ jobs:
           fi
 
       - name: Run REAL OpenRouter smoke test
-        run: swipl -q -s test/run_live_openrouter.pl
+        shell: bash
+        run: |
+          set +e
+          swipl -q -s test/run_live_openrouter.pl > /tmp/openrouter-live.log 2>&1
+          status=$?
+          cat /tmp/openrouter-live.log
+
+          if [ "$status" -eq 0 ]; then
+            evidence="$(grep -E '^(provider|requested_model|selected_model|http_status|response_received|usage_present):' /tmp/openrouter-live.log | tr '\n' ' ')"
+            evidence="${evidence//'%'/'%25'}"
+            echo "::notice title=REAL OpenRouter evidence::${evidence}"
+          else
+            echo "::error title=REAL OpenRouter integration failed::Real provider operation failed; inspect the redacted PlUnit output above."
+          fi
+
+          exit "$status"
