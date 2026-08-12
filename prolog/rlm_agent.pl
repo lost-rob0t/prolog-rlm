@@ -11,7 +11,8 @@
             agent_children/3,
             agent_cancel/4,
             agent_trace/2,
-            agent_plan_handler/5
+            agent_plan_handler/5,
+            agent_tool_handler/4
           ]).
 
 /** <module> Supervised logical agent runtime
@@ -84,8 +85,8 @@ agent_runtime_create_(Options, agent_runtime(Id)) :-
 agent_runtime_destroy(Runtime) :-
     (   runtime_record(Runtime, Id, Pool, _)
     ->  signal_runtime_workers(Id, runtime_destroyed),
-        destroy_runtime_agents(Id),
         catch(thread_pool_destroy(Pool), _, true),
+        destroy_runtime_agents(Id),
         with_mutex(rlm_agent_registry,
                    ( retractall(agent_worker(Id, _, _, _)),
                      retractall(agent_record(Id, _, _, _, _, _, _)),
@@ -494,9 +495,11 @@ worker_exception(Exception, error(Error)) :-
 
 worker_deliver_result(RuntimeId, AgentId, CallId, Result, SendTimeout) :-
     (   agent_queue(RuntimeId, AgentId, Queue)
-    ->  (   thread_send_message(Queue,
-                                result(CallId, Result),
-                                [timeout(SendTimeout)])
+    ->  (   catch(thread_send_message(Queue,
+                                      result(CallId, Result),
+                                      [timeout(SendTimeout)]),
+                  _,
+                  fail)
         ->  trace_add(RuntimeId,
                       worker_result_enqueued,
                       _{agent:AgentId, call_id:CallId})
@@ -808,6 +811,49 @@ agent_plan_handler(Runtime, Parent, Spec, Capabilities, Child) :-
                     context(rlm_agent:agent_plan_handler/5,
                             'typed plan could not spawn child agent')))
     ).
+
+agent_tool_handler(Runtime, Parent, Request, Child) :-
+    normalize_agent_tool_request(Request, Spec, Capabilities),
+    agent_plan_handler(Runtime, Parent, Spec, Capabilities, Child).
+
+normalize_agent_tool_request(Request, Spec, Capabilities) :-
+    (   is_dict(Request),
+        get_dict(spec, Request, Spec),
+        get_dict(capabilities, Request, RawCapabilities),
+        is_list(RawCapabilities)
+    ->  maplist(normalize_agent_tool_capability,
+                RawCapabilities,
+                Capabilities)
+    ;   throw(agent_fault(invalid_agent_spawn_request(Request)))
+    ).
+
+normalize_agent_tool_capability(Value, Capability) :-
+    capabilities_normalize([Value], ok([Capability])),
+    !.
+normalize_agent_tool_capability(Value, Capability) :-
+    (atom(Value); string(Value)),
+    !,
+    require_name_atom(Value, Atom),
+    (   capabilities_normalize([Atom], ok([Capability]))
+    ->  true
+    ;   throw(agent_fault(invalid_child_capability(Value)))
+    ).
+normalize_agent_tool_capability(Value, Capability) :-
+    is_dict(Value),
+    !,
+    (   get_dict(type, Value, Type0),
+        get_dict(name, Value, Name0)
+    ->  require_name_atom(Type0, Type),
+        require_name_atom(Name0, Name),
+        Term =.. [Type, Name],
+        (   capabilities_normalize([Term], ok([Capability]))
+        ->  true
+        ;   throw(agent_fault(invalid_child_capability(Value)))
+        )
+    ;   throw(agent_fault(invalid_child_capability(Value)))
+    ).
+normalize_agent_tool_capability(Value, _) :-
+    throw(agent_fault(invalid_child_capability(Value))).
 
 /* -------------------------------------------------------------------------
  * Trace

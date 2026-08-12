@@ -110,6 +110,11 @@ normalize_step(rlm(Plan0, Bind), rlm(Plan, Bind)) :-
     !,
     normalize_plan(Plan0, Plan).
 normalize_step(tool(Name, Args, Bind), tool(Name, Args, Bind)) :- !.
+normalize_step(spawn_agent(Spec, Capabilities, Bind),
+               tool(spawn_agent,
+                    literal(agent_spawn_request{spec:Spec,
+                                                capabilities:Capabilities}),
+                    Bind)) :- !.
 normalize_step(parallel(Plans0, Bind), parallel(Plans, Bind)) :-
     !,
     must_list(Plans0, parallel_plans),
@@ -152,6 +157,16 @@ normalize_dict_step(tool, Dict, tool(Name, Args, Bind)) :-
     require_text_atom(Dict, name, Name),
     require_dict_key(Dict, args, Args0),
     normalize_expr(Args0, Args),
+    require_text_atom(Dict, bind, Bind).
+normalize_dict_step(spawn_agent, Dict,
+                    tool(spawn_agent,
+                         literal(agent_spawn_request{spec:Spec,
+                                                     capabilities:Capabilities}),
+                         Bind)) :-
+    !,
+    require_dict_key(Dict, spec, Spec),
+    require_dict_key(Dict, capabilities, Capabilities),
+    must_list(Capabilities, child_capabilities),
     require_text_atom(Dict, bind, Bind).
 normalize_dict_step(parallel, Dict, parallel(Plans, Bind)) :-
     !,
