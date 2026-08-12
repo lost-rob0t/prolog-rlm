@@ -102,6 +102,65 @@ test(cancelled_token_stops_before_planner_side_effect,
     completion_test_support:planner_calls(Calls),
     assertion(Calls =:= 0).
 
+test(midflight_cancellation_interrupts_pending_model,
+     [setup(completion_test_support:reset_calls)]) :-
+    rlm_cancellation_token(Token),
+    message_queue_create(Queue),
+    setup_call_cleanup(
+        true,
+        ( thread_create(run_pending_model(Token, Queue), Thread, []),
+          thread_get_message(Queue, started),
+          rlm_cancel(Token),
+          thread_get_message(Queue, outcome(Outcome), [timeout(2)]),
+          thread_join(Thread, _),
+          expect_error(Outcome, Error),
+          assertion(Error.kind == cancelled)
+        ),
+        message_queue_destroy(Queue)).
+
+run_pending_model(Token, Queue) :-
+    llm_query("slow",
+              [ cancel_token(Token),
+                model_handler(completion_test_support:slow_model_started(Queue)),
+                budget(_{time_limit:5.0})
+              ],
+              Outcome),
+    thread_send_message(Queue, outcome(Outcome)).
+
+test(wall_time_budget_interrupts_pending_model,
+     [setup(completion_test_support:reset_calls)]) :-
+    llm_query("slow",
+              [ model_handler(completion_test_support:slow_model),
+                budget(_{time_limit:0.05})
+              ],
+              Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.kind == timeout).
+
+test(token_budget_rejects_reported_overage,
+     [setup(completion_test_support:reset_calls)]) :-
+    llm_query("tokens",
+              [ model_handler(completion_test_support:token_heavy_model),
+                budget(_{max_total_tokens:10})
+              ],
+              Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.kind == token_budget_exceeded),
+    assertion(Error.used =:= 60),
+    assertion(Error.limit =:= 10).
+
+test(cost_budget_rejects_reported_overage,
+     [setup(completion_test_support:reset_calls)]) :-
+    llm_query("cost",
+              [ model_handler(completion_test_support:costly_model),
+                budget(_{max_cost_usd:0.1})
+              ],
+              Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.kind == cost_budget_exceeded),
+    assertion(Error.used =:= 0.5),
+    assertion(Error.limit =:= 0.1).
+
 test(llm_query_supports_bounded_injected_model,
      [setup(completion_test_support:reset_calls)]) :-
     llm_query("hello",
