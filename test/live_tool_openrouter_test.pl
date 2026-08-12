@@ -33,14 +33,14 @@ run_live_tool_case(Registry) :-
                   messages:[message{role:user, content:Prompt}],
                   options:_{max_tokens:640}
               },
-    request_parseable_live_tool_plan(Provider,
-                                     Request,
-                                     2,
-                                     1,
-                                     Response,
-                                     Plan,
-                                     PlanChannel,
-                                     Attempt),
+    request_required_live_tool_plan(Provider,
+                                    Request,
+                                    2,
+                                    1,
+                                    Response,
+                                    Plan,
+                                    PlanChannel,
+                                    Attempt),
     Caps = [tool(project_read)],
     tool_registry_runtime_tools(Registry, Caps, RuntimeTools),
     Runtime = [tools(RuntimeTools),
@@ -61,16 +61,17 @@ run_live_tool_case(Registry) :-
                            Attempt,
                            Result).
 
-request_parseable_live_tool_plan(Provider, Request, Remaining, Attempt,
-                                 Response, Plan, PlanChannel, UsedAttempt) :-
+request_required_live_tool_plan(Provider, Request, Remaining, Attempt,
+                                Response, Plan, PlanChannel, UsedAttempt) :-
     model_complete(Provider, Request, ProviderOutcome),
     require_live_tool_provider_success(ProviderOutcome, Candidate),
-    (   response_tool_plan(Candidate, Plan0, Channel0)
+    (   response_tool_plan(Candidate, Plan0, Channel0),
+        required_live_tool_plan(Plan0)
     ->  Response = Candidate,
         Plan = Plan0,
         PlanChannel = Channel0,
         UsedAttempt = Attempt
-    ;   log_unparseable_live_tool_attempt(Candidate, Attempt),
+    ;   log_rejected_live_tool_attempt(Candidate, Attempt),
         retry_live_tool_plan(Provider,
                              Request,
                              Remaining,
@@ -81,32 +82,37 @@ request_parseable_live_tool_plan(Provider, Request, Remaining, Attempt,
                              UsedAttempt)
     ).
 
+required_live_tool_plan(
+    plan([tool(project_read, object(Pairs), file),
+          final(field(var(file), status))])) :-
+    Pairs = [path-literal("test/fixtures/tool-readable.txt")].
+
 retry_live_tool_plan(Provider, Request, Remaining, Attempt,
                      Response, Plan, PlanChannel, UsedAttempt) :-
     Remaining > 1,
     !,
     NextRemaining is Remaining-1,
     NextAttempt is Attempt+1,
-    request_parseable_live_tool_plan(Provider,
-                                     Request,
-                                     NextRemaining,
-                                     NextAttempt,
-                                     Response,
-                                     Plan,
-                                     PlanChannel,
-                                     UsedAttempt).
+    request_required_live_tool_plan(Provider,
+                                    Request,
+                                    NextRemaining,
+                                    NextAttempt,
+                                    Response,
+                                    Plan,
+                                    PlanChannel,
+                                    UsedAttempt).
 retry_live_tool_plan(_, _, _, _, _, _, _, _) :-
-    throw(error(live_tool_plan_parse_failure,
+    throw(error(live_tool_plan_shape_failure,
                 context(live_tool_openrouter_test,
-                        'real model responses did not contain a valid project-tool typed plan'))).
+                        'real model responses did not contain the required two-step project-tool plan'))).
 
-log_unparseable_live_tool_attempt(Response, Attempt) :-
+log_rejected_live_tool_attempt(Response, Attempt) :-
     format('real_tool_plan_attempt: ~d~n', [Attempt]),
     format('real_tool_plan_attempt_http_status: ~d~n',
            [Response.metadata.http_status]),
     format('real_tool_plan_attempt_selected_model: ~w~n',
            [Response.selected_model]),
-    format('real_tool_plan_attempt_parseable: false~n', []).
+    format('real_tool_plan_attempt_required_shape: false~n', []).
 
 live_tool_planner_prompt(
 "Return ONLY one JSON object. No markdown and no explanation.\n\
