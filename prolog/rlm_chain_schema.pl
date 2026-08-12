@@ -18,13 +18,12 @@
  * ---------------------------------------------------------------------- */
 
 message_normalize(Input, Outcome) :-
-    catch(message_normalize_(Input, Message),
+    catch(( message_normalize_(Input, Message),
+            Result = ok(Message)
+          ),
           Exception,
-          schema_exception(message, Exception, Outcome)),
-    (   var(Outcome)
-    ->  Outcome = ok(Message)
-    ;   true
-    ).
+          schema_exception(message, Exception, Result)),
+    Outcome = Result.
 
 message_normalize_(message(Role0, Content0), Message) :-
     !,
@@ -166,13 +165,12 @@ canonical_message_extra_pair(Key-Value0, Key-Value) :-
  * ---------------------------------------------------------------------- */
 
 prompt_compile(Spec, Outcome) :-
-    catch(prompt_compile_(Spec, Compiled),
+    catch(( prompt_compile_(Spec, Compiled),
+            Result = ok(Compiled)
+          ),
           Exception,
-          schema_exception(prompt, Exception, Outcome)),
-    (   var(Outcome)
-    ->  Outcome = ok(Compiled)
-    ;   true
-    ).
+          schema_exception(prompt, Exception, Result)),
+    Outcome = Result.
 
 prompt_compile_(prompt(Segments0), Compiled) :-
     !,
@@ -198,13 +196,12 @@ normalize_prompt_segment(Segment, _) :-
     throw(chain_schema_fault(invalid_prompt_segment(Segment))).
 
 prompt_bind(Compiled, Bindings, Outcome) :-
-    catch(prompt_bind_(Compiled, Bindings, Text),
+    catch(( prompt_bind_(Compiled, Bindings, Text),
+            Result = ok(Text)
+          ),
           Exception,
-          schema_exception(prompt, Exception, Outcome)),
-    (   var(Outcome)
-    ->  Outcome = ok(Text)
-    ;   true
-    ).
+          schema_exception(prompt, Exception, Result)),
+    Outcome = Result.
 
 prompt_bind_(Compiled, Bindings, Text) :-
     is_dict(Compiled),
@@ -235,13 +232,12 @@ prompt_value_text(Value, _) :-
  * ---------------------------------------------------------------------- */
 
 structured_schema_compile(Spec, Outcome) :-
-    catch(compile_schema(Spec, Compiled),
+    catch(( compile_schema(Spec, Compiled),
+            Result = ok(Compiled)
+          ),
           Exception,
-          schema_exception(structured_output, Exception, Outcome)),
-    (   var(Outcome)
-    ->  Outcome = ok(Compiled)
-    ;   true
-    ).
+          schema_exception(structured_output, Exception, Result)),
+    Outcome = Result.
 
 compile_schema(any, schema(any)) :- !.
 compile_schema(string, schema(string)) :- !.
@@ -291,22 +287,20 @@ compile_field(Field, _) :-
     throw(chain_schema_fault(invalid_schema_field(Field))).
 
 structured_validate(Compiled, Value, Outcome) :-
-    catch(validate_schema_value(Compiled, Value, []),
+    catch(( validate_schema_value(Compiled, Value, []),
+            Result = ok(Value)
+          ),
           Exception,
-          schema_exception(structured_output, Exception, Outcome)),
-    (   var(Outcome)
-    ->  Outcome = ok(Value)
-    ;   true
-    ).
+          schema_exception(structured_output, Exception, Result)),
+    Outcome = Result.
 
 structured_decode_validate(Compiled, Text0, Outcome) :-
-    catch(structured_decode_validate_(Compiled, Text0, Value),
+    catch(( structured_decode_validate_(Compiled, Text0, Value),
+            Result = ok(Value)
+          ),
           Exception,
-          schema_exception(structured_output, Exception, Outcome)),
-    (   var(Outcome)
-    ->  Outcome = ok(Value)
-    ;   true
-    ).
+          schema_exception(structured_output, Exception, Result)),
+    Outcome = Result.
 
 structured_decode_validate_(Compiled, Text0, Value) :-
     require_text(Text0, Text),
@@ -427,7 +421,7 @@ require_ground(Value, _) :- ground(Value), !.
 require_ground(Value, Name) :- throw(chain_schema_fault(non_ground(Name, Value))).
 require_ground_value(Value) :- require_ground(Value, enum_value).
 
-require_unique(Values, Kind) :-
+require_unique(Values, _Kind) :-
     sort(Values, Unique),
     length(Values, Count),
     length(Unique, Count),
