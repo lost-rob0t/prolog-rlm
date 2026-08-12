@@ -28,116 +28,20 @@ jobs:
           p = Path("prolog/rlm_outcome.pl")
           text = p.read_text()
 
-          old = """        repair_handler_call(RepairHandler,
-                            Observation,
-                            NextAttempt,
-                            Plan,
-                            Options,
-                            RepairResult),
-"""
-          new = """        repair_handler_call(RepairHandler,
-                            Observation,
-                            NextAttempt,
-                            Plan,
-                            Options,
-                            Start,
-                            OriginalBudget,
-                            RepairResult),
-"""
+          old = "        repair_handler_call(RepairHandler,\n                            Observation,\n                            NextAttempt,\n                            Plan,\n                            Options,\n                            RepairResult),\n"
+          new = "        repair_handler_call(RepairHandler,\n                            Observation,\n                            NextAttempt,\n                            Plan,\n                            Options,\n                            Start,\n                            OriginalBudget,\n                            RepairResult),\n"
           if old not in text:
               raise SystemExit("repair call context missing")
           text = text.replace(old, new, 1)
 
-          old = """repair_handler_call(Handler,
-                    Observation,
-                    Attempt,
-                    Plan,
-                    Options,
-                    Outcome) :-
-    outcome_limits(Options, Limits),
-    catch(call_with_time_limit(
-              Limits.repair_time_limit,
-              ( call(Handler,
-                     Observation,
-                     Attempt,
-                     Plan,
-                     RepairedPlan)
-              -> Outcome = ok(RepairedPlan)
-              ;  Outcome = error(repair_error{kind:logical_failure,
-                                               message:\"repair handler failed\"})
-              )),
-          Exception,
-          repair_handler_exception(Exception, Outcome)).
-"""
-          new = """repair_handler_call(Handler,
-                    Observation,
-                    Attempt,
-                    Plan,
-                    Options,
-                    Start,
-                    OriginalBudget,
-                    Outcome) :-
-    outcome_limits(Options, Limits),
-    remaining_wall_time(Start,
-                        OriginalBudget.time_limit,
-                        RemainingTime),
-    CallbackLimit is min(Limits.repair_time_limit, RemainingTime),
-    (   CallbackLimit =< 0
-    ->  Outcome = error(repair_error{kind:timeout,
-                                     message:\"repair loop wall-time budget exhausted\"})
-    ;   catch(call_with_time_limit(
-                  CallbackLimit,
-                  ( call(Handler,
-                         Observation,
-                         Attempt,
-                         Plan,
-                         RepairedPlan)
-                  -> Outcome = ok(RepairedPlan)
-                  ;  Outcome = error(repair_error{kind:logical_failure,
-                                                   message:\"repair handler failed\"})
-                  )),
-              Exception,
-              repair_handler_exception(Exception, Outcome))
-    ).
-"""
+          old = "repair_handler_call(Handler,\n                    Observation,\n                    Attempt,\n                    Plan,\n                    Options,\n                    Outcome) :-\n    outcome_limits(Options, Limits),\n    catch(call_with_time_limit(\n              Limits.repair_time_limit,\n              ( call(Handler,\n                     Observation,\n                     Attempt,\n                     Plan,\n                     RepairedPlan)\n              -> Outcome = ok(RepairedPlan)\n              ;  Outcome = error(repair_error{kind:logical_failure,\n                                               message:\"repair handler failed\"})\n              )),\n          Exception,\n          repair_handler_exception(Exception, Outcome)).\n"
+          new = "repair_handler_call(Handler,\n                    Observation,\n                    Attempt,\n                    Plan,\n                    Options,\n                    Start,\n                    OriginalBudget,\n                    Outcome) :-\n    outcome_limits(Options, Limits),\n    remaining_wall_time(Start,\n                        OriginalBudget.time_limit,\n                        RemainingTime),\n    CallbackLimit is min(Limits.repair_time_limit, RemainingTime),\n    (   CallbackLimit =< 0\n    ->  Outcome = error(repair_error{kind:timeout,\n                                     message:\"repair loop wall-time budget exhausted\"})\n    ;   catch(call_with_time_limit(\n                  CallbackLimit,\n                  ( call(Handler,\n                         Observation,\n                         Attempt,\n                         Plan,\n                         RepairedPlan)\n                  -> Outcome = ok(RepairedPlan)\n                  ;  Outcome = error(repair_error{kind:logical_failure,\n                                                   message:\"repair handler failed\"})\n                  )),\n              Exception,\n              repair_handler_exception(Exception, Outcome))\n    ).\n"
           if old not in text:
               raise SystemExit("repair handler definition context missing")
           text = text.replace(old, new, 1)
 
-          marker = """continue_after_repair(error(RepairError),
-                      Current,
-                      Attempt,
-                      _, _, _, _, _, _, _, History0,
-                      Outcome) :-
-    !,
-"""
-          special = """continue_after_repair(error(RepairError),
-                      Current,
-                      Attempt,
-                      _, _, _, _, _, _, _, History0,
-                      Outcome) :-
-    is_dict(RepairError),
-    get_dict(kind, RepairError, timeout),
-    !,
-    Event = repair_event{attempt:Attempt,
-                         status:repair_failed,
-                         diagnostic:Current.status,
-                         error:RepairError},
-    reverse([Event|History0], History),
-    put_dict(_{status:timeout,
-               phase:repair,
-               error:RepairError,
-               repair:repair_summary{attempts:Attempt,
-                                     history:History}},
-             Current,
-             Outcome).
-continue_after_repair(error(RepairError),
-                      Current,
-                      Attempt,
-                      _, _, _, _, _, _, _, History0,
-                      Outcome) :-
-    !,
-"""
+          marker = "continue_after_repair(error(RepairError),\n                      Current,\n                      Attempt,\n                      _, _, _, _, _, _, _, History0,\n                      Outcome) :-\n    !,\n"
+          special = "continue_after_repair(error(RepairError),\n                      Current,\n                      Attempt,\n                      _, _, _, _, _, _, _, History0,\n                      Outcome) :-\n    is_dict(RepairError),\n    get_dict(kind, RepairError, timeout),\n    !,\n    Event = repair_event{attempt:Attempt,\n                         status:repair_failed,\n                         diagnostic:Current.status,\n                         error:RepairError},\n    reverse([Event|History0], History),\n    put_dict(_{status:timeout,\n               phase:repair,\n               error:RepairError,\n               repair:repair_summary{attempts:Attempt,\n                                     history:History}},\n             Current,\n             Outcome).\ncontinue_after_repair(error(RepairError),\n                      Current,\n                      Attempt,\n                      _, _, _, _, _, _, _, History0,\n                      Outcome) :-\n    !,\n"
           if marker not in text:
               raise SystemExit("repair failure continuation context missing")
           text = text.replace(marker, special, 1)
