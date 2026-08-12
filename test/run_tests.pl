@@ -7,6 +7,9 @@
 :- consult(rlm_chain_message_metadata_test).
 :- consult(rlm_chain_control_test).
 :- consult(rlm_stream_canonical_test).
+:- consult(rlm_mcp_model_test).
+:- consult(rlm_mcp_2025_test).
+:- consult(rlm_mcp_runtime_test).
 :- consult(rlm_context_test).
 :- consult(rlm_plan_test).
 :- consult(rlm_tool_test).
