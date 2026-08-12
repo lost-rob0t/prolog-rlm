@@ -1,0 +1,125 @@
+name: Issue 9 hardening patch
+
+on:
+  push:
+    branches:
+      - feature/issue-9-rlm-completion
+    paths:
+      - .github/workflows/issue9-hardening-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/issue-9-rlm-completion
+          fetch-depth: 0
+
+      - name: Apply reviewed runtime hardening
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f"expected patch context missing: {path}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "prolog/rlm_completion.pl",
+              """    term_hash(Response, Hash),
+    format(atom(Id), 'model_~d', [Hash]),
+""",
+              """    term_string(Response, StableText,
+                [quoted(true), numbervars(true)]),
+    term_hash(StableText, Hash),
+    format(atom(Id), 'model_~d', [Hash]),
+""")
+
+          replace_once(
+              "prolog/rlm_completion.pl",
+              """validate_child_step_capabilities(ChildCapabilities, parallel(Plans, _)) :-
+    !,
+    maplist(validate_child_plan_caps(ChildCapabilities), Plans).
+validate_child_step_capabilities(ChildCapabilities, retry(_, Plan, _)) :-
+    !,
+    validate_child_plan_caps(ChildCapabilities, Plan).
+validate_child_step_capabilities(_, _).
+
+validate_child_plan_caps(ChildCapabilities, Plan) :-
+    validate_plan_capabilities_only(Plan, ChildCapabilities).
+""",
+              """validate_child_step_capabilities(ChildCapabilities, parallel(Plans, _)) :-
+    !,
+    maplist(scan_child_capability_plan(ChildCapabilities), Plans).
+validate_child_step_capabilities(ChildCapabilities, retry(_, Plan, _)) :-
+    !,
+    scan_child_capability_plan(ChildCapabilities, Plan).
+validate_child_step_capabilities(_, _).
+
+scan_child_capability_plan(ChildCapabilities, plan(Steps)) :-
+    maplist(validate_child_step_capabilities(ChildCapabilities), Steps).
+
+validate_child_plan_caps(ChildCapabilities, Plan) :-
+    validate_plan_capabilities_only(Plan, ChildCapabilities).
+""")
+
+          replace_once(
+              "prolog/rlm_openai_compatible.pl",
+              """    catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),
+          Exception,
+          true),
+""",
+              """    catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),
+          Exception,
+          transport_exception_handler(Exception)),
+""")
+
+          replace_once(
+              "prolog/rlm_openai_compatible.pl",
+              """http_options(none, Timeout, Status,
+""",
+              """transport_exception_handler(error(rlm_cancelled(Token), Context)) :-
+    !,
+    throw(error(rlm_cancelled(Token), Context)).
+transport_exception_handler(time_limit_exceeded) :-
+    !,
+    throw(time_limit_exceeded).
+transport_exception_handler(time_limit_exceeded(Context)) :-
+    !,
+    throw(time_limit_exceeded(Context)).
+transport_exception_handler(_).
+
+http_options(none, Timeout, Status,
+""")
+
+          replace_once(
+              "prolog/rlm_plan.pl",
+              """execution_exception(plan_execution(Fault), error(Error)) :-
+    !,
+    execution_fault(Fault, Error).
+execution_exception(Exception, error(Error)) :-
+""",
+              """execution_exception(plan_execution(Fault), error(Error)) :-
+    !,
+    execution_fault(Fault, Error).
+execution_exception(error(rlm_cancelled(Token), Context), _) :-
+    !,
+    throw(error(rlm_cancelled(Token), Context)).
+execution_exception(Exception, error(Error)) :-
+""")
+
+      - name: Commit hardening
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add prolog/rlm_completion.pl prolog/rlm_openai_compatible.pl prolog/rlm_plan.pl
+          git diff --cached --check
+          git commit -m "Harden recursive authority and cancellation for #9"
+          git push origin HEAD:feature/issue-9-rlm-completion
