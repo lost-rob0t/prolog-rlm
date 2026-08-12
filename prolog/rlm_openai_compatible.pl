@@ -124,6 +124,7 @@ http_status(Status, Status) :-
     integer(Status),
     !.
 http_status(Options, Status) :-
+    is_list(Options),
     memberchk(status_code(Status), Options),
     !.
 http_status(_, unknown).
@@ -277,7 +278,7 @@ request_payload(Request, RequestedModel, Outcome) :-
     validate_request(Request, Validation),
     (   Validation = error(Error)
     ->  Outcome = error(Error)
-    ;   Request = model_request{messages:Messages0},
+    ;   get_dict(messages, Request, Messages0),
         maplist(message_payload, Messages0, Messages),
         request_options(Request, RequestOptions),
         allowed_generation_options(RequestOptions, GenerationOptions),
@@ -377,7 +378,7 @@ resolve_credential(_, none, ok(none)) :-
     !.
 resolve_credential(Provider, env(Name), Outcome) :-
     !,
-    (   getenv(Name, Key), Key \== ''
+    (   getenv(Name, Key), Key \== '', Key \== ""
     ->  Outcome = ok(Key)
     ;   format(string(Message), "credential environment variable ~w is not configured", [Name]),
         Outcome = error(provider_error{provider:Provider,
@@ -394,7 +395,7 @@ resolve_credential(Provider, _,
                                         response_received:false})).
 
 config_value(Key, Config, Default, Value) :-
-    (   memberchk(Entry, Config),
+    (   member(Entry, Config),
         Entry =.. [Key, Found]
     ->  Value = Found
     ;   Value = Default
