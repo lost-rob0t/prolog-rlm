@@ -1,6 +1,7 @@
 :- begin_tests(rlm_agent).
 
 :- use_module('../prolog/rlm_agent').
+:- use_module('../prolog/rlm_plan').
 
 worker_handler(work(echo, Value), Value).
 worker_handler(work(block, Seconds), done) :-
@@ -180,6 +181,72 @@ trace_bound_case(Runtime) :-
     assertion(Count =< 5),
     last(Trace, Last),
     assertion(Last.type == message_processed).
+
+test(typed_spawn_agent_term_executes_through_closed_tool) :-
+    with_runtime([root_capabilities([tool(spawn_agent), tool(read)])],
+                 typed_spawn_term_case).
+
+typed_spawn_term_case(Runtime) :-
+    agent_spawn(Runtime,
+                none,
+                agent_spec(root),
+                [tool(spawn_agent), tool(read)],
+                ok(Root)),
+    Plan = plan([
+        spawn_agent(agent_spec(child), [tool(read)], child),
+        final(var(child))
+    ]),
+    Caps = [tool(spawn_agent), tool(read)],
+    Options = [tools([tool(spawn_agent,
+                           rlm_agent:agent_tool_handler(Runtime, Root))])],
+    plan_run(Plan, Caps, Options, _{}, ok(Result)),
+    Result.value = Child,
+    Child = agent(_),
+    agent_status(Runtime, Child, ok(Status)),
+    assertion(Status.capabilities == [tool(read)]),
+    agent_children(Runtime, Root, Children),
+    assertion(Children == [Child]).
+
+test(typed_spawn_agent_json_normalizes_and_executes) :-
+    with_runtime([root_capabilities([tool(spawn_agent), tool(read)])],
+                 typed_spawn_json_case).
+
+typed_spawn_json_case(Runtime) :-
+    agent_spawn(Runtime,
+                none,
+                agent_spec(root),
+                [tool(spawn_agent), tool(read)],
+                ok(Root)),
+    Json = "{\"steps\":[{\"op\":\"spawn_agent\",\"spec\":{\"name\":\"json_child\",\"mode\":\"worker\",\"metadata\":{}},\"capabilities\":[{\"type\":\"tool\",\"name\":\"read\"}],\"bind\":\"child\"},{\"op\":\"final\",\"value\":{\"ref\":\"var\",\"name\":\"child\"}}]}",
+    Caps = [tool(spawn_agent), tool(read)],
+    Options = [tools([tool(spawn_agent,
+                           rlm_agent:agent_tool_handler(Runtime, Root))])],
+    plan_run(Json, Caps, Options, _{}, ok(Result)),
+    Result.value = Child,
+    agent_status(Runtime, Child, ok(Status)),
+    assertion(Status.capabilities == [tool(read)]),
+    assertion(Status.spec.name == json_child).
+
+test(spawn_agent_capability_denied_before_child_side_effect) :-
+    with_runtime([root_capabilities([tool(spawn_agent), tool(read)])],
+                 spawn_capability_denied_case).
+
+spawn_capability_denied_case(Runtime) :-
+    agent_spawn(Runtime,
+                none,
+                agent_spec(root),
+                [tool(spawn_agent), tool(read)],
+                ok(Root)),
+    Plan = plan([
+        spawn_agent(agent_spec(child), [tool(read)], child),
+        final(var(child))
+    ]),
+    Options = [tools([tool(spawn_agent,
+                           rlm_agent:agent_tool_handler(Runtime, Root))])],
+    plan_run(Plan, [tool(read)], Options, _{}, error(Error)),
+    assertion(Error.kind == capability_denied),
+    agent_children(Runtime, Root, Children),
+    assertion(Children == []).
 
 with_runtime(Options, Goal) :-
     setup_call_cleanup(
