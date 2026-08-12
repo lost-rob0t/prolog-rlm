@@ -6,9 +6,9 @@
 
 /** <module> Provider-neutral chain orchestration
 
-This module does not import provider transports.  The public `rlm_chain`
-facade injects trusted completion/stream closures, keeping retries, middleware,
-routing, schemas, tracing and usage independent of provider-specific code.
+This module owns provider routing, ordered middleware, bounded retries,
+structured-output validation, usage aggregation, tracing, and streaming
+orchestration. Provider-specific transports are injected by `rlm_chain`.
 */
 
 :- use_module(library(option)).
@@ -38,13 +38,18 @@ chain_invoke_guarded(ProviderSpec, Request0, Options, Transport, Outcome) :-
     require_callable(Transport, transport),
     runtime_config(Options, Config),
     normalize_chain_request(Request0, Request1),
+    message_count(Request1, MessageCount),
     trace_empty(Trace0),
     emit_trace(Config,
                request_normalized,
-               _{message_count:Config.message_count},
+               _{message_count:MessageCount},
                Trace0,
                Trace1),
-    run_request_middleware(Config, Request1, Trace1, RequestOutcome, Trace2),
+    run_request_middleware(Config,
+                           Request1,
+                           Trace1,
+                           RequestOutcome,
+                           Trace2),
     after_request_middleware(RequestOutcome,
                              ProviderSpec,
                              Config,
@@ -58,14 +63,20 @@ after_request_middleware(error(Error), _, _, _, Trace, error(ChainError)) :-
 after_request_middleware(ok(Request0), ProviderSpec, Config, Transport, Trace0,
                          Outcome) :-
     normalize_chain_request(Request0, Request),
-    select_provider(ProviderSpec, Request, Config, Trace0, RouteOutcome, Trace1),
+    select_provider(ProviderSpec,
+                    Request,
+                    Config,
+                    Trace0,
+                    RouteOutcome,
+                    Trace1),
     (   RouteOutcome = ok(Provider)
-    ->  invoke_attempt(1,
+    ->  usage_zero(Usage0),
+        invoke_attempt(1,
                        Provider,
                        Request,
                        Config,
                        Transport,
-                       usage_zero,
+                       Usage0,
                        Trace1,
                        Outcome)
     ;   RouteOutcome = error(Error),
@@ -131,11 +142,13 @@ handle_provider_outcome(ok(Response0),
                         UsageAcc0,
                         Trace0,
                         Outcome) :-
+    !,
     response_usage(Response0, AttemptUsage),
     usage_add(UsageAcc0, AttemptUsage, UsageAcc),
     emit_trace(Config,
                provider_response,
-               _{attempt:Attempt, provider:Provider,
+               _{attempt:Attempt,
+                 provider:Provider,
                  usage:AttemptUsage},
                Trace0,
                Trace1),
@@ -155,8 +168,7 @@ handle_provider_outcome(ok(Response0),
                               UsageAcc,
                               Trace2,
                               Outcome).
-
-handle_provider_outcome(Outcome,
+handle_provider_outcome(Other,
                         Attempt,
                         Provider,
                         _, _, _, _, Trace,
@@ -165,7 +177,7 @@ handle_provider_outcome(Outcome,
                          kind:invalid_transport_outcome,
                          attempt:Attempt,
                          provider:Provider,
-                         detail:Outcome,
+                         detail:Other,
                          message:"transport must return ok(Response) or error(Error)"},
     error_with_trace(Error0, Trace, Error).
 
@@ -191,9 +203,8 @@ after_response_middleware(ok(Response0),
                              ToolOutcome,
                              Trace1),
     (   ToolOutcome = ok(Response)
-    ->  structured_response(Config.schema,
-                            Response,
-                            StructuredOutcome),
+    ->  config_schema(Config, Schema),
+        structured_response(Schema, Response, StructuredOutcome),
         handle_structured_outcome(StructuredOutcome,
                                   Response,
                                   Attempt,
@@ -275,7 +286,7 @@ retry_or_fail(Kind,
               UsageAcc,
               Trace0,
               Outcome) :-
-    Policy = Config.retry_policy,
+    config_retry_policy(Config, Policy),
     (   retry_allowed(Kind, Attempt, Policy)
     ->  retry_delay(Attempt, Policy, Delay),
         NextAttempt is Attempt+1,
@@ -287,7 +298,8 @@ retry_or_fail(Kind,
                      delay:Delay},
                    Trace0,
                    Trace1),
-        call_sleep(Config.sleep_handler, Delay),
+        config_sleep_handler(Config, SleepHandler),
+        call_sleep(SleepHandler, Delay),
         invoke_attempt(NextAttempt,
                        Provider,
                        Request,
@@ -308,13 +320,18 @@ retry_or_fail(Kind,
     ).
 
 retry_allowed(Kind, Attempt, Policy) :-
-    Attempt < Policy.max_attempts,
-    memberchk(Kind, Policy.retry_kinds).
+    get_dict(max_attempts, Policy, MaxAttempts),
+    get_dict(retry_kinds, Policy, RetryKinds),
+    Attempt < MaxAttempts,
+    memberchk(Kind, RetryKinds).
 
 retry_delay(Attempt, Policy, Delay) :-
-    Multiplier is 2 ** max(0, Attempt-1),
-    Raw is Policy.base_delay*Multiplier,
-    Delay is min(Raw, Policy.max_delay).
+    get_dict(base_delay, Policy, BaseDelay),
+    get_dict(max_delay, Policy, MaxDelay),
+    Exponent is max(0, Attempt-1),
+    Multiplier is 2 ** Exponent,
+    Raw is BaseDelay*Multiplier,
+    Delay is min(Raw, MaxDelay).
 
 /* -------------------------------------------------------------------------
  * Streaming invocation
@@ -346,13 +363,18 @@ chain_stream_guarded(ProviderSpec,
     require_callable(EventHandler, stream_event_handler),
     runtime_config(Options, Config),
     normalize_chain_request(Request0, Request1),
+    message_count(Request1, MessageCount),
     trace_empty(Trace0),
     emit_trace(Config,
                request_normalized,
-               _{message_count:Config.message_count, streaming:true},
+               _{message_count:MessageCount, streaming:true},
                Trace0,
                Trace1),
-    run_request_middleware(Config, Request1, Trace1, RequestOutcome, Trace2),
+    run_request_middleware(Config,
+                           Request1,
+                           Trace1,
+                           RequestOutcome,
+                           Trace2),
     (   RequestOutcome = ok(Request0M)
     ->  normalize_chain_request(Request0M, Request),
         select_provider(ProviderSpec,
@@ -406,9 +428,11 @@ stream_transport_outcome(error(Error), Provider, _, _, Trace,
     error_with_trace(Error0, Trace, ChainError).
 stream_transport_outcome(ok(StreamResult0), Provider, Request, Config, Trace0,
                          Outcome) :-
+    !,
     (   is_dict(StreamResult0),
         get_dict(response, StreamResult0, Response0),
-        get_dict(events, StreamResult0, Events)
+        get_dict(events, StreamResult0, Events),
+        is_list(Events)
     ->  true
     ;   throw(chain_runtime_fault(stream,
                                   invalid_stream_result(StreamResult0)))
@@ -454,7 +478,8 @@ stream_after_tool_middleware(error(Error), _, _, _, _, Trace,
     error_with_trace(Error, Trace, ChainError).
 stream_after_tool_middleware(ok(Response), Events, Provider, Request, Config,
                              Trace0, Outcome) :-
-    structured_response(Config.schema, Response, StructuredOutcome),
+    config_schema(Config, Schema),
+    structured_response(Schema, Response, StructuredOutcome),
     (   StructuredOutcome = ok(Structured)
     ->  response_usage(Response, Usage),
         Completion0 = chain_completion{provider:Provider,
@@ -505,7 +530,7 @@ stream_complete(ok(Completion), Events, Provider, Usage, Config, Trace0,
     put_dict(stream_events, Result0, Events, Result).
 
 /* -------------------------------------------------------------------------
- * Request normalization / routing
+ * Request normalization and trusted routing
  * ---------------------------------------------------------------------- */
 
 normalize_chain_request(Request0, Request) :-
@@ -519,78 +544,154 @@ normalize_chain_request(Request0, Request) :-
     ),
     messages_normalize(Messages0, MessagesOutcome),
     require_schema_success(MessagesOutcome, Messages),
-    dict_default(Request0, options, _{}, GenerationOptions),
-    (   is_dict(GenerationOptions), ground(GenerationOptions)
+    (   Messages == []
+    ->  throw(chain_runtime_fault(request, empty_messages))
+    ;   true
+    ),
+    dict_default(Request0, options, chain_options{}, GenerationOptions0),
+    canonical_generation_options(GenerationOptions0, GenerationOptions),
+    (   ground(GenerationOptions)
     ->  true
     ;   throw(chain_runtime_fault(request,
-                                  invalid_generation_options(GenerationOptions)))
+                                  invalid_generation_options(GenerationOptions0)))
     ),
     Request = model_request{messages:Messages,
                             options:GenerationOptions}.
 
-select_provider(provider(Name, Config), _, Config0, Trace0,
-                ok(provider(Name, Config)), Trace) :-
+canonical_generation_options(Options0, Options) :-
+    (   is_dict(Options0)
+    ->  canonical_generation_value(Options0, Options)
+    ;   throw(chain_runtime_fault(request,
+                                  invalid_generation_options(Options0)))
+    ).
+
+canonical_generation_value(Value0, Value) :-
+    is_dict(Value0),
     !,
-    emit_trace(Config0,
-               route_selected,
-               _{provider:provider(Name, Config), mode:direct},
-               Trace0,
-               Trace).
+    dict_pairs(Value0, _, Pairs0),
+    maplist(canonical_generation_pair, Pairs0, Pairs),
+    dict_pairs(Value, chain_options, Pairs).
+canonical_generation_value(Values0, Values) :-
+    is_list(Values0),
+    !,
+    maplist(canonical_generation_value, Values0, Values).
+canonical_generation_value(Value, Value).
+
+canonical_generation_pair(Key-Value0, Key-Value) :-
+    canonical_generation_value(Value0, Value).
+
+message_count(Request, Count) :-
+    get_dict(messages, Request, Messages),
+    length(Messages, Count).
+
+select_provider(provider(Name, ProviderConfig), _, Config, Trace0,
+                Outcome, Trace) :-
+    !,
+    (   valid_provider(provider(Name, ProviderConfig))
+    ->  Provider = provider(Name, ProviderConfig),
+        Outcome = ok(Provider),
+        emit_trace(Config,
+                   route_selected,
+                   _{provider:Provider, mode:direct},
+                   Trace0,
+                   Trace)
+    ;   Outcome = error(chain_error{phase:route,
+                                    kind:invalid_provider_spec,
+                                    provider:provider(Name, ProviderConfig),
+                                    message:"provider configuration must be ground provider(Name, Config)"}),
+        Trace = Trace0
+    ).
 select_provider(route(Candidates), Request, Config, Trace0, Outcome, Trace) :-
     !,
-    (   is_list(Candidates), Candidates \== []
+    (   valid_candidates(Candidates)
     ->  true
-    ;   throw(chain_runtime_fault(route, invalid_candidates(Candidates)))
+    ;   Outcome = error(chain_error{phase:route,
+                                    kind:invalid_candidates,
+                                    candidates:Candidates,
+                                    message:"route candidates must be a non-empty list of ground providers"}),
+        Trace = Trace0
     ),
-    (   Config.router == none
-    ->  throw(chain_runtime_fault(route, missing_router))
-    ;   true
-    ),
-    catch(( call(Config.router, Request, Candidates, Selected)
-          -> true
-          ;  throw(chain_runtime_fault(route, router_failed))
-          ),
-          Exception,
-          route_exception(Exception, Outcome)),
-    (   var(Outcome)
-    ->  (   memberchk(Selected, Candidates)
-        ->  Outcome = ok(Selected),
-            emit_trace(Config,
-                       route_selected,
-                       _{provider:Selected, mode:router},
-                       Trace0,
-                       Trace)
-        ;   Outcome = error(chain_error{phase:route,
-                                        kind:invalid_route_selection,
-                                        selected:Selected,
-                                        candidates:Candidates,
-                                        message:"router selected a provider outside the declared candidates"}),
+    (   nonvar(Outcome)
+    ->  true
+    ;   config_router(Config, Router),
+        (   Router == none
+        ->  Outcome = error(chain_error{phase:route,
+                                        kind:missing_router,
+                                        message:"route(Candidates) requires router(Closure)"}),
             Trace = Trace0
+        ;   call_router(Router,
+                        Request,
+                        Candidates,
+                        Selected,
+                        RouterOutcome),
+            finish_route_selection(RouterOutcome,
+                                   Selected,
+                                   Candidates,
+                                   Config,
+                                   Trace0,
+                                   Outcome,
+                                   Trace)
         )
-    ;   Trace = Trace0
     ).
-select_provider(Provider, _, _, Trace,
+select_provider(ProviderSpec, _, _, Trace,
                 error(chain_error{phase:route,
                                   kind:invalid_provider_spec,
-                                  provider:Provider,
+                                  provider:ProviderSpec,
                                   message:"provider spec must be provider(Name,Config) or route(Candidates)"}),
                 Trace).
 
-route_exception(chain_runtime_fault(Phase, Detail),
-                error(chain_error{phase:Phase,
-                                  kind:router_error,
-                                  detail:Detail,
-                                  message:"provider router failed"})) :-
-    !.
-route_exception(Exception,
-                error(chain_error{phase:route,
-                                  kind:router_exception,
-                                  exception:Safe,
-                                  message:"provider router raised an exception"})) :-
+valid_provider(provider(Name, ProviderConfig)) :-
+    nonvar(Name),
+    ground(ProviderConfig).
+
+valid_candidates(Candidates) :-
+    is_list(Candidates),
+    Candidates \== [],
+    maplist(valid_provider, Candidates).
+
+call_router(Router, Request, Candidates, Selected, Outcome) :-
+    catch(( call(Router, Request, Candidates, Selected)
+          -> Outcome = ok
+          ;  Outcome = error(chain_error{phase:route,
+                                         kind:router_failed,
+                                         message:"provider router predicate failed"})
+          ),
+          Exception,
+          router_exception(Exception, Outcome)).
+
+router_exception(Exception, _) :-
+    control_exception(Exception),
+    !,
+    throw(Exception).
+router_exception(Exception,
+                 error(chain_error{phase:route,
+                                   kind:router_exception,
+                                   exception:Safe,
+                                   message:"provider router raised an exception"})) :-
     safe_exception(Exception, Safe).
 
+finish_route_selection(error(Error), _, _, _, Trace,
+                       error(Error), Trace) :-
+    !.
+finish_route_selection(ok, Selected, Candidates, Config, Trace0,
+                       Outcome, Trace) :-
+    (   memberchk(Selected, Candidates)
+    ->  Outcome = ok(Selected),
+        emit_trace(Config,
+                   route_selected,
+                   _{provider:Selected, mode:router},
+                   Trace0,
+                   Trace)
+    ;   Outcome = error(chain_error{phase:route,
+                                    kind:invalid_route_selection,
+                                    selected:Selected,
+                                    candidates:Candidates,
+                                    message:"router selected a provider outside the declared candidates"}),
+        Trace = Trace0
+    ).
+
 /* -------------------------------------------------------------------------
- * Middleware
+ * Ordered middleware
  * ---------------------------------------------------------------------- */
 
 run_request_middleware(Config, Request, Trace0, Outcome, Trace) :-
@@ -598,10 +699,9 @@ run_request_middleware(Config, Request, Trace0, Outcome, Trace) :-
                             attempt:0,
                             provider:none},
     run_stage_middleware(request,
-                         Config.middleware,
+                         Config,
                          Context,
                          Request,
-                         Config,
                          Trace0,
                          Outcome,
                          Trace).
@@ -612,10 +712,9 @@ run_response_middleware(Config, Attempt, Provider, Response, Trace0,
                             attempt:Attempt,
                             provider:Provider},
     run_stage_middleware(model_response,
-                         Config.middleware,
+                         Config,
                          Context,
                          Response,
-                         Config,
                          Trace0,
                          Outcome,
                          Trace).
@@ -626,10 +725,9 @@ run_completion_middleware(Config, Attempt, Provider, Completion, Trace0,
                             attempt:Attempt,
                             provider:Provider},
     run_stage_middleware(completion,
-                         Config.middleware,
+                         Config,
                          Context,
                          Completion,
-                         Config,
                          Trace0,
                          Outcome,
                          Trace).
@@ -643,9 +741,8 @@ run_tool_call_middleware(Config, Attempt, Provider, Response0, Trace0,
                                 attempt:Attempt,
                                 provider:Provider},
         middleware_tool_calls(ToolCalls0,
-                              Config.middleware,
-                              Context,
                               Config,
+                              Context,
                               Trace0,
                               CallsOutcome,
                               Trace1),
@@ -660,35 +757,35 @@ run_tool_call_middleware(Config, Attempt, Provider, Response0, Trace0,
         Trace = Trace0
     ).
 
-middleware_tool_calls([], _, _, _, Trace, ok([]), Trace).
-middleware_tool_calls([Call0|Calls0], Middleware, Context, Config, Trace0,
+middleware_tool_calls([], _, _, Trace, ok([]), Trace).
+middleware_tool_calls([Call0|Calls0], Config, Context, Trace0,
                       Outcome, Trace) :-
     run_stage_middleware(tool_call,
-                         Middleware,
+                         Config,
                          Context,
                          Call0,
-                         Config,
                          Trace0,
                          OneOutcome,
                          Trace1),
     (   OneOutcome = ok(Call)
     ->  middleware_tool_calls(Calls0,
-                              Middleware,
-                              Context,
                               Config,
+                              Context,
                               Trace1,
                               RestOutcome,
-                              Trace),
+                              Trace2),
         (   RestOutcome = ok(Calls)
-        ->  Outcome = ok([Call|Calls])
-        ;   Outcome = RestOutcome
+        ->  Outcome = ok([Call|Calls]),
+            Trace = Trace2
+        ;   Outcome = RestOutcome,
+            Trace = Trace2
         )
     ;   Outcome = OneOutcome,
         Trace = Trace1
     ).
 
-run_stage_middleware(Stage, Middleware, Context, Input, Config, Trace0,
-                     Outcome, Trace) :-
+run_stage_middleware(Stage, Config, Context, Input, Trace0, Outcome, Trace) :-
+    config_middleware(Config, Middleware),
     stage_handlers(Stage, Middleware, Handlers),
     run_handlers(Handlers,
                  Stage,
@@ -712,15 +809,7 @@ run_handlers([Handler|Handlers], Stage, Context, Value0, Config, Trace0,
                _{stage:Stage},
                Trace0,
                Trace1),
-    catch(( call(Handler, Context, Value0, Value)
-          -> HandlerOutcome = ok(Value)
-          ;  HandlerOutcome = error(chain_error{phase:middleware,
-                                                kind:middleware_failed,
-                                                stage:Stage,
-                                                message:"middleware predicate failed"})
-          ),
-          Exception,
-          middleware_exception(Stage, Exception, HandlerOutcome)),
+    call_middleware(Handler, Stage, Context, Value0, HandlerOutcome),
     (   HandlerOutcome = ok(Value1)
     ->  emit_trace(Config,
                    middleware_completed,
@@ -739,6 +828,21 @@ run_handlers([Handler|Handlers], Stage, Context, Value0, Config, Trace0,
         Trace = Trace1
     ).
 
+call_middleware(Handler, Stage, Context, Value0, Outcome) :-
+    catch(( call(Handler, Context, Value0, Value)
+          -> Outcome = ok(Value)
+          ;  Outcome = error(chain_error{phase:middleware,
+                                         kind:middleware_failed,
+                                         stage:Stage,
+                                         message:"middleware predicate failed"})
+          ),
+          Exception,
+          middleware_exception(Stage, Exception, Outcome)).
+
+middleware_exception(_, Exception, _) :-
+    control_exception(Exception),
+    !,
+    throw(Exception).
 middleware_exception(Stage, Exception,
                      error(chain_error{phase:middleware,
                                        kind:middleware_exception,
@@ -748,10 +852,11 @@ middleware_exception(Stage, Exception,
     safe_exception(Exception, Safe).
 
 /* -------------------------------------------------------------------------
- * Structured output / response / usage
+ * Structured output, response validation, and usage
  * ---------------------------------------------------------------------- */
 
-structured_response(none, _, ok(none)) :- !.
+structured_response(none, _, ok(none)) :-
+    !.
 structured_response(Schema, Response, Outcome) :-
     (   get_dict(text, Response, Text),
         nonempty_text(Text)
@@ -769,16 +874,24 @@ validate_response_shape(Response, _) :-
     throw(chain_runtime_fault(provider, invalid_response(Response))).
 
 completion_result(Completion, Trace, Result) :-
-    Result = chain_result{provider:Completion.provider,
-                          request:Completion.request,
-                          response:Completion.response,
-                          structured:Completion.structured,
-                          attempts:Completion.attempts,
-                          usage:Completion.usage,
+    get_dict(provider, Completion, Provider),
+    get_dict(request, Completion, Request),
+    get_dict(response, Completion, Response),
+    get_dict(structured, Completion, Structured),
+    get_dict(attempts, Completion, Attempts),
+    get_dict(usage, Completion, Usage),
+    Result = chain_result{provider:Provider,
+                          request:Request,
+                          response:Response,
+                          structured:Structured,
+                          attempts:Attempts,
+                          usage:Usage,
                           trace:Trace}.
 
 response_usage(Response, Usage) :-
-    (   get_dict(usage, Response, Usage0), is_dict(Usage0)
+    (   is_dict(Response),
+        get_dict(usage, Response, Usage0),
+        is_dict(Usage0)
     ->  usage_value(Usage0, prompt_tokens, Prompt),
         usage_value(Usage0, completion_tokens, Completion),
         usage_value(Usage0, total_tokens, Total),
@@ -795,12 +908,19 @@ usage_zero(chain_usage{prompt_tokens:0,
                        total_tokens:0,
                        cost:0.0}).
 
-usage_add(usage_zero, Usage, Usage) :- !.
 usage_add(A, B, Usage) :-
-    Prompt is A.prompt_tokens+B.prompt_tokens,
-    Completion is A.completion_tokens+B.completion_tokens,
-    Total is A.total_tokens+B.total_tokens,
-    Cost is A.cost+B.cost,
+    get_dict(prompt_tokens, A, APrompt),
+    get_dict(completion_tokens, A, ACompletion),
+    get_dict(total_tokens, A, ATotal),
+    get_dict(cost, A, ACost),
+    get_dict(prompt_tokens, B, BPrompt),
+    get_dict(completion_tokens, B, BCompletion),
+    get_dict(total_tokens, B, BTotal),
+    get_dict(cost, B, BCost),
+    Prompt is APrompt+BPrompt,
+    Completion is ACompletion+BCompletion,
+    Total is ATotal+BTotal,
+    Cost is ACost+BCost,
     Usage = chain_usage{prompt_tokens:Prompt,
                         completion_tokens:Completion,
                         total_tokens:Total,
@@ -821,23 +941,42 @@ usage_value(Dict, Key, Value) :-
 trace_empty(trace_state{sequence:0, reversed:[]}).
 
 emit_trace(Config, Type, Fields0, Trace0, Trace) :-
-    Sequence is Trace0.sequence+1,
+    get_dict(sequence, Trace0, Previous),
+    Sequence is Previous+1,
     canonical_trace_value(Fields0, Fields),
     Event = chain_event{sequence:Sequence,
                         type:Type,
                         fields:Fields},
-    call_trace_handler(Config.trace_handler, Event),
+    config_trace_handler(Config, TraceHandler),
+    call_trace_handler(TraceHandler, Event),
+    get_dict(reversed, Trace0, Reversed),
     Trace = trace_state{sequence:Sequence,
-                        reversed:[Event|Trace0.reversed]}.
+                        reversed:[Event|Reversed]}.
 
-trace_events(Trace, Events) :- reverse(Trace.reversed, Events).
+trace_events(Trace, Events) :-
+    get_dict(reversed, Trace, Reversed),
+    reverse(Reversed, Events).
 
-call_trace_handler(none, _) :- !.
+call_trace_handler(none, _) :-
+    !.
 call_trace_handler(Handler, Event) :-
-    (   call(Handler, Event)
-    ->  true
-    ;   throw(chain_runtime_fault(trace, trace_handler_failed))
-    ).
+    catch(( call(Handler, Event)
+          -> true
+          ;  throw(chain_runtime_fault(trace, trace_handler_failed))
+          ),
+          Exception,
+          trace_handler_exception(Exception)).
+
+trace_handler_exception(Exception) :-
+    control_exception(Exception),
+    !,
+    throw(Exception).
+trace_handler_exception(chain_runtime_fault(Phase, Detail)) :-
+    !,
+    throw(chain_runtime_fault(Phase, Detail)).
+trace_handler_exception(Exception) :-
+    safe_exception(Exception, Safe),
+    throw(chain_runtime_fault(trace, trace_handler_exception(Safe))).
 
 canonical_trace_value(Value0, Value) :-
     is_dict(Value0),
@@ -870,7 +1009,7 @@ error_with_trace(Error0, Trace, Error) :-
     ).
 
 /* -------------------------------------------------------------------------
- * Config / trusted closures
+ * Configuration and trusted closures
  * ---------------------------------------------------------------------- */
 
 runtime_config(Options, Config) :-
@@ -884,16 +1023,16 @@ runtime_config(Options, Config) :-
     compile_optional_schema(Schema0, Schema),
     option(trace_handler(TraceHandler), Options, none),
     require_optional_callable(TraceHandler, trace_handler),
-    option(sleep_handler(SleepHandler), Options, rlm_chain_runtime:default_sleep),
+    option(sleep_handler(SleepHandler),
+           Options,
+           rlm_chain_runtime:default_sleep),
     require_callable(SleepHandler, sleep_handler),
-    Config0 = chain_config{retry_policy:Policy,
-                           middleware:Middleware,
-                           router:Router,
-                           schema:Schema,
-                           trace_handler:TraceHandler,
-                           sleep_handler:SleepHandler,
-                           message_count:0},
-    Config = Config0.
+    Config = chain_config{retry_policy:Policy,
+                          middleware:Middleware,
+                          router:Router,
+                          schema:Schema,
+                          trace_handler:TraceHandler,
+                          sleep_handler:SleepHandler}.
 
 normalize_retry_policy(default, Policy) :-
     !,
@@ -902,17 +1041,23 @@ normalize_retry_policy(Policy0, Policy) :-
     is_dict(Policy0),
     !,
     default_retry_policy(Default),
-    dict_default(Policy0, max_attempts, Default.max_attempts, MaxAttempts),
-    dict_default(Policy0, base_delay, Default.base_delay, BaseDelay),
-    dict_default(Policy0, max_delay, Default.max_delay, MaxDelay),
-    dict_default(Policy0, retry_kinds, Default.retry_kinds, RetryKinds),
+    dict_default(Policy0, max_attempts, 1, MaxAttempts0),
+    dict_default(Default, max_attempts, 1, DefaultMaxAttempts),
+    ( MaxAttempts0 == 1 -> MaxAttempts = DefaultMaxAttempts ; MaxAttempts = MaxAttempts0 ),
+    get_dict(base_delay, Default, DefaultBaseDelay),
+    get_dict(max_delay, Default, DefaultMaxDelay),
+    get_dict(retry_kinds, Default, DefaultRetryKinds),
+    dict_default(Policy0, base_delay, DefaultBaseDelay, BaseDelay),
+    dict_default(Policy0, max_delay, DefaultMaxDelay, MaxDelay),
+    dict_default(Policy0, retry_kinds, DefaultRetryKinds, RetryKinds),
     require_positive_integer(MaxAttempts, max_attempts),
     require_nonnegative_number(BaseDelay, base_delay),
     require_nonnegative_number(MaxDelay, max_delay),
     (   MaxDelay >= BaseDelay
     ->  true
     ;   throw(chain_runtime_fault(config,
-                                  max_delay_below_base_delay(MaxDelay, BaseDelay)))
+                                  max_delay_below_base_delay(MaxDelay,
+                                                            BaseDelay)))
     ),
     normalize_retry_kinds(RetryKinds, Kinds),
     Policy = retry_policy{max_attempts:MaxAttempts,
@@ -930,14 +1075,16 @@ normalize_retry_kinds(Kinds0, Kinds) :-
     forall(member(Kind, Kinds0),
            (   memberchk(Kind, [provider_error,structured_validation])
            ->  true
-           ;   throw(chain_runtime_fault(config, unsupported_retry_kind(Kind)))
+           ;   throw(chain_runtime_fault(config,
+                                          unsupported_retry_kind(Kind)))
            )),
     sort(Kinds0, Kinds).
 
 normalize_middleware(Middleware0, Middleware) :-
     (   is_list(Middleware0)
     ->  true
-    ;   throw(chain_runtime_fault(config, invalid_middleware(Middleware0)))
+    ;   throw(chain_runtime_fault(config,
+                                  invalid_middleware(Middleware0)))
     ),
     maplist(validate_middleware, Middleware0),
     Middleware = Middleware0.
@@ -947,12 +1094,25 @@ validate_middleware(middleware(Stage, Handler)) :-
     callable(Handler),
     !.
 validate_middleware(Middleware) :-
-    throw(chain_runtime_fault(config, invalid_middleware_entry(Middleware))).
+    throw(chain_runtime_fault(config,
+                              invalid_middleware_entry(Middleware))).
 
-compile_optional_schema(none, none) :- !.
+compile_optional_schema(none, none) :-
+    !.
 compile_optional_schema(Spec, Schema) :-
     structured_schema_compile(Spec, Outcome),
     require_schema_success(Outcome, Schema).
+
+config_retry_policy(Config, Value) :- get_dict(retry_policy, Config, Value).
+config_middleware(Config, Value) :- get_dict(middleware, Config, Value).
+config_router(Config, Value) :- get_dict(router, Config, Value).
+config_schema(Config, Value) :- get_dict(schema, Config, Value).
+config_trace_handler(Config, Value) :- get_dict(trace_handler, Config, Value).
+config_sleep_handler(Config, Value) :- get_dict(sleep_handler, Config, Value).
+
+/* -------------------------------------------------------------------------
+ * Transport, sleep, and control exceptions
+ * ---------------------------------------------------------------------- */
 
 call_transport(Transport, Provider, Request, Outcome) :-
     catch(( call(Transport, Provider, Request, Raw)
@@ -974,6 +1134,10 @@ call_stream_transport(Transport, Provider, Request, Handler, Outcome) :-
           Exception,
           transport_exception(Exception, Outcome)).
 
+transport_exception(Exception, _) :-
+    control_exception(Exception),
+    !,
+    throw(Exception).
 transport_exception(Exception,
                     error(chain_error{phase:provider,
                                       kind:transport_exception,
@@ -981,41 +1145,90 @@ transport_exception(Exception,
                                       message:"transport predicate raised an exception"})) :-
     safe_exception(Exception, Safe).
 
-call_sleep(_, Delay) :- Delay =< 0, !.
-call_sleep(Handler, Delay) :- call(Handler, Delay).
+call_sleep(_, Delay) :-
+    Delay =< 0,
+    !.
+call_sleep(Handler, Delay) :-
+    catch(call(Handler, Delay),
+          Exception,
+          sleep_exception(Exception)).
+
+sleep_exception(Exception) :-
+    control_exception(Exception),
+    !,
+    throw(Exception).
+sleep_exception(Exception) :-
+    safe_exception(Exception, Safe),
+    throw(chain_runtime_fault(retry, sleep_handler_exception(Safe))).
 
 default_sleep(Delay) :- sleep(Delay).
 
+control_exception(time_limit_exceeded).
+control_exception(time_limit_exceeded(_)).
+control_exception(error(time_limit_exceeded, _)).
+control_exception(error(rlm_cancelled(_), _)).
+control_exception(rlm_cancelled(_)).
+
 /* -------------------------------------------------------------------------
- * Helpers / errors
+ * Helpers and error conversion
  * ---------------------------------------------------------------------- */
 
-require_schema_success(ok(Value), Value) :- !.
-require_schema_success(error(Error), _) :- throw(chain_runtime_fault(schema, Error)).
+require_schema_success(ok(Value), Value) :-
+    !.
+require_schema_success(error(Error), _) :-
+    throw(chain_runtime_fault(schema, Error)).
 
-require_options(Options) :- is_list(Options), !.
-require_options(Options) :- throw(chain_runtime_fault(config, invalid_options(Options))).
+require_options(Options) :-
+    is_list(Options),
+    !.
+require_options(Options) :-
+    throw(chain_runtime_fault(config, invalid_options(Options))).
 
-require_callable(Value, _) :- callable(Value), !.
-require_callable(Value, Name) :- throw(chain_runtime_fault(config, invalid_callable(Name, Value))).
+require_callable(Value, _) :-
+    callable(Value),
+    !.
+require_callable(Value, Name) :-
+    throw(chain_runtime_fault(config, invalid_callable(Name, Value))).
 
-require_optional_callable(none, _) :- !.
-require_optional_callable(Value, Name) :- require_callable(Value, Name).
+require_optional_callable(none, _) :-
+    !.
+require_optional_callable(Value, Name) :-
+    require_callable(Value, Name).
 
-require_positive_integer(Value, _) :- integer(Value), Value > 0, !.
+require_positive_integer(Value, _) :-
+    integer(Value),
+    Value > 0,
+    !.
 require_positive_integer(Value, Name) :-
-    throw(chain_runtime_fault(config, invalid_positive_integer(Name, Value))).
+    throw(chain_runtime_fault(config,
+                              invalid_positive_integer(Name, Value))).
 
-require_nonnegative_number(Value, _) :- number(Value), Value >= 0, !.
+require_nonnegative_number(Value, _) :-
+    number(Value),
+    Value >= 0,
+    !.
 require_nonnegative_number(Value, Name) :-
-    throw(chain_runtime_fault(config, invalid_nonnegative_number(Name, Value))).
+    throw(chain_runtime_fault(config,
+                              invalid_nonnegative_number(Name, Value))).
 
 dict_default(Dict, Key, Default, Value) :-
-    ( get_dict(Key, Dict, Found) -> Value = Found ; Value = Default ).
+    (   get_dict(Key, Dict, Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
 
-nonempty_text(Value) :- string(Value), Value \== "", !.
-nonempty_text(Value) :- atom(Value), Value \== ''.
+nonempty_text(Value) :-
+    string(Value),
+    Value \== "",
+    !.
+nonempty_text(Value) :-
+    atom(Value),
+    Value \== ''.
 
+chain_runtime_exception(Exception, _) :-
+    control_exception(Exception),
+    !,
+    throw(Exception).
 chain_runtime_exception(chain_runtime_fault(Phase, Detail), error(Error)) :-
     !,
     Error = chain_error{phase:Phase,
