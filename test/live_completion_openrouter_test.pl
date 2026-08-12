@@ -46,7 +46,7 @@ run_live_completion_case(Registry) :-
                          max_total_tokens:12000,
                          max_cost_usd:0.25,
                          max_output_bytes:32768,
-                         time_limit:60.0})
+                         time_limit:150.0})
               ],
     rlm_completion("Execute the required depth-one RLM acceptance plan.",
                    Context,
