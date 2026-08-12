@@ -17,86 +17,101 @@ request and are never returned in provider terms, results, errors, or traces.
 :- use_module(library(http/http_ssl_plugin)).
 :- use_module(library(lists)).
 
-%!  openai_compatible_complete(+Provider, +Config, +Request, -Outcome) is det.
-%
-%   Execute one real OpenAI-compatible chat-completions request. Outcome is
-%   `ok(ModelResponse)` or `error(ProviderError)`. There is no fallback path.
-
 openai_compatible_complete(Provider, Config, Request, Outcome) :-
     provider_config(Provider, Config, ConfigOutcome),
-    (   ConfigOutcome = error(Error)
-    ->  Outcome = error(Error)
-    ;   ConfigOutcome = ok(Endpoint, Credential, RequestedModel, Timeout),
-        request_payload(Request, RequestedModel, PayloadOutcome),
-        (   PayloadOutcome = error(Error)
-        ->  Outcome = error(Error)
-        ;   PayloadOutcome = ok(Payload),
-            resolve_credential(Provider, Credential, CredentialOutcome),
-            execute_credentialed(CredentialOutcome,
-                                 Provider,
-                                 Endpoint,
-                                 RequestedModel,
-                                 Timeout,
-                                 Payload,
-                                 Outcome)
-        )
-    ).
+    complete_from_config(ConfigOutcome, Provider, Request, Outcome).
+
+complete_from_config(error(Error), _, _, error(Error)) :-
+    !.
+complete_from_config(ok(Endpoint, Credential, RequestedModel, Timeout),
+                     Provider, Request, Outcome) :-
+    request_payload(Request, RequestedModel, PayloadOutcome),
+    complete_payload(PayloadOutcome, Provider, Endpoint, Credential,
+                     RequestedModel, Timeout, Outcome).
+
+complete_payload(error(Error), _, _, _, _, _, error(Error)) :-
+    !.
+complete_payload(ok(Payload), Provider, Endpoint, Credential,
+                 RequestedModel, Timeout, Outcome) :-
+    resolve_credential(Provider, Credential, CredentialOutcome),
+    execute_credentialed(CredentialOutcome, Provider, Endpoint,
+                         RequestedModel, Timeout, Payload, Outcome).
 
 provider_config(Provider, Config, Outcome) :-
-    (   \+ is_list(Config)
-    ->  Outcome = error(provider_error{provider:Provider,
-                                       kind:configuration_error,
-                                       field:config,
-                                       message:"provider config must be a list",
-                                       response_received:false})
-    ;   config_value(endpoint, Config, none, Endpoint),
+    (   is_list(Config)
+    ->  config_value(endpoint, Config, none, Endpoint),
         config_value(model, Config, none, Model),
         config_value(credential, Config, none, Credential),
         config_value(timeout, Config, 30, Timeout),
-        validate_provider_config(Provider,
-                                 Endpoint,
-                                 Model,
-                                 Credential,
-                                 Timeout,
-                                 Outcome)
+        validate_provider_config(Provider, Endpoint, Model, Credential,
+                                 Timeout, Outcome)
+    ;   Outcome = error(provider_error{
+                            provider:Provider,
+                            kind:configuration_error,
+                            field:config,
+                            message:"provider config must be a list",
+                            response_received:false})
     ).
 
-validate_provider_config(Provider, none, _, _, _,
-                         error(provider_error{provider:Provider,
-                                              kind:configuration_error,
-                                              field:endpoint,
-                                              message:"provider endpoint is not configured",
-                                              response_received:false})) :-
-    !.
-validate_provider_config(Provider, _, none, _, _,
-                         error(provider_error{provider:Provider,
-                                              kind:configuration_error,
-                                              field:model,
-                                              message:"provider model is not configured",
-                                              response_received:false})) :-
-    !.
-validate_provider_config(Provider, _, _, Credential, _,
-                         error(provider_error{provider:Provider,
-                                              kind:configuration_error,
-                                              field:credential,
-                                              message:"credentials must use env(Name) or none",
-                                              response_received:false})) :-
+validate_provider_config(Provider, none, _, _, _, error(Error)) :-
+    !,
+    Error = provider_error{provider:Provider,
+                           kind:configuration_error,
+                           field:endpoint,
+                           message:"provider endpoint is not configured",
+                           response_received:false}.
+validate_provider_config(Provider, _, none, _, _, error(Error)) :-
+    !,
+    Error = provider_error{provider:Provider,
+                           kind:configuration_error,
+                           field:model,
+                           message:"provider model is not configured",
+                           response_received:false}.
+validate_provider_config(Provider, _, _, Credential, _, error(Error)) :-
     \+ valid_credential_spec(Credential),
-    !.
-validate_provider_config(Provider, _, _, _, Timeout,
-                         error(provider_error{provider:Provider,
-                                              kind:configuration_error,
-                                              field:timeout,
-                                              message:"timeout must be a positive number",
-                                              response_received:false})) :-
-    (\+ number(Timeout) ; Timeout =< 0),
-    !.
+    !,
+    Error = provider_error{provider:Provider,
+                           kind:configuration_error,
+                           field:credential,
+                           message:"credentials must use env(Name) or none",
+                           response_received:false}.
+validate_provider_config(Provider, _, _, _, Timeout, error(Error)) :-
+    (   \+ number(Timeout)
+    ;   Timeout =< 0
+    ),
+    !,
+    Error = provider_error{provider:Provider,
+                           kind:configuration_error,
+                           field:timeout,
+                           message:"timeout must be a positive number",
+                           response_received:false}.
 validate_provider_config(_, Endpoint, Model, Credential, Timeout,
                          ok(Endpoint, Credential, Model, Timeout)).
 
 valid_credential_spec(none).
 valid_credential_spec(env(Name)) :-
-    (atom(Name) ; string(Name)).
+    (   atom(Name)
+    ;   string(Name)
+    ).
+
+resolve_credential(_, none, ok(none)) :-
+    !.
+resolve_credential(Provider, env(Name), Outcome) :-
+    !,
+    (   getenv(Name, Key),
+        Key \== '',
+        Key \== ""
+    ->  Outcome = ok(Key)
+    ;   format(string(Message),
+               "credential environment variable ~w is not configured",
+               [Name]),
+        Outcome = error(provider_error{
+                            provider:Provider,
+                            kind:missing_credential,
+                            credential:env(Name),
+                            message:Message,
+                            response_received:false})
+    ).
 
 execute_credentialed(error(Error), _, _, _, _, _, error(Error)) :-
     !.
@@ -107,17 +122,15 @@ execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
           Exception,
           true),
     (   var(Exception)
-    ->  normalize_openai_chat_response(Provider,
-                                       RequestedModel,
-                                       Status,
-                                       Reply,
-                                       Outcome)
+    ->  normalize_openai_chat_response(Provider, RequestedModel, Status,
+                                       Reply, Outcome)
     ;   classify_provider_exception(Exception, Kind),
         safe_exception_text(Exception, Key, SafeException),
-        Outcome = error(provider_error{provider:Provider,
-                                       kind:Kind,
-                                       exception:SafeException,
-                                       response_received:false})
+        Outcome = error(provider_error{
+                            provider:Provider,
+                            kind:Kind,
+                            exception:SafeException,
+                            response_received:false})
     ).
 
 http_options(none, Timeout, Status,
@@ -126,7 +139,8 @@ http_options(none, Timeout, Status,
                json_object(dict),
                request_header('Accept'='application/json'),
                user_agent('prolog-rlm/0.1')
-             ]).
+             ]) :-
+    !.
 http_options(Key, Timeout, Status,
              [ authorization(bearer(Key)),
                timeout(Timeout),
@@ -134,24 +148,15 @@ http_options(Key, Timeout, Status,
                json_object(dict),
                request_header('Accept'='application/json'),
                user_agent('prolog-rlm/0.1')
-             ]) :-
-    Key \== none.
-
-%!  normalize_openai_chat_response(+Provider, +RequestedModel, +HttpInfo,
-%!                                  +Raw, -Outcome) is det.
-%
-%   Normalize an OpenAI-compatible chat response. `HttpInfo` may be a status
-%   integer or an option list containing `status_code(Status)` for conformance
-%   tests and compatibility with callers that retain HTTP options.
+             ]).
 
 normalize_openai_chat_response(Provider, RequestedModel, HttpInfo, Raw,
                                Outcome) :-
     http_status(HttpInfo, Status),
-    (   integer(Status), Status >= 200, Status < 300
-    ->  normalize_success_response(Provider,
-                                   RequestedModel,
-                                   Status,
-                                   Raw,
+    (   integer(Status),
+        Status >= 200,
+        Status < 300
+    ->  normalize_success_response(Provider, RequestedModel, Status, Raw,
                                    Outcome)
     ;   normalize_http_error(Provider, Status, Raw, Outcome)
     ).
@@ -167,26 +172,23 @@ http_status(_, unknown).
 
 normalize_success_response(Provider, RequestedModel, Status, Raw, Outcome) :-
     (   \+ is_dict(Raw)
-    ->  Outcome = error(provider_error{provider:Provider,
-                                       kind:invalid_response,
-                                       http_status:Status,
-                                       message:"provider response is not a JSON object",
-                                       response_received:true})
-    ;   wire_error(Raw, TopError)
-    ->  provider_error_from_wire(Provider, Status, TopError, Outcome)
+    ->  Outcome = error(provider_error{
+                            provider:Provider,
+                            kind:invalid_response,
+                            http_status:Status,
+                            message:"provider response is not a JSON object",
+                            response_received:true})
+    ;   wire_error(Raw, WireError)
+    ->  provider_error_from_wire(Provider, Status, WireError, Outcome)
     ;   first_assistant_choice(Raw, Choice, Message)
-    ->  normalize_choice(Provider,
-                         RequestedModel,
-                         Status,
-                         Raw,
-                         Choice,
-                         Message,
-                         Outcome)
-    ;   Outcome = error(provider_error{provider:Provider,
-                                       kind:invalid_response,
-                                       http_status:Status,
-                                       message:"provider response has no assistant choice",
-                                       response_received:true})
+    ->  normalize_choice(Provider, RequestedModel, Status, Raw, Choice,
+                         Message, Outcome)
+    ;   Outcome = error(provider_error{
+                            provider:Provider,
+                            kind:invalid_response,
+                            http_status:Status,
+                            message:"provider response has no assistant choice",
+                            response_received:true})
     ).
 
 wire_error(Dict, Error) :-
@@ -208,24 +210,18 @@ normalize_choice(Provider, RequestedModel, Status, Raw, Choice, Message,
         normalize_content(Content0, Text),
         dict_default(tool_calls, Message, [], ToolCalls0),
         normalize_tool_calls(ToolCalls0, ToolCalls),
-        normalize_assistant_result(Provider,
-                                   RequestedModel,
-                                   Status,
-                                   Raw,
-                                   Choice,
-                                   Message,
-                                   Text,
-                                   ToolCalls,
-                                   Outcome)
+        normalize_assistant_result(Provider, RequestedModel, Status, Raw,
+                                   Choice, Message, Text, ToolCalls, Outcome)
     ).
 
 normalize_assistant_result(Provider, _, Status, _, _, _, "", [],
-                           error(provider_error{provider:Provider,
-                                                kind:invalid_response,
-                                                http_status:Status,
-                                                message:"assistant choice contains no content or tool calls",
-                                                response_received:true})) :-
-    !.
+                           error(Error)) :-
+    !,
+    Error = provider_error{provider:Provider,
+                           kind:invalid_response,
+                           http_status:Status,
+                           message:"assistant choice contains no content or tool calls",
+                           response_received:true}.
 normalize_assistant_result(Provider, RequestedModel, Status, Raw, Choice,
                            Message, Text, ToolCalls, ok(Response)) :-
     dict_default(role, Message, assistant, Role),
@@ -251,13 +247,15 @@ normalize_assistant_result(Provider, RequestedModel, Status, Raw, Choice,
                               metadata:Metadata}.
 
 normalize_http_error(Provider, Status, Raw, Outcome) :-
-    (   is_dict(Raw), wire_error(Raw, WireError)
+    (   is_dict(Raw),
+        wire_error(Raw, WireError)
     ->  provider_error_from_wire(Provider, Status, WireError, Outcome)
-    ;   Outcome = error(provider_error{provider:Provider,
-                                       kind:http_error,
-                                       http_status:Status,
-                                       message:"provider returned a non-success HTTP response",
-                                       response_received:true})
+    ;   Outcome = error(provider_error{
+                            provider:Provider,
+                            kind:http_error,
+                            http_status:Status,
+                            message:"provider returned a non-success HTTP response",
+                            response_received:true})
     ).
 
 provider_error_from_wire(Provider, Status, WireError, error(Error)) :-
@@ -273,7 +271,8 @@ provider_error_from_wire(Provider, Status, WireError, error(Error)) :-
 wire_error_fields(WireError, Code, Message, ErrorType) :-
     (   is_dict(WireError)
     ->  dict_default(code, WireError, null, Code),
-        dict_default(message, WireError, "provider returned an error", Message0),
+        dict_default(message, WireError, "provider returned an error",
+                     Message0),
         normalize_content(Message0, Message),
         wire_error_type(WireError, ErrorType)
     ;   Code = null,
@@ -290,7 +289,8 @@ wire_error_type(WireError, ErrorType) :-
     ).
 
 normalize_usage(Raw, Usage) :-
-    (   get_dict(usage, Raw, RawUsage), is_dict(RawUsage)
+    (   get_dict(usage, Raw, RawUsage),
+        is_dict(RawUsage)
     ->  dict_default(prompt_tokens, RawUsage, null, PromptTokens),
         dict_default(completion_tokens, RawUsage, null, CompletionTokens),
         dict_default(total_tokens, RawUsage, null, TotalTokens),
@@ -333,40 +333,41 @@ request_payload(Request, RequestedModel, Outcome) :-
         request_options(Request, RequestOptions),
         allowed_generation_options(RequestOptions, GenerationOptions),
         put_dict(_{model:RequestedModel, messages:Messages},
-                 GenerationOptions,
-                 Payload),
+                 GenerationOptions, Payload),
         Outcome = ok(Payload)
     ).
 
-validate_request(Request,
-                 error(provider_error{provider:client,
-                                      kind:validation_error,
-                                      field:request,
-                                      message:"model request must be a model_request dict",
-                                      response_received:false})) :-
+validate_request(Request, error(Error)) :-
     \+ is_dict(Request, model_request),
-    !.
-validate_request(Request,
-                 error(provider_error{provider:client,
-                                      kind:validation_error,
-                                      field:messages,
-                                      message:"model request requires a non-empty messages list",
-                                      response_received:false})) :-
-    (   \+ get_dict(messages, Request, Messages)
-    ;   \+ is_list(Messages)
-    ;   Messages == []
-    ),
-    !.
-validate_request(Request,
-                 error(provider_error{provider:client,
-                                      kind:validation_error,
-                                      field:messages,
-                                      message:"every message requires a supported role and content",
-                                      response_received:false})) :-
-    get_dict(messages, Request, Messages),
+    !,
+    Error = provider_error{provider:client,
+                           kind:validation_error,
+                           field:request,
+                           message:"model request must be a model_request dict",
+                           response_received:false}.
+validate_request(Request, error(Error)) :-
+    \+ valid_messages_list(Request, _),
+    !,
+    Error = provider_error{provider:client,
+                           kind:validation_error,
+                           field:messages,
+                           message:"model request requires a non-empty messages list",
+                           response_received:false}.
+validate_request(Request, error(Error)) :-
+    valid_messages_list(Request, Messages),
     \+ maplist(valid_message, Messages),
-    !.
+    !,
+    Error = provider_error{provider:client,
+                           kind:validation_error,
+                           field:messages,
+                           message:"every message requires a supported role and content",
+                           response_received:false}.
 validate_request(_, ok).
+
+valid_messages_list(Request, Messages) :-
+    get_dict(messages, Request, Messages),
+    is_list(Messages),
+    Messages \== [].
 
 valid_message(Message) :-
     is_dict(Message),
@@ -388,10 +389,8 @@ message_payload(Message, Payload) :-
     get_dict(role, Message, Role),
     get_dict(content, Message, Content),
     Base = _{role:Role, content:Content},
-    copy_optional_message_fields([name, tool_call_id, tool_calls],
-                                 Message,
-                                 Base,
-                                 Payload).
+    copy_optional_message_fields([name, tool_call_id, tool_calls], Message,
+                                 Base, Payload).
 
 copy_optional_message_fields([], _, Payload, Payload).
 copy_optional_message_fields([Key|Keys], Message, Payload0, Payload) :-
@@ -402,7 +401,8 @@ copy_optional_message_fields([Key|Keys], Message, Payload0, Payload) :-
     copy_optional_message_fields(Keys, Message, Payload1, Payload).
 
 request_options(Request, Options) :-
-    (   get_dict(options, Request, Candidate), is_dict(Candidate)
+    (   get_dict(options, Request, Candidate),
+        is_dict(Candidate)
     ->  Options = Candidate
     ;   Options = _{}
     ).
@@ -427,22 +427,6 @@ include_present_keys([Key|Keys], Source, Allowed0, Allowed) :-
     ),
     include_present_keys(Keys, Source, Allowed1, Allowed).
 
-resolve_credential(_, none, ok(none)) :-
-    !.
-resolve_credential(Provider, env(Name), Outcome) :-
-    !,
-    (   getenv(Name, Key), Key \== '', Key \== ""
-    ->  Outcome = ok(Key)
-    ;   format(string(Message),
-               "credential environment variable ~w is not configured",
-               [Name]),
-        Outcome = error(provider_error{provider:Provider,
-                                       kind:missing_credential,
-                                       credential:env(Name),
-                                       message:Message,
-                                       response_received:false})
-    ).
-
 config_value(Key, Config, Default, Value) :-
     (   member(Entry, Config),
         Entry =.. [Key, Found]
@@ -456,8 +440,6 @@ dict_default(Key, Dict, Default, Value) :-
     ;   Value = Default
     ).
 
-%!  classify_provider_exception(+Exception, -Kind) is det.
-
 classify_provider_exception(Exception, timeout) :-
     term_string(Exception, Text),
     string_lower(Text, Lower),
@@ -469,11 +451,7 @@ classify_provider_exception(_, transport_error).
 
 safe_exception_text(Exception, Secret, SafeText) :-
     redact_secret(Exception, Secret, SafeException),
-    term_string(SafeException,
-                SafeText,
-                [quoted(true), numbervars(true)]).
-
-%!  redact_secret(+Term, +Secret, -SafeTerm) is det.
+    term_string(SafeException, SafeText, [quoted(true), numbervars(true)]).
 
 redact_secret(Term, Secret, Safe) :-
     (   var(Term)
