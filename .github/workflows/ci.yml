@@ -64,8 +64,8 @@ jobs:
             git diff --check HEAD^ HEAD
           fi
 
-  live-openrouter-tests:
-    name: REAL OpenRouter integration
+  live-openrouter-core:
+    name: REAL OpenRouter core integration
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
@@ -88,24 +88,70 @@ jobs:
         shell: bash
         run: |
           if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-            echo "OPENROUTER_API_KEY is not configured for live integration CI" >&2
+            echo "OPENROUTER_API_KEY is not configured for live core CI" >&2
             exit 1
           fi
 
-      - name: Run REAL OpenRouter smoke, typed-plan, tool, recursive completion, and repair tests
+      - name: Run REAL OpenRouter core suite
         shell: bash
         run: |
           set +e
-          swipl -q -s test/run_live_openrouter.pl > /tmp/openrouter-live.log 2>&1
+          swipl -q -s test/run_live_openrouter.pl > /tmp/openrouter-core.log 2>&1
           status=$?
-          cat /tmp/openrouter-live.log
+          cat /tmp/openrouter-core.log
 
           if [ "$status" -eq 0 ]; then
-            evidence="$(grep -E '^(provider|requested_model|selected_model|http_status|response_received|usage_present|text_present|reasoning_present|expected_token_present|plan_provider|plan_requested_model|plan_selected_model|plan_http_status|plan_response_received|plan_parsed|plan_output_channel|plan_context_executed|plan_tool_executed|plan_final_ok|plan_transition_count|real_tool_provider|real_tool_requested_model|real_tool_selected_model|real_tool_http_status|real_tool_response_received|real_tool_plan_parsed|real_tool_plan_output_channel|real_tool_invoked|real_tool_authorization|real_tool_status|real_tool_file_token_seen|real_tool_transition_count|completion_provider|completion_root_http_status|completion_plan_parsed|completion_context_executed|completion_tool_executed|completion_tool_authorization|completion_tool_status|completion_recursive_model_http_status|completion_recursive_depth|completion_recursive_calls|completion_total_model_calls|completion_file_token_seen|completion_final_ok|repair_provider|repair_requested_model|repair_selected_model|repair_http_status|repair_observation_status|repair_plan_parsed|repair_plan_output_channel|repair_provider_attempt_used|repair_attempts|repair_original_budget_preserved|repair_final_ok):' /tmp/openrouter-live.log | tr '\n' ' ')"
+            evidence="$(grep -E '^(provider|requested_model|selected_model|http_status|response_received|usage_present|text_present|reasoning_present|expected_token_present|plan_provider|plan_requested_model|plan_selected_model|plan_http_status|plan_response_received|plan_parsed|plan_output_channel|plan_context_executed|plan_tool_executed|plan_final_ok|plan_transition_count|real_tool_provider|real_tool_requested_model|real_tool_selected_model|real_tool_http_status|real_tool_response_received|real_tool_plan_parsed|real_tool_plan_output_channel|real_tool_invoked|real_tool_authorization|real_tool_status|real_tool_file_token_seen|real_tool_transition_count|completion_provider|completion_root_http_status|completion_plan_parsed|completion_context_executed|completion_tool_executed|completion_tool_authorization|completion_tool_status|completion_recursive_model_http_status|completion_recursive_depth|completion_recursive_calls|completion_total_model_calls|completion_file_token_seen|completion_final_ok):' /tmp/openrouter-core.log | tr '\n' ' ')"
             evidence="${evidence//'%'/'%25'}"
-            echo "::notice title=REAL OpenRouter evidence::${evidence}"
+            echo "::notice title=REAL OpenRouter core evidence::${evidence}"
           else
-            echo "::error title=REAL OpenRouter integration failed::Real provider operation failed; inspect the redacted PlUnit output above."
+            echo "::error title=REAL OpenRouter core integration failed::Inspect the redacted PlUnit output above."
+          fi
+
+          exit "$status"
+
+  live-openrouter-repair:
+    name: REAL OpenRouter structured repair
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_TEST_MODEL: ${{ vars.OPENROUTER_TEST_MODEL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes swi-prolog-nox
+
+      - name: Require live OpenRouter credential
+        shell: bash
+        run: |
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "OPENROUTER_API_KEY is not configured for live repair CI" >&2
+            exit 1
+          fi
+
+      - name: Run REAL OpenRouter structured repair suite
+        shell: bash
+        run: |
+          set +e
+          swipl -q -s test/run_live_repair_openrouter.pl > /tmp/openrouter-repair.log 2>&1
+          status=$?
+          cat /tmp/openrouter-repair.log
+
+          if [ "$status" -eq 0 ]; then
+            evidence="$(grep -E '^(repair_provider|repair_requested_model|repair_selected_model|repair_http_status|repair_observation_status|repair_plan_parsed|repair_plan_output_channel|repair_provider_attempt_used|repair_attempts|repair_original_budget_preserved|repair_final_ok):' /tmp/openrouter-repair.log | tr '\n' ' ')"
+            evidence="${evidence//'%'/'%25'}"
+            echo "::notice title=REAL OpenRouter repair evidence::${evidence}"
+          else
+            echo "::error title=REAL OpenRouter structured repair failed::Inspect the redacted PlUnit output above."
           fi
 
           exit "$status"
