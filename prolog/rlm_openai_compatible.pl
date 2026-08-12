@@ -45,12 +45,11 @@ provider_config(Provider, Config, Outcome) :-
         config_value(timeout, Config, 30, Timeout),
         validate_provider_config(Provider, Endpoint, Model, Credential,
                                  Timeout, Outcome)
-    ;   Outcome = error(provider_error{
-                            provider:Provider,
-                            kind:configuration_error,
-                            field:config,
-                            message:"provider config must be a list",
-                            response_received:false})
+    ;   Outcome = error(provider_error{provider:Provider,
+                                       kind:configuration_error,
+                                       field:config,
+                                       message:"provider config must be a list",
+                                       response_received:false})
     ).
 
 validate_provider_config(Provider, none, _, _, _, error(Error)) :-
@@ -105,12 +104,11 @@ resolve_credential(Provider, env(Name), Outcome) :-
     ;   format(string(Message),
                "credential environment variable ~w is not configured",
                [Name]),
-        Outcome = error(provider_error{
-                            provider:Provider,
-                            kind:missing_credential,
-                            credential:env(Name),
-                            message:Message,
-                            response_received:false})
+        Outcome = error(provider_error{provider:Provider,
+                                       kind:missing_credential,
+                                       credential:env(Name),
+                                       message:Message,
+                                       response_received:false})
     ).
 
 execute_credentialed(error(Error), _, _, _, _, _, error(Error)) :-
@@ -126,11 +124,10 @@ execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
                                        Reply, Outcome)
     ;   classify_provider_exception(Exception, Kind),
         safe_exception_text(Exception, Key, SafeException),
-        Outcome = error(provider_error{
-                            provider:Provider,
-                            kind:Kind,
-                            exception:SafeException,
-                            response_received:false})
+        Outcome = error(provider_error{provider:Provider,
+                                       kind:Kind,
+                                       exception:SafeException,
+                                       response_received:false})
     ).
 
 http_options(none, Timeout, Status,
@@ -153,9 +150,7 @@ http_options(Key, Timeout, Status,
 normalize_openai_chat_response(Provider, RequestedModel, HttpInfo, Raw,
                                Outcome) :-
     http_status(HttpInfo, Status),
-    (   integer(Status),
-        Status >= 200,
-        Status < 300
+    (   integer(Status), Status >= 200, Status < 300
     ->  normalize_success_response(Provider, RequestedModel, Status, Raw,
                                    Outcome)
     ;   normalize_http_error(Provider, Status, Raw, Outcome)
@@ -172,23 +167,21 @@ http_status(_, unknown).
 
 normalize_success_response(Provider, RequestedModel, Status, Raw, Outcome) :-
     (   \+ is_dict(Raw)
-    ->  Outcome = error(provider_error{
-                            provider:Provider,
-                            kind:invalid_response,
-                            http_status:Status,
-                            message:"provider response is not a JSON object",
-                            response_received:true})
+    ->  Outcome = error(provider_error{provider:Provider,
+                                       kind:invalid_response,
+                                       http_status:Status,
+                                       message:"provider response is not a JSON object",
+                                       response_received:true})
     ;   wire_error(Raw, WireError)
     ->  provider_error_from_wire(Provider, Status, WireError, Outcome)
     ;   first_assistant_choice(Raw, Choice, Message)
     ->  normalize_choice(Provider, RequestedModel, Status, Raw, Choice,
                          Message, Outcome)
-    ;   Outcome = error(provider_error{
-                            provider:Provider,
-                            kind:invalid_response,
-                            http_status:Status,
-                            message:"provider response has no assistant choice",
-                            response_received:true})
+    ;   Outcome = error(provider_error{provider:Provider,
+                                       kind:invalid_response,
+                                       http_status:Status,
+                                       message:"provider response has no assistant choice",
+                                       response_received:true})
     ).
 
 wire_error(Dict, Error) :-
@@ -209,21 +202,29 @@ normalize_choice(Provider, RequestedModel, Status, Raw, Choice, Message,
     ;   dict_default(content, Message, null, Content0),
         normalize_content(Content0, Text),
         dict_default(tool_calls, Message, [], ToolCalls0),
-        normalize_tool_calls(ToolCalls0, ToolCalls),
+        normalize_list(ToolCalls0, ToolCalls),
+        dict_default(reasoning, Message, null, Reasoning0),
+        normalize_content(Reasoning0, Reasoning),
+        dict_default(reasoning_details, Message, [], ReasoningDetails0),
+        normalize_list(ReasoningDetails0, ReasoningDetails),
         normalize_assistant_result(Provider, RequestedModel, Status, Raw,
-                                   Choice, Message, Text, ToolCalls, Outcome)
+                                   Choice, Message, Text, ToolCalls,
+                                   Reasoning, ReasoningDetails, Outcome)
     ).
 
-normalize_assistant_result(Provider, _, Status, _, _, _, "", [],
-                           error(Error)) :-
+normalize_assistant_result(Provider, _, Status, _, _, _, Text, ToolCalls,
+                           Reasoning, ReasoningDetails, error(Error)) :-
+    \+ assistant_payload_present(Text, ToolCalls, Reasoning,
+                                 ReasoningDetails),
     !,
     Error = provider_error{provider:Provider,
                            kind:invalid_response,
                            http_status:Status,
-                           message:"assistant choice contains no content or tool calls",
+                           message:"assistant choice contains no content, tool calls, or reasoning output",
                            response_received:true}.
 normalize_assistant_result(Provider, RequestedModel, Status, Raw, Choice,
-                           Message, Text, ToolCalls, ok(Response)) :-
+                           Message, Text, ToolCalls, Reasoning,
+                           ReasoningDetails, ok(Response)) :-
     dict_default(role, Message, assistant, Role),
     dict_default(finish_reason, Choice, null, FinishReason),
     dict_default(model, Raw, RequestedModel, SelectedModel),
@@ -231,7 +232,9 @@ normalize_assistant_result(Provider, RequestedModel, Status, Raw, Choice,
     normalize_usage(Raw, Usage),
     Assistant = message{role:Role,
                         content:Text,
-                        tool_calls:ToolCalls},
+                        tool_calls:ToolCalls,
+                        reasoning:Reasoning,
+                        reasoning_details:ReasoningDetails},
     Metadata = provider_metadata{provider:Provider,
                                  http_status:Status,
                                  response_received:true},
@@ -242,20 +245,32 @@ normalize_assistant_result(Provider, RequestedModel, Status, Raw, Choice,
                               assistant:Assistant,
                               text:Text,
                               tool_calls:ToolCalls,
+                              reasoning:Reasoning,
+                              reasoning_details:ReasoningDetails,
                               finish_reason:FinishReason,
                               usage:Usage,
                               metadata:Metadata}.
 
+assistant_payload_present(Text, _, _, _) :-
+    Text \== "",
+    !.
+assistant_payload_present(_, ToolCalls, _, _) :-
+    ToolCalls \== [],
+    !.
+assistant_payload_present(_, _, Reasoning, _) :-
+    Reasoning \== "",
+    !.
+assistant_payload_present(_, _, _, ReasoningDetails) :-
+    ReasoningDetails \== [].
+
 normalize_http_error(Provider, Status, Raw, Outcome) :-
-    (   is_dict(Raw),
-        wire_error(Raw, WireError)
+    (   is_dict(Raw), wire_error(Raw, WireError)
     ->  provider_error_from_wire(Provider, Status, WireError, Outcome)
-    ;   Outcome = error(provider_error{
-                            provider:Provider,
-                            kind:http_error,
-                            http_status:Status,
-                            message:"provider returned a non-success HTTP response",
-                            response_received:true})
+    ;   Outcome = error(provider_error{provider:Provider,
+                                       kind:http_error,
+                                       http_status:Status,
+                                       message:"provider returned a non-success HTTP response",
+                                       response_received:true})
     ).
 
 provider_error_from_wire(Provider, Status, WireError, error(Error)) :-
@@ -289,8 +304,7 @@ wire_error_type(WireError, ErrorType) :-
     ).
 
 normalize_usage(Raw, Usage) :-
-    (   get_dict(usage, Raw, RawUsage),
-        is_dict(RawUsage)
+    (   get_dict(usage, Raw, RawUsage), is_dict(RawUsage)
     ->  dict_default(prompt_tokens, RawUsage, null, PromptTokens),
         dict_default(completion_tokens, RawUsage, null, CompletionTokens),
         dict_default(total_tokens, RawUsage, null, TotalTokens),
@@ -307,10 +321,10 @@ normalize_usage(Raw, Usage) :-
                       cost:null}
     ).
 
-normalize_tool_calls(ToolCalls, ToolCalls) :-
-    is_list(ToolCalls),
+normalize_list(Value, Value) :-
+    is_list(Value),
     !.
-normalize_tool_calls(_, []).
+normalize_list(_, []).
 
 normalize_content(null, "") :-
     !.
@@ -389,8 +403,12 @@ message_payload(Message, Payload) :-
     get_dict(role, Message, Role),
     get_dict(content, Message, Content),
     Base = _{role:Role, content:Content},
-    copy_optional_message_fields([name, tool_call_id, tool_calls], Message,
-                                 Base, Payload).
+    copy_optional_message_fields([name,
+                                  tool_call_id,
+                                  tool_calls,
+                                  reasoning,
+                                  reasoning_details],
+                                 Message, Base, Payload).
 
 copy_optional_message_fields([], _, Payload, Payload).
 copy_optional_message_fields([Key|Keys], Message, Payload0, Payload) :-
@@ -401,8 +419,7 @@ copy_optional_message_fields([Key|Keys], Message, Payload0, Payload) :-
     copy_optional_message_fields(Keys, Message, Payload1, Payload).
 
 request_options(Request, Options) :-
-    (   get_dict(options, Request, Candidate),
-        is_dict(Candidate)
+    (   get_dict(options, Request, Candidate), is_dict(Candidate)
     ->  Options = Candidate
     ;   Options = _{}
     ).
@@ -416,7 +433,8 @@ allowed_generation_options(Options, Allowed) :-
             stop,
             tools,
             tool_choice,
-            response_format],
+            response_format,
+            reasoning],
     include_present_keys(Keys, Options, _{}, Allowed).
 
 include_present_keys([], _, Allowed, Allowed).
@@ -428,8 +446,7 @@ include_present_keys([Key|Keys], Source, Allowed0, Allowed) :-
     include_present_keys(Keys, Source, Allowed1, Allowed).
 
 config_value(Key, Config, Default, Value) :-
-    (   member(Entry, Config),
-        Entry =.. [Key, Found]
+    (   member(Entry, Config), Entry =.. [Key, Found]
     ->  Value = Found
     ;   Value = Default
     ).
@@ -501,7 +518,7 @@ secret_string(Secret, Text) :-
 replace_all(Text, Needle, Replacement, Safe) :-
     (   sub_string(Text, Before, Length, After, Needle)
     ->  sub_string(Text, 0, Before, _, Prefix),
-        Start is Before + Length,
+        Start is Before+Length,
         sub_string(Text, Start, After, 0, Suffix),
         string_concat(Prefix, Replacement, Left),
         replace_all(Suffix, Needle, Replacement, Right),
