@@ -257,18 +257,30 @@ normalize_registry_entry(Entry, _) :-
     throw(graph_fault(compile, invalid_registry_entry(Entry))).
 
 validate_schema(Schema) :-
-    findall(Key, member(state_field{key:Key}, Schema), Keys),
+    findall(Key,
+            ( member(Field, Schema),
+              get_dict(key, Field, Key)
+            ),
+            Keys),
     require_unique(Keys, state_field).
 
 validate_nodes(Nodes, Registry) :-
-    findall(Name, member(graph_node{name:Name}, Nodes), Names),
+    findall(Name,
+            ( member(Node, Nodes),
+              get_dict(name, Node, Name)
+            ),
+            Names),
     require_unique(Names, node),
     maplist(validate_node_registry(Registry), Nodes).
 
-validate_node_registry(Registry, graph_node{kind:action, ref:Ref}) :-
+validate_node_registry(Registry, Node) :-
+    get_dict(kind, Node, action),
     !,
+    get_dict(ref, Node, Ref),
     require_registry(Registry, handler, Ref, _).
-validate_node_registry(Registry, graph_node{kind:subgraph, ref:Ref}) :-
+validate_node_registry(Registry, Node) :-
+    get_dict(kind, Node, subgraph),
+    get_dict(ref, Node, Ref),
     require_registry(Registry, subgraph, Ref, _).
 
 validate_edges(Nodes, Edges, Registry) :-
@@ -311,9 +323,15 @@ validate_edge(Names, Registry,
     ->  throw(graph_fault(compile, empty_routes(From)))
     ;   true
     ),
-    findall(Key, member(route{key:Key}, Routes), Keys),
+    findall(Key,
+            ( member(Route, Routes),
+              get_dict(key, Route, Key)
+            ),
+            Keys),
     require_unique(Keys, route_key(From)),
-    forall(member(route{target:Target}, Routes),
+    forall(( member(Route, Routes),
+             get_dict(target, Route, Target)
+           ),
            validate_target(Target, Names)).
 
 validate_from(start, _) :- !.
@@ -741,9 +759,11 @@ execute_current_node(Compiled, Config, Token, ResumeValue, Snapshot, Outcome) :-
                  Context,
                  Outcome).
 
-execute_node(graph_node{kind:action, ref:Ref},
+execute_node(Node,
              Compiled, _, Token, State, Context, Outcome) :-
+    get_dict(kind, Node, action),
     !,
+    get_dict(ref, Node, Ref),
     require_registry(Compiled.registry, handler, Ref, Handler),
     check_graph_cancelled(Token),
     catch(( call(Handler, State, Context, Raw)
@@ -756,8 +776,10 @@ execute_node(graph_node{kind:action, ref:Ref},
           graph_cancelled(CancelToken),
           throw(graph_cancelled(CancelToken))),
     check_graph_cancelled(Token).
-execute_node(graph_node{kind:subgraph, ref:Ref},
+execute_node(Node,
              Compiled, Config, Token, State, Context, Outcome) :-
+    get_dict(kind, Node, subgraph),
+    get_dict(ref, Node, Ref),
     require_registry(Compiled.registry, subgraph, Ref, Subgraph),
     RemainingSteps is max(1, Config.max_steps-Context.step),
     SubOptions = [max_steps(RemainingSteps),
@@ -819,12 +841,14 @@ select_next(Compiled, Config, Token, From, State, Outcome) :-
                        State,
                        Outcome).
 
-select_edge_target(graph_edge{kind:fixed, to:Target}, _, _, _, _, ok(Target)) :-
-    !.
-select_edge_target(graph_edge{kind:conditional,
-                              router:Router,
-                              routes:Routes},
-                   Registry, _, Token, State, Outcome) :-
+select_edge_target(Edge, _, _, _, _, ok(Target)) :-
+    get_dict(kind, Edge, fixed),
+    !,
+    get_dict(to, Edge, Target).
+select_edge_target(Edge, Registry, _, Token, State, Outcome) :-
+    get_dict(kind, Edge, conditional),
+    get_dict(router, Edge, Router),
+    get_dict(routes, Edge, Routes),
     require_registry(Registry, router, Router, Handler),
     check_graph_cancelled(Token),
     catch(( call(Handler, State, Route0)
@@ -859,7 +883,10 @@ initialize_state(Schema, Initial0, State) :-
 
 schema_defaults(Schema, State) :-
     findall(Key-Default,
-            member(state_field{key:Key, default:Default}, Schema),
+            ( member(Field, Schema),
+              get_dict(key, Field, Key),
+              get_dict(default, Field, Default)
+            ),
             Pairs),
     dict_pairs(State, graph_state, Pairs).
 
@@ -1105,8 +1132,9 @@ require_event_handler(Handler) :-
 start_target(Edges, Target) :-
     member(Edge, Edges),
     Edge.from == start,
+    get_dict(kind, Edge, fixed),
     !,
-    Edge = graph_edge{kind:fixed, to:Target}.
+    get_dict(to, Edge, Target).
 
 edge_from(Edges, From, Edge) :-
     member(Edge, Edges),
@@ -1119,12 +1147,25 @@ edge_targets(Node, Edges, Targets) :-
     ;   Targets = []
     ).
 
-edge_targets_(graph_edge{kind:fixed, to:Target}, [Target]) :- !.
-edge_targets_(graph_edge{kind:conditional, routes:Routes}, Targets) :-
-    findall(Target, member(route{target:Target}, Routes), Targets).
+edge_targets_(Edge, [Target]) :-
+    get_dict(kind, Edge, fixed),
+    !,
+    get_dict(to, Edge, Target).
+edge_targets_(Edge, Targets) :-
+    get_dict(kind, Edge, conditional),
+    get_dict(routes, Edge, Routes),
+    findall(Target,
+            ( member(Route, Routes),
+              get_dict(target, Route, Target)
+            ),
+            Targets).
 
 node_names(Nodes, Names) :-
-    findall(Name, member(graph_node{name:Name}, Nodes), Names).
+    findall(Name,
+            ( member(Node, Nodes),
+              get_dict(name, Node, Name)
+            ),
+            Names).
 
 node_by_name(Nodes, Name, Node) :-
     member(Node, Nodes),
