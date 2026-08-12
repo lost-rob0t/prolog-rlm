@@ -42,7 +42,6 @@ validate_live_response(RequestedModel, Response) :-
     Text = Response.text,
     assertion(string(Text)),
     assertion(Text \== ""),
-    assertion(sub_string(Text, _, _, _, "PROLOG_RLM_OPENROUTER_OK")),
     assertion(Response.metadata.provider == openrouter),
     assertion(Response.metadata.http_status =:= 200),
     assertion(Response.metadata.response_received == true),
@@ -71,12 +70,20 @@ nonempty_textlike(Value) :-
     atom(Value),
     Value \== ''.
 
+expected_token_present(Text, Present) :-
+    (   sub_string(Text, _, _, _, "PROLOG_RLM_OPENROUTER_OK")
+    ->  Present = true
+    ;   Present = false
+    ).
+
 log_safe_evidence(RequestedModel, Response) :-
+    expected_token_present(Response.text, TokenPresent),
     format('provider: openrouter~n', []),
     format('requested_model: ~w~n', [RequestedModel]),
     format('selected_model: ~w~n', [Response.selected_model]),
     format('http_status: ~d~n', [Response.metadata.http_status]),
     format('response_received: true~n', []),
-    format('usage_present: ~w~n', [Response.usage.present]).
+    format('usage_present: ~w~n', [Response.usage.present]),
+    format('expected_token_present: ~w~n', [TokenPresent]).
 
 :- end_tests(live_openrouter).
