@@ -6,6 +6,7 @@
             invalid_planner/2,
             fake_model/2,
             slow_model/2,
+            slow_model_started/3,
             token_heavy_model/2,
             costly_model/2,
             reset_calls/0,
@@ -84,6 +85,12 @@ fake_model(_, ok(Response)) :-
 
 slow_model(_, ok(Response)) :-
     bump_model,
+    sleep(5),
+    fake_response("SLOW_MODEL_OK", Response).
+
+slow_model_started(Queue, _, ok(Response)) :-
+    bump_model,
+    thread_send_message(Queue, started),
     sleep(5),
     fake_response("SLOW_MODEL_OK", Response).
 
