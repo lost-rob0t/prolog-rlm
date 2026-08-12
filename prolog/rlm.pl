@@ -13,7 +13,19 @@
             predicate_inspect/2,
             outcome_trace/3,
             plan_repair/6,
-            default_outcome_limits/1
+            default_outcome_limits/1,
+            default_agent_options/1,
+            agent_runtime_create/2,
+            agent_runtime_destroy/1,
+            agent_runtime_status/2,
+            agent_spawn/5,
+            agent_send/5,
+            agent_pump/4,
+            agent_status/3,
+            agent_children/3,
+            agent_cancel/4,
+            agent_trace/2,
+            agent_tool_handler/4
           ]).
 
 /** <module> prolog-rlm entrypoint
@@ -42,7 +54,21 @@ Load this module to initialize the public runtime namespaces.
                 plan_repair/6,
                 default_outcome_limits/1
               ]).
-:- use_module(rlm_agent).
+:- use_module(rlm_agent,
+              [ rlm_agent_ready/0,
+                default_agent_options/1,
+                agent_runtime_create/2,
+                agent_runtime_destroy/1,
+                agent_runtime_status/2,
+                agent_spawn/5,
+                agent_send/5,
+                agent_pump/4,
+                agent_status/3,
+                agent_children/3,
+                agent_cancel/4,
+                agent_trace/2,
+                agent_tool_handler/4
+              ]).
 :- use_module(rlm_graph).
 :- use_module(rlm_mcp).
 
