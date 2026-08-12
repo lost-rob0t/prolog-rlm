@@ -9,10 +9,10 @@
 
 /** <module> Typed symbolic plan runtime
 
-Model output is normalized into a small closed AST. The validator checks the
-entire plan before execution. Model-generated data is never passed to
-unrestricted `call/1`; only trusted host tool closures supplied in runtime
-options are callable.
+Model output is normalized into a small closed AST. Validation covers the
+entire plan before execution. Model data is never passed to unrestricted
+`call/1`; only trusted host closures from the runtime tool registry are
+callable.
 */
 
 :- use_module(library(http/json)).
@@ -20,8 +20,6 @@ options are callable.
 :- use_module(library(lists)).
 :- use_module(rlm_chain).
 :- use_module(rlm_context).
-
-%!  default_plan_budget(-Budget) is det.
 
 default_plan_budget(plan_budget{max_steps:64,
                                 max_depth:4,
@@ -32,10 +30,9 @@ default_plan_budget(plan_budget{max_steps:64,
                                 max_output_bytes:65536,
                                 time_limit:10.0}).
 
-%!  plan_parse(+Input, -Outcome) is det.
-%
-%   Parse canonical terms, JSON dicts, or JSON text. JSON parsing never falls
-%   back to Prolog term parsing.
+/* -------------------------------------------------------------------------
+ * Parsing and normalization
+ * ---------------------------------------------------------------------- */
 
 plan_parse(Input, Outcome) :-
     catch(plan_parse_(Input, Outcome),
@@ -65,18 +62,14 @@ plan_parse_(Input,
                              message:"plan input must be a plan term, JSON object, or JSON text"})) :-
     value_shape(Input, Shape).
 
-json_object_text(Text0, Text) :-
+json_object_text(Text0, Json) :-
     normalize_space(string(Trimmed), Text0),
-    (   sub_string(Trimmed, 0, 3, _, "```")
-    ->  extract_json_object(Trimmed, Text)
-    ;   Text = Trimmed
-    ).
+    extract_json_object(Trimmed, Json).
 
 extract_json_object(Text, Json) :-
     sub_string(Text, Start, _, _, "{"),
     string_length(Text, Length),
-    between(1, Length, Offset),
-    End is Length-Offset,
+    reverse_between(0, Length, End),
     sub_string(Text, End, 1, _, "}"),
     End >= Start,
     !,
@@ -85,16 +78,16 @@ extract_json_object(Text, Json) :-
 extract_json_object(_, _) :-
     throw(plan_fault(no_json_object)).
 
-%!  plan_normalize(+Input, -Outcome) is det.
+reverse_between(Low, High, Value) :-
+    between(Low, High, Offset),
+    Value is High-Offset.
 
 plan_normalize(Input, Outcome) :-
-    catch(normalize_plan(Input, Plan),
+    catch(( normalize_plan(Input, Plan),
+            Outcome = ok(Plan)
+          ),
           Exception,
-          normalize_exception(normalize, Exception, Outcome0)),
-    (   var(Outcome0)
-    ->  Outcome = ok(Plan)
-    ;   Outcome = Outcome0
-    ).
+          normalize_exception(normalize, Exception, Outcome)).
 
 normalize_plan(plan(Steps0), plan(Steps)) :-
     !,
@@ -110,16 +103,13 @@ normalize_plan(Value, _) :-
     throw(plan_fault(invalid_plan(Value))).
 
 normalize_step(context(Handle, Action, Bind),
-               context(Handle, Action, Bind)) :-
-    !.
+               context(Handle, Action, Bind)) :- !.
 normalize_step(model(Provider, Prompt, Options, Bind),
-               model(Provider, Prompt, Options, Bind)) :-
-    !.
+               model(Provider, Prompt, Options, Bind)) :- !.
 normalize_step(rlm(Plan0, Bind), rlm(Plan, Bind)) :-
     !,
     normalize_plan(Plan0, Plan).
-normalize_step(tool(Name, Args, Bind), tool(Name, Args, Bind)) :-
-    !.
+normalize_step(tool(Name, Args, Bind), tool(Name, Args, Bind)) :- !.
 normalize_step(parallel(Plans0, Bind), parallel(Plans, Bind)) :-
     !,
     must_list(Plans0, parallel_plans),
@@ -127,10 +117,8 @@ normalize_step(parallel(Plans0, Bind), parallel(Plans, Bind)) :-
 normalize_step(retry(Attempts, Plan0, Bind), retry(Attempts, Plan, Bind)) :-
     !,
     normalize_plan(Plan0, Plan).
-normalize_step(checkpoint(Label), checkpoint(Label)) :-
-    !.
-normalize_step(final(Value), final(Value)) :-
-    !.
+normalize_step(checkpoint(Label), checkpoint(Label)) :- !.
+normalize_step(final(Value), final(Value)) :- !.
 normalize_step(Dict, Step) :-
     is_dict(Dict),
     !,
@@ -180,7 +168,10 @@ normalize_dict_step(retry, Dict, retry(Attempts, Plan, Bind)) :-
 normalize_dict_step(checkpoint, Dict, checkpoint(Label)) :-
     !,
     require_dict_key(Dict, label, Label0),
-    text_atom(Label0, Label).
+    (   text_atom(Label0, Label)
+    ->  true
+    ;   throw(plan_fault(invalid_checkpoint_label(Label0)))
+    ).
 normalize_dict_step(final, Dict, final(Value)) :-
     !,
     require_dict_key(Dict, value, Value0),
@@ -204,7 +195,10 @@ normalize_context_action(Value, _) :-
 normalize_context_action_dict(search, Dict, search(Pattern)) :-
     !,
     require_dict_key(Dict, pattern, Pattern0),
-    text_string(Pattern0, Pattern).
+    (   text_string(Pattern0, Pattern)
+    ->  true
+    ;   throw(plan_fault(invalid_search_pattern(Pattern0)))
+    ).
 normalize_context_action_dict(slice, Dict, slice(Start, Length)) :-
     !,
     require_integer(Dict, start, Start),
@@ -277,8 +271,10 @@ normalize_expr(Dict, Expr) :-
     is_dict(Dict),
     get_dict(ref, Dict, Ref0),
     !,
-    text_atom(Ref0, Ref),
-    normalize_ref_expr(Ref, Dict, Expr).
+    (   text_atom(Ref0, Ref)
+    ->  normalize_ref_expr(Ref, Dict, Expr)
+    ;   throw(plan_fault(invalid_reference(Ref0)))
+    ).
 normalize_expr(Dict, object(Pairs)) :-
     is_dict(Dict),
     !,
@@ -306,9 +302,14 @@ normalize_ref_expr(Ref, _, _) :-
 
 normalize_pair(Key-Value0, Key-Value) :-
     atom(Key),
+    !,
     normalize_expr(Value0, Value).
+normalize_pair(Pair, _) :-
+    throw(plan_fault(invalid_object_pair(Pair))).
 
-%!  plan_validate(+Plan, +Capabilities, +Budget, -Outcome) is det.
+/* -------------------------------------------------------------------------
+ * Validation
+ * ---------------------------------------------------------------------- */
 
 plan_validate(Plan0, Capabilities, Budget0, Outcome) :-
     catch(plan_validate_(Plan0, Capabilities, Budget0, Outcome),
@@ -316,11 +317,7 @@ plan_validate(Plan0, Capabilities, Budget0, Outcome) :-
           validation_exception(Exception, Outcome)).
 
 plan_validate_(Plan0, Capabilities, Budget0, Outcome) :-
-    (   Plan0 = plan(_)
-    ->  Plan = Plan0
-    ;   plan_normalize(Plan0, NormalizeOutcome),
-        require_ok(NormalizeOutcome, Plan)
-    ),
+    normalize_for_validation(Plan0, Plan),
     validate_capability_list(Capabilities),
     normalize_budget(Budget0, Budget),
     validate_plan_structure(Plan, Capabilities, [], _),
@@ -331,6 +328,11 @@ plan_validate_(Plan0, Capabilities, Budget0, Outcome) :-
                                 budget:Budget,
                                 estimate:Estimate}).
 
+normalize_for_validation(plan(Steps), plan(Steps)) :- !.
+normalize_for_validation(Value, Plan) :-
+    plan_normalize(Value, Outcome),
+    require_ok(Outcome, Plan).
+
 validate_capability_list(Caps) :-
     (   is_list(Caps)
     ->  true
@@ -340,18 +342,33 @@ validate_capability_list(Caps) :-
 normalize_budget(default, Budget) :-
     !,
     default_plan_budget(Budget).
-normalize_budget(Budget, Budget) :-
-    is_dict(Budget, plan_budget),
-    !,
-    validate_budget_values(Budget).
 normalize_budget(Budget0, Budget) :-
     is_dict(Budget0),
     !,
     default_plan_budget(Default),
-    put_dict(Budget0, Default, Budget),
+    budget_update_pairs(Budget0, Updates),
+    put_dict(Updates, Default, Budget),
     validate_budget_values(Budget).
 normalize_budget(Value, _) :-
     throw(plan_validation(invalid_budget(Value))).
+
+budget_update_pairs(Budget0, Updates) :-
+    dict_pairs(Budget0, _, Pairs),
+    maplist(validate_budget_pair, Pairs),
+    dict_pairs(Updates, _, Pairs).
+
+validate_budget_pair(Key-_) :-
+    memberchk(Key, [max_steps,
+                    max_depth,
+                    max_parallel,
+                    max_model_calls,
+                    max_tool_calls,
+                    max_context_ops,
+                    max_output_bytes,
+                    time_limit]),
+    !.
+validate_budget_pair(Key-_) :-
+    throw(plan_validation(unknown_budget_field(Key))).
 
 validate_budget_values(Budget) :-
     positive_integer_field(Budget, max_steps),
@@ -430,7 +447,7 @@ validate_step(retry(Attempts, Plan, Bind), Caps, Scope0, Scope) :-
 validate_step(checkpoint(Label), Caps, Scope, Scope) :-
     !,
     require_capability(checkpoint, Caps),
-    (   atom(Label); string(Label)
+    (   (atom(Label) ; string(Label))
     ->  true
     ;   throw(plan_validation(invalid_checkpoint_label(Label)))
     ).
@@ -475,7 +492,10 @@ validate_expr_in_scope(Scope, Expr) :-
 
 validate_expr_pair(Scope, Key-Expr) :-
     atom(Key),
+    !,
     validate_expr(Expr, Scope).
+validate_expr_pair(_, Pair) :-
+    throw(plan_validation(invalid_expression_pair(Pair))).
 
 validate_context_action(peek(Selector)) :-
     !,
@@ -497,22 +517,40 @@ validate_context_action(partition(Strategy)) :-
     validate_partition_strategy(Strategy).
 validate_context_action(map(Transform)) :-
     !,
-    memberchk(Transform, [identity, lowercase, uppercase, length]).
+    (   memberchk(Transform, [identity, lowercase, uppercase, length])
+    ->  true
+    ;   throw(plan_validation(invalid_map_transform(Transform)))
+    ).
 validate_context_action(reduce(Reducer)) :-
     !,
-    memberchk(Reducer, [count, byte_count]).
+    (   memberchk(Reducer, [count, byte_count])
+    ->  true
+    ;   throw(plan_validation(invalid_reducer(Reducer)))
+    ).
 validate_context_action(Action) :-
     throw(plan_validation(invalid_context_action(Action))).
 
 validate_selector(metadata) :- !.
-validate_selector(head(Count)) :- !, require_nonnegative_integer(Count, peek_count).
-validate_selector(tail(Count)) :- !, require_nonnegative_integer(Count, peek_count).
-validate_selector(item(Index)) :- !, require_nonnegative_integer(Index, item_index).
-validate_selector(Value) :- throw(plan_validation(invalid_selector(Value))).
+validate_selector(head(Count)) :-
+    !,
+    require_nonnegative_integer(Count, peek_count).
+validate_selector(tail(Count)) :-
+    !,
+    require_nonnegative_integer(Count, peek_count).
+validate_selector(item(Index)) :-
+    !,
+    require_nonnegative_integer(Index, item_index).
+validate_selector(Value) :-
+    throw(plan_validation(invalid_selector(Value))).
 
-validate_partition_strategy(fixed(Size)) :- !, require_positive_integer(Size, partition_size).
-validate_partition_strategy(lines(Size)) :- !, require_positive_integer(Size, partition_size).
-validate_partition_strategy(Value) :- throw(plan_validation(invalid_partition_strategy(Value))).
+validate_partition_strategy(fixed(Size)) :-
+    !,
+    require_positive_integer(Size, partition_size).
+validate_partition_strategy(lines(Size)) :-
+    !,
+    require_positive_integer(Size, partition_size).
+validate_partition_strategy(Value) :-
+    throw(plan_validation(invalid_partition_strategy(Value))).
 
 context_capability(peek(_), context(peek)).
 context_capability(slice(_, _), context(slice)).
@@ -535,12 +573,11 @@ add_binding(Bind, Scope0, [Bind|Scope0]) :-
     ).
 
 plan_estimate(Plan, Estimate) :-
-    estimate_plan(Plan, 1, Estimate0),
-    Estimate = Estimate0.put(depth, Estimate0.depth).
+    estimate_plan(Plan, 1, Estimate).
 
 estimate_plan(plan(Steps), Depth, Estimate) :-
     zero_estimate(Zero0),
-    Zero = Zero0.put(depth, Depth),
+    put_dict(depth, Zero0, Depth, Zero),
     estimate_steps(Steps, Depth, Zero, Estimate).
 
 zero_estimate(plan_estimate{steps:0,
@@ -558,30 +595,24 @@ estimate_steps([Step|Steps], Depth, Estimate0, Estimate) :-
 
 estimate_step(context(_, _, _), Depth, Estimate) :-
     !,
-    zero_estimate(Z),
-    Estimate = Z.put(_{steps:1, depth:Depth, context_ops:1}).
+    single_estimate(Depth, context_ops, Estimate).
 estimate_step(model(_, _, _, _), Depth, Estimate) :-
     !,
-    zero_estimate(Z),
-    Estimate = Z.put(_{steps:1, depth:Depth, model_calls:1}).
+    single_estimate(Depth, model_calls, Estimate).
 estimate_step(tool(_, _, _), Depth, Estimate) :-
     !,
-    zero_estimate(Z),
-    Estimate = Z.put(_{steps:1, depth:Depth, tool_calls:1}).
+    single_estimate(Depth, tool_calls, Estimate).
 estimate_step(checkpoint(_), Depth, Estimate) :-
     !,
-    zero_estimate(Z),
-    Estimate = Z.put(_{steps:1, depth:Depth}).
+    single_estimate(Depth, none, Estimate).
 estimate_step(final(_), Depth, Estimate) :-
     !,
-    zero_estimate(Z),
-    Estimate = Z.put(_{steps:1, depth:Depth}).
+    single_estimate(Depth, none, Estimate).
 estimate_step(rlm(Plan, _), Depth, Estimate) :-
     !,
     ChildDepth is Depth+1,
     estimate_plan(Plan, ChildDepth, Child),
-    zero_estimate(Z),
-    Wrapper = Z.put(_{steps:1, depth:ChildDepth}),
+    single_estimate(ChildDepth, none, Wrapper),
     estimate_add(Wrapper, Child, Estimate).
 estimate_step(parallel(Plans, _), Depth, Estimate) :-
     !,
@@ -589,17 +620,27 @@ estimate_step(parallel(Plans, _), Depth, Estimate) :-
     maplist(estimate_at_depth(ChildDepth), Plans, Branches),
     sum_estimates(Branches, Sum),
     length(Plans, Width),
-    zero_estimate(Z),
-    Wrapper = Z.put(_{steps:1, depth:ChildDepth, parallel_width:Width}),
+    single_estimate(ChildDepth, none, Base),
+    put_dict(parallel_width, Base, Width, Wrapper),
     estimate_add(Wrapper, Sum, Estimate).
 estimate_step(retry(Attempts, Plan, _), Depth, Estimate) :-
     !,
     ChildDepth is Depth+1,
     estimate_plan(Plan, ChildDepth, Child),
     estimate_scale(Child, Attempts, Scaled),
-    zero_estimate(Z),
-    Wrapper = Z.put(_{steps:1, depth:ChildDepth}),
+    single_estimate(ChildDepth, none, Wrapper),
     estimate_add(Wrapper, Scaled, Estimate).
+
+single_estimate(Depth, Counter, Estimate) :-
+    zero_estimate(Zero0),
+    put_dict(_{steps:1, depth:Depth}, Zero0, Base),
+    increment_estimate_counter(Counter, Base, Estimate).
+
+increment_estimate_counter(none, Estimate, Estimate) :- !.
+increment_estimate_counter(Name, Estimate0, Estimate) :-
+    get_dict(Name, Estimate0, Value0),
+    Value is Value0+1,
+    put_dict(Name, Estimate0, Value, Estimate).
 
 estimate_at_depth(Depth, Plan, Estimate) :-
     estimate_plan(Plan, Depth, Estimate).
@@ -627,10 +668,12 @@ estimate_scale(A, Factor, C) :-
     Models is A.model_calls*Factor,
     Tools is A.tool_calls*Factor,
     Context is A.context_ops*Factor,
-    C = A.put(_{steps:Steps,
-                model_calls:Models,
-                tool_calls:Tools,
-                context_ops:Context}).
+    put_dict(_{steps:Steps,
+               model_calls:Models,
+               tool_calls:Tools,
+               context_ops:Context},
+             A,
+             C).
 
 validate_estimate(Estimate, Budget) :-
     budget_check(steps, Estimate.steps, Budget.max_steps),
@@ -640,27 +683,29 @@ validate_estimate(Estimate, Budget) :-
     budget_check(tool_calls, Estimate.tool_calls, Budget.max_tool_calls),
     budget_check(context_ops, Estimate.context_ops, Budget.max_context_ops).
 
-budget_check(_, Used, Limit) :- Used =< Limit, !.
+budget_check(_, Used, Limit) :-
+    Used =< Limit,
+    !.
 budget_check(Name, Used, Limit) :-
     throw(plan_validation(budget_exceeded(Name, Used, Limit))).
 
-%!  plan_run(+PlanInput, +Capabilities, +Options, +Inputs, -Outcome) is det.
+/* -------------------------------------------------------------------------
+ * Execution
+ * ---------------------------------------------------------------------- */
 
 plan_run(PlanInput, Capabilities, Options, Inputs, Outcome) :-
     option_value(budget, Options, default, Budget),
     plan_parse(PlanInput, ParseOutcome),
-    (   ParseOutcome = error(Error)
-    ->  Outcome = error(Error)
-    ;   ParseOutcome = ok(Plan),
-        plan_validate(Plan, Capabilities, Budget, ValidationOutcome),
-        (   ValidationOutcome = error(Error)
-        ->  Outcome = error(Error)
-        ;   ValidationOutcome = ok(Validated),
-            plan_execute(Validated, Options, Inputs, Outcome)
-        )
-    ).
+    run_parsed(ParseOutcome, Capabilities, Budget, Options, Inputs, Outcome).
 
-%!  plan_execute(+Validated, +Options, +Inputs, -Outcome) is det.
+run_parsed(error(Error), _, _, _, _, error(Error)) :- !.
+run_parsed(ok(Plan), Caps, Budget, Options, Inputs, Outcome) :-
+    plan_validate(Plan, Caps, Budget, ValidationOutcome),
+    run_validated(ValidationOutcome, Options, Inputs, Outcome).
+
+run_validated(error(Error), _, _, error(Error)) :- !.
+run_validated(ok(Validated), Options, Inputs, Outcome) :-
+    plan_execute(Validated, Options, Inputs, Outcome).
 
 plan_execute(Validated, Options, Inputs, Outcome) :-
     catch(plan_execute_(Validated, Options, Inputs, Outcome),
@@ -680,7 +725,7 @@ plan_execute_(Validated, Options, Inputs, Outcome) :-
                                execute_plan(Plan, Runtime, Inputs, State0,
                                             ExecOutcome)),
           TimeException,
-          timed_execution_exception(TimeException, ExecOutcome)),
+          timed_execution_exception(TimeException, State0, ExecOutcome)),
     finalize_execution(ExecOutcome, Outcome).
 
 runtime_config(Options,
@@ -701,7 +746,7 @@ runtime_config(Options,
     ;   throw(plan_execution(invalid_context_options(ContextOptions)))
     ).
 
-validate_provider_entries([]).
+validate_provider_entries([]) :- !.
 validate_provider_entries([provider_ref(Name, Provider)|Rest]) :-
     atom(Name),
     nonvar(Provider),
@@ -710,7 +755,7 @@ validate_provider_entries([provider_ref(Name, Provider)|Rest]) :-
 validate_provider_entries(Value) :-
     throw(plan_execution(invalid_provider_registry(Value))).
 
-validate_tool_entries([]).
+validate_tool_entries([]) :- !.
 validate_tool_entries([tool(Name, Handler)|Rest]) :-
     atom(Name),
     callable(Handler),
@@ -778,18 +823,16 @@ execute_steps([Step|Steps], Runtime, Inputs, State0, Outcome) :-
         continue_after_step(StepOutcome, Steps, Runtime, Inputs, Outcome)
     ).
 
-continue_after_step(error(Error, State), _, _, _, error(Error, State)) :-
-    !.
-continue_after_step(final(Value, State), _, _, _, final(Value, State)) :-
-    !.
+continue_after_step(error(Error, State), _, _, _, error(Error, State)) :- !.
+continue_after_step(final(Value, State), _, _, _, final(Value, State)) :- !.
 continue_after_step(ok(State), Steps, Runtime, Inputs, Outcome) :-
     execute_steps(Steps, Runtime, Inputs, State, Outcome).
 
 consume_step_budget(Step, State0, Outcome) :-
-    decrement_remaining(steps, State0, StepOutcome),
-    (   StepOutcome = error(_, _)
-    ->  Outcome = StepOutcome
-    ;   StepOutcome = ok(State1),
+    decrement_remaining(steps, State0, First),
+    (   First = error(_, _)
+    ->  Outcome = First
+    ;   First = ok(State1),
         step_counter(Step, Counter),
         consume_optional_counter(Counter, State1, Outcome)
     ).
@@ -811,11 +854,11 @@ decrement_remaining(Name, State0, Outcome) :-
         put_dict(Name, Remaining0, Value, Remaining),
         put_dict(remaining, State0, Remaining, State),
         Outcome = ok(State)
-    ;   Error = plan_error{phase:execute,
-                           kind:budget_exhausted,
-                           budget:Name,
-                           message:"runtime plan budget exhausted"},
-        Outcome = error(Error, State0)
+    ;   Outcome = error(plan_error{phase:execute,
+                                   kind:budget_exhausted,
+                                   budget:Name,
+                                   message:"runtime plan budget exhausted"},
+                       State0)
     ).
 
 execute_step(context(HandleExpr, Action, Bind), Runtime, Inputs, State0,
@@ -836,20 +879,26 @@ execute_step(model(ProviderName, PromptExpr, RequestOptions, Bind), Runtime,
     (   PromptOutcome = error(Error)
     ->  Outcome = error(Error, State0)
     ;   PromptOutcome = ok(PromptValue),
-        text_string(PromptValue, Prompt),
-        lookup_provider(ProviderName, Runtime, Provider),
-        Request = model_request{messages:[message{role:user,
-                                                  content:Prompt}],
-                                options:RequestOptions},
-        model_complete(Provider, Request, ModelOutcome),
-        handle_model_result(ModelOutcome, ProviderName, Bind, State0,
-                            Outcome)
+        (   text_string(PromptValue, Prompt)
+        ->  lookup_provider(ProviderName, Runtime, Provider),
+            Request = model_request{messages:[message{role:user,
+                                                      content:Prompt}],
+                                    options:RequestOptions},
+            model_complete(Provider, Request, ModelOutcome),
+            handle_model_result(ModelOutcome, ProviderName, Bind, State0,
+                                Outcome)
+        ;   Outcome = error(plan_error{phase:execute,
+                                       kind:invalid_prompt,
+                                       provider:ProviderName,
+                                       message:"model prompt did not resolve to text"},
+                           State0)
+        )
     ).
 execute_step(rlm(Plan, Bind), Runtime, Inputs, State0, Outcome) :-
     !,
     parent_vars(State0, ParentVars),
     execute_plan(Plan, Runtime, Inputs, State0, NestedOutcome),
-    nested_result(rlm, NestedOutcome, ParentVars, Bind, State0, Outcome).
+    nested_result(rlm, NestedOutcome, ParentVars, Bind, Outcome).
 execute_step(tool(Name, ArgsExpr, Bind), Runtime, Inputs, State0, Outcome) :-
     !,
     resolve_expr(ArgsExpr, Inputs, State0, ArgsOutcome),
@@ -872,7 +921,7 @@ execute_step(parallel(Plans, Bind), Runtime, Inputs, State0, Outcome) :-
     ;   BranchOutcome = ok(Values, State1),
         restore_vars(State1, ParentVars, Restored),
         bind_value(Bind, Values, Restored, BindOutcome),
-        transition_result(BindOutcome, parallel, Bind, Restored, Outcome)
+        transition_result(BindOutcome, parallel, Bind, Outcome)
     ).
 execute_step(retry(Attempts, Plan, Bind), Runtime, Inputs, State0, Outcome) :-
     !,
@@ -884,15 +933,13 @@ execute_step(retry(Attempts, Plan, Bind), Runtime, Inputs, State0, Outcome) :-
     ;   RetryOutcome = ok(Value, State1),
         restore_vars(State1, ParentVars, Restored),
         bind_value(Bind, Value, Restored, BindOutcome),
-        transition_result(BindOutcome, retry, Bind, Restored, Outcome)
+        transition_result(BindOutcome, retry, Bind, Outcome)
     ).
-execute_step(checkpoint(Label), _, _, State0, Outcome) :-
+execute_step(checkpoint(Label), _, _, State0, ok(State)) :-
     !,
     get_dict(checkpoints, State0, Checkpoints0),
-    Checkpoints = [Label|Checkpoints0],
-    put_dict(checkpoints, State0, Checkpoints, State1),
-    add_transition(checkpoint, none, State1, ok(State), _),
-    Outcome = ok(State).
+    put_dict(checkpoints, State0, [Label|Checkpoints0], State1),
+    add_transition(checkpoint, none, State1, State).
 execute_step(final(ValueExpr), _, Inputs, State0, Outcome) :-
     !,
     resolve_expr(ValueExpr, Inputs, State0, ValueOutcome),
@@ -903,7 +950,7 @@ execute_step(final(ValueExpr), _, Inputs, State0, Outcome) :-
         (   OutputOutcome = error(Error, State1)
         ->  Outcome = error(Error, State1)
         ;   OutputOutcome = ok(State1),
-            add_transition(final, none, State1, ok(State), _),
+            add_transition(final, none, State1, State),
             Outcome = final(Value, State)
         )
     ).
@@ -928,32 +975,30 @@ run_context_action(reduce(Reducer), Handle, Options, Outcome) :-
     context_reduce(Handle, Reducer, Options, Outcome).
 
 handle_context_result(error(ContextError), _, _, State,
-                      error(Error, State)) :-
-    !,
-    Error = plan_error{phase:execute,
-                       kind:context_error,
-                       cause:ContextError,
-                       message:"context operation failed"}.
+                      error(plan_error{phase:execute,
+                                       kind:context_error,
+                                       cause:ContextError,
+                                       message:"context operation failed"},
+                            State)) :- !.
 handle_context_result(ok(ContextResult), Action, Bind, State0, Outcome) :-
     get_dict(value, ContextResult, Value),
     bind_value(Bind, Value, State0, BindOutcome),
     context_action_name(Action, OpName),
-    transition_result(BindOutcome, context(OpName), Bind, State0, Outcome).
+    transition_result(BindOutcome, context(OpName), Bind, Outcome).
 
 context_action_name(Action, Name) :-
     functor(Action, Name, _).
 
 handle_model_result(error(ModelError), Provider, _, State,
-                    error(Error, State)) :-
-    !,
-    Error = plan_error{phase:execute,
-                       kind:model_error,
-                       provider:Provider,
-                       cause:ModelError,
-                       message:"model operation failed"}.
+                    error(plan_error{phase:execute,
+                                     kind:model_error,
+                                     provider:Provider,
+                                     cause:ModelError,
+                                     message:"model operation failed"},
+                          State)) :- !.
 handle_model_result(ok(Response), Provider, Bind, State0, Outcome) :-
     bind_value(Bind, Response, State0, BindOutcome),
-    transition_result(BindOutcome, model(Provider), Bind, State0, Outcome).
+    transition_result(BindOutcome, model(Provider), Bind, Outcome).
 
 handle_tool_result(tool_exception(Exception), Name, _, State,
                    error(Error, State)) :-
@@ -966,12 +1011,11 @@ handle_tool_result(tool_exception(Exception), Name, _, State,
                        message:"trusted host tool raised an exception"}.
 handle_tool_result(Result, Name, Bind, State0, Outcome) :-
     bind_value(Bind, Result, State0, BindOutcome),
-    transition_result(BindOutcome, tool(Name), Bind, State0, Outcome).
+    transition_result(BindOutcome, tool(Name), Bind, Outcome).
 
-transition_result(error(Error, State), _, _, _, error(Error, State)) :- !.
-transition_result(ok(State1), Operation, Bind, _, Outcome) :-
-    add_transition(Operation, Bind, State1, ok(State), _),
-    Outcome = ok(State).
+transition_result(error(Error, State), _, _, error(Error, State)) :- !.
+transition_result(ok(State1), Operation, Bind, ok(State)) :-
+    add_transition(Operation, Bind, State1, State).
 
 bind_value(Bind, Value, State0, Outcome) :-
     consume_output(Value, State0, OutputOutcome),
@@ -993,16 +1037,16 @@ consume_output(Value, State0, Outcome) :-
         put_dict(output_bytes, Remaining0, Left, Remaining),
         put_dict(remaining, State0, Remaining, State),
         Outcome = ok(State)
-    ;   Error = plan_error{phase:execute,
-                           kind:budget_exhausted,
-                           budget:output_bytes,
-                           requested:Bytes,
-                           remaining:Left0,
-                           message:"plan output byte budget exhausted"},
-        Outcome = error(Error, State0)
+    ;   Outcome = error(plan_error{phase:execute,
+                                   kind:budget_exhausted,
+                                   budget:output_bytes,
+                                   requested:Bytes,
+                                   remaining:Left0,
+                                   message:"plan output byte budget exhausted"},
+                       State0)
     ).
 
-add_transition(Operation, Bind, State0, ok(State), Transition) :-
+add_transition(Operation, Bind, State0, State) :-
     get_dict(sequence, State0, Seq0),
     Seq is Seq0+1,
     Transition = plan_transition{sequence:Seq,
@@ -1010,8 +1054,10 @@ add_transition(Operation, Bind, State0, ok(State), Transition) :-
                                  bind:Bind,
                                  status:ok},
     get_dict(transitions, State0, Transitions0),
-    Transitions = [Transition|Transitions0],
-    put_dict(_{sequence:Seq, transitions:Transitions}, State0, State).
+    put_dict(_{sequence:Seq,
+               transitions:[Transition|Transitions0]},
+             State0,
+             State).
 
 execute_branches([], _, _, _, State, Values, ok(Results, State)) :-
     reverse(Values, Results).
@@ -1041,17 +1087,19 @@ execute_retry(Attempts, Plan, Runtime, Inputs, ParentVars, State0, Outcome) :-
         )
     ).
 
-nested_result(_, error(Error, NestedState), _, _, _,
-              error(Error, NestedState)) :-
-    !.
-nested_result(Operation, final(Value, NestedState), ParentVars, Bind, _,
+nested_result(_, error(Error, NestedState), _, _,
+              error(Error, NestedState)) :- !.
+nested_result(Operation, final(Value, NestedState), ParentVars, Bind,
               Outcome) :-
     restore_vars(NestedState, ParentVars, Restored),
     bind_value(Bind, Value, Restored, BindOutcome),
-    transition_result(BindOutcome, Operation, Bind, Restored, Outcome).
+    transition_result(BindOutcome, Operation, Bind, Outcome).
 
-parent_vars(State, Vars) :- get_dict(vars, State, Vars).
-restore_vars(State0, Vars, State) :- put_dict(vars, State0, Vars, State).
+parent_vars(State, Vars) :-
+    get_dict(vars, State, Vars).
+
+restore_vars(State0, Vars, State) :-
+    put_dict(vars, State0, Vars, State).
 
 resolve_expr(literal(Value), _, _, ok(Value)) :- !.
 resolve_expr(input(Name), Inputs, _, Outcome) :-
@@ -1106,11 +1154,11 @@ resolve_expr_list([Expr|Exprs], Inputs, State, Outcome) :-
     ->  Outcome = error(Error)
     ;   HeadOutcome = ok(Value),
         resolve_expr_list(Exprs, Inputs, State, TailOutcome),
-        (   TailOutcome = error(Error)
-        ->  Outcome = error(Error)
-        ;   TailOutcome = ok(Values), Outcome = ok([Value|Values])
-        )
+        prepend_resolved(Value, TailOutcome, Outcome)
     ).
+
+prepend_resolved(_, error(Error), error(Error)) :- !.
+prepend_resolved(Value, ok(Values), ok([Value|Values])).
 
 resolve_expr_pairs(Pairs, Inputs, State, Outcome) :-
     resolve_pairs(Pairs, Inputs, State, PairOutcome),
@@ -1128,12 +1176,11 @@ resolve_pairs([Key-Expr|Pairs], Inputs, State, Outcome) :-
     ->  Outcome = error(Error)
     ;   ValueOutcome = ok(Value),
         resolve_pairs(Pairs, Inputs, State, TailOutcome),
-        (   TailOutcome = error(Error)
-        ->  Outcome = error(Error)
-        ;   TailOutcome = ok(Resolved),
-            Outcome = ok([Key-Value|Resolved])
-        )
+        prepend_pair(Key, Value, TailOutcome, Outcome)
     ).
+
+prepend_pair(_, _, error(Error), error(Error)) :- !.
+prepend_pair(Key, Value, ok(Pairs), ok([Key-Value|Pairs])).
 
 lookup_provider(Name, Runtime, Provider) :-
     get_dict(providers, Runtime, Providers),
@@ -1162,8 +1209,14 @@ finalize_execution(error(Error0, State), error(Error)) :-
     reverse(RevTransitions, Transitions),
     get_dict(remaining, State, Remaining),
     put_dict(_{transitions:Transitions,
-               budget_remaining:Remaining}, Error0, Error).
+               budget_remaining:Remaining},
+             Error0,
+             Error).
 finalize_execution(exception(Error), error(Error)).
+
+/* -------------------------------------------------------------------------
+ * Structured errors and helpers
+ * ---------------------------------------------------------------------- */
 
 preflight_error(Kind, Value,
                 plan_error{phase:preflight,
@@ -1179,17 +1232,23 @@ must_validated_plan(Value) :-
     ;   throw(plan_execution(invalid_validated_plan(Value)))
     ).
 
-must_dict_execution(Value, _) :- is_dict(Value), !.
-must_dict_execution(Value, Field) :- throw(plan_execution(invalid_field(Field, Value))).
+must_dict_execution(Value, _) :-
+    is_dict(Value),
+    !.
+must_dict_execution(Value, Field) :-
+    throw(plan_execution(invalid_field(Field, Value))).
 
 option_value(Name, Options, Default, Value) :-
-    (   is_list(Options), member(Option, Options), Option =.. [Name, Found]
+    (   is_list(Options),
+        member(Option, Options),
+        Option =.. [Name, Found]
     ->  Value = Found
     ;   Value = Default
     ).
 
 require_ok(ok(Value), Value) :- !.
-require_ok(error(Error), _) :- throw(plan_fault(nested_error(Error))).
+require_ok(error(Error), _) :-
+    throw(plan_fault(nested_error(Error))).
 
 normalize_exception(Phase, plan_fault(Fault), error(Error)) :-
     !,
@@ -1207,8 +1266,7 @@ normalize_exception(Phase, Exception, error(Error)) :-
 validation_exception(plan_validation(Fault), error(Error)) :-
     !,
     validation_fault(Fault, Error).
-validation_exception(plan_fault(nested_error(Error)), error(Error)) :-
-    !.
+validation_exception(plan_fault(nested_error(Error)), error(Error)) :- !.
 validation_exception(Exception, error(Error)) :-
     term_string(Exception, Safe, [quoted(true), numbervars(true)]),
     Error = plan_error{phase:validate,
@@ -1256,46 +1314,60 @@ execution_fault(Fault,
                            detail:Fault,
                            message:"plan runtime configuration is invalid"}).
 
-timed_execution_exception(time_limit_exceeded,
+timed_execution_exception(time_limit_exceeded, State,
                           error(plan_error{phase:execute,
                                            kind:time_limit_exceeded,
                                            message:"plan exceeded its wall-time budget"},
-                                exec_state{vars:_{},
-                                           transitions:[],
-                                           sequence:0,
-                                           checkpoints:[],
-                                           remaining:runtime_budget{steps:0,
-                                                                    model_calls:0,
-                                                                    tool_calls:0,
-                                                                    context_ops:0,
-                                                                    output_bytes:0}})) :-
-    !.
-timed_execution_exception(Exception, _) :- throw(Exception).
+                                State)) :- !.
+timed_execution_exception(time_limit_exceeded(_), State,
+                          error(plan_error{phase:execute,
+                                           kind:time_limit_exceeded,
+                                           message:"plan exceeded its wall-time budget"},
+                                State)) :- !.
+timed_execution_exception(Exception, _, _) :-
+    throw(Exception).
 
 positive_integer_field(Dict, Key) :-
-    get_dict(Key, Dict, Value),
-    require_positive_integer(Value, Key).
+    (   get_dict(Key, Dict, Value)
+    ->  require_positive_integer(Value, Key)
+    ;   throw(plan_validation(missing_budget_field(Key)))
+    ).
 
 nonnegative_integer_field(Dict, Key) :-
-    get_dict(Key, Dict, Value),
-    require_nonnegative_integer(Value, Key).
+    (   get_dict(Key, Dict, Value)
+    ->  require_nonnegative_integer(Value, Key)
+    ;   throw(plan_validation(missing_budget_field(Key)))
+    ).
 
-require_positive_integer(Value, _) :- integer(Value), Value > 0, !.
+require_positive_integer(Value, _) :-
+    integer(Value), Value > 0,
+    !.
 require_positive_integer(Value, Field) :-
     throw(plan_validation(invalid_positive_integer(Field, Value))).
 
-require_nonnegative_integer(Value, _) :- integer(Value), Value >= 0, !.
+require_nonnegative_integer(Value, _) :-
+    integer(Value), Value >= 0,
+    !.
 require_nonnegative_integer(Value, Field) :-
     throw(plan_validation(invalid_nonnegative_integer(Field, Value))).
 
-require_atom(Value, _) :- atom(Value), !.
-require_atom(Value, Field) :- throw(plan_validation(invalid_atom(Field, Value))).
+require_atom(Value, _) :-
+    atom(Value),
+    !.
+require_atom(Value, Field) :-
+    throw(plan_validation(invalid_atom(Field, Value))).
 
-must_dict_validation(Value, _) :- is_dict(Value), !.
-must_dict_validation(Value, Field) :- throw(plan_validation(invalid_dict(Field, Value))).
+must_dict_validation(Value, _) :-
+    is_dict(Value),
+    !.
+must_dict_validation(Value, Field) :-
+    throw(plan_validation(invalid_dict(Field, Value))).
 
-must_list_validation(Value, _) :- is_list(Value), !.
-must_list_validation(Value, Field) :- throw(plan_validation(invalid_list(Field, Value))).
+must_list_validation(Value, _) :-
+    is_list(Value),
+    !.
+must_list_validation(Value, Field) :-
+    throw(plan_validation(invalid_list(Field, Value))).
 
 require_dict_key(Dict, Key, Value) :-
     (   get_dict(Key, Dict, Value)
@@ -1318,19 +1390,40 @@ require_integer(Dict, Key, Integer) :-
     ).
 
 dict_default(Key, Dict, Default, Value) :-
-    (get_dict(Key, Dict, Found) -> Value = Found ; Value = Default).
+    (   get_dict(Key, Dict, Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
 
-must_list(Value, _) :- is_list(Value), !.
-must_list(Value, Field) :- throw(plan_fault(invalid_list(Field, Value))).
+must_list(Value, _) :-
+    is_list(Value),
+    !.
+must_list(Value, Field) :-
+    throw(plan_fault(invalid_list(Field, Value))).
 
-must_dict(Value, _) :- is_dict(Value), !.
-must_dict(Value, Field) :- throw(plan_fault(invalid_dict(Field, Value))).
+must_dict(Value, _) :-
+    is_dict(Value),
+    !.
+must_dict(Value, Field) :-
+    throw(plan_fault(invalid_dict(Field, Value))).
 
-text_atom(Value, Atom) :- atom(Value), !, Atom = Value.
-text_atom(Value, Atom) :- string(Value), !, atom_string(Atom, Value).
+text_atom(Value, Atom) :-
+    atom(Value),
+    !,
+    Atom = Value.
+text_atom(Value, Atom) :-
+    string(Value),
+    !,
+    atom_string(Atom, Value).
 
-text_string(Value, String) :- string(Value), !, String = Value.
-text_string(Value, String) :- atom(Value), !, atom_string(Value, String).
+text_string(Value, String) :-
+    string(Value),
+    !,
+    String = Value.
+text_string(Value, String) :-
+    atom(Value),
+    !,
+    atom_string(Value, String).
 
 value_bytes(Value, Bytes) :-
     term_string(Value, Text, [quoted(true), numbervars(true)]),
