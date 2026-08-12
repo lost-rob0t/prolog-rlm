@@ -15,7 +15,9 @@ configuration terms and return structured `ok/1` or `error/1` outcomes.
 Deterministic fake providers remain test-only and are never fallback targets.
 */
 
-:- use_module(rlm_openai_compatible).
+:- use_module(rlm_openai_compatible,
+              [ openai_compatible_complete/4
+              ]).
 
 rlm_chain_ready.
 
