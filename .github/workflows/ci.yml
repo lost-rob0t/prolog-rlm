@@ -151,7 +151,9 @@ jobs:
             evidence="${evidence//'%'/'%25'}"
             echo "::notice title=REAL OpenRouter repair evidence::${evidence}"
           else
-            echo "::error title=REAL OpenRouter structured repair failed::Inspect the redacted PlUnit output above."
+            message="$(tail -n 40 /tmp/openrouter-repair.log | tr '\n' ' ')"
+            message="${message//'%'/'%25'}"
+            echo "::error title=REAL OpenRouter structured repair failed::${message}"
           fi
 
           exit "$status"
