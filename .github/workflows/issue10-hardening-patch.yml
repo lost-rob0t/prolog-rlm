@@ -19,63 +19,136 @@ jobs:
           ref: feature/issue-10-structured-outcomes-repair
           fetch-depth: 0
 
-      - name: Apply reviewed outcome fixes
+      - name: Apply repair wall-time hardening
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          def replace_once(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              if old not in text:
-                  raise SystemExit(f"expected patch context missing: {path}")
-              p.write_text(text.replace(old, new, 1))
+          p = Path("prolog/rlm_outcome.pl")
+          text = p.read_text()
 
-          replace_once(
-              "prolog/rlm_outcome.pl",
-              "    Head =.. [Name|Args],\n    length(Args, Arity),\n",
-              "    length(Args, Arity),\n    Head =.. [Name|Args],\n")
+          old = """        repair_handler_call(RepairHandler,
+                            Observation,
+                            NextAttempt,
+                            Plan,
+                            Options,
+                            RepairResult),
+"""
+          new = """        repair_handler_call(RepairHandler,
+                            Observation,
+                            NextAttempt,
+                            Plan,
+                            Options,
+                            Start,
+                            OriginalBudget,
+                            RepairResult),
+"""
+          if old not in text:
+              raise SystemExit("repair call context missing")
+          text = text.replace(old, new, 1)
 
-          replace_once(
-              "prolog/rlm_outcome.pl",
-              "    take_prefix(Transitions,\n                Limits.trace_max_nodes,\n                Selected,\n                NodeTruncated),\n",
-              "    ChildLimit is max(0, Limits.trace_max_nodes-1),\n    take_prefix(Transitions,\n                ChildLimit,\n                Selected,\n                NodeTruncated),\n")
+          old = """repair_handler_call(Handler,
+                    Observation,
+                    Attempt,
+                    Plan,
+                    Options,
+                    Outcome) :-
+    outcome_limits(Options, Limits),
+    catch(call_with_time_limit(
+              Limits.repair_time_limit,
+              ( call(Handler,
+                     Observation,
+                     Attempt,
+                     Plan,
+                     RepairedPlan)
+              -> Outcome = ok(RepairedPlan)
+              ;  Outcome = error(repair_error{kind:logical_failure,
+                                               message:\"repair handler failed\"})
+              )),
+          Exception,
+          repair_handler_exception(Exception, Outcome)).
+"""
+          new = """repair_handler_call(Handler,
+                    Observation,
+                    Attempt,
+                    Plan,
+                    Options,
+                    Start,
+                    OriginalBudget,
+                    Outcome) :-
+    outcome_limits(Options, Limits),
+    remaining_wall_time(Start,
+                        OriginalBudget.time_limit,
+                        RemainingTime),
+    CallbackLimit is min(Limits.repair_time_limit, RemainingTime),
+    (   CallbackLimit =< 0
+    ->  Outcome = error(repair_error{kind:timeout,
+                                     message:\"repair loop wall-time budget exhausted\"})
+    ;   catch(call_with_time_limit(
+                  CallbackLimit,
+                  ( call(Handler,
+                         Observation,
+                         Attempt,
+                         Plan,
+                         RepairedPlan)
+                  -> Outcome = ok(RepairedPlan)
+                  ;  Outcome = error(repair_error{kind:logical_failure,
+                                                   message:\"repair handler failed\"})
+                  )),
+              Exception,
+              repair_handler_exception(Exception, Outcome))
+    ).
+"""
+          if old not in text:
+              raise SystemExit("repair handler definition context missing")
+          text = text.replace(old, new, 1)
 
-          replace_once(
-              "prolog/rlm_outcome.pl",
-              "    Remaining is max(0.001, Limit-Elapsed).\n",
-              "    Remaining is max(0.0, Limit-Elapsed).\n")
-
-          replace_once(
-              "prolog/rlm_outcome.pl",
-              "required_capability_in_step(rlm(Plan, _), rlm).\n",
-              "required_capability_in_step(rlm(_, _), rlm).\n")
-          replace_once(
-              "prolog/rlm_outcome.pl",
-              "required_capability_in_step(parallel(Plans, _), parallel).\n",
-              "required_capability_in_step(parallel(_, _), parallel).\n")
-          replace_once(
-              "prolog/rlm_outcome.pl",
-              "required_capability_in_step(retry(_, Plan, _), retry).\n",
-              "required_capability_in_step(retry(_, _, _), retry).\n")
-
-          replace_once(
-              "prolog/rlm_plan.pl",
-              "        catch(call(Handler, Args, ToolResult),\n              Exception,\n              ToolResult = tool_exception(Exception)),\n",
-              "        catch(call(Handler, Args, ToolResult),\n              Exception,\n              trusted_tool_exception(Exception, ToolResult)),\n")
-
-          replace_once(
-              "prolog/rlm_plan.pl",
-              "handle_tool_result(tool_exception(Exception), Name, _, State,\n",
-              "trusted_tool_exception(time_limit_exceeded, _) :-\n    !,\n    throw(time_limit_exceeded).\ntrusted_tool_exception(time_limit_exceeded(Context), _) :-\n    !,\n    throw(time_limit_exceeded(Context)).\ntrusted_tool_exception(error(rlm_cancelled(Token), Context), _) :-\n    !,\n    throw(error(rlm_cancelled(Token), Context)).\ntrusted_tool_exception(Exception, tool_exception(Exception)).\n\nhandle_tool_result(tool_exception(Exception), Name, _, State,\n")
+          marker = """continue_after_repair(error(RepairError),
+                      Current,
+                      Attempt,
+                      _, _, _, _, _, _, _, History0,
+                      Outcome) :-
+    !,
+"""
+          special = """continue_after_repair(error(RepairError),
+                      Current,
+                      Attempt,
+                      _, _, _, _, _, _, _, History0,
+                      Outcome) :-
+    is_dict(RepairError),
+    get_dict(kind, RepairError, timeout),
+    !,
+    Event = repair_event{attempt:Attempt,
+                         status:repair_failed,
+                         diagnostic:Current.status,
+                         error:RepairError},
+    reverse([Event|History0], History),
+    put_dict(_{status:timeout,
+               phase:repair,
+               error:RepairError,
+               repair:repair_summary{attempts:Attempt,
+                                     history:History}},
+             Current,
+             Outcome).
+continue_after_repair(error(RepairError),
+                      Current,
+                      Attempt,
+                      _, _, _, _, _, _, _, History0,
+                      Outcome) :-
+    !,
+"""
+          if marker not in text:
+              raise SystemExit("repair failure continuation context missing")
+          text = text.replace(marker, special, 1)
+          p.write_text(text)
           PY
 
       - name: Commit hardening
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add prolog/rlm_outcome.pl prolog/rlm_plan.pl
+          git add prolog/rlm_outcome.pl
           git diff --cached --check
-          git commit -m "Fix structured outcome timeout and trace semantics"
+          git commit -m "Keep repair callbacks inside original wall-time budget"
           git push origin HEAD:feature/issue-10-structured-outcomes-repair
