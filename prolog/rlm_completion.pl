@@ -567,6 +567,15 @@ normalize_handler_outcome(ok(Value), ok(Value)) :- !.
 normalize_handler_outcome(error(Error), error(Error)) :- !.
 normalize_handler_outcome(Value, ok(Value)).
 
+handler_exception(_, error(rlm_cancelled(Token), Context), _) :-
+    !,
+    throw(error(rlm_cancelled(Token), Context)).
+handler_exception(_, time_limit_exceeded, _) :-
+    !,
+    throw(time_limit_exceeded).
+handler_exception(_, time_limit_exceeded(Context), _) :-
+    !,
+    throw(time_limit_exceeded(Context)).
 handler_exception(Kind, Exception,
                   error(completion_error{phase:Kind,
                                          kind:handler_exception,
