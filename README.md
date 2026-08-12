@@ -2,7 +2,7 @@
 
 A **Prolog-native language-model harness and agent runtime built around Recursive Language Models (RLMs)**.
 
-This repository is not a StarIntel component. The goal is to implement RLM-style context computation, model/tool orchestration, durable agent state, and recursive subagents directly in Prolog. Python is not a runtime requirement.
+This repository is not a StarIntel component. The goal is to implement RLM-style context computation, model/tool orchestration, durable agent state, and recursive subagents directly in SWI-Prolog. Python is not a runtime requirement.
 
 ## Project thesis
 
@@ -23,6 +23,49 @@ Primary references:
 - Harnesses are Compositional Generalizers: https://alexzhang13.github.io/blog/2026/harness/
 - lambda-RLM: https://arxiv.org/abs/2603.20105
 - PrologMCP: https://arxiv.org/abs/2606.14935
+
+## Executable bootstrap
+
+The supported baseline is **SWI-Prolog 9.0 or newer**.
+
+The production entrypoint is:
+
+```prolog
+:- use_module('prolog/rlm').
+```
+
+From a clean checkout, verify the runtime and module graph with:
+
+```sh
+swipl -q -s test/check_runtime.pl
+swipl -q -s test/load_all.pl
+```
+
+Run deterministic tests with:
+
+```sh
+swipl -q -s test/run_tests.pl
+```
+
+The bootstrap exposes:
+
+```prolog
+?- use_module('prolog/rlm').
+?- rlm:rlm_version(Version).
+?- rlm:rlm_ready.
+```
+
+Production namespaces live under `prolog/`:
+
+- `rlm` — public runtime entrypoint;
+- `rlm_chain` — provider/model abstraction;
+- `rlm_agent` — supervised logical agents;
+- `rlm_graph` — durable graph execution;
+- `rlm_mcp` — canonical MCP interoperability.
+
+Deterministic model doubles live only under `test/support/`. They are test fixtures, not runtime backends.
+
+GitHub Actions runs static module loading and PlUnit without network access or credentials. Real provider integration is a separate CI class added by the provider milestone; fake providers never count as live integration.
 
 ## Why Prolog?
 
@@ -79,7 +122,7 @@ Prolog is not just replacing the Python REPL syntax. It is the control substrate
 
 The model must not receive unrestricted `call/1`, arbitrary shell execution, or an unbounded source-code execution primitive.
 
-Instead it should emit or select from a small executable plan language whose operations can be validated before execution. Initial forms should include concepts such as:
+Instead it should emit or select from a small executable plan language whose operations can be validated before execution. Initial forms include concepts such as:
 
 ```prolog
 context(search(Context, Query, Hits)).
@@ -103,74 +146,23 @@ The exact syntax is provisional. The invariants are not:
 5. every execution produces a structured trace;
 6. the runtime can cancel and clean up deterministically.
 
-## Core libraries
+## Runtime libraries
 
-### `library/rlm_chain/`
+### `rlm_chain`
 
-A Prolog-native model/tool abstraction layer inspired by useful LangChain concepts:
+Provider-neutral model access, messages, prompts, structured output, streaming, retries, middleware, and usage accounting. Direct OpenAI-compatible HTTP providers are implemented here. Deterministic fakes remain test-only.
 
-- messages and prompts;
-- provider-neutral model interface;
-- direct OpenAI-compatible HTTP providers;
-- structured output;
-- tool schemas and invocation;
-- middleware/hooks;
-- streaming;
-- retries/backoff;
-- token/cost accounting;
-- deterministic fake/test providers under tests only.
+### `rlm_graph`
 
-### `library/rlm_graph/`
+Explicit graph state, fixed/conditional edges, reducers, bounded loops, subgraphs, checkpoints, replay, interrupts, event streaming, parallel branches, and cancellation propagation.
 
-A Prolog-native durable graph runtime inspired by useful LangGraph concepts:
+### `rlm_agent`
 
-- explicit graph state;
-- nodes and fixed/conditional edges;
-- reducers;
-- loops and bounded cycles;
-- subgraphs;
-- checkpoints and replay;
-- interrupts / human-in-the-loop continuation;
-- event streaming;
-- parallel branches;
-- cancellation propagation;
-- backend-neutral persistence.
+Logical agents using SWI engines/state machines, bounded workers, typed mailboxes, supervision, cancellation, capability inheritance, recursive subagents, structured outcomes, and durable artifact access.
 
-### `library/rlm_agent/`
+### `rlm_mcp`
 
-First-class agent runtime:
-
-- logical agents represented by SWI-Prolog engines/state machines;
-- bounded worker pools for blocking model/tool work;
-- typed term messages and mailboxes;
-- supervision and cancellation;
-- capability inheritance;
-- recursive subagents;
-- structured outcomes and repair loops;
-- blackboard/durable artifact access without carrying entire chat histories forward.
-
-### `library/rlm_mcp/`
-
-MCP interoperability as both client and server.
-
-The initial compatibility target is **two protocol generations**:
-
-- `2025-11-25` — sessionful lifecycle with `initialize` / `notifications/initialized`, negotiated protocol version/capabilities, and optional `MCP-Session-Id`;
-- `2026-07-28` — stateless core, self-describing requests, `server/discover`, per-request protocol/client/capability metadata, and header-based routing.
-
-Do not smear version checks through agent code. Both wire protocols must normalize into one internal Prolog representation such as:
-
-```prolog
-mcp_request(Method, Params, Meta).
-mcp_result(Result, Meta).
-mcp_tool(Name, Description, InputSchema, OutputSchema, Meta).
-mcp_resource(Uri, Name, MimeType, Meta).
-mcp_prompt(Name, Description, Arguments, Meta).
-```
-
-Protocol-specific modules encode/decode the canonical terms.
-
-For maximum interoperability the client should prefer `2026-07-28` when explicitly supported, then negotiate/fallback to `2025-11-25`. A server should advertise/accept both when its transport permits it. MCP must not be the model-provider abstraction: model APIs remain direct provider integrations.
+MCP client/server interoperability behind one canonical internal representation. The compatibility targets are both `2025-11-25` and `2026-07-28`; version-specific behavior stays inside protocol adapters rather than leaking into agent/graph code.
 
 ## Planned core predicates
 
@@ -190,9 +182,7 @@ context_partition(+Context, +Strategy, -Partitions).
 
 ## First executable milestone
 
-The first runnable slice is **not** a fake agent.
-
-It must include:
+The first runnable slice is **not** a fake agent. It includes:
 
 1. SWI-Prolog project/module skeleton and PlUnit tests;
 2. a real provider-neutral model interface;
@@ -211,18 +201,7 @@ Fake model providers are required **only for deterministic tests**.
 
 `research/` contains durable numbered research records. See `research/README.md`.
 
-Current records:
-
-- `RLM-RESEARCH-000-foundations.org`
-- `RLM-RESEARCH-001-prolog-runtime-design.org`
-- `RLM-RESEARCH-002-agentic-harness.org`
-- `RLM-RESEARCH-003-typed-symbolic-execution.org`
-- `RLM-RESEARCH-004-prologmcp-repair-loop.org`
-- `RLM-RESEARCH-005-swi-agent-runtime.org`
-- `RLM-RESEARCH-006-mcp-dual-version-runtime.org`
-- `RLM-RESEARCH-007-langchain-langgraph-port.org`
-- `RLM-RESEARCH-008-adaptive-recursion.org`
-- `RLM-RESEARCH-009-durable-artifact-context.org`
+Current records span `RLM-RESEARCH-000` through `RLM-RESEARCH-009` and cover RLM foundations, Prolog runtime design, agentic harnesses, typed symbolic execution, repair loops, SWI agent runtime, MCP dual-version interoperability, LangChain/LangGraph semantics, adaptive recursion, and durable artifact context.
 
 ## Non-goals
 
@@ -237,4 +216,4 @@ Current records:
 
 ## Status
 
-**Research and architecture bootstrap.** The next implementation slice is the real-provider typed-plan RLM loop described above.
+**Executable SWI-Prolog bootstrap in progress.** Follow epic #3 for dependency order and acceptance gates.
