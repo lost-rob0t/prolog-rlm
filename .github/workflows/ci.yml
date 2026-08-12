@@ -32,6 +32,7 @@ jobs:
       - name: Run deterministic PlUnit suite
         env:
           OPENROUTER_API_KEY: ""
+          OPENROUTER_TEST_MODEL: ""
         run: swipl -q -s test/run_tests.pl
 
       - name: Check whitespace errors
@@ -41,3 +42,34 @@ jobs:
           else
             git diff --check HEAD^ HEAD
           fi
+
+  live-openrouter-tests:
+    name: REAL OpenRouter integration
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_TEST_MODEL: ${{ vars.OPENROUTER_TEST_MODEL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes swi-prolog-nox
+
+      - name: Require live OpenRouter credential
+        shell: bash
+        run: |
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "OPENROUTER_API_KEY is not configured for live integration CI" >&2
+            exit 1
+          fi
+
+      - name: Run REAL OpenRouter smoke test
+        run: swipl -q -s test/run_live_openrouter.pl
