@@ -1295,6 +1295,9 @@ validation_fault(Fault,
 execution_exception(plan_execution(Fault), error(Error)) :-
     !,
     execution_fault(Fault, Error).
+execution_exception(error(rlm_cancelled(Token), Context), _) :-
+    !,
+    throw(error(rlm_cancelled(Token), Context)).
 execution_exception(Exception, error(Error)) :-
     term_string(Exception, Safe, [quoted(true), numbervars(true)]),
     Error = plan_error{phase:execute,
