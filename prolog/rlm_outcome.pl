@@ -500,6 +500,8 @@ repair_after_outcome(Current,
                             NextAttempt,
                             Plan,
                             Options,
+                            Start,
+                            OriginalBudget,
                             RepairResult),
         continue_after_repair(RepairResult,
                               Current,
@@ -527,21 +529,31 @@ repair_handler_call(Handler,
                     Attempt,
                     Plan,
                     Options,
+                    Start,
+                    OriginalBudget,
                     Outcome) :-
     outcome_limits(Options, Limits),
-    catch(call_with_time_limit(
-              Limits.repair_time_limit,
-              ( call(Handler,
-                     Observation,
-                     Attempt,
-                     Plan,
-                     RepairedPlan)
-              -> Outcome = ok(RepairedPlan)
-              ;  Outcome = error(repair_error{kind:logical_failure,
-                                               message:"repair handler failed"})
-              )),
-          Exception,
-          repair_handler_exception(Exception, Outcome)).
+    remaining_wall_time(Start,
+                        OriginalBudget.time_limit,
+                        RemainingTime),
+    CallbackLimit is min(Limits.repair_time_limit, RemainingTime),
+    (   CallbackLimit =< 0
+    ->  Outcome = error(repair_error{kind:timeout,
+                                     message:"repair loop wall-time budget exhausted"})
+    ;   catch(call_with_time_limit(
+                  CallbackLimit,
+                  ( call(Handler,
+                         Observation,
+                         Attempt,
+                         Plan,
+                         RepairedPlan)
+                  -> Outcome = ok(RepairedPlan)
+                  ;  Outcome = error(repair_error{kind:logical_failure,
+                                                   message:"repair handler failed"})
+                  )),
+              Exception,
+              repair_handler_exception(Exception, Outcome))
+    ).
 
 repair_handler_exception(time_limit_exceeded,
                          error(repair_error{kind:timeout,
@@ -555,6 +567,26 @@ repair_handler_exception(Exception,
                                             message:"repair handler raised an exception"})) :-
     safe_exception(Exception, Safe).
 
+continue_after_repair(error(RepairError),
+                      Current,
+                      Attempt,
+                      _, _, _, _, _, _, _, History0,
+                      Outcome) :-
+    is_dict(RepairError),
+    get_dict(kind, RepairError, timeout),
+    !,
+    Event = repair_event{attempt:Attempt,
+                         status:repair_failed,
+                         diagnostic:Current.status,
+                         error:RepairError},
+    reverse([Event|History0], History),
+    put_dict(_{status:timeout,
+               phase:repair,
+               error:RepairError,
+               repair:repair_summary{attempts:Attempt,
+                                     history:History}},
+             Current,
+             Outcome).
 continue_after_repair(error(RepairError),
                       Current,
                       Attempt,
