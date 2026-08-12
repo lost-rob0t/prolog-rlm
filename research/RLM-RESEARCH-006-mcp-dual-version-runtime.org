@@ -68,16 +68,14 @@ Where transport design permits, accept both versions at the same logical endpoin
 
 * Maximum-Availability Tests
 
-Build a matrix:
-
-| prolog-rlm role | peer | expected |
-|-
-| client | 2025-only server | initialize and operate |
-| client | 2026-only server | discover/self-describing requests |
-| client | dual server | prefer 2026 |
-| server | 2025-only client | complete legacy lifecycle |
-| server | 2026-only client | stateless request handling |
-| server | dual client | accept selected supported version |
+| prolog-rlm role | peer                | expected behavior                  |
+|-----------------+---------------------+------------------------------------|
+| client          | 2025-only server    | initialize and operate             |
+| client          | 2026-only server    | discover/self-describing requests  |
+| client          | dual-version server | prefer 2026                        |
+| server          | 2025-only client    | complete legacy lifecycle          |
+| server          | 2026-only client    | stateless request handling         |
+| server          | dual-version client | accept selected supported version  |
 
 * Acceptance Evidence
 
