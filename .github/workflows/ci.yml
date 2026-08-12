@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Deterministic unit and load checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes swi-prolog-nox
+
+      - name: Verify supported SWI-Prolog runtime
+        run: swipl -q -s test/check_runtime.pl
+
+      - name: Static load all production modules
+        run: swipl -q -s test/load_all.pl
+
+      - name: Run deterministic PlUnit suite
+        env:
+          OPENROUTER_API_KEY: ""
+        run: swipl -q -s test/run_tests.pl
+
+      - name: Check whitespace errors
+        run: |
+          if [ -n "${{ github.base_ref }}" ]; then
+            git diff --check "origin/${{ github.base_ref }}...HEAD"
+          else
+            git diff --check HEAD^ HEAD
+          fi
