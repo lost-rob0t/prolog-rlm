@@ -1,11 +1,14 @@
 :- begin_tests(rlm_chain).
 
 :- use_module('../prolog/rlm_chain').
-:- use_module('../prolog/rlm_openai_compatible').
+:- use_module('../prolog/rlm_openai_compatible',
+              [ redact_secret/3,
+                classify_provider_exception/2
+              ]).
 
 test(openrouter_provider_keeps_credential_unresolved) :-
     openrouter_provider('openrouter/free', Provider),
-    assertion(Provider = provider(openrouter, Config)),
+    Provider = provider(openrouter, Config),
     assertion(memberchk(credential(env('OPENROUTER_API_KEY')), Config)),
     term_string(Provider, Text),
     assertion(\+ sub_string(Text, _, _, _, "Bearer ")).
@@ -30,17 +33,19 @@ test(normalizes_successful_text_response_and_usage) :-
                                    200,
                                    Raw,
                                    ok(Response)),
-    assertion(Response.provider == openrouter),
-    assertion(Response.requested_model == 'openrouter/free'),
-    assertion(Response.selected_model == "test/selected-model"),
-    assertion(Response.text == "PROLOG_RLM_OPENROUTER_OK"),
-    assertion(Response.finish_reason == "stop"),
-    assertion(Response.metadata.http_status =:= 200),
-    assertion(Response.metadata.response_received == true),
-    assertion(Response.usage.present == true),
-    assertion(Response.usage.prompt_tokens =:= 5),
-    assertion(Response.usage.completion_tokens =:= 7),
-    assertion(Response.usage.total_tokens =:= 12).
+    assertion(get_dict(provider, Response, openrouter)),
+    assertion(get_dict(requested_model, Response, 'openrouter/free')),
+    assertion(get_dict(selected_model, Response, "test/selected-model")),
+    assertion(get_dict(text, Response, "PROLOG_RLM_OPENROUTER_OK")),
+    assertion(get_dict(finish_reason, Response, "stop")),
+    get_dict(metadata, Response, Metadata),
+    assertion(get_dict(http_status, Metadata, 200)),
+    assertion(get_dict(response_received, Metadata, true)),
+    get_dict(usage, Response, Usage),
+    assertion(get_dict(present, Usage, true)),
+    assertion(get_dict(prompt_tokens, Usage, 5)),
+    assertion(get_dict(completion_tokens, Usage, 7)),
+    assertion(get_dict(total_tokens, Usage, 12)).
 
 test(normalizes_tool_call_without_text) :-
     Calls = [_{id:"call-1",
@@ -56,9 +61,10 @@ test(normalizes_tool_call_without_text) :-
                                    200,
                                    Raw,
                                    ok(Response)),
-    assertion(Response.text == ""),
-    assertion(Response.tool_calls == Calls),
-    assertion(Response.usage.present == false).
+    assertion(get_dict(text, Response, "")),
+    assertion(get_dict(tool_calls, Response, Calls)),
+    get_dict(usage, Response, Usage),
+    assertion(get_dict(present, Usage, false)).
 
 test(rejects_empty_success_response) :-
     Raw = _{model:"test/model",
@@ -69,8 +75,8 @@ test(rejects_empty_success_response) :-
                                    200,
                                    Raw,
                                    error(Error)),
-    assertion(Error.kind == invalid_response),
-    assertion(Error.response_received == true).
+    assertion(get_dict(kind, Error, invalid_response)),
+    assertion(get_dict(response_received, Error, true)).
 
 test(normalizes_http_provider_error) :-
     Raw = _{error:_{code:401,
@@ -81,11 +87,11 @@ test(normalizes_http_provider_error) :-
                                    401,
                                    Raw,
                                    error(Error)),
-    assertion(Error.kind == provider_error),
-    assertion(Error.http_status =:= 401),
-    assertion(Error.code =:= 401),
-    assertion(Error.error_type == "authentication"),
-    assertion(Error.response_received == true).
+    assertion(get_dict(kind, Error, provider_error)),
+    assertion(get_dict(http_status, Error, 401)),
+    assertion(get_dict(code, Error, 401)),
+    assertion(get_dict(error_type, Error, "authentication")),
+    assertion(get_dict(response_received, Error, true)).
 
 test(missing_env_credential_fails_before_network) :-
     Missing = '__PROLOG_RLM_TEST_KEY_THAT_MUST_NOT_EXIST__',
@@ -97,9 +103,9 @@ test(missing_env_credential_fails_before_network) :-
                         ]),
     Request = model_request{messages:[message{role:user, content:"ping"}]},
     model_complete(Provider, Request, error(Error)),
-    assertion(Error.kind == missing_credential),
-    assertion(Error.credential == env(Missing)),
-    assertion(Error.response_received == false).
+    assertion(get_dict(kind, Error, missing_credential)),
+    assertion(get_dict(credential, Error, env(Missing))),
+    assertion(get_dict(response_received, Error, false)).
 
 test(malformed_request_fails_before_network) :-
     Provider = provider(openai_compatible,
@@ -110,23 +116,23 @@ test(malformed_request_fails_before_network) :-
                         ]),
     Request = model_request{messages:[]},
     model_complete(Provider, Request, error(Error)),
-    assertion(Error.kind == validation_error),
-    assertion(Error.field == messages).
+    assertion(get_dict(kind, Error, validation_error)),
+    assertion(get_dict(field, Error, messages)).
 
 test(unknown_provider_is_capability_denied) :-
     Provider = provider(unknown_provider, []),
     model_complete(Provider, model_request{messages:[]}, error(Error)),
-    assertion(Error.kind == capability_denied),
-    assertion(Error.capability == chat_completions).
+    assertion(get_dict(kind, Error, capability_denied)),
+    assertion(get_dict(capability, Error, chat_completions)).
 
 test(timeout_exception_is_structured) :-
-    classify_provider_exception(error(timeout_error(read, stream), context(test, timeout)),
-                                Kind),
+    Exception = error(timeout_error(read, stream), context(test, timeout)),
+    classify_provider_exception(Exception, Kind),
     assertion(Kind == timeout).
 
 test(non_timeout_exception_is_transport_error) :-
-    classify_provider_exception(error(socket_error(econnreset), context(test, reset)),
-                                Kind),
+    Exception = error(socket_error(econnreset), context(test, reset)),
+    classify_provider_exception(Exception, Kind),
     assertion(Kind == transport_error).
 
 test(secret_redaction_removes_all_occurrences) :-
