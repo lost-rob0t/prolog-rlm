@@ -341,15 +341,12 @@ pump_reply(error(Error), RuntimeId, AgentId, _, _, error(AgentError)) :-
                              cause:Error,
                              message:"agent engine failed while processing mailbox message"},
     trace_add(RuntimeId, engine_failure, _{agent:AgentId, cause:Error}).
-pump_reply(ok(agent_reply{kind:dispatch,
-                          call_id:CallId,
-                          work:Work}=Reply),
-           RuntimeId,
-           AgentId,
-           Message,
-           Config,
-           Outcome) :-
+pump_reply(ok(Reply), RuntimeId, AgentId, Message, Config, Outcome) :-
+    is_dict(Reply),
+    get_dict(kind, Reply, dispatch),
     !,
+    get_dict(call_id, Reply, CallId),
+    get_dict(work, Reply, Work),
     schedule_worker(RuntimeId,
                     AgentId,
                     CallId,
@@ -399,7 +396,7 @@ schedule_worker(RuntimeId, AgentId, CallId, Work, Config, Outcome) :-
                                     agent:agent(AgentId),
                                     call_id:CallId,
                                     message:"runtime has no trusted worker handler"})
-    ;   catch(thread_create_in_pool(
+    ;   catch(( thread_create_in_pool(
                     Pool,
                     rlm_agent:worker_entry(RuntimeId,
                                            AgentId,
@@ -409,22 +406,23 @@ schedule_worker(RuntimeId, AgentId, CallId, Work, Config, Outcome) :-
                                            Config.send_timeout),
                     Thread,
                     [detached(true), wait(false)]),
+                Created = ok(Thread)
+              ),
               Exception,
               worker_create_exception(RuntimeId,
                                       AgentId,
                                       CallId,
                                       Exception,
-                                      Outcome)),
-        schedule_created_worker(Outcome,
+                                      Created)),
+        schedule_created_worker(Created,
                                 RuntimeId,
                                 AgentId,
                                 CallId,
-                                Thread,
                                 Outcome)
     ).
 
-schedule_created_worker(error(Error), _, _, _, _, error(Error)) :- !.
-schedule_created_worker(_, RuntimeId, AgentId, CallId, Thread,
+schedule_created_worker(error(Error), _, _, _, error(Error)) :- !.
+schedule_created_worker(ok(Thread), RuntimeId, AgentId, CallId,
                         ok(worker(Thread))) :-
     assertz(agent_worker(RuntimeId, AgentId, CallId, Thread)),
     thread_send_message(Thread, rlm_agent_start).
@@ -779,8 +777,10 @@ signal_agent_workers(RuntimeId, AgentId, Reason) :-
 signal_worker(Thread, Reason) :-
     catch(thread_signal(Thread, throw(agent_worker_cancelled(Reason))), _, true).
 
-notify_parent_from_reply(RuntimeId, AgentId,
-                         agent_reply{kind:failed, error:Error}) :-
+notify_parent_from_reply(RuntimeId, AgentId, Reply) :-
+    is_dict(Reply),
+    get_dict(kind, Reply, failed),
+    get_dict(error, Reply, Error),
     !,
     (   agent_record(RuntimeId, AgentId, ParentId, _, _, _, _),
         ParentId \== none
