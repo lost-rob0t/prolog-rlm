@@ -6,7 +6,14 @@
             rlm_query/4,
             rlm_cancellation_token/1,
             rlm_cancel/1,
-            default_completion_budget/1
+            default_completion_budget/1,
+            plan_outcome/5,
+            goal_outcome/3,
+            plan_inspect/4,
+            predicate_inspect/2,
+            outcome_trace/3,
+            plan_repair/6,
+            default_outcome_limits/1
           ]).
 
 /** <module> prolog-rlm entrypoint
@@ -26,6 +33,15 @@ Load this module to initialize the public runtime namespaces.
                 rlm_cancel/1,
                 default_completion_budget/1
               ]).
+:- use_module(rlm_outcome,
+              [ plan_outcome/5,
+                goal_outcome/3,
+                plan_inspect/4,
+                predicate_inspect/2,
+                outcome_trace/3,
+                plan_repair/6,
+                default_outcome_limits/1
+              ]).
 :- use_module(rlm_agent).
 :- use_module(rlm_graph).
 :- use_module(rlm_mcp).
@@ -38,6 +54,7 @@ rlm_ready :-
     rlm_plan:default_plan_budget(_),
     rlm_tool:capabilities_normalize([], ok([])),
     rlm_completion:default_completion_budget(_),
+    rlm_outcome:default_outcome_limits(_),
     rlm_agent:rlm_agent_ready,
     rlm_graph:rlm_graph_ready,
     rlm_mcp:rlm_mcp_ready.

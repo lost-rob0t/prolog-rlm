@@ -908,7 +908,7 @@ execute_step(tool(Name, ArgsExpr, Bind), Runtime, Inputs, State0, Outcome) :-
         lookup_tool(Name, Runtime, Handler),
         catch(call(Handler, Args, ToolResult),
               Exception,
-              ToolResult = tool_exception(Exception)),
+              trusted_tool_exception(Exception, ToolResult)),
         handle_tool_result(ToolResult, Name, Bind, State0, Outcome)
     ).
 execute_step(parallel(Plans, Bind), Runtime, Inputs, State0, Outcome) :-
@@ -999,6 +999,17 @@ handle_model_result(error(ModelError), Provider, _, State,
 handle_model_result(ok(Response), Provider, Bind, State0, Outcome) :-
     bind_value(Bind, Response, State0, BindOutcome),
     transition_result(BindOutcome, model(Provider), Bind, Outcome).
+
+trusted_tool_exception(time_limit_exceeded, _) :-
+    !,
+    throw(time_limit_exceeded).
+trusted_tool_exception(time_limit_exceeded(Context), _) :-
+    !,
+    throw(time_limit_exceeded(Context)).
+trusted_tool_exception(error(rlm_cancelled(Token), Context), _) :-
+    !,
+    throw(error(rlm_cancelled(Token), Context)).
+trusted_tool_exception(Exception, tool_exception(Exception)).
 
 handle_tool_result(tool_exception(Exception), Name, _, State,
                    error(Error, State)) :-
