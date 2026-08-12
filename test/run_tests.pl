@@ -7,6 +7,7 @@
 :- consult(rlm_plan_test).
 :- consult(rlm_tool_test).
 :- consult(rlm_completion_test).
+:- consult(rlm_completion_hardening_test).
 
 main(_) :-
     (   run_tests
