@@ -129,13 +129,37 @@ normalize_dict_content_part(Type, _, _) :-
 
 canonical_message_extras(Input, Extras) :-
     findall(Key-Value,
-            ( member(Key, [name,tool_call_id]),
+            ( member(Key,
+                     [ name,
+                       tool_call_id,
+                       tool_calls,
+                       reasoning,
+                       reasoning_details
+                     ]),
               get_dict(Key, Input, Raw),
-              require_ground(Raw, message_extra(Key)),
-              Value = Raw
+              canonical_message_extra(Raw, Value)
             ),
             Pairs),
     dict_pairs(Extras, message_extra, Pairs).
+
+canonical_message_extra(Value0, Value) :-
+    is_dict(Value0),
+    !,
+    dict_pairs(Value0, _, Pairs0),
+    maplist(canonical_message_extra_pair, Pairs0, Pairs),
+    dict_pairs(Value, message_data, Pairs).
+canonical_message_extra(Values0, Values) :-
+    is_list(Values0),
+    !,
+    maplist(canonical_message_extra, Values0, Values).
+canonical_message_extra(Value, Value) :-
+    ground(Value),
+    !.
+canonical_message_extra(Value, _) :-
+    throw(chain_schema_fault(non_ground(message_extra, Value))).
+
+canonical_message_extra_pair(Key-Value0, Key-Value) :-
+    canonical_message_extra(Value0, Value).
 
 /* -------------------------------------------------------------------------
  * Prompt templates
