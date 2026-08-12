@@ -182,7 +182,8 @@ dispatch_stream_provider(Provider, _, _, _,
 %   runtime.  Options include `retry_policy/1`, `middleware/1`, `router/1`,
 %   `structured_schema/1`, `trace_handler/1`, and `sleep_handler/1`.
 
-chain_invoke(ProviderSpec, Request, Options, Outcome) :-
+chain_invoke(ProviderSpec, Request0, Options, Outcome) :-
+    canonical_runtime_request(Request0, Request),
     rlm_chain_runtime:chain_invoke_with_transport(ProviderSpec,
                                                   Request,
                                                   Options,
@@ -196,13 +197,45 @@ chain_invoke(ProviderSpec, Request, Options, Outcome) :-
 %   completed response; the provider transport calls `EventHandler` as SSE data
 %   arrives.
 
-chain_stream(ProviderSpec, Request, Options, EventHandler, Outcome) :-
+chain_stream(ProviderSpec, Request0, Options, EventHandler, Outcome) :-
+    canonical_runtime_request(Request0, Request),
     rlm_chain_runtime:chain_stream_with_transport(ProviderSpec,
                                                   Request,
                                                   Options,
                                                   rlm_chain:model_stream,
                                                   EventHandler,
                                                   Outcome).
+
+/* Canonicalize anonymous dict tags in generation options.  SWI's `_{}' and
+   `_{...}' syntax intentionally creates an anonymous tag variable.  The chain
+   runtime requires request values to be ground for deterministic traces, so the
+   public facade replaces only these representation-level tags while preserving
+   all option keys and values.  Truly non-ground option values remain non-ground
+   and are still rejected by the runtime. */
+
+canonical_runtime_request(Request0, Request) :-
+    (   is_dict(Request0),
+        get_dict(options, Request0, Options0),
+        is_dict(Options0)
+    ->  canonical_option_value(Options0, Options),
+        put_dict(options, Request0, Options, Request)
+    ;   Request = Request0
+    ).
+
+canonical_option_value(Value0, Value) :-
+    is_dict(Value0),
+    !,
+    dict_pairs(Value0, _, Pairs0),
+    maplist(canonical_option_pair, Pairs0, Pairs),
+    dict_pairs(Value, chain_options, Pairs).
+canonical_option_value(Values0, Values) :-
+    is_list(Values0),
+    !,
+    maplist(canonical_option_value, Values0, Values).
+canonical_option_value(Value, Value).
+
+canonical_option_pair(Key-Value0, Key-Value) :-
+    canonical_option_value(Value0, Value).
 
 normalize_openai_chat_response(Provider, RequestedModel, HttpInfo, Raw,
                                Outcome) :-
