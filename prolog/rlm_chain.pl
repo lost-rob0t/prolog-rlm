@@ -1,6 +1,17 @@
 :- module(rlm_chain,
           [ rlm_chain_ready/0,
             model_complete/3,
+            model_stream/4,
+            chain_invoke/4,
+            chain_stream/5,
+            message_normalize/2,
+            messages_normalize/2,
+            prompt_compile/2,
+            prompt_bind/3,
+            structured_schema_compile/2,
+            structured_validate/3,
+            structured_decode_validate/3,
+            default_retry_policy/1,
             openrouter_provider/2,
             openai_compatible_provider/4,
             default_openrouter_model/1,
@@ -10,13 +21,33 @@
 
 /** <module> Provider-neutral model-chain runtime
 
-`rlm_chain` owns canonical provider dispatch. Production providers use explicit
-configuration terms and return structured `ok/1` or `error/1` outcomes.
-Deterministic fake providers remain test-only and are never fallback targets.
+`rlm_chain` owns the canonical public model abstraction.  The low-level
+`model_complete/3` predicate remains backward compatible, while `chain_invoke/4`
+and `chain_stream/5` add provider routing, middleware, bounded retry policy,
+structured output validation, canonical usage and ordered tracing.
+
+Production providers use explicit configuration terms and return structured
+`ok/1` or `error/1` outcomes.  Deterministic fake providers remain test-only
+and are never fallback targets.
 */
 
+:- use_module(rlm_chain_schema,
+              [ message_normalize/2,
+                messages_normalize/2,
+                prompt_compile/2,
+                prompt_bind/3,
+                structured_schema_compile/2,
+                structured_validate/3,
+                structured_decode_validate/3
+              ]).
+:- use_module(rlm_chain_runtime,
+              [ default_retry_policy/1,
+                chain_invoke_with_transport/5,
+                chain_stream_with_transport/6
+              ]).
 :- use_module(rlm_openai_compatible,
-              [ openai_compatible_complete/4
+              [ openai_compatible_complete/4,
+                openai_compatible_stream/5
               ]).
 
 rlm_chain_ready.
@@ -26,8 +57,14 @@ rlm_chain_ready.
 provider_capability(openrouter, chat_completions).
 provider_capability(openrouter, usage_metadata).
 provider_capability(openrouter, tool_calls).
+provider_capability(openrouter, streaming).
+provider_capability(openrouter, multimodal_input).
+provider_capability(openrouter, structured_output).
 provider_capability(openai_compatible, chat_completions).
 provider_capability(openai_compatible, tool_calls).
+provider_capability(openai_compatible, streaming).
+provider_capability(openai_compatible, multimodal_input).
+provider_capability(openai_compatible, structured_output).
 
 %!  default_openrouter_model(-Model) is det.
 %
@@ -75,6 +112,8 @@ openai_compatible_provider(Endpoint, Credential, Model,
 %   Execute one provider request. Outcome is `ok(ModelResponse)` or
 %   `error(ProviderError)`. Unknown providers and malformed provider terms fail
 %   structurally rather than raising raw provider/network exceptions.
+%
+%   This predicate is the compatibility surface used by pre-#13 callers.
 
 model_complete(provider(Provider, Config), Request, Outcome) :-
     !,
@@ -101,6 +140,101 @@ dispatch_provider(Provider, _, _,
                                        kind:capability_denied,
                                        capability:chat_completions,
                                        message:"provider does not implement chat completions"})).
+
+%!  model_stream(+Provider, +Request, +EventHandler, -Outcome) is det.
+%
+%   Execute one true provider stream. `EventHandler` is called incrementally for
+%   each normalized stream event before the final response is available.
+
+model_stream(provider(Provider, Config), Request, EventHandler, Outcome) :-
+    !,
+    dispatch_stream_provider(Provider, Config, Request, EventHandler, Outcome).
+model_stream(Provider, _, _,
+             error(provider_error{provider:Provider,
+                                  kind:configuration_error,
+                                  message:"provider must be provider(Name, Config)"})).
+
+dispatch_stream_provider(openrouter, Config, Request, EventHandler, Outcome) :-
+    !,
+    rlm_openai_compatible:openai_compatible_stream(openrouter,
+                                                   Config,
+                                                   Request,
+                                                   EventHandler,
+                                                   Outcome).
+dispatch_stream_provider(openai_compatible, Config, Request, EventHandler,
+                         Outcome) :-
+    !,
+    rlm_openai_compatible:openai_compatible_stream(openai_compatible,
+                                                   Config,
+                                                   Request,
+                                                   EventHandler,
+                                                   Outcome).
+dispatch_stream_provider(Provider, _, _, _,
+                         error(provider_error{provider:Provider,
+                                              kind:capability_denied,
+                                              capability:streaming,
+                                              message:"provider does not implement streaming"})).
+
+%!  chain_invoke(+ProviderSpec, +Request, +Options, -Outcome) is det.
+%
+%   Invoke a direct provider or `route(Candidates)` through the canonical chain
+%   runtime.  Options include `retry_policy/1`, `middleware/1`, `router/1`,
+%   `structured_schema/1`, `trace_handler/1`, and `sleep_handler/1`.
+
+chain_invoke(ProviderSpec, Request0, Options, Outcome) :-
+    canonical_runtime_request(Request0, Request),
+    rlm_chain_runtime:chain_invoke_with_transport(ProviderSpec,
+                                                  Request,
+                                                  Options,
+                                                  rlm_chain:model_complete,
+                                                  Outcome).
+
+%!  chain_stream(+ProviderSpec, +Request, +Options, +EventHandler, -Outcome) is det.
+%
+%   Stream a direct or routed provider request through the canonical middleware,
+%   structured-output and trace lifecycle.  Streaming is not simulated from a
+%   completed response; the provider transport calls `EventHandler` as SSE data
+%   arrives.
+
+chain_stream(ProviderSpec, Request0, Options, EventHandler, Outcome) :-
+    canonical_runtime_request(Request0, Request),
+    rlm_chain_runtime:chain_stream_with_transport(ProviderSpec,
+                                                  Request,
+                                                  Options,
+                                                  rlm_chain:model_stream,
+                                                  EventHandler,
+                                                  Outcome).
+
+/* Canonicalize anonymous dict tags in generation options.  SWI's `_{}' and
+   `_{...}' syntax intentionally creates an anonymous tag variable.  The chain
+   runtime requires request values to be ground for deterministic traces, so the
+   public facade replaces only these representation-level tags while preserving
+   all option keys and values.  Truly non-ground option values remain non-ground
+   and are still rejected by the runtime. */
+
+canonical_runtime_request(Request0, Request) :-
+    (   is_dict(Request0),
+        get_dict(options, Request0, Options0),
+        is_dict(Options0)
+    ->  canonical_option_value(Options0, Options),
+        put_dict(options, Request0, Options, Request)
+    ;   Request = Request0
+    ).
+
+canonical_option_value(Value0, Value) :-
+    is_dict(Value0),
+    !,
+    dict_pairs(Value0, _, Pairs0),
+    maplist(canonical_option_pair, Pairs0, Pairs),
+    dict_pairs(Value, chain_options, Pairs).
+canonical_option_value(Values0, Values) :-
+    is_list(Values0),
+    !,
+    maplist(canonical_option_value, Values0, Values).
+canonical_option_value(Value, Value).
+
+canonical_option_pair(Key-Value0, Key-Value) :-
+    canonical_option_value(Value0, Value).
 
 normalize_openai_chat_response(Provider, RequestedModel, HttpInfo, Raw,
                                Outcome) :-
