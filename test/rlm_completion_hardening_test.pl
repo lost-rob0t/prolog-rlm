@@ -5,6 +5,11 @@
 :- use_module('../prolog/rlm_plan', []).
 :- use_module('support/completion_hardening_support').
 
+expect_ok(ok(Result), Result) :- !.
+expect_ok(Outcome, _) :-
+    throw(error(unexpected_completion_outcome(Outcome),
+                context(rlm_completion_hardening_test, expected_ok))).
+
 test(root_parallel_branch_keeps_root_authority) :-
     Options = [ planner_handler(completion_hardening_support:root_parallel_planner),
                 capabilities([parallel, tool(root_only)]),
@@ -16,7 +21,7 @@ test(root_parallel_branch_keeps_root_authority) :-
                    text("opaque"),
                    Options,
                    Outcome),
-    assertion(Outcome = ok(Result)),
+    expect_ok(Outcome, Result),
     assertion(Result.value == [7]),
     assertion(Result.recursion.recursive_calls =:= 0).
 
@@ -24,7 +29,7 @@ test(nonground_model_response_gets_safe_trace_id) :-
     llm_query("trace nonground response",
               [model_handler(completion_hardening_support:nonground_model)],
               Outcome),
-    assertion(Outcome = ok(Result)),
+    expect_ok(Outcome, Result),
     assertion(Result.response.text == "NON_GROUND_OK"),
     Result.trajectory = [Event],
     assertion(atom(Event.id)).
