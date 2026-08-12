@@ -7,16 +7,13 @@
             default_completion_budget/1
           ]).
 
-/** <module> Bounded recursive-language-model completion supervisor
+/** <module> Bounded Recursive Language Model supervisor
 
-The root model selects a typed symbolic plan. Prolog validates capabilities,
-recursive depth, duplicate/cycle structure, model/tool/context budgets and
-then executes the plan with the existing closed interpreter.
-
-Recursive `rlm(...)` plan nodes remain symbolic plans. A depth-1 child may
-contain a real `model(...)` call; the root planner and child call both use the
-production provider registry in live execution. Deterministic tests may inject
-trusted planner/model handlers through explicit options.
+The root model selects a typed symbolic plan. Prolog owns validation,
+capabilities, recursion ceilings, budgets, cancellation and trajectory data.
+Recursive `rlm(...)` nodes remain closed symbolic plans; a child model call is
+still executed by the production provider registry, never by model-generated
+Prolog code.
 */
 
 :- use_module(library(lists)).
@@ -124,8 +121,14 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
     context_metadata(ContextRef.handle, MetadataOutcome),
     require_context_metadata(MetadataOutcome, MetadataRef),
     provider_options(Options, ProviderName, Provider),
-    capability_options(Options, ProviderName, Capabilities, ChildCapabilities),
-    runtime_tools(Options, Capabilities, RuntimeTools, ToolSchemas),
+    capability_options(Options,
+                       ProviderName,
+                       Capabilities,
+                       ChildCapabilities),
+    runtime_tools(Options,
+                  Capabilities,
+                  RuntimeTools,
+                  ToolSchemas),
     planner_prompt(Query,
                    MetadataRef.metadata,
                    Capabilities,
@@ -134,8 +137,9 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                    Options,
                    Prompt),
     planner_attempts(Options, Attempts),
+    planner_token_limit(Options, RequestedPlannerTokens),
     PlannerTokenLimit is min(Budget.max_total_tokens,
-                             planner_token_limit(Options)),
+                             RequestedPlannerTokens),
     planner_plan(Attempts,
                  Prompt,
                  ProviderName,
@@ -174,60 +178,59 @@ completion_after_planner(ok(Planner),
                          Token,
                          Outcome) :-
     check_cancelled(Token),
-    validate_recursive_shape(Planner.plan, Budget, ShapeOutcome),
-    validate_child_capability_plans(ShapeOutcome,
-                                    ChildCapabilities,
-                                    Budget,
-                                    ChildOutcome),
-    completion_after_shape(ChildOutcome,
-                           Planner,
-                           Query,
-                           ContextRef,
-                           ProviderName,
-                           Provider,
-                           Capabilities,
-                           ChildCapabilities,
-                           RuntimeTools,
-                           Options,
-                           Budget,
-                           Token,
-                           Outcome).
+    validate_recursive_plan(Planner.plan,
+                            ChildCapabilities,
+                            Budget,
+                            RecursiveOutcome),
+    completion_after_recursive_validation(RecursiveOutcome,
+                                          Planner,
+                                          Query,
+                                          ContextRef,
+                                          ProviderName,
+                                          Provider,
+                                          Capabilities,
+                                          ChildCapabilities,
+                                          RuntimeTools,
+                                          Options,
+                                          Budget,
+                                          Token,
+                                          Outcome).
 
-completion_after_shape(error(Error), _, _, _, _, _, _, _, _, _, _, _,
-                       error(Error)) :-
+completion_after_recursive_validation(error(Error), _, _, _, _, _, _, _, _,
+                                      _, _, _, error(Error)) :-
     !.
-completion_after_shape(ok(Shape),
-                       Planner,
-                       Query,
-                       ContextRef,
-                       ProviderName,
-                       Provider,
-                       Capabilities,
-                       ChildCapabilities,
-                       RuntimeTools,
-                       Options,
-                       Budget,
-                       Token,
-                       Outcome) :-
-    RemainingCalls0 is Budget.max_model_calls-Planner.model_calls,
-    (   RemainingCalls0 >= 0
+completion_after_recursive_validation(ok(Stats),
+                                      Planner,
+                                      Query,
+                                      ContextRef,
+                                      ProviderName,
+                                      Provider,
+                                      Capabilities,
+                                      ChildCapabilities,
+                                      RuntimeTools,
+                                      Options,
+                                      Budget,
+                                      Token,
+                                      Outcome) :-
+    RemainingCalls is Budget.max_model_calls-Planner.usage.model_calls,
+    (   RemainingCalls >= 0
     ->  true
     ;   throw(completion_fault(model_call_budget_exhausted))
+    ),
+    count_model_steps(Planner.plan, PlanModelCalls),
+    (   PlanModelCalls =< RemainingCalls
+    ->  true
+    ;   throw(completion_fault(model_call_budget_exceeded(PlanModelCalls,
+                                                          RemainingCalls)))
     ),
     remaining_tokens(Budget.max_total_tokens,
                      Planner.usage.total_tokens,
                      RemainingTokens),
-    count_model_steps(Planner.plan, PlanModelCalls),
-    (   PlanModelCalls =< RemainingCalls0
-    ->  true
-    ;   throw(completion_fault(model_call_budget_exceeded(PlanModelCalls,
-                                                          RemainingCalls0)))
-    ),
     bound_plan_model_tokens(Planner.plan,
                             PlanModelCalls,
                             RemainingTokens,
                             BoundedPlan),
-    plan_budget(Budget, RemainingCalls0, PlanBudget),
+    plan_budget(Budget, RemainingCalls, PlanBudget),
     context_runtime_options(Options, ContextOptions),
     RuntimeOptions = [ providers([provider_ref(ProviderName, Provider)]),
                        tools(RuntimeTools),
@@ -243,7 +246,7 @@ completion_after_shape(ok(Shape),
     completion_after_execution(PlanOutcome,
                                Planner,
                                BoundedPlan,
-                               Shape,
+                               Stats,
                                ChildCapabilities,
                                Budget,
                                Token,
@@ -254,50 +257,46 @@ completion_after_execution(error(Error), _, _, _, _, _, _, error(Error)) :-
 completion_after_execution(ok(Result),
                            Planner,
                            Plan,
-                           Shape,
+                           Stats,
                            ChildCapabilities,
                            Budget,
                            Token,
                            Outcome) :-
     check_cancelled(Token),
-    plan_usage(Result, UsageEvents, PlanUsage),
+    plan_usage(Result, PlanUsage),
     usage_add(Planner.usage, PlanUsage, TotalUsage),
-    budget_usage_check(Budget, TotalUsage, UsageBudgetOutcome),
-    completion_finish(UsageBudgetOutcome,
+    budget_usage_check(Budget, TotalUsage, BudgetOutcome),
+    completion_finish(BudgetOutcome,
                       Planner,
                       Plan,
                       Result,
-                      Shape,
+                      Stats,
                       ChildCapabilities,
                       TotalUsage,
-                      UsageEvents,
                       Outcome).
 
-completion_finish(error(Error), _, _, _, _, _, _, _, error(Error)) :- !.
+completion_finish(error(Error), _, _, _, _, _, _, error(Error)) :- !.
 completion_finish(ok,
                   Planner,
                   Plan,
                   Result,
-                  Shape,
+                  Stats,
                   ChildCapabilities,
                   TotalUsage,
-                  UsageEvents,
                   ok(Completion)) :-
     planner_event(Planner, RootEvent),
-    recursive_events(Plan, Result.vars, 0, RecursiveEvents),
-    append([RootEvent|RecursiveEvents], UsageEvents, Events0),
-    sort_events(Events0, Events),
+    plan_model_events(Plan, Result.vars, 0, ModelEvents),
     Completion = completion_result{
                      value:Result.value,
                      plan:Plan,
                      vars:Result.vars,
                      transitions:Result.transitions,
-                     recursion:Shape,
+                     recursion:Stats,
                      child_capabilities:ChildCapabilities,
                      usage:TotalUsage,
                      trajectory:completion_trajectory{
                                     root_event:RootEvent,
-                                    events:Events,
+                                    events:[RootEvent|ModelEvents],
                                     reason:"root model selected validated symbolic plan"
                                 }
                  }.
@@ -324,8 +323,8 @@ llm_query_guarded(Prompt0, Options, Outcome) :-
 llm_query_call(Prompt, Options, Budget, Token, Outcome) :-
     check_cancelled(Token),
     provider_options(Options, ProviderName, Provider),
-    TokenLimit is min(Budget.max_total_tokens,
-                      planner_token_limit(Options)),
+    planner_token_limit(Options, RequestedLimit),
+    TokenLimit is min(Budget.max_total_tokens, RequestedLimit),
     model_request_options(Options, TokenLimit, RequestOptions),
     Request = model_request{messages:[message{role:user, content:Prompt}],
                             options:RequestOptions},
@@ -374,7 +373,7 @@ rlm_query_with_context(Query, ContextRef, Depth, Options, Outcome) :-
     context_metadata(ContextRef.handle, MetadataOutcome),
     require_context_metadata(MetadataOutcome, MetadataRef),
     format(string(Prompt),
-           "Recursive subquery at depth ~d.\nGoal: ~s\nOpaque context metadata: ~q\nAnswer the goal without claiming access to context bytes not supplied in the prompt.",
+           "Recursive subquery at depth ~d.\nGoal: ~s\nOpaque context metadata: ~q\nAnswer only from information actually supplied to you; metadata is not context content.",
            [Depth, Query, MetadataRef.metadata]),
     llm_query(Prompt, Options, ModelOutcome),
     rlm_query_result(ModelOutcome, Depth, Outcome).
@@ -390,7 +389,7 @@ rlm_query_result(ok(ModelResult), Depth, ok(Result)) :-
  * Planner
  * ---------------------------------------------------------------------- */
 
-planner_plan(Attempts,
+planner_plan(MaxAttempts,
              Prompt,
              ProviderName,
              Provider,
@@ -399,72 +398,74 @@ planner_plan(Attempts,
              Budget,
              Token,
              Outcome) :-
-    planner_plan_attempt(1,
-                         Attempts,
-                         Prompt,
-                         ProviderName,
-                         Provider,
-                         Options,
-                         TokenLimit,
-                         Budget,
-                         Token,
-                         usage_summary{model_calls:0,
-                                       prompt_tokens:0,
-                                       completion_tokens:0,
-                                       total_tokens:0,
-                                       cost_usd:0.0,
-                                       cost_known:true,
-                                       tokens_known:true},
-                         Outcome).
+    zero_usage(Zero),
+    planner_loop(1,
+                 MaxAttempts,
+                 Prompt,
+                 ProviderName,
+                 Provider,
+                 Options,
+                 TokenLimit,
+                 Budget,
+                 Token,
+                 Zero,
+                 Outcome).
 
-planner_plan_attempt(Attempt,
-                     MaxAttempts,
-                     Prompt,
-                     ProviderName,
-                     Provider,
-                     Options,
-                     TokenLimit,
-                     Budget,
-                     Token,
-                     Usage0,
-                     Outcome) :-
+planner_loop(Attempt,
+             MaxAttempts,
+             Prompt,
+             ProviderName,
+             Provider,
+             Options,
+             TokenLimit,
+             Budget,
+             Token,
+             Usage0,
+             Outcome) :-
     check_cancelled(Token),
-    (   Usage0.model_calls < Budget.max_model_calls
-    ->  true
-    ;   Outcome = error(completion_error{phase:planner,
+    (   Usage0.model_calls >= Budget.max_model_calls
+    ->  Outcome = error(completion_error{phase:planner,
                                          kind:model_call_budget_exhausted,
-                                         message:"planner exhausted model-call budget"}),
-        !
-    ),
-    remaining_tokens(Budget.max_total_tokens,
-                     Usage0.total_tokens,
-                     RemainingTokens),
-    EffectiveLimit is max(1, min(TokenLimit, RemainingTokens)),
-    planner_request_options(Options, EffectiveLimit, RequestOptions),
-    Request = model_request{messages:[message{role:user, content:Prompt}],
-                            options:RequestOptions},
-    call_planner(Options, Provider, Request, PlannerCall),
-    planner_call_result(PlannerCall,
-                        ProviderName,
-                        Attempt,
-                        MaxAttempts,
-                        Prompt,
-                        Provider,
-                        Options,
-                        TokenLimit,
-                        Budget,
-                        Token,
-                        Usage0,
-                        Outcome).
+                                         message:"planner exhausted model-call budget"})
+    ;   remaining_tokens(Budget.max_total_tokens,
+                         Usage0.total_tokens,
+                         RemainingTokens),
+        (   RemainingTokens =< 0
+        ->  Outcome = error(completion_error{phase:planner,
+                                             kind:token_budget_exhausted,
+                                             message:"planner exhausted token budget"})
+        ;   EffectiveLimit is max(1,
+                                  min(TokenLimit, RemainingTokens)),
+            planner_request_options(Options,
+                                    EffectiveLimit,
+                                    RequestOptions),
+            Request = model_request{
+                          messages:[message{role:user, content:Prompt}],
+                          options:RequestOptions
+                      },
+            call_planner(Options, Provider, Request, PlannerCall),
+            planner_call_result(PlannerCall,
+                                Attempt,
+                                MaxAttempts,
+                                Prompt,
+                                ProviderName,
+                                Provider,
+                                Options,
+                                TokenLimit,
+                                Budget,
+                                Token,
+                                Usage0,
+                                Outcome)
+        )
+    ).
 
-planner_call_result(error(Error), _, _, _, _, _, _, _, _, _, _,
-                    error(Error)) :-
+planner_call_result(error(Error), _, _, _, _, _, _, _, _, _, _, error(Error)) :-
     !.
 planner_call_result(ok(Output),
-                    ProviderName,
                     Attempt,
                     MaxAttempts,
                     Prompt,
+                    ProviderName,
                     Provider,
                     Options,
                     TokenLimit,
@@ -472,9 +473,14 @@ planner_call_result(ok(Output),
                     Token,
                     Usage0,
                     Outcome) :-
-    planner_output(Output, ProviderName, PlanInput, CallUsage, Summary),
+    planner_output(Output,
+                   ProviderName,
+                   PlanInput,
+                   CallUsage,
+                   Summary),
     usage_add(Usage0, CallUsage, Usage1),
-    (   budget_usage_check(Budget, Usage1, error(Error))
+    budget_usage_check(Budget, Usage1, UsageBudgetOutcome),
+    (   UsageBudgetOutcome = error(Error)
     ->  Outcome = error(Error)
     ;   plan_parse(PlanInput, ParseOutcome),
         planner_parse_result(ParseOutcome,
@@ -497,7 +503,6 @@ planner_parse_result(ok(Plan), Summary, Usage, Attempt, _, _, _, _, _, _, _, _,
     !,
     Planner = planner_result{plan:Plan,
                              attempt:Attempt,
-                             model_calls:Usage.model_calls,
                              usage:Usage,
                              provider_summary:Summary}.
 planner_parse_result(error(_),
@@ -516,17 +521,17 @@ planner_parse_result(error(_),
     Attempt < MaxAttempts,
     !,
     Next is Attempt+1,
-    planner_plan_attempt(Next,
-                         MaxAttempts,
-                         Prompt,
-                         ProviderName,
-                         Provider,
-                         Options,
-                         TokenLimit,
-                         Budget,
-                         Token,
-                         Usage,
-                         Outcome).
+    planner_loop(Next,
+                 MaxAttempts,
+                 Prompt,
+                 ProviderName,
+                 Provider,
+                 Options,
+                 TokenLimit,
+                 Budget,
+                 Token,
+                 Usage,
+                 Outcome).
 planner_parse_result(error(ParseError), _, Usage, Attempt, _, _, _, _, _, _, _, _,
                      error(Error)) :-
     Error = completion_error{phase:planner,
@@ -534,28 +539,28 @@ planner_parse_result(error(ParseError), _, Usage, Attempt, _, _, _, _, _, _, _, 
                              attempts:Attempt,
                              usage:Usage,
                              cause:ParseError,
-                             message:"real planner responses did not contain a valid typed plan"}.
+                             message:"planner responses did not contain a valid typed plan"}.
 
 call_planner(Options, Provider, Request, Outcome) :-
-    (   option_value(planner_handler, Options, none, Handler),
-        Handler \== none
-    ->  require_callable(Handler, planner_handler),
-        catch(call(Handler, Request, Outcome0),
+    option_value(planner_handler, Options, none, Handler),
+    (   Handler == none
+    ->  model_complete(Provider, Request, Outcome)
+    ;   require_callable(Handler, planner_handler),
+        catch(call(Handler, Request, RawOutcome),
               Exception,
-              handler_exception(planner, Exception, Outcome0)),
-        normalize_handler_outcome(Outcome0, Outcome)
-    ;   model_complete(Provider, Request, Outcome)
+              handler_exception(planner, Exception, RawOutcome)),
+        normalize_handler_outcome(RawOutcome, Outcome)
     ).
 
 call_model(Options, Provider, Request, Outcome) :-
-    (   option_value(model_handler, Options, none, Handler),
-        Handler \== none
-    ->  require_callable(Handler, model_handler),
-        catch(call(Handler, Request, Outcome0),
+    option_value(model_handler, Options, none, Handler),
+    (   Handler == none
+    ->  model_complete(Provider, Request, Outcome)
+    ;   require_callable(Handler, model_handler),
+        catch(call(Handler, Request, RawOutcome),
               Exception,
-              handler_exception(model, Exception, Outcome0)),
-        normalize_handler_outcome(Outcome0, Outcome)
-    ;   model_complete(Provider, Request, Outcome)
+              handler_exception(model, Exception, RawOutcome)),
+        normalize_handler_outcome(RawOutcome, Outcome)
     ).
 
 normalize_handler_outcome(ok(Value), ok(Value)) :- !.
@@ -566,176 +571,243 @@ handler_exception(Kind, Exception,
                   error(completion_error{phase:Kind,
                                          kind:handler_exception,
                                          exception:Safe,
-                                         message:"trusted test handler raised an exception"})) :-
+                                         message:"trusted injected handler raised an exception"})) :-
     safe_exception(Exception, Safe).
 
 planner_output(Output, ProviderName, PlanInput, Usage, Summary) :-
-    (   is_dict(Output), get_dict(plan, Output, ExplicitPlan)
-    ->  PlanInput = ExplicitPlan,
-        output_usage(Output, Usage),
-        Summary = provider_event{provider:ProviderName,
-                                 selected_model:fake,
-                                 http_status:200,
-                                 response_received:true,
-                                 output_channel:handler}
-    ;   PlanInput = planner_response_plan_input(Output, Channel),
-        response_usage(Output, Usage),
-        response_summary(Output, ProviderName, Channel, Summary)
-    ).
-
-planner_response_plan_input(Response, text) :-
-    is_dict(Response),
-    get_dict(text, Response, Text),
-    nonempty_text(Text),
+    is_dict(Output),
+    get_dict(plan, Output, ExplicitPlan),
     !,
-    Response = Response,
-    fail.
-planner_response_plan_input(Response, PlanInput, text) :-
+    PlanInput = ExplicitPlan,
+    output_usage(Output, Usage),
+    Summary = provider_event{provider:ProviderName,
+                             selected_model:injected,
+                             http_status:200,
+                             response_received:true,
+                             output_channel:handler}.
+planner_output(Output, ProviderName, PlanInput, Usage, Summary) :-
+    real_response_plan_input(Output, PlanInput, Channel),
+    response_usage(Output, Usage),
+    response_summary(Output, ProviderName, Channel, Summary).
+
+real_response_plan_input(Response, PlanInput, text) :-
     is_dict(Response),
     get_dict(text, Response, PlanInput),
     nonempty_text(PlanInput),
     !.
-planner_response_plan_input(Response, PlanInput, reasoning) :-
+real_response_plan_input(Response, PlanInput, reasoning) :-
     is_dict(Response),
     get_dict(reasoning, Response, PlanInput),
     nonempty_text(PlanInput),
     !.
-planner_response_plan_input(Response, Response, structured).
+real_response_plan_input(Response, Response, structured).
 
 /* -------------------------------------------------------------------------
- * Plan validation, recursion and budget shaping
+ * Recursive validation and plan budget shaping
  * ---------------------------------------------------------------------- */
 
-validate_recursive_shape(Plan, Budget, Outcome) :-
-    catch(( recursive_shape(Plan, 0, [], Shape),
-            (   Shape.max_depth =< Budget.max_recursion_depth
-            ->  Outcome = ok(Shape)
-            ;   Outcome = error(completion_error{
-                                     phase:validate,
-                                     kind:recursion_depth_exceeded,
-                                     requested:Shape.max_depth,
-                                     limit:Budget.max_recursion_depth,
-                                     message:"model-selected recursive plan exceeds hard depth ceiling"
-                                 })
-            )
+validate_recursive_plan(Plan, ChildCapabilities, Budget, Outcome) :-
+    catch(( recursive_plan_stats(Plan, Stats),
+            validate_recursive_depth(Stats, Budget),
+            validate_child_capabilities(Plan, ChildCapabilities),
+            Outcome = ok(Stats)
           ),
           completion_fault(Fault),
           recursive_fault(Fault, Outcome)).
 
-recursive_shape(plan(Steps), Depth, Ancestors, Shape) :-
-    term_hash(plan(Steps), Hash),
+recursive_plan_stats(Plan, Stats) :-
+    collect_recursive_plan(Plan, 0, [], Entries, Depths),
+    findall(Hash, member(recursive_entry{hash:Hash}, Entries), Hashes),
+    sort(Hashes, UniqueHashes),
+    length(Hashes, Calls),
+    length(UniqueHashes, UniqueCalls),
+    (   Calls =:= UniqueCalls
+    ->  true
+    ;   throw(completion_fault(duplicate_recursive_call))
+    ),
+    max_list([0|Depths], MaxDepth),
+    Stats = recursion_stats{recursive_calls:Calls,
+                            max_depth:MaxDepth,
+                            fingerprints:Hashes}.
+
+collect_recursive_plan(plan(Steps), Depth, Ancestors, Entries, Depths) :-
+    collect_recursive_steps(Steps,
+                            Depth,
+                            Ancestors,
+                            Entries,
+                            Depths).
+
+collect_recursive_steps([], _, _, [], []).
+collect_recursive_steps([rlm(Child, Bind)|Steps],
+                        Depth,
+                        Ancestors,
+                        Entries,
+                        Depths) :-
+    !,
+    term_hash(Child, Hash),
     (   memberchk(Hash, Ancestors)
     ->  throw(completion_fault(recursive_cycle(Hash)))
     ;   true
     ),
-    child_shapes(Steps, Depth, [Hash|Ancestors], ChildShapes),
-    shape_from_children(Depth, ChildShapes, Shape),
-    reject_duplicate_child_hashes(ChildShapes).
-
-child_shapes([], _, _, []).
-child_shapes([rlm(Child, Bind)|Steps], Depth, Ancestors,
-             [child_shape{bind:Bind, hash:Hash, shape:ChildShape}|Shapes]) :-
-    !,
-    term_hash(Child, Hash),
     ChildDepth is Depth+1,
-    recursive_shape(Child, ChildDepth, Ancestors, ChildShape),
-    child_shapes(Steps, Depth, Ancestors, Shapes).
-child_shapes([parallel(Plans, _)|Steps], Depth, Ancestors, Shapes) :-
+    collect_recursive_plan(Child,
+                           ChildDepth,
+                           [Hash|Ancestors],
+                           ChildEntries,
+                           ChildDepths),
+    collect_recursive_steps(Steps,
+                            Depth,
+                            Ancestors,
+                            RestEntries,
+                            RestDepths),
+    append([recursive_entry{bind:Bind, hash:Hash, depth:ChildDepth}|ChildEntries],
+           RestEntries,
+           Entries),
+    append([ChildDepth|ChildDepths], RestDepths, Depths).
+collect_recursive_steps([parallel(Plans, _)|Steps],
+                        Depth,
+                        Ancestors,
+                        Entries,
+                        Depths) :-
     !,
-    parallel_shapes(Plans, Depth, Ancestors, ParallelShapes),
-    child_shapes(Steps, Depth, Ancestors, Rest),
-    append(ParallelShapes, Rest, Shapes).
-child_shapes([retry(_, Child, Bind)|Steps], Depth, Ancestors,
-             [child_shape{bind:Bind, hash:Hash, shape:ChildShape}|Shapes]) :-
+    collect_parallel_plans(Plans,
+                           Depth,
+                           Ancestors,
+                           ParallelEntries,
+                           ParallelDepths),
+    collect_recursive_steps(Steps,
+                            Depth,
+                            Ancestors,
+                            RestEntries,
+                            RestDepths),
+    append(ParallelEntries, RestEntries, Entries),
+    append(ParallelDepths, RestDepths, Depths).
+collect_recursive_steps([retry(Attempts, RetryPlan, _)|Steps],
+                        Depth,
+                        Ancestors,
+                        Entries,
+                        Depths) :-
     !,
-    term_hash(Child, Hash),
-    ChildDepth is Depth+1,
-    recursive_shape(Child, ChildDepth, Ancestors, ChildShape),
-    child_shapes(Steps, Depth, Ancestors, Shapes).
-child_shapes([_|Steps], Depth, Ancestors, Shapes) :-
-    child_shapes(Steps, Depth, Ancestors, Shapes).
+    collect_recursive_plan(RetryPlan,
+                           Depth,
+                           Ancestors,
+                           RetryEntries,
+                           RetryDepths),
+    (   Attempts > 1, RetryEntries \== []
+    ->  throw(completion_fault(repeated_recursive_retry(Attempts)))
+    ;   true
+    ),
+    collect_recursive_steps(Steps,
+                            Depth,
+                            Ancestors,
+                            RestEntries,
+                            RestDepths),
+    append(RetryEntries, RestEntries, Entries),
+    append(RetryDepths, RestDepths, Depths).
+collect_recursive_steps([_|Steps], Depth, Ancestors, Entries, Depths) :-
+    collect_recursive_steps(Steps,
+                            Depth,
+                            Ancestors,
+                            Entries,
+                            Depths).
 
-parallel_shapes([], _, _, []).
-parallel_shapes([Plan|Plans], Depth, Ancestors,
-                [child_shape{bind:parallel, hash:Hash, shape:Shape}|Shapes]) :-
-    term_hash(Plan, Hash),
-    ChildDepth is Depth+1,
-    recursive_shape(Plan, ChildDepth, Ancestors, Shape),
-    parallel_shapes(Plans, Depth, Ancestors, Shapes).
+collect_parallel_plans([], _, _, [], []).
+collect_parallel_plans([Plan|Plans], Depth, Ancestors, Entries, Depths) :-
+    collect_recursive_plan(Plan,
+                           Depth,
+                           Ancestors,
+                           PlanEntries,
+                           PlanDepths),
+    collect_parallel_plans(Plans,
+                           Depth,
+                           Ancestors,
+                           RestEntries,
+                           RestDepths),
+    append(PlanEntries, RestEntries, Entries),
+    append(PlanDepths, RestDepths, Depths).
 
-shape_from_children(Depth, [],
-                    recursion_shape{max_depth:Depth,
-                                    recursive_calls:0,
-                                    child_hashes:[]}).
-shape_from_children(Depth, Children, Shape) :-
-    Children \== [],
-    findall(Max, (member(C, Children), Max=C.shape.max_depth), Maxima),
-    max_list([Depth|Maxima], MaxDepth),
-    findall(Count, (member(C, Children), Count=C.shape.recursive_calls), Counts),
-    sum_list(Counts, NestedCount),
-    length(Children, DirectCount),
-    Calls is DirectCount+NestedCount,
-    findall(Hash, member(child_shape{hash:Hash}, Children), Hashes),
-    Shape = recursion_shape{max_depth:MaxDepth,
-                            recursive_calls:Calls,
-                            child_hashes:Hashes}.
-
-reject_duplicate_child_hashes(Children) :-
-    findall(Hash, member(child_shape{hash:Hash}, Children), Hashes),
-    sort(Hashes, Unique),
-    length(Hashes, Count),
-    length(Unique, UniqueCount),
-    (   Count =:= UniqueCount
+validate_recursive_depth(Stats, Budget) :-
+    (   Stats.max_depth =< Budget.max_recursion_depth
     ->  true
-    ;   throw(completion_fault(duplicate_recursive_call))
+    ;   throw(completion_fault(recursion_depth_exceeded(Stats.max_depth,
+                                                         Budget.max_recursion_depth)))
     ).
+
+validate_child_capabilities(plan(Steps), ChildCapabilities) :-
+    maplist(validate_child_step_capabilities(ChildCapabilities), Steps).
+
+validate_child_step_capabilities(ChildCapabilities, rlm(Child, _)) :-
+    !,
+    require_child_capability(rlm, ChildCapabilities),
+    validate_plan_capabilities_only(Child, ChildCapabilities).
+validate_child_step_capabilities(ChildCapabilities, parallel(Plans, _)) :-
+    !,
+    maplist(validate_child_plan_caps(ChildCapabilities), Plans).
+validate_child_step_capabilities(ChildCapabilities, retry(_, Plan, _)) :-
+    !,
+    validate_child_plan_caps(ChildCapabilities, Plan).
+validate_child_step_capabilities(_, _).
+
+validate_child_plan_caps(ChildCapabilities, Plan) :-
+    validate_plan_capabilities_only(Plan, ChildCapabilities).
+
+validate_plan_capabilities_only(plan(Steps), Capabilities) :-
+    maplist(validate_operation_capability(Capabilities), Steps).
+
+validate_operation_capability(Capabilities, context(_, Action, _)) :-
+    !,
+    action_capability(Action, Capability),
+    require_child_capability(Capability, Capabilities).
+validate_operation_capability(Capabilities, model(Provider, _, _, _)) :-
+    !,
+    require_child_capability(model(Provider), Capabilities).
+validate_operation_capability(Capabilities, tool(Name, _, _)) :-
+    !,
+    require_child_capability(tool(Name), Capabilities).
+validate_operation_capability(Capabilities, rlm(Plan, _)) :-
+    !,
+    require_child_capability(rlm, Capabilities),
+    validate_plan_capabilities_only(Plan, Capabilities).
+validate_operation_capability(Capabilities, parallel(Plans, _)) :-
+    !,
+    require_child_capability(parallel, Capabilities),
+    maplist(validate_child_plan_caps(Capabilities), Plans).
+validate_operation_capability(Capabilities, retry(_, Plan, _)) :-
+    !,
+    require_child_capability(retry, Capabilities),
+    validate_plan_capabilities_only(Plan, Capabilities).
+validate_operation_capability(Capabilities, checkpoint(_)) :-
+    !,
+    require_child_capability(checkpoint, Capabilities).
+validate_operation_capability(_, final(_)) :- !.
+validate_operation_capability(_, _).
+
+require_child_capability(Capability, Capabilities) :-
+    (   memberchk(Capability, Capabilities)
+    ->  true
+    ;   throw(completion_fault(child_capability_denied(Capability)))
+    ).
+
+action_capability(peek(_), context(peek)).
+action_capability(slice(_, _), context(slice)).
+action_capability(search(_), context(search)).
+action_capability(partition(_), context(partition)).
+action_capability(map(_), context(map)).
+action_capability(reduce(_), context(reduce)).
 
 recursive_fault(Fault,
                 error(completion_error{phase:validate,
                                        kind:recursive_plan_rejected,
                                        detail:Fault,
-                                       message:"recursive plan failed duplicate/cycle validation"})).
-
-validate_child_capability_plans(error(Error), _, _, error(Error)) :- !.
-validate_child_capability_plans(ok(Shape), ChildCapabilities, Budget, Outcome) :-
-    (   Shape.recursive_calls =:= 0
-    ->  Outcome = ok(Shape)
-    ;   Outcome = ok(Shape),
-        require_nonempty_list(ChildCapabilities, child_capabilities),
-        Budget = Budget
-    ).
-
-validate_child_plans_in_plan(plan(Steps), ChildCapabilities, ChildBudget) :-
-    maplist(validate_child_step(ChildCapabilities, ChildBudget), Steps).
-
-validate_child_step(ChildCapabilities, ChildBudget, rlm(Child, _)) :-
-    !,
-    plan_validate(Child, ChildCapabilities, ChildBudget, Validation),
-    require_plan_validation(Validation),
-    validate_child_plans_in_plan(Child, ChildCapabilities, ChildBudget).
-validate_child_step(ChildCapabilities, ChildBudget, parallel(Plans, _)) :-
-    !,
-    maplist(validate_child_plan(ChildCapabilities, ChildBudget), Plans).
-validate_child_step(ChildCapabilities, ChildBudget, retry(_, Plan, _)) :-
-    !,
-    validate_child_plan(ChildCapabilities, ChildBudget, Plan).
-validate_child_step(_, _, _).
-
-validate_child_plan(ChildCapabilities, ChildBudget, Plan) :-
-    plan_validate(Plan, ChildCapabilities, ChildBudget, Validation),
-    require_plan_validation(Validation),
-    validate_child_plans_in_plan(Plan, ChildCapabilities, ChildBudget).
-
-require_plan_validation(ok(_)) :- !.
-require_plan_validation(error(Error)) :-
-    throw(completion_fault(child_capability_validation_failed(Error))).
+                                       message:"recursive plan failed depth/cycle/capability validation"})).
 
 count_model_steps(plan(Steps), Count) :-
     maplist(step_model_count, Steps, Counts),
     sum_list(Counts, Count).
 
 step_model_count(model(_, _, _, _), 1) :- !.
-step_model_count(rlm(Plan, _), Count) :- !, count_model_steps(Plan, Count).
+step_model_count(rlm(Plan, _), Count) :- !,
+    count_model_steps(Plan, Count).
 step_model_count(parallel(Plans, _), Count) :-
     !,
     maplist(count_model_steps, Plans, Counts),
@@ -747,12 +819,13 @@ step_model_count(retry(Attempts, Plan, _), Count) :-
 step_model_count(_, 0).
 
 bound_plan_model_tokens(Plan, 0, _, Plan) :- !.
+bound_plan_model_tokens(_, _, RemainingTokens, _) :-
+    RemainingTokens =< 0,
+    !,
+    throw(completion_fault(token_budget_exhausted)).
 bound_plan_model_tokens(Plan, Calls, RemainingTokens, Bounded) :-
-    (   RemainingTokens > 0
-    ->  PerCall is max(1, RemainingTokens // Calls),
-        bound_plan_tokens(Plan, PerCall, Bounded)
-    ;   throw(completion_fault(token_budget_exhausted))
-    ).
+    PerCall is max(1, RemainingTokens // Calls),
+    bound_plan_tokens(Plan, PerCall, Bounded).
 
 bound_plan_tokens(plan(Steps0), PerCall, plan(Steps)) :-
     maplist(bound_step_tokens(PerCall), Steps0, Steps).
@@ -779,7 +852,8 @@ bound_plan_tokens_with(PerCall, Plan0, Plan) :-
     bound_plan_tokens(Plan0, PerCall, Plan).
 
 dict_token_limit(Options, Ceiling, Limit) :-
-    (   get_dict(max_tokens, Options, Requested), integer(Requested), Requested > 0
+    (   get_dict(max_tokens, Options, Requested),
+        integer(Requested), Requested > 0
     ->  Limit is min(Requested, Ceiling)
     ;   get_dict(max_completion_tokens, Options, Requested2),
         integer(Requested2), Requested2 > 0
@@ -798,35 +872,25 @@ plan_budget(Budget, RemainingModelCalls,
               time_limit:Budget.time_limit}) :-
     PlanDepth is Budget.max_recursion_depth+1.
 
-child_plan_budget(Budget,
-                  _{max_steps:Budget.max_iterations,
-                    max_depth:1,
-                    max_parallel:Budget.max_concurrent_subcalls,
-                    max_model_calls:Budget.max_model_calls,
-                    max_tool_calls:Budget.max_tool_calls,
-                    max_context_ops:Budget.max_context_ops,
-                    max_output_bytes:Budget.max_output_bytes,
-                    time_limit:Budget.time_limit}).
-
 /* -------------------------------------------------------------------------
  * Usage and trajectory
  * ---------------------------------------------------------------------- */
 
-plan_usage(Result, Events, Usage) :-
+plan_usage(Result, Usage) :-
     dict_pairs(Result.vars, _, Pairs),
-    findall(Event-EventUsage,
-            ( member(Bind-Value, Pairs),
-              is_model_response(Value),
-              response_usage(Value, EventUsage),
-              response_event(Value, unknown, plan_binding(Bind), unknown, Event)
+    findall(Hash-Response,
+            ( member(_-Response, Pairs),
+              is_model_response(Response),
+              term_hash(Response, Hash)
             ),
-            EventPairs),
-    pairs_events_usage(EventPairs, Events, Usages),
+            RawPairs),
+    sort(RawPairs, UniquePairs),
+    findall(ResponseUsage,
+            ( member(_-Response, UniquePairs),
+              response_usage(Response, ResponseUsage)
+            ),
+            Usages),
     usage_sum(Usages, Usage).
-
-pairs_events_usage([], [], []).
-pairs_events_usage([Event-Usage|Pairs], [Event|Events], [Usage|Usages]) :-
-    pairs_events_usage(Pairs, Events, Usages).
 
 is_model_response(Value) :-
     is_dict(Value),
@@ -836,15 +900,24 @@ is_model_response(Value) :-
     get_dict(usage, Value, _).
 
 response_usage(Response, Usage) :-
-    (   is_dict(Response), get_dict(usage, Response, Raw), is_dict(Raw)
+    (   is_dict(Response),
+        get_dict(usage, Response, Raw),
+        is_dict(Raw)
     ->  usage_number(Raw, prompt_tokens, Prompt, PromptKnown),
-        usage_number(Raw, completion_tokens, Completion, CompletionKnown),
+        usage_number(Raw,
+                     completion_tokens,
+                     Completion,
+                     CompletionKnown),
         usage_number(Raw, total_tokens, Total0, TotalKnown0),
         (   TotalKnown0 == true
-        ->  Total = Total0, TokensKnown = true
-        ;   PromptKnown == true, CompletionKnown == true
-        ->  Total is Prompt+Completion, TokensKnown = true
-        ;   Total = 0, TokensKnown = false
+        ->  Total = Total0,
+            TokensKnown = true
+        ;   PromptKnown == true,
+            CompletionKnown == true
+        ->  Total is Prompt+Completion,
+            TokensKnown = true
+        ;   Total = 0,
+            TokensKnown = false
         ),
         usage_cost(Raw, Cost, CostKnown),
         Usage = usage_summary{model_calls:1,
@@ -865,28 +938,28 @@ response_usage(Response, Usage) :-
 
 output_usage(Output, Usage) :-
     (   get_dict(usage, Output, Raw), is_dict(Raw)
-    ->  fake_usage_summary(Raw, Usage)
-    ;   Usage = usage_summary{model_calls:1,
-                              prompt_tokens:0,
-                              completion_tokens:0,
-                              total_tokens:0,
-                              cost_usd:0.0,
+    ->  dict_default(prompt_tokens, Raw, 0, Prompt),
+        dict_default(completion_tokens, Raw, 0, Completion),
+        dict_default(total_tokens, Raw, 0, Total),
+        dict_default(cost, Raw, 0.0, Cost),
+        Usage = usage_summary{model_calls:1,
+                              prompt_tokens:Prompt,
+                              completion_tokens:Completion,
+                              total_tokens:Total,
+                              cost_usd:Cost,
                               cost_known:true,
                               tokens_known:true}
+    ;   zero_usage(Zero),
+        put_dict(model_calls, Zero, 1, Usage)
     ).
 
-fake_usage_summary(Raw, Usage) :-
-    dict_default(prompt_tokens, Raw, 0, Prompt),
-    dict_default(completion_tokens, Raw, 0, Completion),
-    dict_default(total_tokens, Raw, 0, Total),
-    dict_default(cost, Raw, 0.0, Cost),
-    Usage = usage_summary{model_calls:1,
-                          prompt_tokens:Prompt,
-                          completion_tokens:Completion,
-                          total_tokens:Total,
-                          cost_usd:Cost,
-                          cost_known:true,
-                          tokens_known:true}.
+zero_usage(usage_summary{model_calls:0,
+                         prompt_tokens:0,
+                         completion_tokens:0,
+                         total_tokens:0,
+                         cost_usd:0.0,
+                         cost_known:true,
+                         tokens_known:true}).
 
 usage_number(Dict, Key, Value, Known) :-
     (   get_dict(Key, Dict, Found), number(Found)
@@ -916,13 +989,7 @@ usage_add(A, B, C) :-
                       cost_known:CostKnown,
                       tokens_known:TokensKnown}.
 
-usage_sum([], usage_summary{model_calls:0,
-                            prompt_tokens:0,
-                            completion_tokens:0,
-                            total_tokens:0,
-                            cost_usd:0.0,
-                            cost_known:true,
-                            tokens_known:true}).
+usage_sum([], Usage) :- zero_usage(Usage).
 usage_sum([Usage|Usages], Total) :-
     usage_sum(Usages, Rest),
     usage_add(Usage, Rest, Total).
@@ -952,10 +1019,7 @@ budget_usage_check(Budget, Usage, Outcome) :-
     ).
 
 remaining_tokens(Max, Used, Remaining) :-
-    (   number(Used)
-    ->  Remaining is max(0, Max-Used)
-    ;   Remaining = Max
-    ).
+    Remaining is max(0, Max-Used).
 
 planner_event(Planner,
               model_event{id:root_planner,
@@ -967,6 +1031,27 @@ planner_event(Planner,
                           http_status:Planner.provider_summary.http_status,
                           usage:Planner.usage}).
 
+plan_model_events(plan(Steps), Vars, Depth, Events) :-
+    findall(Event,
+            plan_model_event(Steps, Vars, Depth, Event),
+            Events).
+
+plan_model_event(Steps, Vars, Depth, Event) :-
+    member(model(Provider, _, _, Bind), Steps),
+    get_dict(Bind, Vars, Response),
+    is_model_response(Response),
+    response_event(Response, Depth, direct_plan_model, Provider, Event).
+plan_model_event(Steps, Vars, Depth, Event) :-
+    member(rlm(_, Bind), Steps),
+    get_dict(Bind, Vars, Response),
+    is_model_response(Response),
+    ChildDepth is Depth+1,
+    response_event(Response,
+                   ChildDepth,
+                   "model-selected recursive rlm step",
+                   unknown,
+                   Event).
+
 response_event(Response, Depth, Reason, ProviderFallback,
                model_event{id:Id,
                            parent:root_planner,
@@ -977,7 +1062,7 @@ response_event(Response, Depth, Reason, ProviderFallback,
                            http_status:Status,
                            usage:Usage}) :-
     term_hash(Response, Hash),
-    format(atom(Id), 'model_~16r', [Hash]),
+    format(atom(Id), 'model_~d', [Hash]),
     dict_default(provider, Response, ProviderFallback, Provider),
     dict_default(selected_model, Response, unknown, Selected),
     (   get_dict(metadata, Response, Metadata), is_dict(Metadata)
@@ -998,22 +1083,6 @@ response_summary(Response, ProviderFallback, Channel,
     ->  dict_default(http_status, Metadata, 0, Status)
     ;   Status = 0
     ).
-
-recursive_events(plan(Steps), Vars, Depth, Events) :-
-    findall(Event,
-            ( member(rlm(_, Bind), Steps),
-              get_dict(Bind, Vars, Value),
-              is_model_response(Value),
-              ChildDepth is Depth+1,
-              response_event(Value,
-                             ChildDepth,
-                             "model-selected recursive rlm step",
-                             unknown,
-                             Event)
-            ),
-            Events).
-
-sort_events(Events, Events).
 
 /* -------------------------------------------------------------------------
  * Prompt construction and options
@@ -1037,7 +1106,7 @@ Context metadata: ~q\n\
 Root capabilities: ~q\n\
 Child capabilities: ~q\n\
 Registered tool schemas: ~q\n\
-Recursive decomposition is optional. Use an rlm step only when useful; every rlm step contains a nested typed plan.\n\
+Recursive decomposition is optional. An rlm step contains a nested typed plan, and that child may use only child capabilities.\n\
 ~s",
            [Query,
             Metadata,
@@ -1047,13 +1116,14 @@ Recursive decomposition is optional. Use an rlm step only when useful; every rlm
             Instruction]).
 
 provider_options(Options, ProviderName, Provider) :-
-    (   option_value(provider, Options, none, Explicit), Explicit \== none
-    ->  Provider = Explicit,
-        provider_name_from_term(Explicit, ProviderName0),
-        option_value(provider_name, Options, ProviderName0, ProviderName)
-    ;   default_openrouter_model(Model),
+    option_value(provider, Options, none, Explicit),
+    (   Explicit == none
+    ->  default_openrouter_model(Model),
         openrouter_provider(Model, Provider),
         option_value(provider_name, Options, openrouter, ProviderName)
+    ;   Provider = Explicit,
+        provider_name_from_term(Explicit, DefaultName),
+        option_value(provider_name, Options, DefaultName, ProviderName)
     ).
 
 provider_name_from_term(provider(Name, _), Name) :- atom(Name), !.
@@ -1129,7 +1199,8 @@ completion_budget(Options, Budget) :-
 
 validate_completion_budget(Budget) :-
     require_positive_integer(Budget.max_iterations, max_iterations),
-    require_nonnegative_integer(Budget.max_recursion_depth, max_recursion_depth),
+    require_nonnegative_integer(Budget.max_recursion_depth,
+                                max_recursion_depth),
     require_positive_integer(Budget.max_concurrent_subcalls,
                              max_concurrent_subcalls),
     require_positive_integer(Budget.max_model_calls, max_model_calls),
@@ -1246,10 +1317,6 @@ require_positive_number(Value, Field) :-
 require_nonnegative_number(Value, _) :- number(Value), Value >= 0, !.
 require_nonnegative_number(Value, Field) :-
     throw(completion_fault(invalid_nonnegative_number(Field, Value))).
-
-require_nonempty_list(Value, _) :- is_list(Value), Value \== [], !.
-require_nonempty_list(Value, Field) :-
-    throw(completion_fault(invalid_nonempty_list(Field, Value))).
 
 text_string(Value, String) :- string(Value), !, String = Value.
 text_string(Value, String) :- atom(Value), !, atom_string(Value, String).
