@@ -15,6 +15,7 @@ How should prolog-rlm combine RLM context computation with general agent/tool be
 - Zhang et al., Recursive Language Models: https://arxiv.org/abs/2512.24601
 - Alex Zhang, Language Models will be Scaffolds: https://alexzhang13.github.io/blog/2026/scaffold/
 - Alex Zhang, Harnesses are Compositional Generalizers: https://alexzhang13.github.io/blog/2026/harness/
+- Recursive Agent Harnesses: https://arxiv.org/abs/2606.13643
 - ReAct: https://arxiv.org/abs/2210.03629
 - CodeAct: https://arxiv.org/abs/2402.01030
 - Apple CodeAct page: https://machinelearning.apple.com/research/codeact
@@ -29,6 +30,8 @@ ReAct demonstrates the utility of interleaving reasoning and external action. Co
 
 Zhang's later harness framing generalizes the RLM idea: the harness is responsible for transforming complex world/context state into locally manageable observations and calls. A harness should not hardcode a task-specific decomposition strategy when the model can choose one from evidence.
 
+Recursive Agent Harnesses independently names the next step beyond model recursion: make the recursively invoked unit a full agent harness with planning and tools rather than a bare model call. Its controlled long-context evaluation reports a substantial gain over its fixed-backbone coding-agent baseline. This is direct evidence that =spawn_agent= belongs beside =rlm_query= as a first-class but separately budgeted operation.
+
 * Prolog Adaptation
 
 Use Prolog as the harness and execution semantics layer.
@@ -39,19 +42,23 @@ Agent state and RLM context state should share infrastructure but remain concept
 
 - RLM context computation answers: what subset/representation should the model reason over?
 - agent orchestration answers: what action/subagent/tool should run next?
+- recursive agent harness execution answers: when is a fresh tool-capable reasoning root worth its extra authority and cost?
 
-Both can compile into the same validated runtime actions.
+All three can compile into the same validated runtime actions, but their budgets and capabilities remain explicit.
 
 * Avoid
 
 - hardcoding one MapReduce-like context decomposition as the RLM algorithm;
 - treating every agent tool call as RLM recursion;
+- treating every recursive call as a full privileged subagent;
 - unrestricted source generation as the normal control channel;
 - growing the entire agent transcript forever when durable state can live outside the prompt.
 
 * Implementation Implication
 
 Create three first-class embedded libraries: =rlm_chain= for providers/tools, =rlm_graph= for durable workflows, and =rlm_agent= for supervised logical agents. The RLM supervisor uses all three but remains callable as a model-like completion interface.
+
+Expose both =rlm_query= and =spawn_agent= to the validated plan language. A spawned child receives an explicitly narrowed capability set and an independent budget.
 
 * Acceptance Evidence
 
@@ -62,5 +69,6 @@ A first agentic run must demonstrate:
 - one capability-gated tool;
 - one model-selected plan;
 - one depth-1 recursive model call;
+- one supervised child-agent path in a later P1 fixture;
 - one structured trace explaining each transition;
 - deterministic termination under configured budgets.
