@@ -22,7 +22,15 @@
             artifact_list/4,
             artifact_ref_status/3,
             artifact_context_pack/4,
+            artifact_context_refs/4,
+            artifact_trace/3,
             artifact_namespace/2,
+            agent_artifact_publish/8,
+            agent_artifact_refs/3,
+            agent_artifact_context/5,
+            artifact_graph_schema_field/1,
+            graph_artifact_publish/7,
+            graph_artifact_context/5,
             default_agent_options/1,
             agent_runtime_create/2,
             agent_runtime_destroy/1,
@@ -83,7 +91,21 @@ Load this module to initialize the public runtime namespaces.
                 artifact_list/4,
                 artifact_ref_status/3,
                 artifact_context_pack/4,
+                artifact_context_refs/4,
+                artifact_trace/3,
                 artifact_namespace/2
+              ]).
+:- use_module(rlm_artifact_agent,
+              [ rlm_artifact_agent_ready/0,
+                agent_artifact_publish/8,
+                agent_artifact_refs/3,
+                agent_artifact_context/5
+              ]).
+:- use_module(rlm_artifact_graph,
+              [ rlm_artifact_graph_ready/0,
+                artifact_graph_schema_field/1,
+                graph_artifact_publish/7,
+                graph_artifact_context/5
               ]).
 :- use_module(rlm_agent,
               [ rlm_agent_ready/0,
@@ -125,6 +147,8 @@ rlm_ready :-
     rlm_completion:default_completion_budget(_),
     rlm_outcome:default_outcome_limits(_),
     rlm_artifact:rlm_artifact_ready,
+    rlm_artifact_agent:rlm_artifact_agent_ready,
+    rlm_artifact_graph:rlm_artifact_graph_ready,
     rlm_agent:rlm_agent_ready,
     rlm_graph:rlm_graph_ready,
     rlm_mcp:rlm_mcp_ready.
