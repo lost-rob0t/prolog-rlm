@@ -47,25 +47,80 @@ Run deterministic tests with:
 swipl -q -s test/run_tests.pl
 ```
 
-The bootstrap exposes:
+### CLI quickstart
+
+A fresh checkout can run a real deterministic runtime walkthrough with **no credentials**:
+
+```sh
+swipl -q -s bin/prolog-rlm.pl -- demo
+```
+
+That command exercises opaque context operations, a capability-gated local tool, adaptive recursion, supervised agents, graph checkpoint/resume, and the dual-version MCP facade.
+
+Inspect one subsystem:
+
+```sh
+swipl -q -s bin/prolog-rlm.pl -- demo recursion --view
+swipl -q -s bin/prolog-rlm.pl -- graph --json
+swipl -q -s bin/prolog-rlm.pl -- mcp --json
+```
+
+With an OpenRouter credential, run a direct completion:
+
+```sh
+export OPENROUTER_API_KEY='...'
+
+swipl -q -s bin/prolog-rlm.pl -- direct "Reply with DIRECT_OK"
+```
+
+Run a bounded **real depth-1 RLM** from one command:
+
+```sh
+swipl -q -s bin/prolog-rlm.pl -- rlm \
+  "What token is in the external context?" \
+  --context "The token is RLM_CONTEXT_42."
+```
+
+Export and inspect a portable trace outside the originating runtime process:
+
+```sh
+swipl -q -s bin/prolog-rlm.pl -- graph \
+  --trace /tmp/graph.json
+
+swipl -q -s bin/prolog-rlm.pl -- trace-view /tmp/graph.json
+```
+
+The same CLI supports JSONL traces and custom OpenAI-compatible endpoints. See:
+
+- `docs/cli-demo-traces.md` for commands, provider configuration, budgets, capabilities, failures, and trace format;
+- `examples/README.md` for reproducible direct, context, tool, recursion, graph, MCP, hosted-provider, and local-provider walkthroughs.
+
+The bootstrap also exposes the library API:
 
 ```prolog
 ?- use_module('prolog/rlm').
 ?- rlm:rlm_version(Version).
 ?- rlm:rlm_ready.
+?- rlm:demo_all(Result).
 ```
 
 Production namespaces live under `prolog/`:
 
 - `rlm` — public runtime entrypoint;
 - `rlm_chain` — provider/model abstraction;
+- `rlm_context` — bounded opaque external-context operations;
+- `rlm_tool` — capability-gated local tool execution;
+- `rlm_completion` — model-to-plan-to-execution RLM loop;
 - `rlm_agent` — supervised logical agents;
 - `rlm_graph` — durable graph execution;
-- `rlm_mcp` — canonical MCP interoperability.
+- `rlm_mcp` — canonical MCP interoperability;
+- `rlm_trace` — portable JSON/JSONL trace export and hierarchical viewing;
+- `rlm_demo` — credential-free deterministic runtime demonstrations;
+- `rlm_cli` — thin command facade over the production modules.
 
 Deterministic model doubles live only under `test/support/`. They are test fixtures, not runtime backends.
 
-GitHub Actions runs static module loading and PlUnit without network access or credentials. Real provider integration is a separate CI class added by the provider milestone; fake providers never count as live integration.
+GitHub Actions runs static module loading, PlUnit, deterministic benchmark/conformance, and the credential-free CLI smoke without network credentials. Real provider integration is a separate CI class; fake providers never count as live integration. The credentialed lane also executes the one-command `rlm` CLI path against the real provider.
 
 ## Why Prolog?
 
@@ -122,22 +177,20 @@ Prolog is not just replacing the Python REPL syntax. It is the control substrate
 
 The model must not receive unrestricted `call/1`, arbitrary shell execution, or an unbounded source-code execution primitive.
 
-Instead it should emit or select from a small executable plan language whose operations can be validated before execution. Initial forms include concepts such as:
+Instead it emits or selects from a small executable plan language whose operations are validated before execution. Executable forms include:
 
 ```prolog
-context(search(Context, Query, Hits)).
-context(partition(Hits, semantic, Parts)).
-model(call(Model, Prompt, Result)).
-rlm(call(Agent, SubContext, Query, Result)).
-tool(call(Tool, Args, Result)).
-spawn(AgentSpec, Child).
-parallel(Goals).
-retry(Policy, Goal).
+context(HandleExpr, Action, Bind).
+model(ProviderName, PromptExpr, RequestOptions, Bind).
+rlm(SubPlan, Bind).
+tool(ToolName, ArgsExpr, Bind).
+parallel(SubPlans, Bind).
+retry(Attempts, SubPlan, Bind).
 checkpoint(Label).
-final(Result).
+final(ValueExpr).
 ```
 
-The exact syntax is provisional. The invariants are not:
+The invariants are:
 
 1. every executable operation has a declared capability;
 2. plans are validated before execution;
@@ -152,6 +205,14 @@ The exact syntax is provisional. The invariants are not:
 
 Provider-neutral model access, messages, prompts, structured output, streaming, retries, middleware, and usage accounting. Direct OpenAI-compatible HTTP providers are implemented here. Deterministic fakes remain test-only.
 
+### `rlm_context`
+
+Opaque context handles and bounded `peek`, `search`, `slice`, `partition`, `map`, and `reduce` operations with byte/item/time accounting.
+
+### `rlm_completion`
+
+The high-level RLM execution loop: root model planning, closed-plan validation, capability checks, bounded context/tool/model execution, recursive child calls, structured repair, usage aggregation, and trajectories.
+
 ### `rlm_graph`
 
 Explicit graph state, fixed/conditional edges, reducers, bounded loops, subgraphs, checkpoints, replay, interrupts, event streaming, parallel branches, and cancellation propagation.
@@ -164,36 +225,44 @@ Logical agents using SWI engines/state machines, bounded workers, typed mailboxe
 
 MCP client/server interoperability behind one canonical internal representation. The compatibility targets are both `2025-11-25` and `2026-07-28`; version-specific behavior stays inside protocol adapters rather than leaking into agent/graph code.
 
-## Planned core predicates
+### `rlm_trace`
 
-Names are provisional:
+Portable `prolog-rlm.trace.v1` JSON and JSONL export plus a minimal hierarchical viewer. Dicts/lists remain structured; Prolog compound terms use explicit `$term`/`args` encoding rather than opaque pretty-printed terms.
+
+## Core predicates
 
 ```prolog
 rlm_completion(+Query, +Context, +Options, -Result).
 llm_query(+Prompt, +Options, -Result).
 rlm_query(+Query, +SubContext, +Options, -Result).
-agent_run(+AgentSpec, +Input, +Options, -Result).
+agent_spawn(+Runtime, +Parent, +Spec, +Capabilities, -Outcome).
 plan_validate(+Plan, +Capabilities, +Budget, -ValidatedPlan).
-plan_execute(+ValidatedPlan, +State0, -State, -Result).
-context_peek(+Context, +Selector, -View).
-context_search(+Context, +Pattern, -Matches).
-context_partition(+Context, +Strategy, -Partitions).
+plan_execute(+ValidatedPlan, +RuntimeOptions, +Inputs, -Outcome).
+context_peek(+Context, +Selector, +Options, -Outcome).
+context_search(+Context, +Pattern, +Options, -Outcome).
+context_partition(+Context, +Strategy, +Options, -Outcome).
+trace_write(+Path, +Format, +Name, +Payload, -Outcome).
+demo(+Name, -Result).
 ```
 
-## First executable milestone
+## Executable core milestone
 
-The first runnable slice is **not** a fake agent. It includes:
+The runnable core includes:
 
 1. SWI-Prolog project/module skeleton and PlUnit tests;
 2. a real provider-neutral model interface;
-3. at least one real OpenAI-compatible provider over SWI HTTP libraries;
-4. one opaque external context handle with bounded peek/search/slice operations;
+3. real OpenAI-compatible providers over SWI HTTP libraries;
+4. opaque external context handles with bounded context operations;
 5. a typed/allow-listed plan interpreter;
 6. a real model -> plan -> execute -> model loop;
-7. depth-1 `rlm_query/...`;
-8. one capability-gated local tool;
-9. structured outcomes and trajectory tracing;
-10. hard iteration, depth, concurrency, time, token/cost, and output budgets.
+7. bounded recursive RLM execution;
+8. capability-gated local tools;
+9. structured outcomes, trajectories, and durable artifacts;
+10. hard iteration, depth, concurrency, time, token/cost, and output budgets;
+11. supervised logical agents and durable graph execution;
+12. dual-version MCP interoperability;
+13. deterministic benchmark/conformance plus live provider gates;
+14. a CLI/demo/trace surface over the same production runtime.
 
 Fake model providers are required **only for deterministic tests**.
 
@@ -216,4 +285,4 @@ Current records span `RLM-RESEARCH-000` through `RLM-RESEARCH-009` and cover RLM
 
 ## Status
 
-**Executable SWI-Prolog bootstrap in progress.** Follow epic #3 for dependency order and acceptance gates.
+The P1 executable core, adaptive recursion, and benchmark/conformance milestones are implemented. Current P2 work focuses on operability, demonstrations, portable traces, and controlled experiments with recursion depth greater than one. Follow epic #3 for the dependency graph and acceptance gates.

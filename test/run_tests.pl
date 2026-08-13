@@ -27,6 +27,9 @@
 :- consult(rlm_recursion_runtime_test).
 :- consult(rlm_benchmark_test).
 :- consult(rlm_conformance_test).
+:- consult(rlm_trace_test).
+:- consult(rlm_demo_test).
+:- consult(rlm_cli_test).
 
 main(_) :-
     (   run_tests
