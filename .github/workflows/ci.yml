@@ -39,6 +39,7 @@ jobs:
           swipl -q -g halt -s test/live_tool_openrouter_test.pl
           swipl -q -g halt -s test/live_completion_openrouter_test.pl
           swipl -q -g halt -s test/live_repair_openrouter_test.pl
+          swipl -q -g halt -s benchmark/rlm_live_deep_experiment.pl
 
       - name: Run deterministic PlUnit suite
         shell: bash
@@ -72,6 +73,29 @@ jobs:
             message="$(tail -n 60 /tmp/prolog-rlm-benchmark.log | tr '\n' ' ')"
             message="${message//'%'/'%25'}"
             echo "::error title=Deterministic benchmark/conformance failure::${message}"
+          fi
+          exit "$status"
+
+      - name: Run deterministic deep recursion experiment
+        shell: bash
+        run: |
+          set +e
+          report="${RUNNER_TEMP}/prolog-rlm-deep-experiment.json"
+          swipl -q -s benchmark/run.pl -- deep-experiment "$report" > /tmp/prolog-rlm-deep-experiment.log 2>&1
+          status=$?
+          cat /tmp/prolog-rlm-deep-experiment.log
+          if [ -f "$report" ]; then
+            cat "$report"
+          fi
+          if [ "$status" -eq 0 ]; then
+            grep -q '"suite":"deep_recursion_experiment"' "$report" || status=1
+            grep -q '"case_count":15' "$report" || status=1
+            grep -q '"recursion_depth":2' "$report" || status=1
+          fi
+          if [ "$status" -ne 0 ]; then
+            message="$(tail -n 60 /tmp/prolog-rlm-deep-experiment.log | tr '\n' ' ')"
+            message="${message//'%'/'%25'}"
+            echo "::error title=Deterministic deep recursion experiment failed::${message}"
           fi
           exit "$status"
 
@@ -200,6 +224,37 @@ jobs:
             message="$(tail -n 60 /tmp/openrouter-benchmark.log | tr '\n' ' ')"
             message="${message//'%'/'%25'}"
             echo "::error title=REAL OpenRouter benchmark failed::${message}"
+          fi
+          exit "$status"
+
+      - name: Run REAL depth 0/1/2 recursion experiment
+        shell: bash
+        run: |
+          set +e
+          report="${RUNNER_TEMP}/prolog-rlm-openrouter-deep.json"
+          status=1
+          for attempt in 1 2; do
+            swipl -q -s benchmark/run.pl -- deep-integration "$report" > /tmp/openrouter-deep.log 2>&1
+            status=$?
+            if [ "$status" -eq 0 ]; then
+              break
+            fi
+            cat /tmp/openrouter-deep.log
+            sleep 6
+          done
+          cat /tmp/openrouter-deep.log
+          if [ -f "$report" ]; then
+            cat "$report"
+          fi
+          if [ "$status" -eq 0 ]; then
+            grep -q '"suite":"deep_openrouter_experiment"' "$report" || status=1
+            grep -q '"case_count":3' "$report" || status=1
+            grep -q '"recursion_depth":2' "$report" || status=1
+          fi
+          if [ "$status" -ne 0 ]; then
+            message="$(tail -n 80 /tmp/openrouter-deep.log | tr '\n' ' ')"
+            message="${message//'%'/'%25'}"
+            echo "::error title=REAL depth recursion experiment failed::${message}"
           fi
           exit "$status"
 

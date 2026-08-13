@@ -892,6 +892,20 @@ plan_budget(Budget, RemainingModelCalls,
  * ---------------------------------------------------------------------- */
 
 plan_usage(Result, Usage) :-
+    plan_model_responses(Result, Responses),
+    findall(ResponseUsage,
+            ( member(Response, Responses),
+              response_usage(Response, ResponseUsage)
+            ),
+            Usages),
+    usage_sum(Usages, Usage).
+
+plan_model_responses(Result, Responses) :-
+    get_dict(model_responses, Result, Recorded),
+    is_list(Recorded),
+    !,
+    Responses = Recorded.
+plan_model_responses(Result, Responses) :-
     dict_pairs(Result.vars, _, Pairs),
     findall(Hash-Response,
             ( member(_-Response, Pairs),
@@ -900,12 +914,7 @@ plan_usage(Result, Usage) :-
             ),
             RawPairs),
     sort(RawPairs, UniquePairs),
-    findall(ResponseUsage,
-            ( member(_-Response, UniquePairs),
-              response_usage(Response, ResponseUsage)
-            ),
-            Usages),
-    usage_sum(Usages, Usage).
+    findall(Response, member(_-Response, UniquePairs), Responses).
 
 is_model_response(Value) :-
     is_dict(Value),

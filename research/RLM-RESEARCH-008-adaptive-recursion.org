@@ -56,3 +56,27 @@ Canonicalize subproblem/context identifiers enough to detect obvious repeated re
 - demonstrate a decomposable long-context task routes to depth 1;
 - compare single generated plan with bounded multi-candidate plan selection;
 - prove configured hard maximum still terminates pathological plans.
+
+* Issue 20 implementation evidence
+
+The controlled depth >1 experiment is implemented behind an explicit public opt-in. Requesting =max_recursion_depth > 1= through the supported =prolog/rlm= facade is rejected before planner execution unless the caller also passes =experimental_deep_recursion(true)=. The flag does not grant capabilities or widen budgets.
+
+The experiment reuses the production typed-plan state machine rather than creating a second recursive executor. Depth-2 tests prove that whole-tree step and model-call estimates are checked against one global budget, grandchild plans remain inside the narrowed child capability envelope, and cancelling the root completion interrupts work already running in a grandchild.
+
+A deterministic harness compares depth 0, 1, and 2 fixtures plus two alternative composition strategies: a supervised delegated child agent and a fresh-root durable-artifact handoff. The harness deliberately contains help/hurt/neutral fixture outcomes so deeper recursion is not treated as the expected winner. Provider-call/token/cost values in this deterministic fixture are marked as modeled rather than live economics.
+
+Reproducible deterministic command:
+
+#+begin_src sh
+swipl -q -s benchmark/run.pl -- deep-experiment
+#+end_src
+
+A separate credentialed benchmark executes real OpenRouter depth 0/1/2 trees and records actual provider calls, token usage, reported cost, wall latency, depth, and response quality:
+
+#+begin_src sh
+swipl -q -s benchmark/run.pl -- deep-integration
+#+end_src
+
+Promotion is intentionally separate from execution. =deep_experiment_promotion/2= requires at least 20 live trials, at least 3 independent fixtures, a positive quality delta, bounded cost/latency ratios, and zero budget/capability/cancellation failures. Deterministic fixture evidence reports zero live trials and therefore cannot promote deeper recursion by itself.
+
+Issue #42 records a distinct term-API fingerprint edge discovered by these tests: anonymous-tag SWI dicts can make direct recursive =term_hash/2= fingerprints non-ground and cause false cycle detection. That follow-up must canonicalize fingerprints without weakening genuine cycle protection.
