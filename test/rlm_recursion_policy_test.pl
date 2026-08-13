@@ -62,6 +62,7 @@ test(delegated_subagent_is_a_bounded_candidate_when_available) :-
                context_chars:30000,
                uncertainty:0.7,
                branch_diversity:0.95,
+               cheap_submodel_available:true,
                delegated_subagent_available:true},
              Signals),
     recursion_candidates(Signals, [max_candidates(5)], ok(Candidates)),
