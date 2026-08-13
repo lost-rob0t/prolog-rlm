@@ -7,9 +7,11 @@ test(compound_terms_are_structured_not_flat_strings) :-
     Payload = event(route(recursive_rlm),
                     _{depth:1, flags:[ok,done]}),
     trace_encode(Payload, Encoded),
-    assertion(Encoded."$term" == "event"),
+    get_dict('$term', Encoded, EventFunctor),
+    assertion(EventFunctor == "event"),
     Encoded.args = [Route, Dict],
-    assertion(Route."$term" == "route"),
+    get_dict('$term', Route, RouteFunctor),
+    assertion(RouteFunctor == "route"),
     assertion(Route.args == ["recursive_rlm"]),
     assertion(Dict.depth =:= 1),
     assertion(Dict.flags == ["ok","done"]).
@@ -17,7 +19,8 @@ test(compound_terms_are_structured_not_flat_strings) :-
 test(json_envelope_has_version_name_and_payload) :-
     trace_envelope(demo, _{status:ok}, Envelope),
     trace_json(Envelope, Json),
-    atom_json_dict(Json, Parsed, []),
+    atom_string(JsonAtom, Json),
+    atom_json_dict(JsonAtom, Parsed, []),
     assertion(Parsed.schema == "prolog-rlm.trace.v1"),
     assertion(Parsed.name == "demo"),
     assertion(Parsed.payload.status == "ok").
@@ -29,7 +32,8 @@ test(jsonl_enumerates_top_level_list) :-
     exclude(=(""), RawLines, Lines),
     assertion(length(Lines, 3)),
     Lines = [FirstLine|_],
-    atom_json_dict(FirstLine, First, []),
+    atom_string(FirstAtom, FirstLine),
+    atom_json_dict(FirstAtom, First, []),
     assertion(First.sequence =:= 1),
     assertion(First.payload == "alpha").
 
