@@ -64,7 +64,25 @@
             benchmark_report/3,
             benchmark_budget_check/3,
             benchmark_json/2,
-            benchmark_human_summary/2
+            benchmark_human_summary/2,
+            demo/2,
+            demo_all/1,
+            demo_context/1,
+            demo_tool/1,
+            demo_recursion/1,
+            demo_agent/1,
+            demo_graph/1,
+            demo_mcp/1,
+            trace_envelope/3,
+            trace_json/2,
+            trace_jsonl/2,
+            trace_write/5,
+            trace_read/3,
+            trace_view/2,
+            trace_view_file/3,
+            trace_encode/2,
+            cli_run/2,
+            cli_usage/1
           ]).
 
 /** <module> prolog-rlm entrypoint
@@ -168,6 +186,33 @@ Load this module to initialize the public runtime namespaces.
                 benchmark_json/2,
                 benchmark_human_summary/2
               ]).
+:- use_module(rlm_demo,
+              [ rlm_demo_ready/0,
+                demo/2,
+                demo_all/1,
+                demo_context/1,
+                demo_tool/1,
+                demo_recursion/1,
+                demo_agent/1,
+                demo_graph/1,
+                demo_mcp/1
+              ]).
+:- use_module(rlm_trace,
+              [ rlm_trace_ready/0,
+                trace_envelope/3,
+                trace_json/2,
+                trace_jsonl/2,
+                trace_write/5,
+                trace_read/3,
+                trace_view/2,
+                trace_view_file/3,
+                trace_encode/2
+              ]).
+:- use_module(rlm_cli,
+              [ rlm_cli_ready/0,
+                cli_run/2,
+                cli_usage/1
+              ]).
 :- use_module(rlm_mcp).
 
 rlm_version('0.1.0-dev').
@@ -187,4 +232,7 @@ rlm_ready :-
     rlm_agent:rlm_agent_ready,
     rlm_graph:rlm_graph_ready,
     rlm_benchmark:rlm_benchmark_ready,
+    rlm_demo:rlm_demo_ready,
+    rlm_trace:rlm_trace_ready,
+    rlm_cli:rlm_cli_ready,
     rlm_mcp:rlm_mcp_ready.
