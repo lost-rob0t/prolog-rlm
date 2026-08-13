@@ -1,0 +1,34 @@
+name: One-time nested usage ledger patch
+
+on:
+  push:
+    branches:
+      - feature/issue-20-deep-recursion-experiments
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ hashFiles('.github/usage-ledger.patch') != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v6
+        with:
+          ref: feature/issue-20-deep-recursion-experiments
+          fetch-depth: 0
+
+      - name: Apply exact patch and self-remove
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check .github/usage-ledger.patch
+          git apply .github/usage-ledger.patch
+          git rm .github/usage-ledger.patch .github/workflows/apply-usage-ledger.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add prolog/rlm_plan.pl prolog/rlm_completion.pl
+          git commit -m "fix(completion): account nested model usage"
+          git push origin HEAD:feature/issue-20-deep-recursion-experiments
