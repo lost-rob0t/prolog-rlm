@@ -24,14 +24,14 @@ benchmark_case(Name,
                Status,
                Quality0,
                Metrics0,
-               Details,
+               Details0,
                Case) :-
     require_atom(Name, name),
     require_atom(Category, category),
     require_status(Status),
     unit_score(Quality0, quality, Quality),
     normalize_metrics(Metrics0, Metrics),
-    require_ground(Details, details),
+    json_safe(Details0, Details),
     Case = benchmark_case{
                name:Name,
                category:Category,
@@ -274,6 +274,47 @@ budget_key(max_latency_ms, latency_ms).
 budget_key(max_recursion_depth, recursion_depth).
 budget_key(max_context_bytes_inspected, context_bytes_inspected).
 
+/* JSON-safe details ------------------------------------------------------ */
+
+json_safe(Value, _) :-
+    var(Value),
+    !,
+    throw(error(instantiation_error,
+                context(rlm_benchmark, 'benchmark details contain a variable'))).
+json_safe(Value, Value) :-
+    number(Value),
+    !.
+json_safe(Value, Value) :-
+    string(Value),
+    !.
+json_safe(Value, Value) :-
+    memberchk(Value, [true,false,null]),
+    !.
+json_safe(Value, Value) :-
+    atom(Value),
+    !.
+json_safe(Values0, Values) :-
+    is_list(Values0),
+    !,
+    maplist(json_safe, Values0, Values).
+json_safe(Dict0, Dict) :-
+    is_dict(Dict0),
+    !,
+    dict_pairs(Dict0, _, Pairs0),
+    maplist(json_safe_pair, Pairs0, Pairs),
+    dict_pairs(Dict, benchmark_details, Pairs).
+json_safe(Value, String) :-
+    ground(Value),
+    !,
+    term_string(Value, String, [quoted(true), numbervars(true)]).
+json_safe(_, _) :-
+    throw(error(instantiation_error,
+                context(rlm_benchmark,
+                        'benchmark details contain a non-ground term'))).
+
+json_safe_pair(Key-Value0, Key-Value) :-
+    json_safe(Value0, Value).
+
 /* Validation ------------------------------------------------------------- */
 
 report_status(0, pass) :- !.
@@ -340,7 +381,3 @@ unit_score(Value0, _, Value) :-
 unit_score(Value, Name, _) :-
     throw(error(domain_error(unit_score(Name), Value),
                 context(rlm_benchmark, 'invalid benchmark score'))).
-
-require_ground(Value, _) :- ground(Value), !.
-require_ground(_, Name) :-
-    throw(error(instantiation_error, context(rlm_benchmark, Name))).
