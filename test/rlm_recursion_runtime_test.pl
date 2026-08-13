@@ -33,6 +33,10 @@ test(easy_request_executes_direct_handler_only,
     assertion(Execution.selected_policy == direct_continuation),
     assertion(Execution.result == direct(easy_lookup)),
     assertion(Execution.next_depth =:= 0),
+    assertion(Execution.actual_cost == unknown),
+    assertion(Execution.actual_usage == unknown),
+    assertion(Execution.parent_identity == root),
+    assertion(atom(Execution.child_identity)),
     assertion(Execution.next_fingerprints == []),
     findall(Route, route_call(Route, _), Routes),
     assertion(Routes == [direct_continuation]).
@@ -52,6 +56,54 @@ test(long_context_executes_depth_one_recursive_handler,
     assertion(Execution.next_fingerprints == [Execution.fingerprint]),
     findall(Route, route_call(Route, _), Routes),
     assertion(Routes == [recursive_rlm]).
+
+test(recursive_trace_records_measured_usage_and_identities,
+     [setup(setup_calls), cleanup(setup_calls)]) :-
+    Request = _{subject:measured_recursive,
+                parent_identity:parent_1,
+                recursive_rlm:plunit_rlm_recursion_runtime:recursive_metadata_handler},
+    budgeted(_{task_complexity:0.95,
+               context_chars:220000,
+               uncertainty:0.9,
+               branch_diversity:0.5},
+             Signals),
+    recursion_execute(Signals, Request, [], ok(Execution)),
+    assertion(Execution.selected_policy == recursive_rlm),
+    assertion(Execution.parent_identity == parent_1),
+    assertion(Execution.child_identity == child_1),
+    assertion(Execution.actual_cost =:= 0.031),
+    assertion(Execution.actual_usage == usage{tokens:321}),
+    Execution.trace = [_, Trace],
+    assertion(Trace.reason == long_context_recursive_decomposition),
+    assertion(Trace.parent_identity == parent_1),
+    assertion(Trace.child_identity == child_1),
+    assertion(Trace.depth =:= 1),
+    assertion(number(Trace.estimated_cost)),
+    assertion(Trace.actual_cost =:= 0.031),
+    assertion(Trace.actual_usage == usage{tokens:321}).
+
+test(delegated_trace_records_measured_usage_and_parent,
+     [setup(setup_calls), cleanup(setup_calls)]) :-
+    Request = _{subject:branching_delegate,
+                parent_identity:supervisor_7,
+                delegated_subagent:plunit_rlm_recursion_runtime:delegated_metadata_handler},
+    budgeted(_{task_complexity:1.0,
+               context_chars:100,
+               uncertainty:1.0,
+               branch_diversity:1.0},
+             Signals),
+    recursion_execute(Signals, Request, [], ok(Execution)),
+    assertion(Execution.selected_policy == delegated_subagent),
+    assertion(Execution.parent_identity == supervisor_7),
+    assertion(atom(Execution.child_identity)),
+    assertion(Execution.actual_cost =:= 0.07),
+    assertion(Execution.actual_usage == usage{tokens:88}),
+    assertion(Execution.next_depth =:= 0),
+    Execution.trace = [_, Trace],
+    assertion(Trace.selected_policy == delegated_subagent),
+    assertion(Trace.parent_identity == supervisor_7),
+    assertion(Trace.recursive == false),
+    assertion(Trace.depth =:= 0).
 
 test(duplicate_recursive_subject_is_redirected,
      [setup(setup_calls), cleanup(setup_calls)]) :-
@@ -173,7 +225,20 @@ cheap_handler(_, Subject, cheap(Subject)) :-
 recursive_handler(_, Subject, recursive(Subject)) :-
     assertz(route_call(recursive_rlm, Subject)).
 
+recursive_metadata_handler(_, Subject,
+                           ok(recursive(Subject),
+                              _{actual_cost:0.031,
+                                usage:usage{tokens:321},
+                                child_identity:child_1})) :-
+    assertz(route_call(recursive_rlm, Subject)).
+
 delegated_handler(_, Subject, delegated(Subject)) :-
+    assertz(route_call(delegated_subagent, Subject)).
+
+delegated_metadata_handler(_, Subject,
+                           ok(delegated(Subject),
+                              _{actual_cost:0.07,
+                                usage:usage{tokens:88}})) :-
     assertz(route_call(delegated_subagent, Subject)).
 
 error_handler(_, _, error(route_error(expected_failure))).
