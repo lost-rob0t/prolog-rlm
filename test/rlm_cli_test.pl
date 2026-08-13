@@ -63,16 +63,37 @@ test(custom_endpoint_requires_model) :-
               cli_fault(model_required_for_endpoint(
                             "http://127.0.0.1:8000/v1/chat/completions"))).
 
-test(default_rlm_planner_is_depth_one_and_uses_context_variable) :-
-    rlm_cli:simple_recursive_planner_instruction(openrouter,
-                                                 128,
-                                                 "Question: test",
-                                                 Instruction),
-    assertion(sub_string(Instruction, _, _, _, "\"op\":\"context\"")),
-    assertion(sub_string(Instruction, _, _, _, "\"op\":\"rlm\"")),
-    assertion(sub_string(Instruction, _, _, _, "\"provider\":\"openrouter\"")),
-    assertion(sub_string(Instruction, _, _, _, "\"name\":\"snippet\"")),
-    assertion(sub_string(Instruction, _, _, _, "\"max_tokens\":128")).
+test(default_rlm_plan_is_depth_one_and_uses_context_variable) :-
+    rlm_cli:simple_recursive_plan(openrouter,
+                                  128,
+                                  "Question: test",
+                                  Plan),
+    Plan = plan([
+               context(input(context), slice(0, ContextLength), snippet),
+               rlm(plan([
+                       model(openrouter,
+                             var(snippet),
+                             ModelOptions,
+                             child_response),
+                       final(var(child_response))
+                   ]),
+                   child),
+               final(var(child))
+           ]),
+    assertion(ContextLength =:= 14),
+    assertion(ModelOptions.max_tokens =:= 128).
+
+test(fixed_cli_planner_returns_exact_plan_without_token_usage) :-
+    rlm_cli:simple_recursive_plan(openrouter,
+                                  64,
+                                  "Question: test",
+                                  Plan),
+    rlm_cli:fixed_cli_planner(Plan, _{}, Output),
+    assertion(Output.plan == Plan),
+    assertion(Output.usage.prompt_tokens =:= 0),
+    assertion(Output.usage.completion_tokens =:= 0),
+    assertion(Output.usage.total_tokens =:= 0),
+    assertion(Output.usage.cost =:= 0.0).
 
 test(demo_trace_export_and_trace_view_are_roundtrippable) :-
     tmp_file_stream(text, Path, Stream),
