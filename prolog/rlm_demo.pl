@@ -111,8 +111,8 @@ demo_tool_registry(Registry, Result) :-
     Result = demo_result{
                  name:tool,
                  status:pass,
-                 value:_{authorization:Execution.authorization,
-                         status:Execution.status,
+                 value:_{authorization:Trace.authorization,
+                         status:Trace.status,
                          content:Execution.value.content,
                          truncated:Execution.value.truncated},
                  trace:[Trace]
@@ -184,7 +184,7 @@ demo_agent_(Result) :-
 demo_agent_runtime(Runtime, Result) :-
     agent_spawn(Runtime, none, agent_spec(parent), [], ok(Parent)),
     agent_spawn(Runtime, Parent, agent_spec(child), [], ok(Child)),
-    agent_children(Runtime, Parent, ok(Children)),
+    agent_children(Runtime, Parent, Children),
     agent_runtime_status(Runtime, RuntimeStatus),
     agent_cancel(Runtime, Parent, demo_complete, ok(_)),
     agent_status(Runtime, Parent, ok(ParentStatus)),
