@@ -5,6 +5,8 @@
             artifact_persist_get/4,
             artifact_persist_latest/4,
             artifact_persist_list/2,
+            artifact_persist_trace_append/3,
+            artifact_persist_trace/2,
             artifact_persist_delete_namespace/1
           ]).
 
@@ -16,7 +18,10 @@
        artifact_record(namespace:any,
                        key:atom,
                        version:integer,
-                       artifact:any).
+                       artifact:any),
+       artifact_trace_record(namespace:any,
+                             sequence:integer,
+                             event:any).
 
 artifact_persist_open(File) :-
     with_mutex(rlm_artifact_persist,
@@ -88,10 +93,38 @@ artifact_persist_list(Namespace, Artifacts) :-
     sort(Rows0, Rows),
     findall(Artifact, member(_-_-Artifact, Rows), Artifacts).
 
+artifact_persist_trace_append(Namespace, BaseEvent, Event) :-
+    require_attached,
+    ground(BaseEvent),
+    !,
+    with_mutex(rlm_artifact_persist,
+               ( findall(S,
+                         artifact_trace_record(Namespace, S, _),
+                         Sequences),
+                 next_version(Sequences, Sequence),
+                 put_dict(sequence, BaseEvent, Sequence, Event),
+                 assert_artifact_trace_record(Namespace, Sequence, Event)
+               )).
+artifact_persist_trace_append(_, BaseEvent, _) :-
+    throw(error(instantiation_error,
+                context(rlm_artifact_persist,
+                        non_ground_trace_event(BaseEvent)))).
+
+artifact_persist_trace(Namespace, Events) :-
+    require_attached,
+    with_mutex(rlm_artifact_persist,
+               findall(Sequence-Event,
+                       artifact_trace_record(Namespace, Sequence, Event),
+                       Pairs0)),
+    keysort(Pairs0, Pairs),
+    findall(Event, member(_-Event, Pairs), Events).
+
 artifact_persist_delete_namespace(Namespace) :-
     require_attached,
     with_mutex(rlm_artifact_persist,
-               retractall_artifact_record(Namespace, _, _, _)).
+               ( retractall_artifact_record(Namespace, _, _, _),
+                 retractall_artifact_trace_record(Namespace, _, _)
+               )).
 
 next_version([], 1).
 next_version(Versions, Version) :-
