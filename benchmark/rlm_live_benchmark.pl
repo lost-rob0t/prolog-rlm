@@ -78,15 +78,33 @@ live_case(exception(Exception), ElapsedMs, Case) :-
                      exception:Safe},
                    Case).
 
+% Integration status answers whether the provider/runtime produced a usable
+% assistant response. Quality separately grades instruction compliance. This
+% matters for aliases such as openrouter/free, whose selected model and output
+% channel can vary between runs even when the provider path is healthy.
 response_quality(Response, 1.0, pass,
                  _{expected_token:true, assistant_output:true}) :-
-    response_text(Response, Text),
+    expected_token_present(Response),
+    !.
+response_quality(Response, 0.5, pass,
+                 _{expected_token:false, assistant_output:true}) :-
+    assistant_output_present(Response, true),
+    !.
+response_quality(_, 0.0, fail,
+                 _{expected_token:false, assistant_output:false}).
+
+expected_token_present(Response) :-
+    response_channel_text(Response, Text),
     sub_string(Text, _, _, _, "PROLOG_RLM_BENCHMARK_OK"),
     !.
-response_quality(Response, 0.0, fail,
-                 _{expected_token:false,
-                   assistant_output:OutputPresent}) :-
-    assistant_output_present(Response, OutputPresent).
+
+response_channel_text(Response, Text) :-
+    response_text(Response, Text),
+    Text \== "".
+response_channel_text(Response, Reasoning) :-
+    get_dict(reasoning, Response, Reasoning),
+    string(Reasoning),
+    Reasoning \== "".
 
 response_text(Response, Text) :-
     (   get_dict(text, Response, Value),
@@ -96,18 +114,12 @@ response_text(Response, Text) :-
     ).
 
 assistant_output_present(Response, true) :-
-    response_text(Response, Text),
-    Text \== "",
+    response_channel_text(Response, _),
     !.
 assistant_output_present(Response, true) :-
     get_dict(tool_calls, Response, ToolCalls),
     is_list(ToolCalls),
     ToolCalls \== [],
-    !.
-assistant_output_present(Response, true) :-
-    get_dict(reasoning, Response, Reasoning),
-    string(Reasoning),
-    Reasoning \== "",
     !.
 assistant_output_present(_, false).
 
