@@ -62,7 +62,8 @@ artifact_persist_append(Namespace, Key, BaseArtifact, Artifact) :-
                  assert_artifact_record(Namespace,
                                         Key,
                                         Version,
-                                        Artifact)
+                                        Artifact),
+                 append_publish_trace_locked(Namespace, Artifact)
                )).
 artifact_persist_append(_, _, BaseArtifact, _) :-
     throw(error(instantiation_error,
@@ -98,13 +99,7 @@ artifact_persist_trace_append(Namespace, BaseEvent, Event) :-
     ground(BaseEvent),
     !,
     with_mutex(rlm_artifact_persist,
-               ( findall(S,
-                         artifact_trace_record(Namespace, S, _),
-                         Sequences),
-                 next_version(Sequences, Sequence),
-                 put_dict(sequence, BaseEvent, Sequence, Event),
-                 assert_artifact_trace_record(Namespace, Sequence, Event)
-               )).
+               append_trace_locked(Namespace, BaseEvent, Event)).
 artifact_persist_trace_append(_, BaseEvent, _) :-
     throw(error(instantiation_error,
                 context(rlm_artifact_persist,
@@ -125,6 +120,20 @@ artifact_persist_delete_namespace(Namespace) :-
                ( retractall_artifact_record(Namespace, _, _, _),
                  retractall_artifact_trace_record(Namespace, _, _)
                )).
+
+append_publish_trace_locked(Namespace, Artifact) :-
+    BaseEvent = artifact_trace{type:published,
+                               ref:Artifact.ref,
+                               producer:Artifact.provenance},
+    append_trace_locked(Namespace, BaseEvent, _).
+
+append_trace_locked(Namespace, BaseEvent, Event) :-
+    findall(S,
+            artifact_trace_record(Namespace, S, _),
+            Sequences),
+    next_version(Sequences, Sequence),
+    put_dict(sequence, BaseEvent, Sequence, Event),
+    assert_artifact_trace_record(Namespace, Sequence, Event).
 
 next_version([], 1).
 next_version(Versions, Version) :-
