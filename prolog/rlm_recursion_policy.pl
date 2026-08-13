@@ -10,9 +10,14 @@
 /** <module> Adaptive recursion and context-program routing policy
 
 The policy compares bounded routing candidates using explicit utility/cost
-scores.  Recursion is one route, not the default control flow.  Production
+scores. Recursion is one route, not the default control flow. Production
 configuration permits one recursive level by default; deeper recursion requires
 both an explicit option and capability.
+
+Model-assisted candidate generation and selection are deliberately constrained:
+- generators may only rescore routes already admitted by capabilities/budgets;
+- generated expected values are always recomputed by the policy;
+- selectors may only choose a route from the final bounded candidate set.
 */
 
 :- use_module(library(option)).
@@ -44,13 +49,7 @@ recursion_route(Signals0, Options, Outcome) :-
 recursion_route_(Signals0, Options, Decision) :-
     normalize_options(Options, Policy),
     normalize_signals(Signals0, Policy, Signals),
-    build_candidates(Signals, Policy, Candidates0),
-    apply_candidate_generator(Policy,
-                              Signals,
-                              Candidates0,
-                              Candidates1),
-    normalize_candidates(Candidates1, Candidates2),
-    bound_candidates(Candidates2, Policy.max_candidates, Candidates),
+    candidate_set(Signals, Policy, Candidates),
     Candidates \== [],
     select_candidate(Policy, Signals, Candidates, Selected),
     decision_reason(Selected, Signals, Reason),
@@ -84,13 +83,16 @@ recursion_candidates(Signals0, Options, Outcome) :-
 recursion_candidates_(Signals0, Options, Candidates) :-
     normalize_options(Options, Policy),
     normalize_signals(Signals0, Policy, Signals),
-    build_candidates(Signals, Policy, Candidates0),
+    candidate_set(Signals, Policy, Candidates).
+
+candidate_set(Signals, Policy, Candidates) :-
+    build_candidates(Signals, Policy, BaseCandidates),
     apply_candidate_generator(Policy,
                               Signals,
-                              Candidates0,
-                              Candidates1),
-    normalize_candidates(Candidates1, Candidates2),
-    bound_candidates(Candidates2, Policy.max_candidates, Candidates).
+                              BaseCandidates,
+                              Candidates0),
+    normalize_candidates(Policy, Candidates0, Candidates1),
+    bound_candidates(Candidates1, Policy.max_candidates, Candidates).
 
 recursion_guard(Fingerprint,
                 PreviousFingerprints,
@@ -126,7 +128,7 @@ recursion_fingerprint(Term, Fingerprint) :-
                             'fingerprinted recursion request must be ground')))
     ).
 
-/* ---------------------------------------------------------------------- */
+/* Options --------------------------------------------------------------- */
 
 normalize_options(Options, Policy) :-
     (   is_list(Options)
@@ -205,6 +207,8 @@ effective_max_depth(MaxDepth, true, true, MaxDepth) :- !.
 effective_max_depth(MaxDepth, _, _, Effective) :-
     Effective is min(MaxDepth, 1).
 
+/* Signals --------------------------------------------------------------- */
+
 normalize_signals(Signals0, Policy, Signals) :-
     (   is_dict(Signals0)
     ->  true
@@ -256,6 +260,8 @@ normalize_signals(Signals0, Policy, Signals) :-
                   delegated_subagent_available:SubagentAvailable,
                   artifact_context_available:ArtifactAvailable
               }.
+
+/* Candidate construction ------------------------------------------------ */
 
 build_candidates(Signals, Policy, Candidates) :-
     direct_candidate(Signals, Policy, Direct),
@@ -372,6 +378,8 @@ expected_value(Utility, Cost, Policy, Value) :-
     Raw is Utility-Policy.cost_weight*Cost,
     round_score(Raw, Value).
 
+/* Model-assisted candidate hook ---------------------------------------- */
+
 apply_candidate_generator(Policy, Signals, Base, Candidates) :-
     Generator = Policy.candidate_generator,
     (   Generator == none
@@ -380,14 +388,35 @@ apply_candidate_generator(Policy, Signals, Base, Candidates) :-
               Exception,
               throw(recursion_policy_fault(candidate_generator_exception(Exception)))),
         require_list(Generated0, generated_candidates),
-        append(Base, Generated0, Candidates)
+        validate_generated_routes(Generated0, Base),
+        % Generated candidates come first so a hook may rescore an already
+        % admitted route. normalize_candidates/3 still recomputes value and
+        % deduplicates by route, so a generator cannot create extra route kinds.
+        append(Generated0, Base, Candidates)
     ).
 
-normalize_candidates(Candidates0, Candidates) :-
-    maplist(normalize_candidate, Candidates0, Candidates1),
+validate_generated_routes([], _).
+validate_generated_routes([Candidate|Rest], Base) :-
+    generated_route(Candidate, Route),
+    (   candidate_for_route(Base, Route, _)
+    ->  true
+    ;   throw(recursion_policy_fault(
+                  candidate_generator_route_unavailable(Route)))
+    ),
+    validate_generated_routes(Rest, Base).
+
+generated_route(Candidate, Route) :-
+    (   is_dict(Candidate),
+        get_dict(route, Candidate, Route)
+    ->  require_route(Route)
+    ;   throw(recursion_policy_fault(invalid_candidate(Candidate)))
+    ).
+
+normalize_candidates(Policy, Candidates0, Candidates) :-
+    maplist(normalize_candidate(Policy), Candidates0, Candidates1),
     dedupe_routes(Candidates1, [], Candidates).
 
-normalize_candidate(Candidate0, Candidate) :-
+normalize_candidate(Policy, Candidate0, Candidate) :-
     (   is_dict(Candidate0)
     ->  true
     ;   throw(recursion_policy_fault(invalid_candidate(Candidate0)))
@@ -395,11 +424,9 @@ normalize_candidate(Candidate0, Candidate) :-
     require_route(Candidate0.route),
     score(Candidate0.expected_utility, expected_utility, Utility),
     nonnegative_score(Candidate0.estimated_cost, estimated_cost, Cost),
-    (   get_dict(expected_value, Candidate0, Value0)
-    ->  number(Value0),
-        Value = Value0
-    ;   Value is Utility-Cost
-    ),
+    % Never trust a generated/selected expected_value field. It is derived
+    % from the normalized utility/cost under the active policy.
+    expected_value(Utility, Cost, Policy, Value),
     (   get_dict(rationale, Candidate0, Rationale)
     ->  true
     ;   Rationale = generated_candidate
@@ -456,6 +483,8 @@ route_rank(cheap_submodel, 3).
 route_rank(recursive_rlm, 4).
 route_rank(delegated_subagent, 5).
 
+/* Selection ------------------------------------------------------------- */
+
 select_candidate(Policy, Signals, Candidates, Selected) :-
     Selector = Policy.candidate_selector,
     (   Selector == none
@@ -463,14 +492,19 @@ select_candidate(Policy, Signals, Candidates, Selected) :-
     ;   catch(call(Selector, Signals, Candidates, Selected0),
               Exception,
               throw(recursion_policy_fault(candidate_selector_exception(Exception)))),
-        normalize_candidate(Selected0, Selected),
-        memberchk(Selected.route,
-                  [direct_continuation,
-                   cheap_submodel,
-                   recursive_rlm,
-                   delegated_subagent,
-                   deterministic_context])
+        normalize_candidate(Policy, Selected0, Proposed),
+        (   candidate_for_route(Candidates, Proposed.route, Selected)
+        ->  true
+        ;   throw(recursion_policy_fault(
+                      candidate_selector_out_of_bounds(Proposed.route)))
+        )
     ).
+
+candidate_for_route([Candidate|_], Route, Candidate) :-
+    Candidate.route == Route,
+    !.
+candidate_for_route([_|Rest], Route, Candidate) :-
+    candidate_for_route(Rest, Route, Candidate).
 
 decision_reason(Selected, Signals, Reason) :-
     Route = Selected.route,
@@ -480,7 +514,10 @@ reason_for_route(direct_continuation, Signals, easy_direct_continuation) :-
     Signals.task_complexity =< 0.35,
     !.
 reason_for_route(direct_continuation, Signals, recursion_guarded) :-
-    (Signals.duplicate == true ; Signals.remaining_depth =:= 0 ; Signals.remaining_calls =:= 0),
+    (   Signals.duplicate == true
+    ;   Signals.remaining_depth =:= 0
+    ;   Signals.remaining_calls =:= 0
+    ),
     !.
 reason_for_route(direct_continuation, _, direct_route_has_best_expected_value).
 reason_for_route(deterministic_context, Signals, context_operation_dominates) :-
@@ -504,7 +541,7 @@ budget_remaining(Signals,
                      tokens:Signals.remaining_tokens
                  }).
 
-/* ---------------------------------------------------------------------- */
+/* Error wrapping -------------------------------------------------------- */
 
 policy_outcome(Phase, Goal, Outcome) :-
     catch(( call(Goal, Value), Result = ok(Value) ),
@@ -535,9 +572,9 @@ policy_exception(Phase, Exception, error(Error)) :-
                 message:"adaptive recursion policy raised an exception"
             }.
 
-/* ---------------------------------------------------------------------- */
+/* Validation ------------------------------------------------------------ */
 
-score(Value0, Name, Value) :-
+score(Value0, _, Value) :-
     number(Value0),
     Value0 >= 0.0,
     Value0 =< 1.0,
@@ -546,7 +583,8 @@ score(Value0, Name, Value) :-
 score(Value, Name, _) :-
     throw(recursion_policy_fault(invalid_score(Name, Value))).
 
-unit_score(Value0, Name, Value) :- score(Value0, Name, Value).
+unit_score(Value0, Name, Value) :-
+    score(Value0, Name, Value).
 
 nonnegative_score(Value0, _, Value) :-
     number(Value0),
@@ -556,15 +594,23 @@ nonnegative_score(Value0, _, Value) :-
 nonnegative_score(Value, Name, _) :-
     throw(recursion_policy_fault(invalid_nonnegative_score(Name, Value))).
 
-positive_integer(Value, _) :- integer(Value), Value > 0, !.
+positive_integer(Value, _) :-
+    integer(Value),
+    Value > 0,
+    !.
 positive_integer(Value, Name) :-
     throw(recursion_policy_fault(invalid_positive_integer(Name, Value))).
 
-nonnegative_integer(Value, _) :- integer(Value), Value >= 0, !.
+nonnegative_integer(Value, _) :-
+    integer(Value),
+    Value >= 0,
+    !.
 nonnegative_integer(Value, Name) :-
     throw(recursion_policy_fault(invalid_nonnegative_integer(Name, Value))).
 
-boolean(Value, _) :- memberchk(Value, [true,false]), !.
+boolean(Value, _) :-
+    memberchk(Value, [true,false]),
+    !.
 boolean(Value, Name) :-
     throw(recursion_policy_fault(invalid_boolean(Name, Value))).
 
@@ -578,16 +624,25 @@ require_list(Value, Name) :-
     throw(recursion_policy_fault(expected_list(Name, Value))).
 
 dict_score(Dict, Key, Default, Value) :-
-    ( get_dict(Key, Dict, Raw) -> true ; Raw = Default ),
+    (   get_dict(Key, Dict, Raw)
+    ->  true
+    ;   Raw = Default
+    ),
     score(Raw, Key, Value).
 
 dict_nonnegative_integer(Dict, Key, Default, Value) :-
-    ( get_dict(Key, Dict, Raw) -> true ; Raw = Default ),
+    (   get_dict(Key, Dict, Raw)
+    ->  true
+    ;   Raw = Default
+    ),
     nonnegative_integer(Raw, Key),
     Value = Raw.
 
 dict_boolean(Dict, Key, Default, Value) :-
-    ( get_dict(Key, Dict, Raw) -> true ; Raw = Default ),
+    (   get_dict(Key, Dict, Raw)
+    ->  true
+    ;   Raw = Default
+    ),
     boolean(Raw, Key),
     Value = Raw.
 
