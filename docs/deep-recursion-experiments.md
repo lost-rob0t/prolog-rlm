@@ -124,6 +124,29 @@ The fixture set is designed to produce all three possible outcomes:
 
 This is intentional. The harness must be capable of saying "do not recurse deeper."
 
+## REAL OpenRouter depth comparison
+
+The credentialed integration lane also runs a separate real-provider experiment:
+
+```sh
+export OPENROUTER_API_KEY='...'
+swipl -q -s benchmark/run.pl -- deep-integration
+```
+
+Or write its report:
+
+```sh
+swipl -q -s benchmark/run.pl -- deep-integration /tmp/deep-openrouter.json
+```
+
+This runs fixed typed plans at depth 0, 1, and 2 against the normal OpenRouter provider. The fixed planner is injected locally so it makes **zero network calls**; only the model steps inside the measured recursion tree use the provider. Depth 0 performs one provider model step, depth 1 performs two, and depth 2 performs three.
+
+The report records real provider calls, prompt/completion/total tokens, provider-reported cost, wall latency, selected model, HTTP status, recursion depth, usable assistant output, and whether the requested acceptance token was present.
+
+The live gate separates health from exact instruction-following in the same spirit as the normal provider benchmark: a usable provider response can remain a passing integration case with reduced quality when the exact token is missed. Provider errors or an empty unusable response fail the case.
+
+A single CI run is **not** promotion evidence. These measurements are samples that can later be accumulated into the live-trial evidence required by the promotion rule.
+
 ## Promotion rule
 
 `deep_experiment_promotion/2` encodes the graduation rule. Depth >1 is eligible for production consideration only when evidence satisfies **all** of these defaults:
