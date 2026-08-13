@@ -213,8 +213,7 @@ jobs:
               "Return the token CLI_RLM_OK using the external context." \
               --context "The required token is CLI_RLM_OK." \
               --max-tokens 96 \
-              --planner-max-tokens 900 \
-              --planner-attempts 2 \
+              --time-limit 60 \
               --json > /tmp/prolog-rlm-live-cli.json 2> /tmp/prolog-rlm-live-cli.err
             status=$?
             if [ "$status" -eq 0 ]; then
