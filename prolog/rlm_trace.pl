@@ -12,7 +12,7 @@
 
 /** <module> Portable trace export and inspection
 
-Arbitrary ground Prolog runtime terms are converted into a stable JSON-safe
+Arbitrary Prolog runtime terms are converted into a stable JSON-safe
 representation. Dict/list structure is preserved. Non-dict compound terms are
 encoded explicitly as `{"$term": Functor, "args": [...]}` so consumers do not
 have to parse `write_term/3` output to recover trajectory structure.
@@ -28,7 +28,7 @@ trace_envelope(Name0, Payload0, Envelope) :-
     normalize_name(Name0, Name),
     trace_encode(Payload0, Payload),
     get_time(Now),
-    format_time(string(GeneratedAt), '%FT%T%:z', Now),
+    format_time(string(GeneratedAt), '%FT%T%z', Now),
     Envelope = trace_envelope{
                    schema:"prolog-rlm.trace.v1",
                    name:Name,
@@ -111,7 +111,7 @@ trace_view_file(Path, Format, Outcome) :-
 
 trace_encode(Value, Encoded) :-
     (   var(Value)
-    ->  Encoded = trace_var{"$var":"_"}
+    ->  Encoded = trace_var{'$var':"_"}
     ;   number(Value)
     ->  Encoded = Value
     ;   string(Value)
@@ -134,7 +134,7 @@ trace_encode(Value, Encoded) :-
     ->  Value =.. [Functor|Args0],
         atom_string(Functor, FunctorString),
         maplist(trace_encode, Args0, Args),
-        Encoded = trace_term{"$term":FunctorString,
+        Encoded = trace_term{'$term':FunctorString,
                              args:Args}
     ;   term_string(Value, Encoded,
                     [quoted(true), numbervars(true)])
@@ -200,7 +200,8 @@ read_jsonl_line("", Stream, Records) :-
     !,
     read_jsonl_records(Stream, Records).
 read_jsonl_line(Line, Stream, [Record|Records]) :-
-    atom_json_dict(Line, Record, []),
+    atom_string(Atom, Line),
+    atom_json_dict(Atom, Record, []),
     read_jsonl_records(Stream, Records).
 
 trace_serialized(json, Envelope, Text) :-
@@ -269,6 +270,12 @@ indent_string(Indent, Prefix) :-
 
 normalize_name(Name, Name) :- string(Name), !.
 normalize_name(Name, String) :- atom(Name), !, atom_string(Name, String).
+normalize_name(Name, String) :-
+    ground(Name),
+    !,
+    term_string(Name,
+                String,
+                [quoted(true), numbervars(true), max_depth(8)]).
 normalize_name(Name, _) :- throw(trace_fault(invalid_name(Name))).
 
 normalize_path(Path, Path) :- atom(Path), !.
