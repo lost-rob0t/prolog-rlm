@@ -1,34 +1,44 @@
 # Canonical MCP runtime
 
-`rlm_mcp` is the version-neutral Model Context Protocol boundary for prolog-rlm.
-Agent, graph, and RLM code consume canonical Prolog terms. JSON-RPC envelopes,
-wire method names, protocol dates, HTTP headers, and transport session state are
-owned by the selected protocol adapter.
+`rlm_mcp` is the version-neutral Model Context Protocol boundary for
+`prolog-rlm`. Agent, graph, chain, completion, and plan code consume canonical
+Prolog terms. JSON-RPC envelopes, protocol dates, method strings, HTTP routing
+headers, and legacy session state end at the MCP negotiation/adapter boundary.
 
-The first implemented adapter is MCP `2025-11-25`.
+Supported protocol generations:
+
+- `2025-11-25` — legacy initialize/initialized lifecycle with optional
+  Streamable HTTP sessions;
+- `2026-07-28` — stateless, self-describing requests with `server/discover`.
+
+The architectural invariant is:
+
+> Version-specific MCP behavior ends at the adapter boundary.
 
 ## Module boundaries
 
 - `rlm_mcp_model.pl` — canonical commands, capabilities, tools, resources,
   prompts, content, notifications, and JSON-compatible metadata.
-- `rlm_mcp_transport.pl` — persistent stdio and Streamable HTTP request/response
-  transport plus deterministic fixture transports.
-- `rlm_mcp_transport_send.pl` — send-only notification path. In particular,
-  stdio notifications are written without waiting for a response.
-- `rlm_mcp_v2025_11_25.pl` — JSON-RPC codec, initialization lifecycle,
-  capability negotiation, protocol/session headers, result normalization, and
-  bounded session recovery for the `2025-11-25` protocol.
-- `rlm_mcp.pl` — public canonical client/server facade, ordered traces, dispatch,
-  and bounded re-initialization/replay.
+- `rlm_mcp_transport.pl` — stdio, Streamable HTTP, and deterministic fixture
+  transports. It moves envelopes and headers but never selects a protocol.
+- `rlm_mcp_transport_send.pl` — send-only legacy notification transport path.
+- `rlm_mcp_v2025_11_25.pl` — 2025 JSON-RPC codec, initialize lifecycle,
+  session headers, capability negotiation, and bounded 404 recovery.
+- `rlm_mcp_v2026_07_28.pl` — 2026 self-describing request codec,
+  `server/discover`, routing metadata, `resultType`, and standardized version
+  errors. It contains no session lifecycle.
+- `rlm_mcp_compat.pl` — replaceable endpoint compatibility cache containing only
+  protocol-selection evidence.
+- `rlm_mcp.pl` — canonical client/server facade, bounded negotiation/fallback,
+  protocol routing, traces, and canonical dispatch.
 
-Protocol-specific code must not be added to `rlm_agent.pl`, `rlm_graph.pl`, or
-other consumers. Conformance tests reject known MCP wire strings in those
-modules.
+Static regression tests reject protocol dates, MCP wire methods, routing headers,
+and JSON-RPC branching in `rlm_agent.pl`, `rlm_graph.pl`, `rlm_chain.pl`,
+`rlm_completion.pl`, and `rlm_plan.pl`.
 
 ## Canonical commands
 
-The public command vocabulary is deliberately independent of MCP wire method
-strings:
+The public command vocabulary is independent of MCP wire method strings:
 
 ```prolog
 list_tools
@@ -50,25 +60,13 @@ Normalize external command data with:
 mcp_command_normalize(+Input, -Outcome).
 ```
 
-Successful normalization returns a ground `mcp_command{}` dict. Tool and prompt
-names are canonical atoms; URIs and cursors are canonical text values.
+Successful normalization returns a ground `mcp_command{}` value. The canonical
+model also normalizes tools, resources, prompts, content, notifications, and
+capabilities. Formal extension advertisement is represented by the canonical
+`extensions` capability; deprecated `roots` and `sampling` fields remain in the
+model only for compatibility with older peers.
 
-Each command maps to a capability class (`tools`, `resources`, or `prompts`).
-The 2025 adapter refuses a command when the server did not negotiate the
-corresponding capability.
-
-## Canonical entities and results
-
-Entity normalizers are exported through `rlm_mcp`:
-
-```prolog
-mcp_tool_normalize(+WireLikeDict, -Outcome).
-mcp_resource_normalize(+WireLikeDict, -Outcome).
-mcp_prompt_normalize(+WireLikeDict, -Outcome).
-mcp_notification_normalize(+Input, -Outcome).
-```
-
-The canonical result types are:
+The canonical result families are:
 
 ```prolog
 mcp_tools_page{tools:Tools, next_cursor:Cursor}
@@ -79,20 +77,9 @@ mcp_prompts_page{prompts:Prompts, next_cursor:Cursor}
 mcp_prompt_result{description:Description, messages:Messages}
 ```
 
-Canonical content supports text, image, audio, embedded resources, and resource
-links. Tool `structuredContent` is preserved as canonical JSON-compatible data.
-
-Canonical server-to-client notification terms currently include:
-
-```prolog
-tools_list_changed
-resources_list_changed
-prompts_list_changed
-resource_updated(Uri)
-```
-
-The canonical terms do not contain strings such as `tools/list`, JSON-RPC ids,
-or a protocol date.
+Tool `structuredContent` is preserved as canonical JSON-compatible data. The
+2026 wire-level `resultType` discriminator is adapter-owned and is not exposed
+as protocol branching in callers.
 
 ## Client API
 
@@ -106,16 +93,17 @@ mcp_client_connect(+TransportSpec,
                    -Outcome).
 ```
 
-Example fixture client:
+By default the client uses `protocol(auto)`. It first consults verified endpoint
+compatibility, otherwise probes the 2026 discovery path and performs at most one
+legacy protocol fallback. Explicit pins are also available:
 
 ```prolog
-mcp_client_connect(
-    fixture(streamable_http, my_fixture),
-    _{name:"my-client", version:"1.0"},
-    _{roots:_{listChanged:false}},
-    [],
-    ok(Client0)).
+protocol('2025-11-25')
+protocol('2026-07-28')
 ```
+
+`cache_max_age(GenerationCount)` controls deterministic compatibility-cache
+staleness. The default is 32 connection generations.
 
 Execute canonical operations with:
 
@@ -123,64 +111,63 @@ Execute canonical operations with:
 mcp_client_command(+Client0, +Command, -Client, -Outcome).
 ```
 
-The returned client handle carries the new request id, adapter state, session,
-and trace. Treat client handles as immutable state values: pass the returned
-handle to the next operation.
-
-Decode an incoming canonical notification with:
-
-```prolog
-mcp_client_notification(+Client, +WireNotification, -Outcome).
-```
-
-Inspect lifecycle evidence with:
+Inspect protocol and ordered evidence with:
 
 ```prolog
 mcp_client_protocol(+Client, -Protocol).
 mcp_client_trace(+Client, -Events).
 ```
 
-Close a real transport with:
+Close the transport with:
 
 ```prolog
 mcp_client_close(+Client, -Outcome).
 ```
 
-## Server API
+Client state values are immutable handles: pass the returned handle to the next
+operation.
 
-Create a canonical server state with:
+## Negotiation policy
 
-```prolog
-mcp_server_new(+TransportKind,
-               +ServerInfo,
-               +ServerCapabilities,
-               +Options,
-               -Outcome).
-```
+The selection policy is deterministic and bounded:
 
-`TransportKind` is `stdio` or `streamable_http`. For deterministic server tests,
-`session_id(Session)` may be supplied in `Options`.
+1. A non-stale verified cache entry may select its previously verified protocol.
+2. Explicit mutual 2026 support is preferred.
+3. With unknown compatibility, the client sends `server/discover` using the
+   2026 request format.
+4. A successful discovery that includes `2026-07-28` selects 2026.
+5. A legacy endpoint that rejects or cannot service discovery falls back once
+   to the 2025 initialize lifecycle.
+6. If a selected 2026 peer later returns the standardized unsupported-version
+   error and advertises `2025-11-25`, the client invalidates the cache,
+   initializes 2025, and replays the command once.
+7. Protocol fallback never loops; the protocol retry budget is one.
 
-Process a protocol message with:
+Every selection, discovery, rejection, and fallback is recorded in the canonical
+trace.
 
-```prolog
-mcp_server_handle(+Server0,
-                  +Wire,
-                  +RequestMeta,
-                  +Dispatch,
-                  -Server,
-                  -Outcome).
-```
+## Endpoint compatibility cache
 
-`Dispatch` never receives a JSON-RPC method. It is called with a canonical
-`mcp_command{}` value (or a canonical notification wrapper). A successful
-command dispatch returns a canonical result dict, which the adapter serializes
-back to the selected wire protocol.
+`rlm_mcp_compat.pl` stores only:
+
+- endpoint identity;
+- transport kind;
+- verified supported versions;
+- selected version;
+- verification source;
+- deterministic generation.
+
+It never stores session identifiers or agent/graph state. Malformed entries are
+removed and treated as misses. Entries older than the caller-provided generation
+window are deterministically invalidated. A rejected selected protocol is also
+invalidated before fallback.
+
+This module is intentionally replaceable; protocol selection does not depend on
+a specific persistence implementation.
 
 ## MCP 2025-11-25 lifecycle
 
-The `rlm_mcp_v2025_11_25` adapter implements the protocol lifecycle as a state
-machine:
+The legacy adapter retains the existing state machine:
 
 ```text
 new
@@ -190,25 +177,112 @@ initialized_pending
 ready
 ```
 
-The initialize request declares protocol version `2025-11-25`, client
-implementation metadata, and client capabilities. The response must negotiate
-that supported protocol version and provide server implementation metadata and
-capabilities. Unsupported versions fail closed.
+The initialize request carries protocol version, client implementation metadata,
+and capabilities. For Streamable HTTP, post-initialize requests include
+`MCP-Protocol-Version: 2025-11-25`. When a server returns an
+`MCP-Session-Id`, later requests carry that session id.
 
-For Streamable HTTP:
+A `404` for an established legacy session invalidates it. The client permits
+exactly one re-initialization and replay. A second invalidation fails with
+`reinitialize_exhausted`.
 
-- initialization advertises JSON and SSE response media types;
-- later operations include `MCP-Protocol-Version: 2025-11-25`;
-- when the server supplies an `MCP-Session-Id`, later operations include it;
-- a response is correlated with its expected JSON-RPC request id;
-- a `404` on an established session invalidates that session;
-- the canonical client permits exactly one re-initialization and command replay;
-- a second invalidation fails with `reinitialize_exhausted`.
+For stdio, HTTP headers are absent but the legacy initialize lifecycle remains.
+The initialized notification is send-only and does not wait for a response.
 
-For stdio, protocol and session HTTP headers are absent. Initialization and
-canonical commands still use the same adapter state machine. The initialized
-notification is send-only, so a stdio client never blocks waiting for a response
-to a JSON-RPC notification.
+## MCP 2026-07-28 lifecycle
+
+The 2026 adapter is stateless. It does **not** send `initialize`, does not send
+`notifications/initialized`, does not allocate an MCP session id, and does not
+reuse legacy 404 session recovery.
+
+Every request carries request-scoped `_meta` data:
+
+- `io.modelcontextprotocol/protocolVersion`;
+- `io.modelcontextprotocol/clientCapabilities`;
+- `io.modelcontextprotocol/clientInfo` when available.
+
+Servers implement `server/discover`. The canonical server response advertises
+supported versions and server capabilities and places server implementation
+metadata in result `_meta`.
+
+Successful 2026 results include `resultType: "complete"`. Missing or unsupported
+result types fail closed rather than being silently interpreted as a 2025
+result.
+
+### Streamable HTTP routing metadata
+
+Every 2026 POST includes:
+
+- `Accept: application/json, text/event-stream`;
+- `MCP-Protocol-Version: 2026-07-28`;
+- `Mcp-Method: <JSON-RPC method>`.
+
+`tools/call`, `resources/read`, and `prompts/get` additionally send `Mcp-Name`
+from the request name or URI. Values unsafe for a direct HTTP routing header are
+UTF-8/Base64 encoded using the MCP `:(b64):` sentinel form.
+
+The server verifies that body protocol metadata and HTTP protocol/method/name
+routing metadata agree before canonical dispatch.
+
+### Standard 2026 protocol errors
+
+The adapter emits the standardized JSON-RPC errors used by the 2026 protocol:
+
+- `-32020` — request/header metadata mismatch;
+- `-32022` — unsupported protocol version, with `supported` and `requested`
+  version data.
+
+These map to HTTP 400 on the server path. A recognized `-32022` response drives
+bounded version selection rather than an unbounded retry loop.
+
+## Dual-version server routing
+
+Create one canonical server with:
+
+```prolog
+mcp_server_new(+TransportKind,
+               +ServerInfo,
+               +ServerCapabilities,
+               +Options,
+               -Outcome).
+```
+
+The server keeps independent adapter state: legacy 2025 session state and a
+stateless 2026 adapter. Detection/routing occurs before canonical command
+dispatch:
+
+```text
+transport
+  -> protocol detection / negotiation
+  -> selected version adapter
+  -> canonical mcp_command{}
+  -> canonical Dispatch
+  -> selected version adapter
+  -> transport reply
+```
+
+A legacy `initialize` is routed to 2025. A self-describing request carrying 2026
+protocol metadata is routed to 2026. Legacy post-initialize requests continue to
+use the existing 2025 state/session validator.
+
+`Dispatch` never receives protocol dates or wire method strings.
+
+## Compatibility matrix
+
+Deterministic tests cover these paths:
+
+| Client | Server | Expected path |
+| --- | --- | --- |
+| prolog-rlm | 2025-only | discovery rejection -> 2025 initialize/session |
+| prolog-rlm | 2026-only | discovery -> stateless 2026 |
+| prolog-rlm | dual | prefer verified 2026 |
+| 2025-only | prolog-rlm | 2025 adapter/session lifecycle |
+| 2026-only | prolog-rlm | 2026 stateless adapter |
+| dual | prolog-rlm | request metadata selects the correct adapter |
+
+The suite also covers response-id mismatch, required 2026 `resultType`, routing
+header/body mismatch, unsupported-version advertisement, bounded fallback,
+cache staleness, malformed cache entries, and time-limit propagation.
 
 ## Transport specifications
 
@@ -219,9 +293,9 @@ fixture(stdio, Handler)
 fixture(streamable_http, Handler)
 ```
 
-The deterministic handler is called with the outgoing wire dict and transport
-metadata and returns an `mcp_transport_response{}` (or `null` for a send-only
-fixture notification).
+The deterministic handler receives the outgoing wire dict and transport
+metadata and returns an `mcp_transport_response{}`. Legacy send-only fixture
+notifications may return `null`.
 
 ### stdio
 
@@ -229,9 +303,8 @@ fixture notification).
 stdio(Executable, Arguments)
 ```
 
-The transport owns persistent stdin/stdout/stderr pipes for the child process.
-Each JSON-RPC request is encoded as one JSON line and each response is decoded
-from one JSON line. Notification sends do not read stdout.
+The transport owns persistent stdin/stdout/stderr pipes. JSON-RPC requests are
+encoded one per line and responses are decoded one per line.
 
 ### Streamable HTTP
 
@@ -239,14 +312,13 @@ from one JSON line. Notification sends do not read stdout.
 streamable_http(Endpoint)
 ```
 
-The transport uses SWI-Prolog HTTP streams and accepts an ordinary JSON response
-or an SSE response containing a JSON-RPC result event. Transport code only moves
-envelopes and metadata; it does not choose MCP methods or interpret protocol
-capabilities.
+The transport uses SWI-Prolog HTTP streams and accepts ordinary JSON responses
+or SSE responses carrying a JSON-RPC result event. It does not interpret
+protocol versions or MCP capabilities.
 
 ## Trace contract
 
-Client and server lifecycle events use ordered `mcp_trace{}` values:
+Client and server events are ordered `mcp_trace{}` values:
 
 ```prolog
 mcp_trace{
@@ -258,32 +330,39 @@ mcp_trace{
 }
 ```
 
-Client traces cover connection, initialize send, negotiated initialization,
-ready state, command send/completion, and session invalidation. Server traces
-cover creation, initialization, ready state, command completion, and canonical
-notification receipt.
+Important negotiation events include `discover_sent`, `protocol_selected`,
+`protocol_rejected`, and `protocol_fallback`. Legacy lifecycle traces retain
+`initialize_sent`, `initialized_negotiated`, `ready`, and
+`session_invalidated`. Commands use `command_sent` and `command_completed`.
+Server traces distinguish discovery and command completion while retaining the
+legacy lifecycle evidence.
 
 Sequence numbers are monotonic within a client/server state value.
 
-## Failure contract
+## Failure and control-exception contract
 
-Ordinary validation, negotiation, transport, remote, capability, and session
-failures return structured `error(Error)` outcomes. The runtime does not turn
-cancellation or time-limit control exceptions into ordinary MCP failures.
+Ordinary validation, negotiation, transport, remote, capability, cache, and
+session failures return structured `error(Error)` outcomes. Cancellation and
+time-limit control exceptions are rethrown and are never converted to ordinary
+MCP failures.
 
-Important fail-closed cases include:
+Fail-closed cases include malformed request metadata, mismatched routing
+headers, unsupported versions, unnegotiated capabilities, response-id mismatch,
+missing 2026 `resultType`, malformed capability advertisement, malformed cache
+state, incorrect legacy session ids, and exhausted retry/recovery budgets.
 
-- unsupported protocol version;
-- use of an MCP capability that was not negotiated;
-- JSON-RPC response id mismatch;
-- missing/incorrect HTTP protocol header after initialization;
-- missing/incorrect established session id;
-- unknown wire method or notification;
-- malformed canonical entity/result data;
-- exhausted 404 session recovery budget.
+## Model inference remains provider-native
+
+MCP interoperability is for tools, resources, prompts, and applicable
+extensions. `prolog-rlm` does not redesign its model-completion architecture
+around MCP Sampling. The provider/OpenRouter completion path remains the model
+inference path; deprecated legacy Sampling/Roots behavior is not promoted into
+the core RLM architecture.
 
 ## Primary protocol references
 
-Implementation details are based on the official Model Context Protocol
-`2025-11-25` specification, especially Lifecycle, Transports, Client, and Server
-sections on `modelcontextprotocol.io`.
+Wire behavior is implemented against the official Model Context Protocol
+`2025-11-25` and `2026-07-28` specification/schema in the
+`modelcontextprotocol/modelcontextprotocol` repository and the official
+2026-07-28 release documentation. Secondary SDK behavior is not treated as the
+protocol source of truth.
