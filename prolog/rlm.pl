@@ -14,6 +14,9 @@
             recursion_fingerprint/2,
             recursion_execute/4,
             recursion_execution_context/4,
+            default_deep_experiment_policy/1,
+            deep_experiment_run/2,
+            deep_experiment_promotion/2,
             plan_outcome/5,
             goal_outcome/3,
             plan_inspect/4,
@@ -88,6 +91,11 @@
 /** <module> prolog-rlm entrypoint
 
 Load this module to initialize the public runtime namespaces.
+
+Depth greater than one is an experimental public-API boundary.  Supplying a
+larger recursion budget does not by itself enable it: callers must also pass
+`experimental_deep_recursion(true)`.  That flag is only an opt-in; it grants no
+capabilities and does not widen any normal budget.
 */
 
 :- use_module(rlm_chain).
@@ -95,9 +103,7 @@ Load this module to initialize the public runtime namespaces.
 :- use_module(rlm_plan).
 :- use_module(rlm_tool).
 :- use_module(rlm_completion,
-              [ rlm_completion/4,
-                llm_query/3,
-                rlm_query/4,
+              [ llm_query/3,
                 rlm_cancellation_token/1,
                 rlm_cancel/1,
                 default_completion_budget/1
@@ -114,6 +120,12 @@ Load this module to initialize the public runtime namespaces.
               [ rlm_recursion_runtime_ready/0,
                 recursion_execute/4,
                 recursion_execution_context/4
+              ]).
+:- use_module(rlm_deep_experiment,
+              [ rlm_deep_experiment_ready/0,
+                default_deep_experiment_policy/1,
+                deep_experiment_run/2,
+                deep_experiment_promotion/2
               ]).
 :- use_module(rlm_outcome,
               [ plan_outcome/5,
@@ -225,6 +237,7 @@ rlm_ready :-
     rlm_completion:default_completion_budget(_),
     rlm_recursion_policy:rlm_recursion_policy_ready,
     rlm_recursion_runtime:rlm_recursion_runtime_ready,
+    rlm_deep_experiment:rlm_deep_experiment_ready,
     rlm_outcome:default_outcome_limits(_),
     rlm_artifact:rlm_artifact_ready,
     rlm_artifact_agent:rlm_artifact_agent_ready,
@@ -236,3 +249,51 @@ rlm_ready :-
     rlm_trace:rlm_trace_ready,
     rlm_cli:rlm_cli_ready,
     rlm_mcp:rlm_mcp_ready.
+
+/* Public recursion gate -------------------------------------------------- */
+
+rlm_completion(Query, Context, Options, Outcome) :-
+    public_deep_recursion_gate(Options, Gate),
+    (   Gate == ok
+    ->  rlm_completion:rlm_completion(Query, Context, Options, Outcome)
+    ;   Gate = error(Error),
+        Outcome = error(Error)
+    ).
+
+rlm_query(Query, Context, Options, Outcome) :-
+    public_deep_recursion_gate(Options, Gate),
+    (   Gate == ok
+    ->  rlm_completion:rlm_query(Query, Context, Options, Outcome)
+    ;   Gate = error(Error),
+        Outcome = error(Error)
+    ).
+
+public_deep_recursion_gate(Options, Outcome) :-
+    (   is_list(Options),
+        requested_public_depth(Options, RequestedDepth),
+        RequestedDepth > 1,
+        \+ memberchk(experimental_deep_recursion(true), Options)
+    ->  Outcome = error(completion_error{
+                            phase:validate,
+                            kind:experimental_deep_recursion_required,
+                            requested_depth:RequestedDepth,
+                            message:"depth >1 is experimental; pass experimental_deep_recursion(true) explicitly"
+                        })
+    ;   Outcome = ok
+    ).
+
+requested_public_depth(Options, RequestedDepth) :-
+    findall(Depth,
+            ( member(Option, Options),
+              public_depth_option(Option, Depth) ),
+            Depths),
+    max_list([1|Depths], RequestedDepth).
+
+public_depth_option(depth(Depth), Depth) :-
+    integer(Depth),
+    Depth >= 0.
+public_depth_option(budget(Budget), Depth) :-
+    is_dict(Budget),
+    get_dict(max_recursion_depth, Budget, Depth),
+    integer(Depth),
+    Depth >= 0.
