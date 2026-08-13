@@ -812,6 +812,7 @@ preflight_runtime_with(Runtime, Plan) :-
 
 initial_execution_state(Budget,
                         exec_state{vars:_{},
+                                   model_responses:[],
                                    transitions:[],
                                    sequence:0,
                                    checkpoints:[],
@@ -1012,8 +1013,13 @@ handle_model_result(error(ModelError), Provider, _, State,
                                      message:"model operation failed"},
                           State)) :- !.
 handle_model_result(ok(Response), Provider, Bind, State0, Outcome) :-
-    bind_value(Bind, Response, State0, BindOutcome),
+    record_model_response(Response, State0, State1),
+    bind_value(Bind, Response, State1, BindOutcome),
     transition_result(BindOutcome, model(Provider), Bind, Outcome).
+
+record_model_response(Response, State0, State) :-
+    get_dict(model_responses, State0, Responses0),
+    put_dict(model_responses, State0, [Response|Responses0], State).
 
 trusted_tool_exception(time_limit_exceeded, _) :-
     !,
@@ -1223,9 +1229,12 @@ finalize_execution(final(Value, State), ok(Result)) :-
     get_dict(checkpoints, State, RevCheckpoints),
     reverse(RevCheckpoints, Checkpoints),
     get_dict(vars, State, Vars),
+    get_dict(model_responses, State, RevModelResponses),
+    reverse(RevModelResponses, ModelResponses),
     get_dict(remaining, State, Remaining),
     Result = plan_result{value:Value,
                          vars:Vars,
+                         model_responses:ModelResponses,
                          transitions:Transitions,
                          checkpoints:Checkpoints,
                          budget_remaining:Remaining}.
@@ -1233,8 +1242,11 @@ finalize_execution(error(Error0, State), error(Error)) :-
     !,
     get_dict(transitions, State, RevTransitions),
     reverse(RevTransitions, Transitions),
+    get_dict(model_responses, State, RevModelResponses),
+    reverse(RevModelResponses, ModelResponses),
     get_dict(remaining, State, Remaining),
     put_dict(_{transitions:Transitions,
+               model_responses:ModelResponses,
                budget_remaining:Remaining},
              Error0,
              Error).
