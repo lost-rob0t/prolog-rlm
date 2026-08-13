@@ -9,6 +9,7 @@
             artifact_ref_status/3,
             artifact_context_pack/4,
             artifact_context_refs/4,
+            artifact_trace/3,
             artifact_namespace/2
           ]).
 
@@ -26,6 +27,7 @@ only selected latest artifacts.
 
 :- dynamic artifact_memory_store/1.
 :- dynamic artifact_memory_record/5.
+:- dynamic artifact_memory_trace/4.
 
 rlm_artifact_ready.
 
@@ -55,6 +57,7 @@ artifact_store_close_(artifact_store(memory, Id)) :-
     !,
     with_mutex(rlm_artifact_memory,
                ( retractall(artifact_memory_record(Id, _, _, _, _)),
+                 retractall(artifact_memory_trace(Id, _, _, _)),
                  retractall(artifact_memory_store(Id)) )).
 artifact_store_close_(artifact_store(persist, _)) :-
     !,
@@ -184,6 +187,7 @@ artifact_context_pack_(Store, Namespace0, Options, Pack) :-
     normalize_namespace(Namespace0, Namespace),
     entries_refs(Entries, Refs),
     length(Entries, ItemCount),
+    trace_context_consumption(Store, Namespace, Options, Refs, []),
     Pack = artifact_context_pack{namespace:Namespace,
                                  entries:Entries,
                                  refs:Refs,
@@ -217,12 +221,23 @@ artifact_context_refs_(Store, Refs0, Options, Pack) :-
                          Truncated),
     entries_refs(Entries, Refs),
     length(Entries, ItemCount),
+    trace_ref_consumption(Store, Options, Entries, Stale),
     Pack = artifact_ref_context_pack{entries:Entries,
                                      refs:Refs,
                                      stale_refs:Stale,
                                      item_count:ItemCount,
                                      chars:Chars,
                                      truncated:Truncated}.
+
+artifact_trace(Store, Namespace0, Outcome) :-
+    artifact_outcome(trace,
+                     artifact_trace_(Store, Namespace0),
+                     Outcome).
+
+artifact_trace_(Store, Namespace0, Events) :-
+    require_store(Store),
+    normalize_namespace(Namespace0, Namespace),
+    backend_trace(Store, Namespace, Events).
 
 resolve_latest_refs(_, [], Artifacts, Artifacts, Stale, Stale).
 resolve_latest_refs(Store, [Ref|Refs], Artifacts0, Artifacts, Stale0, Stale) :-
@@ -252,6 +267,41 @@ entries_refs(Entries, Refs) :-
             ( member(Entry, Entries), Ref = Entry.ref ),
             Refs).
 
+trace_context_consumption(Store, Namespace, Options, Refs, Stale) :-
+    consumer_from_options(Options, Consumer),
+    BaseEvent = artifact_trace{type:consumed,
+                               refs:Refs,
+                               consumer:Consumer,
+                               stale_refs:Stale},
+    backend_trace_append(Store, Namespace, BaseEvent, _).
+
+trace_ref_consumption(Store, Options, Entries, Stale) :-
+    findall(Namespace,
+            ( member(Entry, Entries), Namespace = Entry.namespace ),
+            Namespaces0),
+    sort(Namespaces0, Namespaces),
+    maplist(trace_namespace_entries(Store, Options, Entries, Stale), Namespaces).
+
+trace_namespace_entries(Store, Options, Entries, Stale, Namespace) :-
+    findall(Ref,
+            ( member(Entry, Entries),
+              Entry.namespace == Namespace,
+              Ref = Entry.ref ),
+            Refs),
+    include(stale_for_namespace(Namespace), Stale, NamespaceStale),
+    trace_context_consumption(Store,
+                              Namespace,
+                              Options,
+                              Refs,
+                              NamespaceStale).
+
+stale_for_namespace(Namespace, Stale) :-
+    Stale.requested.namespace == Namespace.
+
+consumer_from_options(Options, Consumer) :-
+    option(consumer(Consumer0), Options, none),
+    canonical_value(Consumer0, Consumer).
+
 /* ---------------------------------------------------------------------- */
 
 backend_append(artifact_store(memory, Id), Namespace, Key, BaseArtifact,
@@ -276,7 +326,14 @@ backend_append(artifact_store(memory, Id), Namespace, Key, BaseArtifact,
                                                 Namespace,
                                                 Key,
                                                 Version,
-                                                Artifact))
+                                                Artifact)),
+                 BaseEvent = artifact_trace{type:published,
+                                            ref:Ref,
+                                            producer:Artifact.provenance},
+                 memory_trace_append_locked(Id,
+                                            Namespace,
+                                            BaseEvent,
+                                            _)
                )).
 backend_append(artifact_store(persist, File), Namespace, Key, BaseArtifact,
                Artifact) :-
@@ -310,6 +367,33 @@ backend_list(artifact_store(memory, Id), Namespace, Artifacts) :-
 backend_list(artifact_store(persist, File), Namespace, Artifacts) :-
     artifact_persist_open(File),
     artifact_persist_list(Namespace, Artifacts).
+
+backend_trace_append(artifact_store(memory, Id), Namespace, BaseEvent, Event) :-
+    require_memory_store(Id),
+    with_mutex(rlm_artifact_memory,
+               memory_trace_append_locked(Id, Namespace, BaseEvent, Event)).
+backend_trace_append(artifact_store(persist, File), Namespace, BaseEvent, Event) :-
+    artifact_persist_open(File),
+    artifact_persist_trace_append(Namespace, BaseEvent, Event).
+
+backend_trace(artifact_store(memory, Id), Namespace, Events) :-
+    require_memory_store(Id),
+    findall(Sequence-Event,
+            artifact_memory_trace(Id, Namespace, Sequence, Event),
+            Pairs0),
+    keysort(Pairs0, Pairs),
+    findall(Event, member(_-Event, Pairs), Events).
+backend_trace(artifact_store(persist, File), Namespace, Events) :-
+    artifact_persist_open(File),
+    artifact_persist_trace(Namespace, Events).
+
+memory_trace_append_locked(Id, Namespace, BaseEvent, Event) :-
+    findall(S,
+            artifact_memory_trace(Id, Namespace, S, _),
+            Sequences),
+    next_version(Sequences, Sequence),
+    put_dict(sequence, BaseEvent, Sequence, Event),
+    assertz(artifact_memory_trace(Id, Namespace, Sequence, Event)).
 
 require_store(artifact_store(memory, Id)) :-
     !,
@@ -423,6 +507,7 @@ take_context_entries_([Artifact|Rest], Remaining, MaxChars,
 
 compact_entry(Artifact, Entry, Chars) :-
     Entry = artifact_context_entry{ref:Artifact.ref,
+                                   namespace:Artifact.namespace,
                                    key:Artifact.key,
                                    kind:Artifact.kind,
                                    value:Artifact.value,
