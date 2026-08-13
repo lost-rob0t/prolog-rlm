@@ -11,7 +11,6 @@ The CLI only composes public runtime APIs. It does not duplicate provider,
 context, agent, graph, MCP, or recursion runtimes.
 */
 
-:- use_module(library(http/json)).
 :- use_module(library(readutil)).
 :- use_module(rlm_chain).
 :- use_module(rlm_completion).
@@ -154,13 +153,13 @@ direct_outcome(ProviderName, Model, error(Error), Options, Session) :-
 rlm_session(Query, Options, Session) :-
     provider_from_options(Options, ProviderName, Provider, Model),
     rlm_context(Query, Options, ContextText),
-    simple_recursive_planner_instruction(ProviderName,
-                                         Options.max_tokens,
-                                         ContextText,
-                                         PlannerInstruction),
+    simple_recursive_plan(ProviderName,
+                          Options.max_tokens,
+                          ContextText,
+                          Plan),
     completion_budget_from_options(Options, Budget0),
     put_dict(_{max_recursion_depth:1,
-               max_model_calls:3,
+               max_model_calls:2,
                max_context_ops:1},
              Budget0,
              Budget),
@@ -170,9 +169,9 @@ rlm_session(Query, Options, Session) :-
                                     context(slice),
                                     model(ProviderName)]),
                       child_capabilities([model(ProviderName)]),
-                      planner_instruction(PlannerInstruction),
-                      planner_attempts(Options.planner_attempts),
-                      planner_max_tokens(Options.planner_max_tokens),
+                      planner_handler(rlm_cli:fixed_cli_planner(Plan)),
+                      planner_attempts(1),
+                      planner_max_tokens(1),
                       context_options([max_bytes(Options.context_bytes),
                                        time_limit(2.0)]),
                       budget(Budget)],
@@ -186,7 +185,7 @@ rlm_outcome(ProviderName, Model, ok(Result), Options, Session) :-
     !,
     completion_output_text(Result, Text),
     format(string(Summary),
-           'rlm via ~w (~w), depth ~d, ~d model calls: ~s~n',
+           'rlm via ~w (~w), depth ~d, ~d runtime model slots: ~s~n',
            [ProviderName,
             Model,
             Result.recursion.max_depth,
@@ -223,37 +222,33 @@ context_payload(Options, Text) :-
     Text = Options.context.
 context_payload(_, "No additional external context was supplied.").
 
-simple_recursive_planner_instruction(ProviderName,
-                                     MaxTokens,
-                                     ContextText,
-                                     Instruction) :-
+simple_recursive_plan(ProviderName,
+                      MaxTokens,
+                      ContextText,
+                      Plan) :-
     string_length(ContextText, RawLength),
     ContextLength is max(1, min(RawLength, 8192)),
-    atom_string(ProviderName, ProviderString),
-    Plan = _{steps:[
-                 _{op:"context",
-                   handle:_{ref:"input", name:"context"},
-                   action:_{type:"slice", start:0, length:ContextLength},
-                   bind:"snippet"},
-                 _{op:"rlm",
-                   plan:_{steps:[
-                              _{op:"model",
-                                provider:ProviderString,
-                                prompt:_{ref:"var", name:"snippet"},
-                                options:_{max_tokens:MaxTokens},
-                                bind:"child_response"},
-                              _{op:"final",
-                                value:_{ref:"var", name:"child_response"}}
-                          ]},
-                   bind:"child"},
-                 _{op:"final",
-                   value:_{ref:"var", name:"child"}}
-             ]},
-    with_output_to(string(PlanJson),
-                   json_write_dict(current_output, Plan, [width(0)])),
-    format(string(Instruction),
-           'For this CLI invocation return exactly the following JSON plan, changing only insignificant JSON whitespace. Return no markdown or explanation.~n~s',
-           [PlanJson]).
+    Plan = plan([
+               context(input(context),
+                       slice(0, ContextLength),
+                       snippet),
+               rlm(plan([
+                       model(ProviderName,
+                             var(snippet),
+                             _{max_tokens:MaxTokens},
+                             child_response),
+                       final(var(child_response))
+                   ]),
+                   child),
+               final(var(child))
+           ]).
+
+fixed_cli_planner(Plan, _Request,
+                  _{plan:Plan,
+                    usage:_{prompt_tokens:0,
+                            completion_tokens:0,
+                            total_tokens:0,
+                            cost:0.0}}).
 
 /* Provider configuration ---------------------------------------------- */
 
@@ -295,8 +290,7 @@ completion_budget_from_options(Options,
                                  max_cost_usd:Options.max_cost_usd,
                                  max_output_bytes:65536,
                                  time_limit:Options.time_limit}) :-
-    TotalTokens is max(Options.max_tokens*4,
-                       Options.planner_max_tokens*2).
+    TotalTokens is max(512, Options.max_tokens*4).
 
 /* Trace export and inspection ----------------------------------------- */
 
@@ -394,8 +388,6 @@ default_cli_options(
                 context_file:none,
                 context_bytes:8192,
                 max_tokens:256,
-                planner_attempts:2,
-                planner_max_tokens:1200,
                 max_cost_usd:0.25,
                 time_limit:120.0}).
 
@@ -437,12 +429,6 @@ parse_options(['--context-bytes',Value|Rest], O0, O, P0, P) :-
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--max-tokens',Value|Rest], O0, O, P0, P) :-
     !, positive_integer_arg(Value, N), put_dict(max_tokens, O0, N, O1),
-    parse_options(Rest, O1, O, P0, P).
-parse_options(['--planner-attempts',Value|Rest], O0, O, P0, P) :-
-    !, positive_integer_arg(Value, N), put_dict(planner_attempts, O0, N, O1),
-    parse_options(Rest, O1, O, P0, P).
-parse_options(['--planner-max-tokens',Value|Rest], O0, O, P0, P) :-
-    !, positive_integer_arg(Value, N), put_dict(planner_max_tokens, O0, N, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--max-cost',Value|Rest], O0, O, P0, P) :-
     !, nonnegative_number_arg(Value, Cost), put_dict(max_cost_usd, O0, Cost, O1),
@@ -534,8 +520,6 @@ cli_usage(Usage) :-
         "  --context TEXT",
         "  --context-file PATH",
         "  --context-bytes N             Context byte ceiling (default 8192)",
-        "  --planner-attempts N          Root planner parse attempts (default 2)",
-        "  --planner-max-tokens N        Root planner token limit (default 1200)",
         "",
         "Output options:",
         "  --json                        Emit portable trace-envelope JSON",
