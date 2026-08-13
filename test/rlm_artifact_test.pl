@@ -46,12 +46,12 @@ versioned_history_case(Store) :-
                   [task, alpha],
                   [history(true)],
                   ok(History)),
-    assertion(History = [_,_]),
+    length(History, 2),
     artifact_list(Store,
                   [task, alpha],
                   [],
                   ok(Current)),
-    assertion(Current = [Only]),
+    Current = [Only],
     assertion(Only.ref == V2.ref).
 
 test(provenance_and_publish_consume_trace_are_explicit) :-
@@ -76,10 +76,10 @@ producer_consumer_trace_case(Store) :-
                           [consumer(Consumer)],
                           ok(Pack)),
     assertion(Pack.item_count =:= 1),
-    assertion(Pack.entries = [Entry]),
+    Pack.entries = [Entry],
     assertion(Entry.value.fact == "durable"),
     artifact_trace(Store, [task, trace], ok(Trace)),
-    assertion(Trace = [Published, Consumed]),
+    Trace = [Published, Consumed],
     assertion(Published.type == published),
     assertion(Published.producer.run_id == producer_run),
     assertion(Consumed.type == consumed),
@@ -99,10 +99,10 @@ stale_ref_handoff_case(Store) :-
                           [V1.ref],
                           [consumer(_{run_id:run_b}), max_items(4)],
                           ok(Pack)),
-    assertion(Pack.entries = [Entry]),
+    Pack.entries = [Entry],
     assertion(Entry.ref == V2.ref),
     assertion(Entry.value.status == "final"),
-    assertion(Pack.stale_refs = [Stale]),
+    Pack.stale_refs = [Stale],
     assertion(Stale.requested == V1.ref),
     assertion(Stale.current == V2.ref).
 
@@ -123,7 +123,7 @@ context_selection_case(Store) :-
                           ok(Pack)),
     assertion(Pack.item_count =:= 1),
     assertion(Pack.truncated == true),
-    assertion(Pack.entries = [Entry]),
+    Pack.entries = [Entry],
     assertion(Entry.kind == finding).
 
 test(non_ground_payload_fails_closed) :-
@@ -161,7 +161,7 @@ persistent_reopen_case(File) :-
     artifact_get(Store2, Artifact.ref, ok(Restored)),
     assertion(Restored.value.text == "survives"),
     artifact_trace(Store2, [task, restart], ok(Trace)),
-    assertion(Trace = [Published]),
+    Trace = [Published],
     assertion(Published.type == published),
     artifact_store_close(Store2, ok(closed)).
 
@@ -201,7 +201,7 @@ agent_artifact_runtime_case(Runtime, Store) :-
                            Store,
                            [call_id(fresh_call), max_items(4)],
                            ok(Pack)),
-    assertion(Pack.entries = [Entry]),
+    Pack.entries = [Entry],
     assertion(Entry.value.text == "compact state"),
     artifact_trace(Store, Ref.namespace, ok(Trace)),
     last(Trace, Consumed),
@@ -241,14 +241,14 @@ graph_artifact_run_case(Store) :-
                     [backend(Backend), run_id(artifact_run)],
                     ok(Result)),
           assertion(Result.state.seen =:= 1),
-          assertion(Result.state.artifact_refs = [Ref]),
+          Result.state.artifact_refs = [Ref],
           graph_checkpoint(Backend, artifact_run, Snapshot),
           assertion(Snapshot.state.artifact_refs == [Ref]),
           artifact_get(Store, Ref, ok(Artifact)),
           assertion(Artifact.provenance.run_id == artifact_run),
           assertion(Artifact.provenance.graph_id == artifact_graph),
           artifact_trace(Store, Ref.namespace, ok(Trace)),
-          assertion(Trace = [Published, Consumed]),
+          Trace = [Published, Consumed],
           assertion(Published.type == published),
           assertion(Consumed.type == consumed),
           assertion(Consumed.consumer.node == consume)
