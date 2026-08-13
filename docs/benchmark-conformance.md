@@ -112,7 +112,20 @@ These deterministic numbers are conformance fixtures, not claims about provider 
 - latency;
 - prompt/completion/total tokens when OpenRouter reports them;
 - provider-reported cost when available;
-- quality based on the expected benchmark token being present.
+- whether any usable assistant output was returned;
+- whether the requested benchmark token was actually produced.
+
+Integration **status** and output **quality** are separate signals. This is deliberate because aliases such as `openrouter/free` may select different models and output channels between runs.
+
+The case passes the integration-health gate when the provider returns usable assistant output in text, reasoning, or tool-call form. Quality is graded independently:
+
+```text
+1.0  expected benchmark token appears in text or reasoning
+0.5  usable assistant output exists but the expected token is missing
+0.0  no usable assistant output; integration case fails
+```
+
+This means a healthy provider/runtime path cannot become a flaky CI failure merely because a dynamically selected free model ignores the exact-token instruction. The miss is still preserved as benchmark evidence through `quality=0.5` and `details.quality.expected_token=false` rather than being hidden.
 
 Provider usage fields that are legitimately absent are reported as zero in the numeric metric schema while `details.usage_present` preserves whether provider usage metadata was available.
 
@@ -146,4 +159,4 @@ standalone benchmark/run.pl deterministic suite
 
 The second gate is intentional: it verifies the CLI, report serialization, budget application, and exit status independently of PlUnit.
 
-The REAL OpenRouter job runs the existing core and structured-repair suites plus `benchmark/run.pl integration`. With credentials available, CI therefore gates a machine-readable real-provider benchmark report containing latency, token usage, provider-reported cost, selected-model evidence, and the quality check.
+The REAL OpenRouter job runs the existing core and structured-repair suites plus `benchmark/run.pl integration`. With credentials available, CI therefore gates a machine-readable real-provider benchmark report containing latency, token usage, provider-reported cost, selected-model evidence, provider/runtime health, and instruction-quality evidence.
