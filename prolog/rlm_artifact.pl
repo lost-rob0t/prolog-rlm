@@ -8,14 +8,15 @@
             artifact_list/4,
             artifact_ref_status/3,
             artifact_context_pack/4,
+            artifact_context_refs/4,
             artifact_namespace/2
           ]).
 
 /** <module> Durable versioned artifact store for fresh reasoning roots
 
 Artifacts are cross-run durable state, distinct from conversational transcript
-and graph execution checkpoints.  Every write creates an immutable version with
-explicit provenance.  Consumers may request compact context packs containing
+and graph execution checkpoints. Every write creates an immutable version with
+explicit provenance. Consumers may request compact context packs containing
 only selected latest artifacts.
 */
 
@@ -81,16 +82,12 @@ artifact_put_(Store, Namespace0, Key0, Kind0, Value0, Provenance0, Artifact) :-
     require_name(Kind0, Kind),
     canonical_value(Value0, Value),
     normalize_provenance(Provenance0, Provenance),
-    backend_next_version(Store, Namespace, Key, Version),
-    Ref = artifact_ref{namespace:Namespace, key:Key, version:Version},
-    Artifact = rlm_artifact{ref:Ref,
-                            namespace:Namespace,
-                            key:Key,
-                            kind:Kind,
-                            version:Version,
-                            value:Value,
-                            provenance:Provenance},
-    backend_put(Store, Namespace, Key, Version, Artifact).
+    BaseArtifact = rlm_artifact{namespace:Namespace,
+                                key:Key,
+                                kind:Kind,
+                                value:Value,
+                                provenance:Provenance},
+    backend_append(Store, Namespace, Key, BaseArtifact, Artifact).
 
 artifact_get(Store, Ref0, Outcome) :-
     artifact_outcome(get,
@@ -173,10 +170,7 @@ artifact_context_pack(Store, Namespace0, Options, Outcome) :-
 
 artifact_context_pack_(Store, Namespace0, Options, Pack) :-
     require_options(Options),
-    option(max_items(MaxItems), Options, 16),
-    option(max_chars(MaxChars), Options, 12000),
-    require_positive_integer(MaxItems, max_items),
-    require_positive_integer(MaxChars, max_chars),
+    context_limits(Options, MaxItems, MaxChars),
     artifact_list_(Store,
                    Namespace0,
                    [history(false)|Options],
@@ -188,52 +182,106 @@ artifact_context_pack_(Store, Namespace0, Options, Pack) :-
                          Chars,
                          Truncated),
     normalize_namespace(Namespace0, Namespace),
-    findall(Ref,
-            ( member(Entry, Entries), Ref = Entry.ref ),
-            Refs),
+    entries_refs(Entries, Refs),
+    length(Entries, ItemCount),
     Pack = artifact_context_pack{namespace:Namespace,
                                  entries:Entries,
                                  refs:Refs,
-                                 item_count:len(Entries),
+                                 item_count:ItemCount,
                                  chars:Chars,
                                  truncated:Truncated}.
 
+artifact_context_refs(Store, Refs0, Options, Outcome) :-
+    artifact_outcome(context_refs,
+                     artifact_context_refs_(Store, Refs0, Options),
+                     Outcome).
+
+artifact_context_refs_(Store, Refs0, Options, Pack) :-
+    require_store(Store),
+    require_options(Options),
+    require_ref_list(Refs0),
+    context_limits(Options, MaxItems, MaxChars),
+    maplist(normalize_ref, Refs0, Refs1),
+    resolve_latest_refs(Store, Refs1, [], Resolved0, [], Stale0),
+    reverse(Resolved0, Resolved1),
+    reverse(Stale0, Stale),
+    sort_artifacts(Resolved1, Resolved2),
+    latest_per_key(Resolved2, [], Latest0),
+    sort_artifacts(Latest0, Latest1),
+    filter_artifacts(Latest1, Options, Artifacts),
+    take_context_entries(Artifacts,
+                         MaxItems,
+                         MaxChars,
+                         Entries,
+                         Chars,
+                         Truncated),
+    entries_refs(Entries, Refs),
+    length(Entries, ItemCount),
+    Pack = artifact_ref_context_pack{entries:Entries,
+                                     refs:Refs,
+                                     stale_refs:Stale,
+                                     item_count:ItemCount,
+                                     chars:Chars,
+                                     truncated:Truncated}.
+
+resolve_latest_refs(_, [], Artifacts, Artifacts, Stale, Stale).
+resolve_latest_refs(Store, [Ref|Refs], Artifacts0, Artifacts, Stale0, Stale) :-
+    (   backend_latest(Store,
+                       Ref.namespace,
+                       Ref.key,
+                       LatestVersion,
+                       Latest)
+    ->  (   Ref.version =:= LatestVersion
+        ->  Stale1 = Stale0
+        ;   Stale1 = [artifact_stale_ref{requested:Ref,
+                                         current:Latest.ref}|Stale0]
+        ),
+        Artifacts1 = [Latest|Artifacts0]
+    ;   throw(artifact_fault(not_found(Ref)))
+    ),
+    resolve_latest_refs(Store, Refs, Artifacts1, Artifacts, Stale1, Stale).
+
+context_limits(Options, MaxItems, MaxChars) :-
+    option(max_items(MaxItems), Options, 16),
+    option(max_chars(MaxChars), Options, 12000),
+    require_positive_integer(MaxItems, max_items),
+    require_positive_integer(MaxChars, max_chars).
+
+entries_refs(Entries, Refs) :-
+    findall(Ref,
+            ( member(Entry, Entries), Ref = Entry.ref ),
+            Refs).
+
 /* ---------------------------------------------------------------------- */
 
-backend_next_version(artifact_store(memory, Id), Namespace, Key, Version) :-
+backend_append(artifact_store(memory, Id), Namespace, Key, BaseArtifact,
+               Artifact) :-
     require_memory_store(Id),
     with_mutex(rlm_artifact_memory,
-               findall(V,
-                       artifact_memory_record(Id, Namespace, Key, V, _),
-                       Versions)),
-    next_version(Versions, Version).
-backend_next_version(artifact_store(persist, File), Namespace, Key, Version) :-
-    artifact_persist_open(File),
-    artifact_persist_next_version(Namespace, Key, Version).
-
-backend_put(artifact_store(memory, Id), Namespace, Key, Version, Artifact) :-
-    require_memory_store(Id),
-    with_mutex(rlm_artifact_memory,
-               (   artifact_memory_record(Id,
-                                           Namespace,
-                                           Key,
-                                           Version,
-                                           Existing)
-               ->  ( Existing == Artifact
-                   -> true
-                   ;  throw(artifact_fault(immutable_version(
-                                              Namespace,
-                                              Key,
-                                              Version))) )
-               ;   assertz(artifact_memory_record(Id,
-                                                  Namespace,
-                                                  Key,
-                                                  Version,
-                                                  Artifact))
+               ( findall(V,
+                         artifact_memory_record(Id,
+                                                Namespace,
+                                                Key,
+                                                V,
+                                                _),
+                         Versions),
+                 next_version(Versions, Version),
+                 Ref = artifact_ref{namespace:Namespace,
+                                    key:Key,
+                                    version:Version},
+                 put_dict(_{ref:Ref, version:Version},
+                          BaseArtifact,
+                          Artifact),
+                 assertz(artifact_memory_record(Id,
+                                                Namespace,
+                                                Key,
+                                                Version,
+                                                Artifact))
                )).
-backend_put(artifact_store(persist, File), Namespace, Key, Version, Artifact) :-
+backend_append(artifact_store(persist, File), Namespace, Key, BaseArtifact,
+               Artifact) :-
     artifact_persist_open(File),
-    artifact_persist_put(Namespace, Key, Version, Artifact).
+    artifact_persist_append(Namespace, Key, BaseArtifact, Artifact).
 
 backend_get(artifact_store(memory, Id), Namespace, Key, Version, Artifact) :-
     require_memory_store(Id),
@@ -305,14 +353,18 @@ latest_per_key([Artifact|Artifacts], Acc0, Acc) :-
 
 replace_latest(Artifact, [], [Artifact]).
 replace_latest(Artifact, [Existing|Rest], [Artifact|Rest]) :-
-    Artifact.key == Existing.key,
+    same_artifact_key(Artifact, Existing),
     Artifact.version > Existing.version,
     !.
 replace_latest(Artifact, [Existing|Rest], [Existing|Rest]) :-
-    Artifact.key == Existing.key,
+    same_artifact_key(Artifact, Existing),
     !.
 replace_latest(Artifact, [Existing|Rest], [Existing|Updated]) :-
     replace_latest(Artifact, Rest, Updated).
+
+same_artifact_key(A, B) :-
+    A.namespace == B.namespace,
+    A.key == B.key.
 
 filter_artifacts(Artifacts0, Options, Artifacts) :-
     option(kinds(Kinds0), Options, all),
@@ -398,6 +450,12 @@ normalize_ref(Ref0, Ref) :-
     require_name(Key0, Key),
     require_positive_integer(Version, version),
     Ref = artifact_ref{namespace:Namespace, key:Key, version:Version}.
+
+require_ref_list(Refs) :-
+    (   is_list(Refs)
+    ->  true
+    ;   throw(artifact_fault(invalid_ref_list(Refs)))
+    ).
 
 normalize_provenance(Provenance0, Provenance) :-
     is_dict(Provenance0),
