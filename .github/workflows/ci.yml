@@ -75,6 +75,19 @@ jobs:
           fi
           exit "$status"
 
+      - name: Run credential-free CLI demo and trace smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          trace="${RUNNER_TEMP}/prolog-rlm-cli-graph.json"
+          swipl -q -s bin/prolog-rlm.pl -- demo --json > /tmp/prolog-rlm-cli-demo.json
+          grep -q '"schema":"prolog-rlm.trace.v1"' /tmp/prolog-rlm-cli-demo.json
+          grep -q '"status":"pass"' /tmp/prolog-rlm-cli-demo.json
+          swipl -q -s bin/prolog-rlm.pl -- demo graph --trace "$trace" --trace-format json > /tmp/prolog-rlm-cli-graph.log
+          test -s "$trace"
+          swipl -q -s bin/prolog-rlm.pl -- trace-view "$trace" --trace-format json > /tmp/prolog-rlm-cli-trace-view.log
+          grep -q 'completed_status' /tmp/prolog-rlm-cli-trace-view.log
+
       - name: Verify persistent graph resume across fresh SWI processes
         shell: bash
         run: |
@@ -187,5 +200,41 @@ jobs:
             message="$(tail -n 60 /tmp/openrouter-benchmark.log | tr '\n' ' ')"
             message="${message//'%'/'%25'}"
             echo "::error title=REAL OpenRouter benchmark failed::${message}"
+          fi
+          exit "$status"
+
+      - name: Run one-command REAL RLM CLI smoke
+        shell: bash
+        run: |
+          set +e
+          status=1
+          for attempt in 1 2; do
+            swipl -q -s bin/prolog-rlm.pl -- rlm \
+              "Return the token CLI_RLM_OK using the external context." \
+              --context "The required token is CLI_RLM_OK." \
+              --max-tokens 96 \
+              --planner-max-tokens 900 \
+              --planner-attempts 2 \
+              --json > /tmp/prolog-rlm-live-cli.json 2> /tmp/prolog-rlm-live-cli.err
+            status=$?
+            if [ "$status" -eq 0 ]; then
+              break
+            fi
+            cat /tmp/prolog-rlm-live-cli.err
+            sleep 6
+          done
+          cat /tmp/prolog-rlm-live-cli.err
+          if [ -f /tmp/prolog-rlm-live-cli.json ]; then
+            cat /tmp/prolog-rlm-live-cli.json
+          fi
+          if [ "$status" -eq 0 ]; then
+            grep -q '"schema":"prolog-rlm.trace.v1"' /tmp/prolog-rlm-live-cli.json || status=1
+            grep -q '"max_depth":1' /tmp/prolog-rlm-live-cli.json || status=1
+            grep -q '"model_calls":' /tmp/prolog-rlm-live-cli.json || status=1
+          fi
+          if [ "$status" -ne 0 ]; then
+            message="$(tail -n 60 /tmp/prolog-rlm-live-cli.err | tr '\n' ' ')"
+            message="${message//'%'/'%25'}"
+            echo "::error title=REAL RLM CLI smoke failed::${message}"
           fi
           exit "$status"
