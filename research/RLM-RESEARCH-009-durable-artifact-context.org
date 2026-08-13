@@ -2,7 +2,7 @@
 :ID:       prolog-rlm-research-009-durable-artifact-context
 :END:
 #+title: RLM-RESEARCH-009 Durable Artifact Context and Fresh Reasoning Roots
-#+status: RESEARCHING
+#+status: VERIFIED
 #+filetags: :rlm:context:memory:artifacts:blackboard:
 
 * Research Question
@@ -16,43 +16,171 @@ How should long-running prolog-rlm agents preserve useful state without forcing 
 - Chained Recursive Language Models: https://arxiv.org/abs/2608.05124
 - LangGraph persistence: https://docs.langchain.com/oss/python/langgraph/persistence
 
-Retrieved 2026-08-11.
+Retrieved 2026-08-11 and rechecked during implementation 2026-08-12.
 
-* Preliminary Findings
+* Findings
 
 RLM already separates large context from the prompt. The same principle should apply to agent memory: durable task state belongs in the runtime and should be projected into model context as needed.
 
-Chained/fresh-root approaches suggest that later reasoning stages can begin with a clean model context while sharing compact summaries, blackboards, or durable artifacts from prior roots. This avoids treating an accumulated transcript as the sole source of truth.
+Chained/fresh-root approaches support later reasoning stages beginning with clean model context while sharing compact summaries, blackboards, findings, or other durable artifacts from prior roots. The accumulated transcript is therefore neither the durable database nor the only source of truth.
 
-* Proposed Prolog Model
+Current LangGraph persistence also distinguishes execution checkpoints from cross-thread/cross-run stored memory. That separation maps cleanly to a Prolog runtime: graph checkpoints restore execution state, while a backend-neutral artifact store owns reusable task knowledge.
 
-Represent persistent run knowledge as versioned artifacts/facts with provenance, for example:
+* Final Prolog Model
+
+The implementation uses immutable versioned records behind a backend-neutral facade:
 
 #+begin_src prolog
-artifact(Id, Kind, Version, Ref, Provenance).
-summary(Id, Scope, Text, SourceArtifacts).
-finding(Id, Claim, EvidenceRefs, Status).
-blackboard(Key, Version, Value, Provenance).
+rlm_artifact{
+    ref:artifact_ref{
+        namespace:Namespace,
+        key:Key,
+        version:Version
+    },
+    namespace:Namespace,
+    key:Key,
+    kind:Kind,
+    version:Version,
+    value:Value,
+    provenance:Provenance
+}.
 #+end_src
 
-A context-pack builder chooses a bounded subset for each model call. The durable state remains authoritative; the generated prompt/context pack is disposable.
+The public API supports:
 
-* Persistence Boundary
+#+begin_src prolog
+artifact_store_open(Spec, Outcome).
+artifact_store_close(Store, Outcome).
+artifact_put(Store, Namespace, Key, Kind, Value, Provenance, Outcome).
+artifact_get(Store, Ref, Outcome).
+artifact_latest(Store, Namespace, Key, Outcome).
+artifact_list(Store, Namespace, Options, Outcome).
+artifact_ref_status(Store, Ref, Outcome).
+artifact_context_pack(Store, Namespace, Options, Outcome).
+artifact_context_refs(Store, Refs, Options, Outcome).
+artifact_trace(Store, Namespace, Outcome).
+#+end_src
 
-The initial adapter may use in-memory facts plus =library(persistency)= for local development. The public interface must remain backend-neutral so graph checkpoints/artifacts can later use a database or object store without rewriting agent logic.
+The initial backends are process-local memory and =library(persistency)=. Agents and graphs depend only on the facade, so a database or object-store adapter can replace the local backend without rewriting orchestration logic.
 
-* Open Questions
+* Version and Supersession Semantics
 
-- artifact invalidation/version conflict semantics;
-- whether summaries are model-authored, deterministic, or both;
-- context-pack selection heuristics;
-- how to retain negative evidence/rejected branches without prompt bloat;
-- replay semantics when provider outputs are nondeterministic.
+Versions are monotonically increasing per =(Namespace, Key)= and are immutable after publication. A correction writes a new version; it never mutates the old value.
+
+Exact historical references remain readable. Consumers can classify a reference as:
+
+#+begin_src prolog
+current(Ref).
+stale(OldRef, CurrentRef).
+missing_version(OldRef, CurrentRef).
+missing(Ref).
+#+end_src
+
+A fresh-root handoff through =artifact_context_refs/4= resolves a stale reference to the latest artifact while returning the supersession explicitly in =stale_refs=. This prevents an old checkpoint or agent handle from silently injecting superseded state.
+
+* Context Selection
+
+Durable state remains authoritative; the context pack is disposable.
+
+Fresh roots can select by artifact kind/key and enforce hard =max_items= and =max_chars= ceilings. Namespace packs select only latest versions by default. Ref-based packs resolve only explicitly supplied artifact handles.
+
+The compact entry contains artifact reference, namespace, key, kind, value, and provenance. It does not contain model message history or a transcript field. Full artifact history is available only through explicit =artifact_list(..., [history(true)], ...)= calls.
+
+* Producer and Consumer Trace
+
+Every publication records a =published= trace event with the immutable artifact reference and producer provenance.
+
+Every context handoff records a =consumed= event with consumer identity, current artifact refs, and stale-ref supersessions. Persistent backends store these trace events beside artifact records, so producer/consumer linkage survives process restart.
+
+Graph helpers augment provenance with =run_id=, =graph_id=, =node=, and =step=. Agent helpers augment provenance with runtime and agent identity. Callers may add model/tool =call_id= or evidence references in their own provenance/value dicts.
+
+* Agent Integration
+
+=rlm_artifact_agent= persists an artifact and then sends the existing typed mailbox message:
+
+#+begin_src prolog
+checkpoint(RuntimeId, artifact(Ref)).
+#+end_src
+
+The normal agent pump establishes =artifact(Ref)= in =State.checkpoints=. The helper deliberately does not pump the mailbox itself, so publication cannot accidentally consume unrelated queued work.
+
+Later roots use =agent_artifact_context/5= to resolve those handles into a bounded fresh context pack. Agent state therefore carries references, not copied artifact payloads or prior conversation text.
+
+* Graph Integration
+
+=rlm_artifact_graph= exposes a reusable typed state field:
+
+#+begin_src prolog
+field(artifact_refs, list, [], append).
+#+end_src
+
+A graph node publishes an artifact and receives a normal state patch containing =[Ref]=. Existing graph checkpoint/replay machinery persists only the reference in graph state. A later or resumed node resolves it through the artifact store.
+
+This preserves the separation:
+
+#+begin_example
+checkpoint -> execution state + artifact refs
+artifact store -> durable artifact payloads + provenance + trace
+transcript -> model-local interaction history
+#+end_example
+
+* Fresh-Process Restart Evidence
+
+CI contains a two-process restart fixture.
+
+Process 1:
+
+1. opens persistent graph and artifact stores;
+2. publishes a blackboard artifact;
+3. stores only its reference in typed graph state;
+4. interrupts and persists the graph checkpoint;
+5. exits.
+
+Process 2:
+
+1. starts a fresh SWI-Prolog process;
+2. reopens both persistent stores;
+3. reloads the checkpoint and artifact by reference;
+4. resumes at the next graph node;
+5. builds bounded artifact context without replaying producer chat text;
+6. records the consumer trace;
+7. completes the graph.
+
+This is an actual process boundary rather than an in-process reconstruction test.
+
+* Three-Root Evidence
+
+The deterministic artifact suite also runs three logical reasoning roots:
+
+1. root 1 publishes durable summary version 1;
+2. root 2 receives only the compact artifact entry, consumes it, and publishes a corrected version 2 referencing its source artifact;
+3. root 3 begins from root 1's stale reference, receives current version 2, and receives an explicit stale-reference record.
+
+The test asserts that the handoff entries contain neither =messages= nor =transcript= fields. It also verifies the ordered producer/consumer trace across all three roots.
+
+* Failure Semantics
+
+The facade fails closed for malformed namespaces/refs, closed stores, missing artifacts, invalid budgets, and non-ground payload/provenance data.
+
+An agent publish that persists successfully but fails to queue its checkpoint attachment returns a structured =attachment_failed= error carrying the persisted artifact reference. It does not falsely claim that the artifact entered agent state.
+
+* Resolved Questions
+
+- Artifact invalidation is represented through immutable superseding versions rather than destructive mutation.
+- Context-pack selection is explicit, latest-only by default, and bounded by item/character budgets.
+- Graph replay restores artifact references but does not replay chat text.
+- Provenance plus =published=/=consumed= trace events connect producers and later consumers.
+- The storage implementation remains replaceable behind =rlm_artifact=.
+
+Open policy questions remain for later milestones: model-authored versus deterministic summarization policy, negative-evidence retention heuristics, and replay policy for nondeterministic provider outputs. Those do not change the artifact-store contract implemented here.
 
 * Acceptance Evidence
 
-- run three sequential reasoning roots where root 2/3 do not receive the full prior transcript;
-- later roots recover required facts from durable artifacts;
-- stale artifact versions are detectable;
-- checkpoint replay reconstructs runtime state without replaying chat text;
-- provenance connects final answer to artifact/evidence origins.
+- [X] three sequential reasoning roots share compact artifacts without transcript inheritance;
+- [X] later roots recover required facts from durable artifacts;
+- [X] stale artifact versions are detectable and resolve with explicit supersession evidence;
+- [X] graph checkpoint replay reconstructs runtime state from artifact refs without replaying chat text;
+- [X] persistent artifact payloads and producer/consumer traces survive a fresh SWI process;
+- [X] agent state carries artifact handles through the existing checkpoint mailbox;
+- [X] provenance connects artifact producers to later consumers;
+- [X] deterministic CI covers memory, persistent reopen, graph integration, agent integration, bounded selection, three-root handoff, and cross-process restart.

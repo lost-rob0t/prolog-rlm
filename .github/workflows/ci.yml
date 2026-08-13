@@ -67,6 +67,17 @@ jobs:
           swipl -q -s test/graph_restart_phase1.pl -- "$checkpoint"
           swipl -q -s test/graph_restart_phase2.pl -- "$checkpoint"
 
+      - name: Verify durable artifact handoff across fresh SWI processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          restart_dir="$(mktemp -d)"
+          trap 'rm -rf "$restart_dir"' EXIT
+          checkpoint="$restart_dir/artifact-graph-checkpoint.db"
+          artifacts="$restart_dir/artifacts.db"
+          swipl -q -s test/artifact_restart_phase1.pl -- "$checkpoint" "$artifacts"
+          swipl -q -s test/artifact_restart_phase2.pl -- "$checkpoint" "$artifacts"
+
       - name: Check whitespace errors
         run: |
           if [ -n "${{ github.base_ref }}" ]; then
