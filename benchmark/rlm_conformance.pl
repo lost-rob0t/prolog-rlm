@@ -229,12 +229,15 @@ with_term_context(Terms, Goal, Metrics, Details) :-
         call(Goal, Ref.handle, Metrics, Details),
         context_delete(Ref.handle, _)).
 
-context_result_metrics(Result,
-                       _{context_ops:1,
-                         latency_ms:Trace.elapsed_ms,
-                         context_bytes_inspected:Trace.bytes_inspected,
-                         context_items_inspected:Trace.items_inspected}) :-
-    Trace = Result.trace.
+context_result_metrics(Result, Metrics) :-
+    Trace = Result.trace,
+    LatencyMs = Trace.elapsed_ms,
+    BytesInspected = Trace.bytes_inspected,
+    ItemsInspected = Trace.items_inspected,
+    Metrics = _{context_ops:1,
+                latency_ms:LatencyMs,
+                context_bytes_inspected:BytesInspected,
+                context_items_inspected:ItemsInspected}.
 
 make_long_text(Text) :-
     findall(Line,
@@ -565,8 +568,8 @@ mcp_2026_adapter_case(1.0, _{}, Details) :-
 
 mcp_dual_facade_case(1.0, _{}, Details) :-
     rlm_mcp_ready,
-    mcp_command_normalize(list_tools, Canonical),
-    ensure(Canonical == list_tools, unexpected_command(Canonical)),
+    mcp_command_normalize(list_tools, ok(Canonical)),
+    ensure(Canonical.op == list_tools, unexpected_command(Canonical)),
     Details = _{facade:version_neutral,
                 protocols:['2025-11-25','2026-07-28'],
                 canonical_command:Canonical}.
@@ -585,9 +588,13 @@ apply_budget_outcome(error(Error), Budget, Case0, Case) :-
     Details = _{observation:Case0.details,
                 fixed_budget:Budget,
                 budget_error:Error},
-    Case = Case0.put(_{status:fail,
-                       quality:0.0,
-                       details:Details}).
+    benchmark_case(Case0.name,
+                   Case0.category,
+                   fail,
+                   0.0,
+                   Case0.metrics,
+                   Details,
+                   Case).
 
 case_budget(context_peek,
             _{max_context_ops:1,
