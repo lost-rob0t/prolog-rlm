@@ -9,6 +9,12 @@ budgeted(Signals0, Signals) :-
              Signals0,
              Signals).
 
+has_route(Candidates, Route) :-
+    member(Candidate, Candidates),
+    get_dict(route, Candidate, CandidateRoute),
+    CandidateRoute == Route,
+    !.
+
 test(easy_retrieval_stays_direct) :-
     budgeted(_{task_complexity:0.10,
                context_chars:1200,
@@ -79,8 +85,7 @@ test(duplicate_subcall_removes_recursive_candidate) :-
                duplicate:true},
              Signals),
     recursion_candidates(Signals, [], ok(Candidates)),
-    assertion(\+ (member(Candidate, Candidates),
-                  Candidate.route == recursive_rlm)).
+    assertion(\+ has_route(Candidates, recursive_rlm)).
 
 test(no_progress_subcall_removes_recursive_candidate) :-
     budgeted(_{task_complexity:0.95,
@@ -90,8 +95,7 @@ test(no_progress_subcall_removes_recursive_candidate) :-
                progress:0.01},
              Signals),
     recursion_candidates(Signals, [min_progress(0.05)], ok(Candidates)),
-    assertion(\+ (member(Candidate, Candidates),
-                  Candidate.route == recursive_rlm)).
+    assertion(\+ has_route(Candidates, recursive_rlm)).
 
 test(explicit_duplicate_guard_rejects_fingerprint) :-
     recursion_fingerprint(call_tool(search, query{q:"same"}), Fingerprint),
@@ -122,8 +126,7 @@ test(depth_greater_than_one_is_disabled_by_default) :-
     recursion_candidates(Signals,
                          [max_recursion_depth(4)],
                          ok(Candidates)),
-    assertion(\+ (member(Candidate, Candidates),
-                  Candidate.route == recursive_rlm)).
+    assertion(\+ has_route(Candidates, recursive_rlm)).
 
 test(depth_greater_than_one_requires_both_opt_in_and_capability) :-
     Signals = _{task_complexity:0.95,
@@ -137,8 +140,7 @@ test(depth_greater_than_one_requires_both_opt_in_and_capability) :-
                allow_deep_recursion(true),
                deep_recursion_capability(true)],
     recursion_candidates(Signals, Options, ok(Candidates)),
-    assertion((member(Candidate, Candidates),
-               Candidate.route == recursive_rlm)).
+    assertion(has_route(Candidates, recursive_rlm)).
 
 test(deep_opt_in_without_capability_stays_capped_at_one) :-
     Signals = _{task_complexity:0.95,
@@ -151,8 +153,7 @@ test(deep_opt_in_without_capability_stays_capped_at_one) :-
                          [max_recursion_depth(3),
                           allow_deep_recursion(true)],
                          ok(Candidates)),
-    assertion(\+ (member(Candidate, Candidates),
-                  Candidate.route == recursive_rlm)).
+    assertion(\+ has_route(Candidates, recursive_rlm)).
 
 test(candidate_generation_is_bounded) :-
     budgeted(_{task_complexity:0.75,
