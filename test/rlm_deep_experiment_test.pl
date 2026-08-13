@@ -35,7 +35,7 @@ depth_two_planner(_, ok(Output)) :-
 grandchild_tool_planner(_, ok(Output)) :-
     bump_planner_calls,
     Grandchild = plan([tool(secret_tool,
-                            literal(_{secret:true}),
+                            literal(secret_payload{secret:true}),
                             secret),
                        final(var(secret))]),
     Child = plan([rlm(Grandchild, grandchild),
