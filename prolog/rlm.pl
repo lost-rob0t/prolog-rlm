@@ -14,6 +14,15 @@
             outcome_trace/3,
             plan_repair/6,
             default_outcome_limits/1,
+            artifact_store_open/2,
+            artifact_store_close/2,
+            artifact_put/7,
+            artifact_get/3,
+            artifact_latest/4,
+            artifact_list/4,
+            artifact_ref_status/3,
+            artifact_context_pack/4,
+            artifact_namespace/2,
             default_agent_options/1,
             agent_runtime_create/2,
             agent_runtime_destroy/1,
@@ -64,6 +73,18 @@ Load this module to initialize the public runtime namespaces.
                 plan_repair/6,
                 default_outcome_limits/1
               ]).
+:- use_module(rlm_artifact,
+              [ rlm_artifact_ready/0,
+                artifact_store_open/2,
+                artifact_store_close/2,
+                artifact_put/7,
+                artifact_get/3,
+                artifact_latest/4,
+                artifact_list/4,
+                artifact_ref_status/3,
+                artifact_context_pack/4,
+                artifact_namespace/2
+              ]).
 :- use_module(rlm_agent,
               [ rlm_agent_ready/0,
                 default_agent_options/1,
@@ -103,6 +124,7 @@ rlm_ready :-
     rlm_tool:capabilities_normalize([], ok([])),
     rlm_completion:default_completion_budget(_),
     rlm_outcome:default_outcome_limits(_),
+    rlm_artifact:rlm_artifact_ready,
     rlm_agent:rlm_agent_ready,
     rlm_graph:rlm_graph_ready,
     rlm_mcp:rlm_mcp_ready.
