@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   apply:
-    if: ${{ hashFiles('.github/usage-ledger.patch') != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out branch
@@ -19,13 +18,17 @@ jobs:
           ref: feature/issue-20-deep-recursion-experiments
           fetch-depth: 0
 
-      - name: Apply exact patch and self-remove
+      - name: Apply exact patch once
         shell: bash
         run: |
           set -euo pipefail
+          if [ ! -f .github/usage-ledger.patch ]; then
+            echo "usage ledger patch already consumed"
+            exit 0
+          fi
           git apply --check .github/usage-ledger.patch
           git apply .github/usage-ledger.patch
-          git rm .github/usage-ledger.patch .github/workflows/apply-usage-ledger.yml
+          git rm .github/usage-ledger.patch
           git diff --check
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
