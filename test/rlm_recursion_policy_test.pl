@@ -156,7 +156,9 @@ test(deep_opt_in_without_capability_stays_capped_at_one) :-
 test(candidate_generation_is_bounded) :-
     budgeted(_{task_complexity:0.75,
                context_chars:120000,
-               uncertainty:0.6},
+               uncertainty:0.6,
+               cheap_submodel_available:true,
+               delegated_subagent_available:true},
              Signals),
     recursion_candidates(Signals,
                          [max_candidates(2),
@@ -164,6 +166,35 @@ test(candidate_generation_is_bounded) :-
                               plunit_rlm_recursion_policy:generated_candidates)],
                          ok(Candidates)),
     assertion(length(Candidates, 2)).
+
+test(generated_expected_value_is_recomputed) :-
+    budgeted(_{task_complexity:0.2,
+               context_chars:1000,
+               uncertainty:0.2},
+             Signals),
+    recursion_candidates(Signals,
+                         [cost_weight(0.5),
+                          candidate_generator(
+                              plunit_rlm_recursion_policy:spoof_direct_value)],
+                         ok(Candidates)),
+    member(Candidate, Candidates),
+    Candidate.route == direct_continuation,
+    assertion(Candidate.expected_utility =:= 0.5),
+    assertion(Candidate.estimated_cost =:= 0.2),
+    assertion(Candidate.expected_value =:= 0.4).
+
+test(generator_cannot_enable_unavailable_route) :-
+    budgeted(_{task_complexity:0.2,
+               context_chars:1000,
+               uncertainty:0.2,
+               cheap_submodel_available:false},
+             Signals),
+    recursion_candidates(Signals,
+                         [candidate_generator(
+                              plunit_rlm_recursion_policy:unavailable_cheap)],
+                         error(Error)),
+    assertion(Error.detail ==
+              candidate_generator_route_unavailable(cheap_submodel)).
 
 test(candidate_selector_hook_can_choose_available_route) :-
     budgeted(_{task_complexity:0.8,
@@ -175,6 +206,20 @@ test(candidate_selector_hook_can_choose_available_route) :-
                          plunit_rlm_recursion_policy:prefer_deterministic)],
                     ok(Decision)),
     assertion(Decision.policy == deterministic_context).
+
+test(selector_cannot_escape_bounded_candidate_set) :-
+    budgeted(_{task_complexity:0.1,
+               context_chars:1000,
+               uncertainty:0.1,
+               delegated_subagent_available:true},
+             Signals),
+    recursion_route(Signals,
+                    [max_candidates(1),
+                     candidate_selector(
+                         plunit_rlm_recursion_policy:escape_bounded_set)],
+                    error(Error)),
+    assertion(Error.detail ==
+              candidate_selector_out_of_bounds(delegated_subagent)).
 
 test(decision_exposes_expected_utility_cost_and_all_signals) :-
     budgeted(_{task_complexity:0.7,
@@ -196,18 +241,41 @@ generated_candidates(_, _,
                      [ _{route:cheap_submodel,
                          expected_utility:0.99,
                          estimated_cost:0.10,
-                         expected_value:0.935,
+                         expected_value:99.0,
                          rationale:model_generated_candidate},
                        _{route:delegated_subagent,
                          expected_utility:0.98,
                          estimated_cost:0.20,
-                         expected_value:0.87,
+                         expected_value:99.0,
                          rationale:model_generated_candidate}
                      ]).
+
+spoof_direct_value(_, _,
+                   [ _{route:direct_continuation,
+                       expected_utility:0.5,
+                       estimated_cost:0.2,
+                       expected_value:99.0,
+                       rationale:spoofed_value}
+                   ]).
+
+unavailable_cheap(_, _,
+                  [ _{route:cheap_submodel,
+                      expected_utility:0.99,
+                      estimated_cost:0.01,
+                      expected_value:99.0,
+                      rationale:capability_escape}
+                  ]).
 
 prefer_deterministic(_, Candidates, Selected) :-
     member(Selected, Candidates),
     Selected.route == deterministic_context,
     !.
+
+escape_bounded_set(_, _,
+                   _{route:delegated_subagent,
+                     expected_utility:1.0,
+                     estimated_cost:0.0,
+                     expected_value:1.0,
+                     rationale:selector_escape}).
 
 :- end_tests(rlm_recursion_policy).
