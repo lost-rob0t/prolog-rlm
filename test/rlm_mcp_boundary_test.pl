@@ -80,15 +80,29 @@ test(canonical_notification_decodes_without_wire_leakage) :-
     assertion(\+ sub_string(Text, _, _, _, "notifications/")),
     assertion(\+ sub_string(Text, _, _, _, "2025-11-25")).
 
-test(agent_and_graph_have_no_protocol_version_branching) :-
-    assert_no_protocol_leak('../prolog/rlm_agent.pl'),
-    assert_no_protocol_leak('../prolog/rlm_graph.pl').
+test(canonical_runtime_layers_have_no_protocol_version_branching) :-
+    forall(member(Path,
+                  ['prolog/rlm_agent.pl',
+                   'prolog/rlm_graph.pl',
+                   'prolog/rlm_chain.pl',
+                   'prolog/rlm_completion.pl',
+                   'prolog/rlm_plan.pl']),
+           assert_no_protocol_leak(Path)).
 
 stdio_fixture(Wire, Meta, Response) :-
     assertion(Meta.headers == []),
     get_dict(method, Wire, Method),
     stdio_method(Method, Wire, Response).
 
+stdio_method("server/discover", Wire, Response) :-
+    Response = mcp_transport_response{
+                   status:200,
+                   body:_{jsonrpc:"2.0",
+                          id:Wire.id,
+                          error:_{code: -32601,
+                                  message:"Method not found"}},
+                   headers:transport_headers{},
+                   content_type:'application/json'}.
 stdio_method("initialize", Wire, Response) :-
     server_info(ServerInfo),
     server_caps(ServerCaps),
@@ -116,6 +130,8 @@ assert_no_protocol_leak(Path) :-
     read_file_to_string(Path, Text, []),
     forall(member(Needle,
                   ["2025-11-25",
+                   "2026-07-28",
+                   "server/discover",
                    "tools/list",
                    "tools/call",
                    "resources/list",
@@ -124,6 +140,8 @@ assert_no_protocol_leak(Path) :-
                    "prompts/get",
                    "MCP-Protocol-Version",
                    "MCP-Session-Id",
+                   "Mcp-Method",
+                   "Mcp-Name",
                    "jsonrpc"]),
            assertion(\+ sub_string(Text, _, _, _, Needle))).
 
