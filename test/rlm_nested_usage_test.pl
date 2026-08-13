@@ -84,7 +84,7 @@ test(hidden_nested_usage_can_trip_completion_token_budget) :-
     rlm_completion:plan_usage(Result, Usage),
     completion_budget(59, Budget),
     rlm_completion:budget_usage_check(Budget, Usage, Outcome),
-    assertion(Outcome = error(Error)),
+    Outcome = error(Error),
     assertion(Error.kind == token_budget_exceeded),
     assertion(Error.used =:= 60),
     assertion(Error.limit =:= 59).
