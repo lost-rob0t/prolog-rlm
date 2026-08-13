@@ -92,6 +92,7 @@ normalize_capabilities(Role, Input, Capabilities) :-
     capability_value(Input, sampling, Sampling),
     capability_value(Input, elicitation, Elicitation),
     capability_value(Input, experimental, Experimental),
+    capability_value(Input, extensions, Extensions),
     Capabilities = mcp_capabilities{
                        role:Role,
                        tools:Tools,
@@ -102,7 +103,8 @@ normalize_capabilities(Role, Input, Capabilities) :-
                        roots:Roots,
                        sampling:Sampling,
                        elicitation:Elicitation,
-                       experimental:Experimental
+                       experimental:Experimental,
+                       extensions:Extensions
                    }.
 normalize_capabilities(Role, Input, _) :-
     throw(mcp_model_fault(invalid_capabilities(Role, Input))).
