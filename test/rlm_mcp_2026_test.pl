@@ -4,12 +4,12 @@
 :- use_module('../prolog/rlm_mcp_compat').
 
 client_info(_{name:"prolog-rlm-2026-test", version:"1.0"}).
-client_caps(_{extensions:_{"io.modelcontextprotocol/tasks":_{}}}).
+client_caps(_{extensions:_{'io.modelcontextprotocol/tasks':_{}}}).
 server_info(_{name:"fixture-2026-server", version:"1.0"}).
 server_caps(_{tools:_{listChanged:true},
               resources:_{listChanged:true},
               prompts:_{listChanged:true},
-              extensions:_{"io.modelcontextprotocol/tasks":_{}}}).
+              extensions:_{'io.modelcontextprotocol/tasks':_{}}}).
 
 new_http_client(State) :-
     client_info(Info),
@@ -47,8 +47,10 @@ test(discover_request_is_self_describing_and_routed) :-
               '2026-07-28'),
     assertion(Wire.params.'_meta'.'io.modelcontextprotocol/clientInfo'.name ==
               "prolog-rlm-2026-test"),
-    assertion(Wire.params.'_meta'.'io.modelcontextprotocol/clientCapabilities'.extensions \==
-              _),
+    get_dict(extensions,
+             Wire.params.'_meta'.'io.modelcontextprotocol/clientCapabilities',
+             Extensions),
+    assertion(get_dict('io.modelcontextprotocol/tasks', Extensions, _)),
     assertion(memberchk('MCP-Protocol-Version'='2026-07-28', Meta.headers)),
     assertion(memberchk('Mcp-Method'="server/discover", Meta.headers)),
     assertion(\+ memberchk('MCP-Session-Id'=_, Meta.headers)).
