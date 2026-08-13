@@ -1,8 +1,7 @@
 :- module(rlm_artifact_persist,
           [ artifact_persist_open/1,
             artifact_persist_close/0,
-            artifact_persist_next_version/3,
-            artifact_persist_put/4,
+            artifact_persist_append/4,
             artifact_persist_get/4,
             artifact_persist_latest/4,
             artifact_persist_list/2,
@@ -40,43 +39,30 @@ artifact_persist_close :-
                ;   true
                )).
 
-artifact_persist_next_version(Namespace, Key, Version) :-
+artifact_persist_append(Namespace, Key, BaseArtifact, Artifact) :-
     require_attached,
-    with_mutex(rlm_artifact_persist,
-               findall(V,
-                       artifact_record(Namespace, Key, V, _),
-                       Versions)),
-    (   Versions == []
-    ->  Version = 1
-    ;   max_list(Versions, Latest),
-        Version is Latest+1
-    ).
-
-artifact_persist_put(Namespace, Key, Version, Artifact) :-
-    require_attached,
-    ground(Artifact),
-    integer(Version),
-    Version > 0,
+    ground(BaseArtifact),
     !,
     with_mutex(rlm_artifact_persist,
-               (   artifact_record(Namespace, Key, Version, Existing)
-               ->  (   Existing == Artifact
-                   ->  true
-                   ;   throw(error(permission_error(overwrite,
-                                                     artifact_version,
-                                                     Namespace-Key-Version),
-                                     context(rlm_artifact_persist,
-                                             'artifact versions are immutable')))
-                   )
-               ;   assert_artifact_record(Namespace,
-                                          Key,
-                                          Version,
-                                          Artifact)
+               ( findall(V,
+                         artifact_record(Namespace, Key, V, _),
+                         Versions),
+                 next_version(Versions, Version),
+                 Ref = artifact_ref{namespace:Namespace,
+                                    key:Key,
+                                    version:Version},
+                 put_dict(_{ref:Ref, version:Version},
+                          BaseArtifact,
+                          Artifact),
+                 assert_artifact_record(Namespace,
+                                        Key,
+                                        Version,
+                                        Artifact)
                )).
-artifact_persist_put(_, _, Version, Artifact) :-
-    throw(error(domain_error(artifact_record, Version-Artifact),
+artifact_persist_append(_, _, BaseArtifact, _) :-
+    throw(error(instantiation_error,
                 context(rlm_artifact_persist,
-                        'artifact version and payload must be ground'))).
+                        non_ground_artifact(BaseArtifact)))).
 
 artifact_persist_get(Namespace, Key, Version, Artifact) :-
     require_attached,
@@ -106,6 +92,12 @@ artifact_persist_delete_namespace(Namespace) :-
     require_attached,
     with_mutex(rlm_artifact_persist,
                retractall_artifact_record(Namespace, _, _, _)).
+
+next_version([], 1).
+next_version(Versions, Version) :-
+    Versions \== [],
+    max_list(Versions, Latest),
+    Version is Latest+1.
 
 require_attached :-
     (   db_attached(_)
