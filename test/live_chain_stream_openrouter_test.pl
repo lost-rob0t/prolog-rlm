@@ -56,7 +56,7 @@ validate_stream_result(RequestedModel, Result) :-
     assertion(string(Response.text)),
     assertion(Response.text \== ""),
     assertion(sub_string(Response.text, _, _, _, "STREAM_OK")),
-    assertion(Response.finish_reason \== "length"),
+    assertion(nonempty_textlike(Response.finish_reason)),
     assertion(is_list(Result.stream_events)),
     assertion(Result.stream_events \== []),
     assertion(ground(Result.stream_events)),

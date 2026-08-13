@@ -59,7 +59,12 @@
             graph_checkpoint/3,
             graph_history/3,
             graph_cancellation_token/1,
-            graph_cancel/1
+            graph_cancel/1,
+            benchmark_case/7,
+            benchmark_report/3,
+            benchmark_budget_check/3,
+            benchmark_json/2,
+            benchmark_human_summary/2
           ]).
 
 /** <module> prolog-rlm entrypoint
@@ -155,6 +160,14 @@ Load this module to initialize the public runtime namespaces.
                 graph_cancellation_token/1,
                 graph_cancel/1
               ]).
+:- use_module(rlm_benchmark,
+              [ rlm_benchmark_ready/0,
+                benchmark_case/7,
+                benchmark_report/3,
+                benchmark_budget_check/3,
+                benchmark_json/2,
+                benchmark_human_summary/2
+              ]).
 :- use_module(rlm_mcp).
 
 rlm_version('0.1.0-dev').
@@ -173,4 +186,5 @@ rlm_ready :-
     rlm_artifact_graph:rlm_artifact_graph_ready,
     rlm_agent:rlm_agent_ready,
     rlm_graph:rlm_graph_ready,
+    rlm_benchmark:rlm_benchmark_ready,
     rlm_mcp:rlm_mcp_ready.
