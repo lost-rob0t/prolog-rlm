@@ -7,6 +7,13 @@
             rlm_cancellation_token/1,
             rlm_cancel/1,
             default_completion_budget/1,
+            default_recursion_policy/1,
+            recursion_route/3,
+            recursion_candidates/3,
+            recursion_guard/5,
+            recursion_fingerprint/2,
+            recursion_execute/4,
+            recursion_execution_context/4,
             plan_outcome/5,
             goal_outcome/3,
             plan_inspect/4,
@@ -71,6 +78,19 @@ Load this module to initialize the public runtime namespaces.
                 rlm_cancellation_token/1,
                 rlm_cancel/1,
                 default_completion_budget/1
+              ]).
+:- use_module(rlm_recursion_policy,
+              [ rlm_recursion_policy_ready/0,
+                default_recursion_policy/1,
+                recursion_route/3,
+                recursion_candidates/3,
+                recursion_guard/5,
+                recursion_fingerprint/2
+              ]).
+:- use_module(rlm_recursion_runtime,
+              [ rlm_recursion_runtime_ready/0,
+                recursion_execute/4,
+                recursion_execution_context/4
               ]).
 :- use_module(rlm_outcome,
               [ plan_outcome/5,
@@ -145,6 +165,8 @@ rlm_ready :-
     rlm_plan:default_plan_budget(_),
     rlm_tool:capabilities_normalize([], ok([])),
     rlm_completion:default_completion_budget(_),
+    rlm_recursion_policy:rlm_recursion_policy_ready,
+    rlm_recursion_runtime:rlm_recursion_runtime_ready,
     rlm_outcome:default_outcome_limits(_),
     rlm_artifact:rlm_artifact_ready,
     rlm_artifact_agent:rlm_artifact_agent_ready,
