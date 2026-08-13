@@ -1,6 +1,7 @@
 :- begin_tests(rlm_benchmark).
 
 :- use_module('../prolog/rlm_benchmark').
+:- use_module('../benchmark/rlm_live_benchmark').
 
 test(case_normalizes_missing_metrics_to_zero) :-
     benchmark_case(example,
@@ -111,5 +112,54 @@ test(json_and_human_summary_are_stable_outputs) :-
     benchmark_human_summary(Report, Summary),
     assertion(sub_string(Summary, _, _, _, "deterministic: pass")),
     assertion(sub_string(Summary, _, _, _, "context 42 bytes")).
+
+test(live_quality_exact_token_in_text_is_full_pass) :-
+    Response = _{text:"PROLOG_RLM_BENCHMARK_OK",
+                 reasoning:"",
+                 tool_calls:[]},
+    rlm_live_benchmark:response_quality(Response,
+                                        Quality,
+                                        Status,
+                                        Details),
+    assertion(Quality =:= 1.0),
+    assertion(Status == pass),
+    assertion(Details.expected_token == true),
+    assertion(Details.assistant_output == true).
+
+test(live_quality_exact_token_in_reasoning_is_full_pass) :-
+    Response = _{text:"",
+                 reasoning:"analysis PROLOG_RLM_BENCHMARK_OK",
+                 tool_calls:[]},
+    rlm_live_benchmark:response_quality(Response,
+                                        Quality,
+                                        Status,
+                                        Details),
+    assertion(Quality =:= 1.0),
+    assertion(Status == pass),
+    assertion(Details.expected_token == true).
+
+test(live_quality_usable_output_without_token_is_partial_pass) :-
+    Response = _{text:"",
+                 reasoning:"I produced a valid assistant response.",
+                 tool_calls:[]},
+    rlm_live_benchmark:response_quality(Response,
+                                        Quality,
+                                        Status,
+                                        Details),
+    assertion(Quality =:= 0.5),
+    assertion(Status == pass),
+    assertion(Details.expected_token == false),
+    assertion(Details.assistant_output == true).
+
+test(live_quality_without_assistant_output_fails) :-
+    Response = _{text:"", reasoning:"", tool_calls:[]},
+    rlm_live_benchmark:response_quality(Response,
+                                        Quality,
+                                        Status,
+                                        Details),
+    assertion(Quality =:= 0.0),
+    assertion(Status == fail),
+    assertion(Details.expected_token == false),
+    assertion(Details.assistant_output == false).
 
 :- end_tests(rlm_benchmark).
