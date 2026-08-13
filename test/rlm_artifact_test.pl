@@ -106,6 +106,65 @@ stale_ref_handoff_case(Store) :-
     assertion(Stale.requested == V1.ref),
     assertion(Stale.current == V2.ref).
 
+test(three_fresh_roots_share_artifacts_without_transcript_inheritance) :-
+    with_memory_store(three_fresh_roots_case).
+
+three_fresh_roots_case(Store) :-
+    Namespace = [task, three_roots],
+    Root1 = _{run_id:root_1, agent_id:root, call_id:call_1},
+    artifact_put(Store,
+                 Namespace,
+                 working_summary,
+                 summary,
+                 _{text:"root one durable fact", stage:1},
+                 Root1,
+                 ok(V1)),
+
+    Root2 = _{run_id:root_2, agent_id:root, call_id:call_2},
+    artifact_context_refs(Store,
+                          [V1.ref],
+                          [consumer(Root2), max_items(4), max_chars(4096)],
+                          ok(Pack2)),
+    Pack2.entries = [Root2Entry],
+    assertion(Root2Entry.value.text == "root one durable fact"),
+    assertion(\+ get_dict(messages, Root2Entry, _)),
+    assertion(\+ get_dict(transcript, Root2Entry, _)),
+    artifact_put(Store,
+                 Namespace,
+                 working_summary,
+                 summary,
+                 _{text:"root two corrected fact",
+                   stage:2,
+                   source_refs:[Root2Entry.ref]},
+                 Root2,
+                 ok(V2)),
+
+    Root3 = _{run_id:root_3, agent_id:root, call_id:call_3},
+    artifact_context_refs(Store,
+                          [V1.ref],
+                          [consumer(Root3), max_items(4), max_chars(4096)],
+                          ok(Pack3)),
+    Pack3.entries = [Root3Entry],
+    assertion(Root3Entry.ref == V2.ref),
+    assertion(Root3Entry.value.text == "root two corrected fact"),
+    assertion(\+ get_dict(messages, Root3Entry, _)),
+    assertion(\+ get_dict(transcript, Root3Entry, _)),
+    Pack3.stale_refs = [Stale],
+    assertion(Stale.requested == V1.ref),
+    assertion(Stale.current == V2.ref),
+
+    artifact_trace(Store, Namespace, ok(Trace)),
+    Trace = [Publish1, Consume2, Publish2, Consume3],
+    assertion(Publish1.type == published),
+    assertion(Publish1.producer.run_id == root_1),
+    assertion(Consume2.type == consumed),
+    assertion(Consume2.consumer.run_id == root_2),
+    assertion(Publish2.type == published),
+    assertion(Publish2.producer.run_id == root_2),
+    assertion(Consume3.type == consumed),
+    assertion(Consume3.consumer.run_id == root_3),
+    assertion(Consume3.stale_refs == [Stale]).
+
 test(context_selection_is_bounded_and_kind_filtered) :-
     with_memory_store(context_selection_case).
 
