@@ -7,8 +7,20 @@ case_named(Report, Name, Case) :-
     Case.name == Name,
     !.
 
+report_failures(Report) :-
+    (   Report.status == pass
+    ->  true
+    ;   forall(( member(Case, Report.cases),
+                 Case.status == fail
+               ),
+               format(user_error,
+                      'CONFORMANCE FAILURE ~w: ~q~n',
+                      [Case.name, Case.details]))
+    ).
+
 test(deterministic_suite_reports_all_required_families) :-
     deterministic_conformance(Report),
+    report_failures(Report),
     assertion(Report.status == pass),
     assertion(Report.case_count =:= 16),
     assertion(Report.failed =:= 0),
