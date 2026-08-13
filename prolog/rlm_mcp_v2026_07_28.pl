@@ -764,51 +764,9 @@ adapter_outcome(Operation, Goal, Outcome) :-
           adapter_exception(Operation, Exception, Result)),
     Outcome = Result.
 
-adapter_exception(_, mcp_2026_fault(unsupported_by_peer(Requested, Supported)),
-                  error(Error)) :-
-    !,
-    Error = mcp_error{phase:adapter_2026_07_28,
-                      kind:unsupported_protocol_version,
-                      protocol_version:'2026-07-28',
-                      requested:Requested,
-                      supported:Supported,
-                      jsonrpc_code:-32022,
-                      http_status:400,
-                      error_data:json{supported:Supported, requested:Requested},
-                      message:"MCP peer does not support the requested protocol version"}.
-adapter_exception(_, mcp_2026_fault(unsupported_protocol_version(Requested)),
-                  error(Error)) :-
-    !,
-    mcp_2026_protocol_version(Version),
-    Error = mcp_error{phase:adapter_2026_07_28,
-                      kind:unsupported_protocol_version,
-                      protocol_version:Version,
-                      requested:Requested,
-                      supported:[Version, '2025-11-25'],
-                      jsonrpc_code:-32022,
-                      http_status:400,
-                      error_data:json{supported:[Version, '2025-11-25'],
-                                      requested:Requested},
-                      message:"Unsupported MCP protocol version"}.
-adapter_exception(_, mcp_2026_fault(header_mismatch(Field, Expected, Actual)),
-                  error(Error)) :-
-    !,
-    Error = mcp_error{phase:adapter_2026_07_28,
-                      kind:header_mismatch,
-                      protocol_version:'2026-07-28',
-                      detail:header_mismatch(Field, Expected, Actual),
-                      jsonrpc_code:-32020,
-                      http_status:400,
-                      error_data:json{field:Field, expected:Expected, actual:Actual},
-                      message:"MCP request metadata does not match the request body"}.
 adapter_exception(Operation, mcp_2026_fault(Detail), error(Error)) :-
     !,
-    Error = mcp_error{phase:adapter_2026_07_28,
-                      kind:protocol_error,
-                      operation:Operation,
-                      detail:Detail,
-                      protocol_version:'2026-07-28',
-                      message:"MCP 2026-07-28 protocol operation failed"}.
+    adapter_fault_error(Operation, Detail, Error).
 adapter_exception(Operation, Exception, error(Error)) :-
     term_string(Exception, Safe, [quoted(true), numbervars(true)]),
     Error = mcp_error{phase:adapter_2026_07_28,
@@ -817,3 +775,45 @@ adapter_exception(Operation, Exception, error(Error)) :-
                       exception:Safe,
                       protocol_version:'2026-07-28',
                       message:"MCP 2026-07-28 adapter raised an exception"}.
+
+adapter_fault_error(_, unsupported_by_peer(Requested, Supported), Error) :-
+    !,
+    Error = mcp_error{phase:adapter_2026_07_28,
+                      kind:unsupported_protocol_version,
+                      protocol_version:'2026-07-28',
+                      requested:Requested,
+                      supported:Supported,
+                      jsonrpc_code: -32022,
+                      http_status:400,
+                      error_data:json{supported:Supported, requested:Requested},
+                      message:"MCP peer does not support the requested protocol version"}.
+adapter_fault_error(_, unsupported_protocol_version(Requested), Error) :-
+    !,
+    mcp_2026_protocol_version(Version),
+    Error = mcp_error{phase:adapter_2026_07_28,
+                      kind:unsupported_protocol_version,
+                      protocol_version:Version,
+                      requested:Requested,
+                      supported:[Version, '2025-11-25'],
+                      jsonrpc_code: -32022,
+                      http_status:400,
+                      error_data:json{supported:[Version, '2025-11-25'],
+                                      requested:Requested},
+                      message:"Unsupported MCP protocol version"}.
+adapter_fault_error(_, header_mismatch(Field, Expected, Actual), Error) :-
+    !,
+    Error = mcp_error{phase:adapter_2026_07_28,
+                      kind:header_mismatch,
+                      protocol_version:'2026-07-28',
+                      detail:header_mismatch(Field, Expected, Actual),
+                      jsonrpc_code: -32020,
+                      http_status:400,
+                      error_data:json{field:Field, expected:Expected, actual:Actual},
+                      message:"MCP request metadata does not match the request body"}.
+adapter_fault_error(Operation, Detail, Error) :-
+    Error = mcp_error{phase:adapter_2026_07_28,
+                      kind:protocol_error,
+                      operation:Operation,
+                      detail:Detail,
+                      protocol_version:'2026-07-28',
+                      message:"MCP 2026-07-28 protocol operation failed"}.
