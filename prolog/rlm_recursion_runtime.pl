@@ -6,11 +6,16 @@
 
 /** <module> Executable adaptive recursion routing
 
-This module turns a policy decision into one bounded runtime action.  It does
-not perform provider inference itself.  Callers supply explicit route handlers,
+This module turns a policy decision into one bounded runtime action. It does
+not perform provider inference itself. Callers supply explicit route handlers,
 so direct continuation, deterministic context work, cheap-model delegation,
 recursive RLM work, and supervised-agent delegation remain capability/runtime
 boundaries rather than hidden policy side effects.
+
+Handlers may return plain values, `ok(Value)`, `error(Error)`, or
+`ok(Value, Metadata)`. Metadata can report `actual_cost`, `usage`, and a
+`child_identity`. The execution trace always exposes parent/child identity,
+reason, estimated cost, actual cost/usage (or `unknown`), and depth.
 */
 
 :- use_module(library(option)).
@@ -72,6 +77,7 @@ execution_context(Signals0, Request, Options, Context) :-
     Context = recursion_execution_context{
                   signals:Signals,
                   fingerprint:Fingerprint,
+                  parent_identity:Request.parent_identity,
                   previous_fingerprints:Previous,
                   policy_options:PolicyOptions
               }.
@@ -191,12 +197,70 @@ invoke_handler(Handler, Decision, Subject, Outcome) :-
           Exception,
           handler_exception(Decision.policy, Exception, Outcome)).
 
-normalize_handler_outcome(ok(Value), ok(Value)) :- !.
 normalize_handler_outcome(error(Error), error(Error)) :- !.
-normalize_handler_outcome(Value, ok(Value)).
+normalize_handler_outcome(ok(Value, Metadata0), ok(Result)) :-
+    !,
+    normalize_handler_metadata(Metadata0, Metadata),
+    Result = handler_result{value:Value, metadata:Metadata}.
+normalize_handler_outcome(ok(Value), ok(Result)) :-
+    !,
+    empty_handler_metadata(Metadata),
+    Result = handler_result{value:Value, metadata:Metadata}.
+normalize_handler_outcome(Value, ok(Result)) :-
+    empty_handler_metadata(Metadata),
+    Result = handler_result{value:Value, metadata:Metadata}.
+
+empty_handler_metadata(
+    handler_metadata{actual_cost:unknown,
+                     usage:unknown,
+                     child_identity:auto}).
+
+normalize_handler_metadata(Metadata0, Metadata) :-
+    require_dict(Metadata0, handler_metadata),
+    metadata_actual_cost(Metadata0, ActualCost),
+    metadata_ground_value(Metadata0, usage, unknown, Usage),
+    metadata_ground_value(Metadata0,
+                          child_identity,
+                          auto,
+                          ChildIdentity),
+    Metadata = handler_metadata{actual_cost:ActualCost,
+                                usage:Usage,
+                                child_identity:ChildIdentity}.
+
+metadata_actual_cost(Metadata, ActualCost) :-
+    (   get_dict(actual_cost, Metadata, Raw)
+    ->  normalize_actual_cost(Raw, ActualCost)
+    ;   ActualCost = unknown
+    ).
+
+normalize_actual_cost(unknown, unknown) :- !.
+normalize_actual_cost(Value, Cost) :-
+    number(Value),
+    Value >= 0,
+    !,
+    Cost is float(Value).
+normalize_actual_cost(Value, _) :-
+    throw(recursion_runtime_fault(invalid_actual_cost(Value))).
+
+metadata_ground_value(Dict, Key, Default, Value) :-
+    (   get_dict(Key, Dict, Raw)
+    ->  ground_value(Raw, Key),
+        Value = Raw
+    ;   Value = Default
+    ).
+
+ground_value(Value, _) :- ground(Value), !.
+ground_value(Value, Name) :-
+    throw(recursion_runtime_fault(non_ground_metadata(Name, Value))).
 
 finish_execution(error(Error), _, _, _, error(Error)) :- !.
-finish_execution(ok(Value), Decision, Context, IsRecursive, ok(Result)) :-
+finish_execution(ok(HandlerResult),
+                 Decision,
+                 Context,
+                 IsRecursive,
+                 ok(Result)) :-
+    Value = HandlerResult.value,
+    Metadata = HandlerResult.metadata,
     next_fingerprints(IsRecursive,
                       Context.fingerprint,
                       Context.previous_fingerprints,
@@ -204,22 +268,46 @@ finish_execution(ok(Value), Decision, Context, IsRecursive, ok(Result)) :-
     next_depth(IsRecursive,
                Context.signals.current_depth,
                NextDepth),
+    child_identity(Decision,
+                   Context,
+                   Metadata.child_identity,
+                   ChildIdentity),
+    ExecutionTrace = recursion_trace{
+                         type:recursion_route_executed,
+                         selected_policy:Decision.policy,
+                         reason:Decision.reason,
+                         fingerprint:Context.fingerprint,
+                         parent_identity:Context.parent_identity,
+                         child_identity:ChildIdentity,
+                         recursive:IsRecursive,
+                         depth:NextDepth,
+                         next_depth:NextDepth,
+                         estimated_cost:Decision.estimated_cost,
+                         actual_cost:Metadata.actual_cost,
+                         actual_usage:Metadata.usage
+                     },
     Result = recursion_execution{
                  selected_policy:Decision.policy,
                  decision:Decision,
                  result:Value,
                  fingerprint:Context.fingerprint,
+                 parent_identity:Context.parent_identity,
+                 child_identity:ChildIdentity,
+                 estimated_cost:Decision.estimated_cost,
+                 actual_cost:Metadata.actual_cost,
+                 actual_usage:Metadata.usage,
                  next_fingerprints:NextFingerprints,
                  next_depth:NextDepth,
-                 trace:[Decision.trace,
-                        recursion_trace{
-                            type:recursion_route_executed,
-                            selected_policy:Decision.policy,
-                            fingerprint:Context.fingerprint,
-                            recursive:IsRecursive,
-                            next_depth:NextDepth
-                        }]
+                 trace:[Decision.trace, ExecutionTrace]
              }.
+
+child_identity(_, _, ChildIdentity, ChildIdentity) :-
+    ChildIdentity \== auto,
+    !.
+child_identity(Decision, Context, auto, ChildIdentity) :-
+    atomic_list_concat([Decision.policy, Context.fingerprint],
+                       ':',
+                       ChildIdentity).
 
 next_fingerprints(true, Fingerprint, Previous, Next) :-
     !,
@@ -248,8 +336,10 @@ normalize_request(Request0, Request) :-
     normalize_handler(Request0, delegated_subagent, Delegated),
     normalize_hook(Request0, selector, Selector),
     normalize_hook(Request0, generator, Generator),
+    normalize_identity(Request0, parent_identity, root, ParentIdentity),
     Request = recursion_request{
                   subject:Subject,
+                  parent_identity:ParentIdentity,
                   direct_continuation:Direct,
                   deterministic_context:Deterministic,
                   cheap_submodel:Cheap,
@@ -271,6 +361,13 @@ normalize_hook(Dict, Key, Hook) :-
     ->  callable_or_none(Raw, Key),
         Hook = Raw
     ;   Hook = none
+    ).
+
+normalize_identity(Dict, Key, Default, Identity) :-
+    (   get_dict(Key, Dict, Raw)
+    ->  ground_value(Raw, Key),
+        Identity = Raw
+    ;   Identity = Default
     ).
 
 handler_available(Request, Route, true) :-
