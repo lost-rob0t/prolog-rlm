@@ -187,7 +187,9 @@ test(recursion_depth_above_one_requires_opt_in_and_capability,
                       Request,
                       [max_recursion_depth(4),
                        allow_deep_recursion(true),
-                       deep_recursion_capability(true)],
+                       deep_recursion_capability(true),
+                       candidate_selector(
+                           plunit_rlm_recursion_runtime:prefer_recursive)],
                       ok(DeepExecution)),
     assertion(DeepExecution.selected_policy == recursive_rlm),
     assertion(DeepExecution.next_depth =:= 2).
@@ -240,6 +242,11 @@ delegated_metadata_handler(_, Subject,
                               _{actual_cost:0.07,
                                 usage:usage{tokens:88}})) :-
     assertz(route_call(delegated_subagent, Subject)).
+
+prefer_recursive(_, Candidates, Selected) :-
+    member(Selected, Candidates),
+    Selected.route == recursive_rlm,
+    !.
 
 error_handler(_, _, error(route_error(expected_failure))).
 
