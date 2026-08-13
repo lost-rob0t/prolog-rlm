@@ -82,11 +82,11 @@ test(canonical_notification_decodes_without_wire_leakage) :-
 
 test(canonical_runtime_layers_have_no_protocol_version_branching) :-
     forall(member(Path,
-                  ['../prolog/rlm_agent.pl',
-                   '../prolog/rlm_graph.pl',
-                   '../prolog/rlm_chain.pl',
-                   '../prolog/rlm_completion.pl',
-                   '../prolog/rlm_plan.pl']),
+                  ['prolog/rlm_agent.pl',
+                   'prolog/rlm_graph.pl',
+                   'prolog/rlm_chain.pl',
+                   'prolog/rlm_completion.pl',
+                   'prolog/rlm_plan.pl']),
            assert_no_protocol_leak(Path)).
 
 stdio_fixture(Wire, Meta, Response) :-
