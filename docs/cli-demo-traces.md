@@ -72,18 +72,20 @@ There is no fake-provider fallback. Provider errors produce a failed CLI session
 
 ## One-command RLM completion
 
-The `rlm` command executes a bounded real RLM path rather than aliasing direct completion. Its default plan is:
+The `rlm` command executes a bounded real depth-1 RLM path rather than aliasing direct completion. Its CLI orchestration skeleton is constructed locally and then executed by the production `rlm_completion/4` runtime:
 
 ```text
-root planner
+trusted CLI plan
   -> opaque context slice
   -> recursive child plan
-       -> provider model call
+       -> real provider model call
        -> child final
   -> root final
 ```
 
-Production recursion is capped at depth 1 for this command. The root budget permits at most three model calls and one context operation.
+This is intentionally different from asking a root model to reproduce a fixed JSON plan. The CLI already knows the operability skeleton, so spending provider tokens to echo it adds latency, cost, and nondeterminism without adding semantic value. The library-level `rlm_completion/4` API still supports model-selected root plans for applications that want dynamic strategy selection.
+
+Production recursion is capped at depth 1 for this command. The runtime admits one context operation and one recursive child model call; the injected trusted planner is represented in completion accounting but consumes zero provider tokens and makes no network request.
 
 Example with inline external context:
 
@@ -106,8 +108,6 @@ Useful bounds:
 ```text
 --context-bytes N
 --max-tokens N
---planner-attempts N
---planner-max-tokens N
 --max-cost USD
 --time-limit SECONDS
 ```
@@ -138,6 +138,8 @@ swipl -q -s bin/prolog-rlm.pl -- direct "hello" \
 
 A custom endpoint requires an explicit model name. This prevents accidentally sending an OpenRouter alias to an unrelated endpoint.
 
+The same provider options work with `rlm`; only the recursive child inference is sent to that endpoint.
+
 ## Capabilities
 
 The CLI preserves the runtime's authority boundaries.
@@ -161,6 +163,8 @@ and narrows the recursive child to:
 ```
 
 The model cannot widen these capabilities or turn arbitrary model text into `call/1`, shell execution, filesystem access, or another unrestricted evaluator.
+
+Applications that need a different authority set should call the library APIs directly and pass explicit `capabilities(...)` and `child_capabilities(...)` options rather than using the opinionated CLI skeleton.
 
 ## JSON output
 
@@ -256,6 +260,8 @@ swipl -q -s bin/prolog-rlm.pl -- rlm "question" --context "data" \
   --trace /tmp/rlm.json
 swipl -q -s bin/prolog-rlm.pl -- trace-view /tmp/rlm.json
 ```
+
+A budget failure remains data. For example, the JSON envelope can contain `phase:"budget"`, `kind:"token_budget_exceeded"`, `used`, and `limit` without losing the provider/runtime evidence that led to the rejection.
 
 ## MCP interoperability
 
