@@ -171,3 +171,21 @@ jobs:
           fi
 
           exit "$status"
+
+      - name: Run REAL OpenRouter benchmark suite
+        shell: bash
+        run: |
+          set +e
+          report="${RUNNER_TEMP}/prolog-rlm-openrouter-benchmark.json"
+          swipl -q -s benchmark/run.pl -- integration "$report" > /tmp/openrouter-benchmark.log 2>&1
+          status=$?
+          cat /tmp/openrouter-benchmark.log
+          if [ -f "$report" ]; then
+            cat "$report"
+          fi
+          if [ "$status" -ne 0 ]; then
+            message="$(tail -n 60 /tmp/openrouter-benchmark.log | tr '\n' ' ')"
+            message="${message//'%'/'%25'}"
+            echo "::error title=REAL OpenRouter benchmark failed::${message}"
+          fi
+          exit "$status"
