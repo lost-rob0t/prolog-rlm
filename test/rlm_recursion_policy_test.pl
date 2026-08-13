@@ -93,7 +93,7 @@ test(no_progress_subcall_removes_recursive_candidate) :-
                   Candidate.route == recursive_rlm)).
 
 test(explicit_duplicate_guard_rejects_fingerprint) :-
-    recursion_fingerprint(call_tool(search, _{q:"same"}), Fingerprint),
+    recursion_fingerprint(call_tool(search, query{q:"same"}), Fingerprint),
     recursion_guard(Fingerprint,
                     [Fingerprint],
                     1.0,
