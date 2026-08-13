@@ -1,6 +1,6 @@
 # Adaptive recursion routing
 
-`rlm_recursion_policy` chooses among bounded execution forms instead of treating recursion as the default. `rlm_recursion_runtime` executes exactly one selected route through an explicit caller-supplied handler.
+`rlm_recursion_policy` chooses among bounded execution forms instead of treating recursion as the default. `rlm_recursion_runtime` executes exactly one selected route through an explicit caller-supplied handler. Both are loaded and re-exported by the public `rlm` entrypoint, so `rlm_ready/0` also verifies the adaptive subsystem is loadable.
 
 The design goal is:
 
@@ -123,7 +123,7 @@ recursion_decision{
 }.
 ```
 
-The trace repeats the selected policy, reason, normalized signals, remaining budgets, utility/cost/value, and candidate count. Consumers do not need hidden policy state to explain a choice.
+The policy trace repeats the selected policy, reason, normalized signals, remaining budgets, utility, estimated cost, and expected value. Consumers do not need hidden policy state to explain a choice.
 
 ## Deep recursion gate
 
@@ -189,7 +189,7 @@ where `Closure` is called as:
 call(Closure, Signals, BaseCandidates, GeneratedCandidates)
 ```
 
-Generated candidates must use canonical routes and valid utility/cost scores. Any supplied `expected_value` is ignored; the policy recomputes it with the configured cost weight.
+A generator may only rescore routes already admitted by the deterministic capability/budget pass. It cannot introduce a route that was unavailable. Generated candidates must use valid utility/cost scores. Any supplied `expected_value` is ignored; the policy recomputes it with the configured cost weight.
 
 Selection can be extended with:
 
@@ -200,10 +200,10 @@ candidate_selector(Closure)
 called as:
 
 ```prolog
-call(Closure, Signals, BoundedCandidates, Selected)
+call(Closure, Signals, BoundedCandidates, SelectedCandidate)
 ```
 
-The selector may return a candidate or route, but the route must already exist in the normalized **bounded** candidate set. It cannot create an unbounded route during selection.
+The selector must return a candidate dict whose route already exists in the normalized **bounded** candidate set. The runtime uses the canonical bounded candidate for that route, so a selector cannot spoof scores or create an out-of-bounds route during selection.
 
 ## Executable routing
 
@@ -220,6 +220,7 @@ A request is conceptually:
 
 ```prolog
 _{ subject:GroundSubject,
+   parent_identity:ParentIdentity,
    direct_continuation:DirectHandler,
    deterministic_context:ContextHandler,
    cheap_submodel:CheapHandler,
@@ -230,7 +231,7 @@ _{ subject:GroundSubject,
  }.
 ```
 
-Handlers are optional. Missing handlers remove the corresponding capability signal or force deterministic redirection if a non-executable route was otherwise selected.
+`parent_identity` is optional and defaults to `root`. Handlers are optional. Missing handlers remove the corresponding capability signal or force deterministic redirection if a non-executable route was otherwise selected.
 
 Each handler is called as:
 
@@ -238,9 +239,24 @@ Each handler is called as:
 call(Handler, Decision, Subject, Result)
 ```
 
-and may return `ok(Value)`, `error(Error)`, or a plain value. Cancellation/time-limit control exceptions are rethrown rather than converted to ordinary route failures.
+and may return:
 
-## Execution result
+```prolog
+Value
+ok(Value)
+error(Error)
+ok(Value,
+   _{ actual_cost:MeasuredCost,
+      usage:MeasuredUsage,
+      child_identity:ChildIdentity
+    })
+```
+
+All metadata keys are optional. `actual_cost` must be nonnegative when supplied; `usage` and `child_identity` must be ground. If no child identity is supplied, the runtime derives a stable route/fingerprint identity. If measured usage or cost is unavailable, the trace records `unknown` instead of inventing a number.
+
+Cancellation/time-limit control exceptions are rethrown rather than converted to ordinary route failures.
+
+## Execution result and trace
 
 Successful execution returns:
 
@@ -250,13 +266,37 @@ recursion_execution{
     decision:Decision,
     result:Value,
     fingerprint:Fingerprint,
+    parent_identity:ParentIdentity,
+    child_identity:ChildIdentity,
+    estimated_cost:EstimatedCost,
+    actual_cost:ActualCostOrUnknown,
+    actual_usage:ActualUsageOrUnknown,
     next_fingerprints:FingerprintHistory,
     next_depth:Depth,
     trace:[PolicyTrace, ExecutionTrace]
 }.
 ```
 
-Only recursive execution increments depth and adds the current subject fingerprint to history.
+The execution trace records:
+
+```prolog
+recursion_trace{
+    type:recursion_route_executed,
+    selected_policy:Route,
+    reason:Reason,
+    fingerprint:Fingerprint,
+    parent_identity:ParentIdentity,
+    child_identity:ChildIdentity,
+    recursive:IsRecursive,
+    depth:Depth,
+    next_depth:Depth,
+    estimated_cost:EstimatedCost,
+    actual_cost:ActualCostOrUnknown,
+    actual_usage:ActualUsageOrUnknown
+}.
+```
+
+Only recursive execution increments depth and adds the current subject fingerprint to history. Delegated-agent calls retain the current recursion depth while still recording parent/child identity and measured execution metadata.
 
 ## Provider and agent boundaries
 
@@ -282,9 +322,11 @@ The deterministic suite verifies:
 - cheap-model and delegated-agent routes are capability-gated;
 - duplicate/no-progress recursion is rejected or redirected;
 - depth >1 requires both experimental gates;
-- candidate generation is hard-bounded;
+- candidate generation is hard-bounded and cannot enable unavailable routes;
 - generated value claims are rescored;
 - selector hooks cannot escape the bounded set;
 - route execution invokes only the selected handler;
 - recursive execution advances depth/fingerprint state;
-- time-limit/cancellation control exceptions propagate.
+- recursive and delegated execution traces record identities, estimated cost, and measured cost/usage when supplied;
+- time-limit/cancellation control exceptions propagate;
+- the public `rlm` entrypoint loads and reports readiness for both adaptive modules.
