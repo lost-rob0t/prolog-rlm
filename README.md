@@ -93,7 +93,17 @@ swipl -q -s bin/prolog-rlm.pl -- trace-view /tmp/graph.json
 The same CLI supports JSONL traces and custom OpenAI-compatible endpoints. See:
 
 - `docs/cli-demo-traces.md` for commands, provider configuration, budgets, capabilities, failures, and trace format;
+- `docs/deep-recursion-experiments.md` for the explicit depth >1 experiment gate, shared-tree safety invariants, deterministic/live benchmark commands, and promotion rule;
 - `examples/README.md` for reproducible direct, context, tool, recursion, graph, MCP, hosted-provider, and local-provider walkthroughs.
+
+Controlled depth >1 experiments are available separately and remain opt-in:
+
+```sh
+swipl -q -s benchmark/run.pl -- deep-experiment
+OPENROUTER_API_KEY='...' swipl -q -s benchmark/run.pl -- deep-integration
+```
+
+Requesting a recursion budget above depth 1 through the supported public facade also requires `experimental_deep_recursion(true)`. The flag does not grant capabilities or widen budgets.
 
 The bootstrap also exposes the library API:
 
@@ -106,11 +116,13 @@ The bootstrap also exposes the library API:
 
 Production namespaces live under `prolog/`:
 
-- `rlm` — public runtime entrypoint;
+- `rlm` — public runtime entrypoint and depth >1 opt-in boundary;
 - `rlm_chain` — provider/model abstraction;
 - `rlm_context` — bounded opaque external-context operations;
 - `rlm_tool` — capability-gated local tool execution;
 - `rlm_completion` — model-to-plan-to-execution RLM loop;
+- `rlm_recursion_policy` / `rlm_recursion_runtime` — bounded adaptive recursion selection and execution;
+- `rlm_deep_experiment` — explicit depth 0/1/2 comparison, alternative recursive harnesses, and promotion evidence;
 - `rlm_agent` — supervised logical agents;
 - `rlm_graph` — durable graph execution;
 - `rlm_mcp` — canonical MCP interoperability;
@@ -120,7 +132,7 @@ Production namespaces live under `prolog/`:
 
 Deterministic model doubles live only under `test/support/`. They are test fixtures, not runtime backends.
 
-GitHub Actions runs static module loading, PlUnit, deterministic benchmark/conformance, and the credential-free CLI smoke without network credentials. Real provider integration is a separate CI class; fake providers never count as live integration. The credentialed lane also executes the one-command `rlm` CLI path against the real provider.
+GitHub Actions runs static module loading, PlUnit, deterministic benchmark/conformance, the deterministic depth >1 experiment, and the credential-free CLI smoke without network credentials. Real provider integration is a separate CI class; fake providers never count as live integration. The credentialed lane also executes the real depth 0/1/2 experiment and the one-command `rlm` CLI path against OpenRouter.
 
 ## Why Prolog?
 
@@ -197,7 +209,8 @@ The invariants are:
 3. recursion, concurrency, wall time, tokens, cost, inference steps, output bytes, and tool use are budgeted;
 4. child agents inherit a narrowed capability set by default;
 5. every execution produces a structured trace;
-6. the runtime can cancel and clean up deterministically.
+6. the runtime can cancel and clean up deterministically;
+7. depth >1 is not enabled merely by increasing a numeric budget through the public facade.
 
 ## Runtime libraries
 
@@ -229,12 +242,18 @@ MCP client/server interoperability behind one canonical internal representation.
 
 Portable `prolog-rlm.trace.v1` JSON and JSONL export plus a minimal hierarchical viewer. Dicts/lists remain structured; Prolog compound terms use explicit `$term`/`args` encoding rather than opaque pretty-printed terms.
 
+### `rlm_deep_experiment`
+
+Controlled depth >1 evaluation over the existing runtimes. It compares nested typed-plan recursion, supervised delegated agents, and fresh-root durable-artifact handoff; proves global tree budgets/capability narrowing/cancellation behavior; records deterministic help/hurt/neutral classifications; and encodes a promotion rule that requires live evidence before deeper recursion can be considered for production.
+
 ## Core predicates
 
 ```prolog
 rlm_completion(+Query, +Context, +Options, -Result).
 llm_query(+Prompt, +Options, -Result).
 rlm_query(+Query, +SubContext, +Options, -Result).
+deep_experiment_run(+Options, -Outcome).
+deep_experiment_promotion(+Evidence, -Decision).
 agent_spawn(+Runtime, +Parent, +Spec, +Capabilities, -Outcome).
 plan_validate(+Plan, +Capabilities, +Budget, -ValidatedPlan).
 plan_execute(+ValidatedPlan, +RuntimeOptions, +Inputs, -Outcome).
@@ -262,7 +281,8 @@ The runnable core includes:
 11. supervised logical agents and durable graph execution;
 12. dual-version MCP interoperability;
 13. deterministic benchmark/conformance plus live provider gates;
-14. a CLI/demo/trace surface over the same production runtime.
+14. a CLI/demo/trace surface over the same production runtime;
+15. controlled depth 0/1/2 experiments with explicit opt-in, alternative recursive harness comparisons, and non-automatic promotion criteria.
 
 Fake model providers are required **only for deterministic tests**.
 
@@ -285,4 +305,4 @@ Current records span `RLM-RESEARCH-000` through `RLM-RESEARCH-009` and cover RLM
 
 ## Status
 
-The P1 executable core, adaptive recursion, and benchmark/conformance milestones are implemented. Current P2 work focuses on operability, demonstrations, portable traces, and controlled experiments with recursion depth greater than one. Follow epic #3 for the dependency graph and acceptance gates.
+The P1 executable core, adaptive recursion, benchmark/conformance, CLI/demo/trace surface, and controlled depth >1 experiment harness are implemented. Production recursion still defaults to depth 1; deeper recursion remains explicitly experimental until the encoded live-evidence promotion rule is satisfied. Follow epic #3 for the dependency graph and acceptance gates.
