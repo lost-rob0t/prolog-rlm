@@ -10,6 +10,7 @@
 :- consult(rlm_mcp_model_test).
 :- consult(rlm_mcp_2025_test).
 :- consult(rlm_mcp_2026_test).
+:- consult(rlm_mcp_2026_matrix_test).
 :- consult(rlm_mcp_runtime_test).
 :- consult(rlm_mcp_dual_test).
 :- consult(rlm_mcp_boundary_test).
