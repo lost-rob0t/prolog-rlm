@@ -16,9 +16,9 @@
 
 /** <module> Model Context Protocol interoperability
 
-The public runtime is command-oriented and version-neutral.  The 2025-11-25
-adapter is selected internally; JSON-RPC method names and session headers never
-cross this facade into agent or graph code.
+The public runtime is command-oriented and version-neutral. Protocol selection,
+wire methods, HTTP routing metadata, and legacy session state terminate at this
+facade and its version adapters.
 */
 
 :- use_module(rlm_mcp_model,
@@ -30,13 +30,20 @@ cross this facade into agent or graph code.
 :- use_module(rlm_mcp_transport).
 :- use_module(rlm_mcp_transport_send).
 :- use_module(rlm_mcp_v2025_11_25).
+:- use_module(rlm_mcp_v2026_07_28).
+:- use_module(rlm_mcp_compat).
 :- use_module(library(option)).
 
+:- dynamic mcp_connect_generation/1.
+
+mcp_connect_generation(0).
+
 rlm_mcp_ready :-
-    mcp_2025_protocol_version('2025-11-25').
+    mcp_2025_protocol_version('2025-11-25'),
+    mcp_2026_protocol_version('2026-07-28').
 
 /* -------------------------------------------------------------------------
- * Client
+ * Client negotiation
  * ---------------------------------------------------------------------- */
 
 mcp_client_connect(TransportSpec, ClientInfo, ClientCaps, Options, Outcome) :-
@@ -52,47 +59,356 @@ client_connect(TransportSpec, ClientInfo, ClientCaps, Options, Outcome) :-
     mcp_transport_open(TransportSpec, Options, TransportOutcome),
     (   TransportOutcome = ok(Transport)
     ->  mcp_transport_kind(Transport, Kind),
-        mcp_2025_client_state_new(ClientInfo,
-                                  ClientCaps,
-                                  Kind,
-                                  StateOutcome),
-        client_connect_state(StateOutcome,
-                             Transport,
-                             Options,
-                             Outcome)
+        endpoint_identity(TransportSpec, Endpoint),
+        next_connect_generation(Generation),
+        option(cache_max_age(MaxAge), Options, 32),
+        option(protocol(Protocol0), Options, auto),
+        normalize_protocol_option(Protocol0, Protocol),
+        trace_empty(Trace0),
+        connect_selected(Protocol,
+                         Transport,
+                         Kind,
+                         Endpoint,
+                         Generation,
+                         MaxAge,
+                         ClientInfo,
+                         ClientCaps,
+                         Trace0,
+                         Outcome)
     ;   TransportOutcome = error(Error),
         Outcome = error(Error)
     ).
 
-client_connect_state(error(Error), Transport, _, error(Error)) :-
+connect_selected('2025-11-25', Transport, Kind, Endpoint, Generation, _,
+                 ClientInfo, ClientCaps, Trace0, Outcome) :-
+    !,
+    connect_2025(Transport,
+                 Kind,
+                 Endpoint,
+                 Generation,
+                 ClientInfo,
+                 ClientCaps,
+                 1,
+                 explicit,
+                 Trace0,
+                 Outcome).
+connect_selected('2026-07-28', Transport, Kind, Endpoint, Generation, _,
+                 ClientInfo, ClientCaps, Trace0, Outcome) :-
+    !,
+    connect_2026_discover(Transport,
+                          Kind,
+                          Endpoint,
+                          Generation,
+                          ClientInfo,
+                          ClientCaps,
+                          1,
+                          false,
+                          Trace0,
+                          Outcome).
+connect_selected(auto, Transport, Kind, Endpoint, Generation, MaxAge,
+                 ClientInfo, ClientCaps, Trace0, Outcome) :-
+    mcp_compat_cache_lookup(Endpoint,
+                            Kind,
+                            Generation,
+                            MaxAge,
+                            CacheOutcome),
+    connect_from_cache(CacheOutcome,
+                       Transport,
+                       Kind,
+                       Endpoint,
+                       Generation,
+                       ClientInfo,
+                       ClientCaps,
+                       Trace0,
+                       Outcome).
+
+connect_from_cache(ok(Entry), Transport, Kind, Endpoint, Generation,
+                   ClientInfo, ClientCaps, Trace0, Outcome) :-
+    !,
+    Selected = Entry.selected,
+    (   Selected == '2026-07-28'
+    ->  mcp_2026_client_state_new(ClientInfo,
+                                  ClientCaps,
+                                  Kind,
+                                  StateOutcome),
+        connect_cached_2026(StateOutcome,
+                            Transport,
+                            Endpoint,
+                            Generation,
+                            ClientInfo,
+                            ClientCaps,
+                            Entry,
+                            Trace0,
+                            Outcome)
+    ;   connect_2025(Transport,
+                     Kind,
+                     Endpoint,
+                     Generation,
+                     ClientInfo,
+                     ClientCaps,
+                     1,
+                     cache,
+                     Trace0,
+                     Outcome)
+    ).
+connect_from_cache(_, Transport, Kind, Endpoint, Generation,
+                   ClientInfo, ClientCaps, Trace0, Outcome) :-
+    connect_2026_discover(Transport,
+                          Kind,
+                          Endpoint,
+                          Generation,
+                          ClientInfo,
+                          ClientCaps,
+                          1,
+                          true,
+                          Trace0,
+                          Outcome).
+
+connect_cached_2026(error(Error), Transport, _, _, _, _, _, _,
+                    error(Error)) :-
     !,
     mcp_transport_close(Transport, _).
-client_connect_state(ok(State0), Transport, Options, Outcome) :-
-    trace_empty(Trace0),
+connect_cached_2026(ok(State), Transport, Endpoint, Generation,
+                    ClientInfo, ClientCaps, Entry, Trace0, ok(Client)) :-
     trace_emit(connected,
-               State0,
-               _{transport:State0.transport},
+               State,
+               _{transport:State.transport},
                Trace0,
                Trace1),
-    initialize_client(Transport,
-                      State0,
-                      1,
-                      StateOutcome,
-                      Trace1,
-                      Trace2),
-    (   StateOutcome = ok(State)
-    ->  option(protocol('2025-11-25'), Options, '2025-11-25'),
-        Client = mcp_client{transport:Transport,
-                            adapter_state:State,
-                            next_id:2,
-                            trace:Trace2},
-        Outcome = ok(Client)
+    trace_emit(protocol_selected,
+               State,
+               _{source:cache,
+                 verified_versions:Entry.verified_versions},
+               Trace1,
+               Trace),
+    make_client(Transport,
+                State,
+                Endpoint,
+                Generation,
+                ClientInfo,
+                ClientCaps,
+                1,
+                Trace,
+                Client).
+
+connect_2026_discover(Transport, Kind, Endpoint, Generation,
+                      ClientInfo, ClientCaps, Id, AllowFallback,
+                      Trace0, Outcome) :-
+    mcp_2026_client_state_new(ClientInfo, ClientCaps, Kind, StateOutcome),
+    (   StateOutcome = ok(State0)
+    ->  trace_emit(connected,
+                   State0,
+                   _{transport:Kind},
+                   Trace0,
+                   Trace1),
+        mcp_2026_client_discover(State0, Id, Wire, Meta, EncodeOutcome),
+        connect_2026_discover_exchange(EncodeOutcome,
+                                       Transport,
+                                       Kind,
+                                       Endpoint,
+                                       Generation,
+                                       ClientInfo,
+                                       ClientCaps,
+                                       Id,
+                                       AllowFallback,
+                                       State0,
+                                       Wire,
+                                       Meta,
+                                       Trace1,
+                                       Outcome)
     ;   StateOutcome = error(Error),
         mcp_transport_close(Transport, _),
         Outcome = error(Error)
     ).
 
-initialize_client(Transport, State0, Id, Outcome, Trace0, Trace) :-
+connect_2026_discover_exchange(error(Error), Transport, _, _, _, _, _, _, _,
+                               _, _, _, _, error(Error)) :-
+    !,
+    mcp_transport_close(Transport, _).
+connect_2026_discover_exchange(ok, Transport, Kind, Endpoint, Generation,
+                               ClientInfo, ClientCaps, Id, AllowFallback,
+                               State0, Wire, Meta, Trace0, Outcome) :-
+    trace_emit(discover_sent,
+               State0,
+               _{request_id:Id},
+               Trace0,
+               Trace1),
+    mcp_transport_exchange(Transport, Wire, Meta, ExchangeOutcome),
+    accept_discover_exchange(ExchangeOutcome,
+                             Transport,
+                             Kind,
+                             Endpoint,
+                             Generation,
+                             ClientInfo,
+                             ClientCaps,
+                             Id,
+                             AllowFallback,
+                             State0,
+                             Trace1,
+                             Outcome).
+
+accept_discover_exchange(ok(Response), Transport, Kind, Endpoint, Generation,
+                         ClientInfo, ClientCaps, Id, AllowFallback,
+                         State0, Trace0, Outcome) :-
+    mcp_2026_client_accept_discover(State0,
+                                    Id,
+                                    Response,
+                                    State,
+                                    AcceptOutcome),
+    (   AcceptOutcome = ok
+    ->  cache_store_quiet(Endpoint,
+                          Kind,
+                          State.supported_versions,
+                          '2026-07-28',
+                          discovery,
+                          Generation),
+        trace_emit(protocol_selected,
+                   State,
+                   _{source:discovery,
+                     supported_versions:State.supported_versions},
+                   Trace0,
+                   Trace),
+        NextId is Id+1,
+        make_client(Transport,
+                    State,
+                    Endpoint,
+                    Generation,
+                    ClientInfo,
+                    ClientCaps,
+                    NextId,
+                    Trace,
+                    Client),
+        Outcome = ok(Client)
+    ;   AcceptOutcome = error(Error),
+        discover_failed(Error,
+                        Transport,
+                        Kind,
+                        Endpoint,
+                        Generation,
+                        ClientInfo,
+                        ClientCaps,
+                        Id,
+                        AllowFallback,
+                        State0,
+                        Trace0,
+                        Outcome)
+    ).
+accept_discover_exchange(error(Error), Transport, Kind, Endpoint, Generation,
+                         ClientInfo, ClientCaps, Id, AllowFallback,
+                         State0, Trace0, Outcome) :-
+    discover_failed(Error,
+                    Transport,
+                    Kind,
+                    Endpoint,
+                    Generation,
+                    ClientInfo,
+                    ClientCaps,
+                    Id,
+                    AllowFallback,
+                    State0,
+                    Trace0,
+                    Outcome).
+
+discover_failed(Error, Transport, Kind, Endpoint, Generation,
+                ClientInfo, ClientCaps, FailedId, true, State0,
+                Trace0, Outcome) :-
+    !,
+    cache_invalidate_quiet(Endpoint),
+    trace_emit(protocol_fallback,
+               State0,
+               _{from:'2026-07-28',
+                 to:'2025-11-25',
+                 reason:Error},
+               Trace0,
+               Trace1),
+    InitId is FailedId+1,
+    connect_2025(Transport,
+                 Kind,
+                 Endpoint,
+                 Generation,
+                 ClientInfo,
+                 ClientCaps,
+                 InitId,
+                 fallback,
+                 Trace1,
+                 Outcome).
+discover_failed(Error, Transport, _, _, _, _, _, _, false, _, _, error(Error)) :-
+    mcp_transport_close(Transport, _).
+
+connect_2025(Transport, Kind, Endpoint, Generation,
+             ClientInfo, ClientCaps, InitId, Source, Trace0, Outcome) :-
+    mcp_2025_client_state_new(ClientInfo,
+                              ClientCaps,
+                              Kind,
+                              StateOutcome),
+    (   StateOutcome = ok(State0)
+    ->  trace_emit(connected,
+                   State0,
+                   _{transport:Kind},
+                   Trace0,
+                   Trace1),
+        trace_emit(protocol_selected,
+                   State0,
+                   _{source:Source},
+                   Trace1,
+                   Trace2),
+        initialize_client_2025(Transport,
+                               State0,
+                               InitId,
+                               InitOutcome,
+                               Trace2,
+                               Trace3),
+        finish_connect_2025(InitOutcome,
+                            Transport,
+                            Kind,
+                            Endpoint,
+                            Generation,
+                            ClientInfo,
+                            ClientCaps,
+                            InitId,
+                            Trace3,
+                            Outcome)
+    ;   StateOutcome = error(Error),
+        mcp_transport_close(Transport, _),
+        Outcome = error(Error)
+    ).
+
+finish_connect_2025(error(Error), Transport, _, _, _, _, _, _, _, error(Error)) :-
+    !,
+    mcp_transport_close(Transport, _).
+finish_connect_2025(ok(State), Transport, Kind, Endpoint, Generation,
+                    ClientInfo, ClientCaps, InitId, Trace, ok(Client)) :-
+    cache_store_quiet(Endpoint,
+                      Kind,
+                      ['2025-11-25'],
+                      '2025-11-25',
+                      initialize,
+                      Generation),
+    NextId is InitId+1,
+    make_client(Transport,
+                State,
+                Endpoint,
+                Generation,
+                ClientInfo,
+                ClientCaps,
+                NextId,
+                Trace,
+                Client).
+
+make_client(Transport, State, Endpoint, Generation,
+            ClientInfo, ClientCaps, NextId, Trace,
+            mcp_client{transport:Transport,
+                       adapter_state:State,
+                       endpoint:Endpoint,
+                       generation:Generation,
+                       client_info:ClientInfo,
+                       client_capabilities:ClientCaps,
+                       next_id:NextId,
+                       protocol_retry_count:0,
+                       protocol_retry_limit:1,
+                       trace:Trace}).
+
+initialize_client_2025(Transport, State0, Id, Outcome, Trace0, Trace) :-
     mcp_2025_client_initialize(State0, Id, Wire, Meta, EncodeOutcome),
     (   EncodeOutcome = ok
     ->  trace_emit(initialize_sent,
@@ -101,22 +417,22 @@ initialize_client(Transport, State0, Id, Outcome, Trace0, Trace) :-
                    Trace0,
                    Trace1),
         mcp_transport_exchange(Transport, Wire, Meta, ExchangeOutcome),
-        accept_initialize_exchange(ExchangeOutcome,
-                                   Transport,
-                                   State0,
-                                   Id,
-                                   Outcome,
-                                   Trace1,
-                                   Trace)
+        accept_initialize_exchange_2025(ExchangeOutcome,
+                                        Transport,
+                                        State0,
+                                        Id,
+                                        Outcome,
+                                        Trace1,
+                                        Trace)
     ;   EncodeOutcome = error(Error),
         Outcome = error(Error),
         Trace = Trace0
     ).
 
-accept_initialize_exchange(error(Error), _, _, _, error(Error), Trace, Trace) :-
+accept_initialize_exchange_2025(error(Error), _, _, _, error(Error), Trace, Trace) :-
     !.
-accept_initialize_exchange(ok(Response), Transport, State0, Id,
-                           Outcome, Trace0, Trace) :-
+accept_initialize_exchange_2025(ok(Response), Transport, State0, Id,
+                                Outcome, Trace0, Trace) :-
     mcp_2025_client_accept_initialize(State0,
                                       Id,
                                       Response,
@@ -132,26 +448,26 @@ accept_initialize_exchange(ok(Response), Transport, State0, Id,
                                     Notification,
                                     NotificationMeta,
                                     NotificationOutcome),
-        send_initialized(NotificationOutcome,
-                         Transport,
-                         State1,
-                         Notification,
-                         NotificationMeta,
-                         Outcome,
-                         Trace1,
-                         Trace)
+        send_initialized_2025(NotificationOutcome,
+                              Transport,
+                              State1,
+                              Notification,
+                              NotificationMeta,
+                              Outcome,
+                              Trace1,
+                              Trace)
     ;   AcceptOutcome = error(Error),
         Outcome = error(Error),
         Trace = Trace0
     ).
 
-send_initialized(error(Error), _, _, _, _, error(Error), Trace, Trace) :-
+send_initialized_2025(error(Error), _, _, _, _, error(Error), Trace, Trace) :-
     !.
-send_initialized(ok(StateMaybe), Transport, State0, Wire, Meta,
-                 Outcome, Trace0, Trace) :-
+send_initialized_2025(ok(StateMaybe), Transport, State0, Wire, Meta,
+                      Outcome, Trace0, Trace) :-
     mcp_transport_send(Transport, Wire, Meta, SendOutcome),
     (   SendOutcome = ok(sent)
-    ->  normalize_ready_state(StateMaybe, State0, State),
+    ->  normalize_ready_state_2025(StateMaybe, State0, State),
         trace_emit(ready,
                    State,
                    _{protocol_version:'2025-11-25'},
@@ -163,12 +479,16 @@ send_initialized(ok(StateMaybe), Transport, State0, Wire, Meta,
         Trace = Trace0
     ).
 
-normalize_ready_state(StateMaybe, _, StateMaybe) :-
+normalize_ready_state_2025(StateMaybe, _, StateMaybe) :-
     is_dict(StateMaybe, mcp_2025_client),
     StateMaybe.phase == ready,
     !.
-normalize_ready_state(_, State0, State) :-
+normalize_ready_state_2025(_, State0, State) :-
     put_dict(phase, State0, ready, State).
+
+/* -------------------------------------------------------------------------
+ * Client commands
+ * ---------------------------------------------------------------------- */
 
 mcp_client_command(Client0, Command0, Client, Outcome) :-
     catch(client_command(Client0, Command0, Client, Outcome),
@@ -179,17 +499,169 @@ client_command(Client0, Command0, Client, Outcome) :-
     require_client(Client0),
     mcp_command_normalize(Command0, CommandOutcome),
     (   CommandOutcome = ok(Command)
-    ->  command_once(Client0,
-                     Command,
-                     true,
-                     Client,
-                     Outcome)
+    ->  command_once(Client0, Command, true, Client, Outcome)
     ;   CommandOutcome = error(Error),
         Client = Client0,
         Outcome = error(Error)
     ).
 
-command_once(Client0, Command, AllowRecovery, Client, Outcome) :-
+command_once(Client0, Command, AllowSessionRecovery, Client, Outcome) :-
+    State = Client0.adapter_state,
+    (   is_dict(State, mcp_2026_client)
+    ->  command_once_2026(Client0, Command, Client, Outcome)
+    ;   is_dict(State, mcp_2025_client)
+    ->  command_once_2025(Client0,
+                          Command,
+                          AllowSessionRecovery,
+                          Client,
+                          Outcome)
+    ;   Client = Client0,
+        Outcome = error(mcp_error{phase:runtime,
+                                  kind:invalid_adapter_state,
+                                  message:"MCP client has an unknown adapter state"})
+    ).
+
+command_once_2026(Client0, Command, Client, Outcome) :-
+    Id = Client0.next_id,
+    State0 = Client0.adapter_state,
+    mcp_2026_client_command(State0,
+                            Id,
+                            Command,
+                            Wire,
+                            Meta,
+                            EncodeOutcome),
+    (   EncodeOutcome = ok(_)
+    ->  trace_emit(command_sent,
+                   State0,
+                   _{request_id:Id, operation:Command.op},
+                   Client0.trace,
+                   Trace1),
+        mcp_transport_exchange(Client0.transport,
+                               Wire,
+                               Meta,
+                               ExchangeOutcome),
+        command_exchange_2026(ExchangeOutcome,
+                              Client0,
+                              Command,
+                              Id,
+                              Trace1,
+                              Client,
+                              Outcome)
+    ;   EncodeOutcome = error(Error),
+        Client = Client0,
+        Outcome = error(Error)
+    ).
+
+command_exchange_2026(error(Error), Client0, _, _, _, Client0, error(Error)) :-
+    !.
+command_exchange_2026(ok(Response), Client0, Command, Id, Trace0,
+                      Client, Outcome) :-
+    mcp_2026_client_decode(Client0.adapter_state,
+                           Id,
+                           Command,
+                           Response,
+                           DecodeOutcome),
+    (   DecodeOutcome = error(Error),
+        protocol_fallback_allowed(Client0, Error)
+    ->  fallback_command_to_2025(Client0,
+                                 Command,
+                                 Id,
+                                 Error,
+                                 Trace0,
+                                 Client,
+                                 Outcome)
+    ;   finish_command_2026(DecodeOutcome,
+                            Client0,
+                            Command,
+                            Id,
+                            Trace0,
+                            Client,
+                            Outcome)
+    ).
+
+finish_command_2026(error(Error), Client0, _, _, _, Client0, error(Error)) :- !.
+finish_command_2026(ok(Result), Client0, Command, Id, Trace0,
+                    Client, ok(Result)) :-
+    NextId is Id+1,
+    trace_emit(command_completed,
+               Client0.adapter_state,
+               _{request_id:Id, operation:Command.op},
+               Trace0,
+               Trace),
+    cache_store_quiet(Client0.endpoint,
+                      Client0.adapter_state.transport,
+                      Client0.adapter_state.supported_versions,
+                      '2026-07-28',
+                      command_success,
+                      Client0.generation),
+    put_dict(_{next_id:NextId, trace:Trace}, Client0, Client).
+
+protocol_fallback_allowed(Client, Error) :-
+    is_dict(Error),
+    get_dict(kind, Error, unsupported_protocol_version),
+    get_dict(supported, Error, Supported),
+    memberchk('2025-11-25', Supported),
+    Client.protocol_retry_count < Client.protocol_retry_limit.
+
+fallback_command_to_2025(Client0, Command, FailedId, Error, Trace0,
+                         Client, Outcome) :-
+    cache_invalidate_quiet(Client0.endpoint),
+    State2026 = Client0.adapter_state,
+    trace_emit(protocol_rejected,
+               State2026,
+               _{failed_request_id:FailedId,
+                 reason:Error,
+                 advertised_versions:Error.supported},
+               Trace0,
+               Trace1),
+    mcp_2025_client_state_new(Client0.client_info,
+                              Client0.client_capabilities,
+                              State2026.transport,
+                              StateOutcome),
+    (   StateOutcome = ok(State0)
+    ->  trace_emit(protocol_fallback,
+                   State0,
+                   _{from:'2026-07-28', to:'2025-11-25'},
+                   Trace1,
+                   Trace2),
+        InitId is FailedId+1,
+        initialize_client_2025(Client0.transport,
+                               State0,
+                               InitId,
+                               InitOutcome,
+                               Trace2,
+                               Trace3),
+        retry_after_protocol_fallback(InitOutcome,
+                                      Client0,
+                                      Command,
+                                      InitId,
+                                      Trace3,
+                                      Client,
+                                      Outcome)
+    ;   StateOutcome = error(NewError),
+        Client = Client0,
+        Outcome = error(NewError)
+    ).
+
+retry_after_protocol_fallback(error(Error), Client0, _, _, _,
+                              Client0, error(Error)) :- !.
+retry_after_protocol_fallback(ok(State), Client0, Command, InitId, Trace,
+                              Client, Outcome) :-
+    RetryCount is Client0.protocol_retry_count+1,
+    CommandId is InitId+1,
+    cache_store_quiet(Client0.endpoint,
+                      State.transport,
+                      ['2025-11-25'],
+                      '2025-11-25',
+                      unsupported_version,
+                      Client0.generation),
+    Temp = Client0.put(_{adapter_state:State,
+                         next_id:CommandId,
+                         protocol_retry_count:RetryCount,
+                         trace:Trace}),
+    command_once_2025(Temp, Command, true, Client, Outcome).
+
+command_once_2025(Client0, Command, AllowRecovery, Client, Outcome) :-
     Id = Client0.next_id,
     State0 = Client0.adapter_state,
     mcp_2025_client_command(State0,
@@ -208,46 +680,48 @@ command_once(Client0, Command, AllowRecovery, Client, Outcome) :-
                                Wire,
                                Meta,
                                ExchangeOutcome),
-        command_exchange(ExchangeOutcome,
-                         Client0,
-                         Command,
-                         Id,
-                         AllowRecovery,
-                         Trace1,
-                         Client,
-                         Outcome)
+        command_exchange_2025(ExchangeOutcome,
+                              Client0,
+                              Command,
+                              Id,
+                              AllowRecovery,
+                              Trace1,
+                              Client,
+                              Outcome)
     ;   EncodeOutcome = error(Error),
         Client = Client0,
         Outcome = error(Error)
     ).
 
-command_exchange(error(Error), Client0, _, _, _, _, Client0, error(Error)) :-
+command_exchange_2025(error(Error), Client0, _, _, _, _, Client0, error(Error)) :-
     !.
-command_exchange(ok(Response), Client0, Command, Id, AllowRecovery, Trace0,
-                 Client, Outcome) :-
+command_exchange_2025(ok(Response), Client0, Command, Id, AllowRecovery, Trace0,
+                      Client, Outcome) :-
     (   Response.status =:= 404,
         AllowRecovery == true
-    ->  recover_and_retry(Client0,
-                          Command,
-                          Id,
-                          Trace0,
-                          Client,
-                          Outcome)
+    ->  recover_and_retry_2025(Client0,
+                               Command,
+                               Id,
+                               Trace0,
+                               Client,
+                               Outcome)
     ;   mcp_2025_client_decode(Client0.adapter_state,
+                               Id,
                                Command,
                                Response,
                                DecodeOutcome),
-        finish_command(DecodeOutcome,
-                       Client0,
-                       Command,
-                       Id,
-                       Trace0,
-                       Client,
-                       Outcome)
+        finish_command_2025(DecodeOutcome,
+                            Client0,
+                            Command,
+                            Id,
+                            Trace0,
+                            Client,
+                            Outcome)
     ).
 
-finish_command(error(Error), Client0, _, _, _, Client0, error(Error)) :- !.
-finish_command(ok(Result), Client0, Command, Id, Trace0, Client, ok(Result)) :-
+finish_command_2025(error(Error), Client0, _, _, _, Client0, error(Error)) :- !.
+finish_command_2025(ok(Result), Client0, Command, Id, Trace0,
+                    Client, ok(Result)) :-
     NextId is Id+1,
     trace_emit(command_completed,
                Client0.adapter_state,
@@ -256,7 +730,7 @@ finish_command(ok(Result), Client0, Command, Id, Trace0, Client, ok(Result)) :-
                Trace),
     put_dict(_{next_id:NextId, trace:Trace}, Client0, Client).
 
-recover_and_retry(Client0, Command, FailedId, Trace0, Client, Outcome) :-
+recover_and_retry_2025(Client0, Command, FailedId, Trace0, Client, Outcome) :-
     mcp_2025_client_recover_404(Client0.adapter_state, RecoveryOutcome),
     (   RecoveryOutcome = ok(ResetState)
     ->  trace_emit(session_invalidated,
@@ -265,33 +739,33 @@ recover_and_retry(Client0, Command, FailedId, Trace0, Client, Outcome) :-
                    Trace0,
                    Trace1),
         InitId is FailedId+1,
-        initialize_client(Client0.transport,
-                          ResetState,
-                          InitId,
-                          InitOutcome,
-                          Trace1,
-                          Trace2),
-        retry_after_reinitialize(InitOutcome,
-                                 Client0,
-                                 Command,
-                                 InitId,
-                                 Trace2,
-                                 Client,
-                                 Outcome)
+        initialize_client_2025(Client0.transport,
+                               ResetState,
+                               InitId,
+                               InitOutcome,
+                               Trace1,
+                               Trace2),
+        retry_after_reinitialize_2025(InitOutcome,
+                                      Client0,
+                                      Command,
+                                      InitId,
+                                      Trace2,
+                                      Client,
+                                      Outcome)
     ;   RecoveryOutcome = error(Error),
         Client = Client0,
         Outcome = error(Error)
     ).
 
-retry_after_reinitialize(error(Error), Client0, _, _, _, Client0, error(Error)) :-
-    !.
-retry_after_reinitialize(ok(State), Client0, Command, InitId, Trace,
-                         Client, Outcome) :-
+retry_after_reinitialize_2025(error(Error), Client0, _, _, _,
+                              Client0, error(Error)) :- !.
+retry_after_reinitialize_2025(ok(State), Client0, Command, InitId, Trace,
+                              Client, Outcome) :-
     CommandId is InitId+1,
     Temp = Client0.put(_{adapter_state:State,
                          next_id:CommandId,
                          trace:Trace}),
-    command_once(Temp, Command, false, Client, Outcome).
+    command_once_2025(Temp, Command, false, Client, Outcome).
 
 mcp_client_close(Client, Outcome) :-
     (   is_dict(Client, mcp_client)
@@ -310,7 +784,7 @@ mcp_client_protocol(Client, Protocol) :-
     Protocol = Client.adapter_state.protocol_version.
 
 /* -------------------------------------------------------------------------
- * Server
+ * Dual-version server
  * ---------------------------------------------------------------------- */
 
 mcp_server_new(TransportKind, ServerInfo, ServerCaps, Options, Outcome) :-
@@ -319,17 +793,29 @@ mcp_server_new(TransportKind, ServerInfo, ServerCaps, Options, Outcome) :-
                               ServerCaps,
                               TransportKind,
                               SessionId,
-                              StateOutcome),
-    (   StateOutcome = ok(State)
-    ->  trace_empty(Trace0),
-        trace_emit(server_created,
-                   State,
-                   _{transport:TransportKind},
-                   Trace0,
-                   Trace),
-        Outcome = ok(mcp_server{adapter_state:State, trace:Trace})
-    ;   Outcome = StateOutcome
-    ).
+                              State2025Outcome),
+    mcp_2026_server_state_new(ServerInfo,
+                              ServerCaps,
+                              TransportKind,
+                              State2026Outcome),
+    server_new_states(State2025Outcome,
+                      State2026Outcome,
+                      TransportKind,
+                      Outcome).
+
+server_new_states(error(Error), _, _, error(Error)) :- !.
+server_new_states(_, error(Error), _, error(Error)) :- !.
+server_new_states(ok(State2025), ok(State2026), TransportKind, ok(Server)) :-
+    trace_empty(Trace0),
+    trace_emit(server_created,
+               State2025,
+               _{transport:TransportKind,
+                 supported_protocols:['2026-07-28', '2025-11-25']},
+               Trace0,
+               Trace),
+    Server = mcp_server{adapter_state:State2025,
+                        adapter_2026:State2026,
+                        trace:Trace}.
 
 mcp_server_handle(Server0, Wire, RequestMeta, Dispatch, Server, Outcome) :-
     catch(server_handle(Server0,
@@ -344,30 +830,58 @@ mcp_server_handle(Server0, Wire, RequestMeta, Dispatch, Server, Outcome) :-
 server_handle(Server0, Wire, RequestMeta, Dispatch, Server, Outcome) :-
     require_server(Server0),
     callable(Dispatch),
-    mcp_2025_server_receive(Server0.adapter_state,
+    detect_server_protocol(Server0, Wire, RequestMeta, Protocol),
+    server_handle_protocol(Protocol,
+                           Server0,
+                           Wire,
+                           RequestMeta,
+                           Dispatch,
+                           Server,
+                           Outcome).
+
+server_handle_protocol('2026-07-28', Server0, Wire, RequestMeta, Dispatch,
+                       Server, Outcome) :-
+    !,
+    State0 = Server0.adapter_2026,
+    mcp_2026_server_receive(State0,
                             Wire,
                             RequestMeta,
                             Event,
                             ReceiveOutcome),
-    handle_server_receive(ReceiveOutcome,
-                          Event,
-                          Server0,
-                          Dispatch,
-                          Server,
-                          Outcome).
+    handle_server_receive_2026(ReceiveOutcome,
+                               Event,
+                               Wire,
+                               Server0,
+                               Dispatch,
+                               Server,
+                               Outcome).
+server_handle_protocol('2025-11-25', Server0, Wire, RequestMeta, Dispatch,
+                       Server, Outcome) :-
+    State0 = Server0.adapter_state,
+    mcp_2025_server_receive(State0,
+                            Wire,
+                            RequestMeta,
+                            Event,
+                            ReceiveOutcome),
+    handle_server_receive_2025(ReceiveOutcome,
+                               Event,
+                               Server0,
+                               Dispatch,
+                               Server,
+                               Outcome).
 
-handle_server_receive(error(Error), _, Server, _, Server, Outcome) :-
+handle_server_receive_2025(error(Error), _, Server, _, Server, Outcome) :-
     !,
-    server_error_outcome(Error, Outcome).
-handle_server_receive(ok(State), Event, Server0, Dispatch, Server, Outcome) :-
-    server_event(Event,
-                 State,
-                 Server0,
-                 Dispatch,
-                 Server,
-                 Outcome).
+    server_error_outcome_2025(Error, Outcome).
+handle_server_receive_2025(ok(State), Event, Server0, Dispatch, Server, Outcome) :-
+    server_event_2025(Event,
+                      State,
+                      Server0,
+                      Dispatch,
+                      Server,
+                      Outcome).
 
-server_event(initialize(Id, _, _), State, Server0, _, Server, Outcome) :-
+server_event_2025(initialize(Id, _, _), State, Server0, _, Server, Outcome) :-
     !,
     mcp_2025_server_initialize_response(State,
                                         Id,
@@ -388,8 +902,8 @@ server_event(initialize(Id, _, _), State, Server0, _, Server, Outcome) :-
         Server = Server0,
         Outcome = error(Error)
     ).
-server_event(initialized, State, Server0, _, Server,
-             ok(mcp_server_no_reply{})) :-
+server_event_2025(initialized, State, Server0, _, Server,
+                  ok(mcp_server_no_reply{})) :-
     !,
     trace_emit(server_ready,
                State,
@@ -397,7 +911,7 @@ server_event(initialized, State, Server0, _, Server,
                Server0.trace,
                Trace),
     put_dict(_{adapter_state:State, trace:Trace}, Server0, Server).
-server_event(command(Id, Command), State, Server0, Dispatch, Server, Outcome) :-
+server_event_2025(command(Id, Command), State, Server0, Dispatch, Server, Outcome) :-
     call_dispatch(Dispatch, Command, DispatchOutcome),
     (   DispatchOutcome = ok(CanonicalResult)
     ->  mcp_2025_server_command_response(State,
@@ -406,31 +920,154 @@ server_event(command(Id, Command), State, Server0, Dispatch, Server, Outcome) :-
                                          CanonicalResult,
                                          Wire,
                                          EncodeOutcome),
-        finish_server_command(EncodeOutcome,
-                              Id,
-                              Command,
-                              Wire,
-                              State,
-                              Server0,
-                              Server,
-                              Outcome)
+        finish_server_command_2025(EncodeOutcome,
+                                   Id,
+                                   Command,
+                                   Wire,
+                                   State,
+                                   Server0,
+                                   Server,
+                                   Outcome)
     ;   DispatchOutcome = error(Error),
         Server = Server0,
         Outcome = error(Error)
     ).
 
-finish_server_command(error(Error), _, _, _, _, Server, Server, error(Error)) :-
-    !.
-finish_server_command(ok, Id, Command, Wire, State, Server0, Server,
-                      ok(mcp_server_reply{wire:Wire,
-                                          meta:mcp_transport_response_meta{headers:[]},
-                                          status:200})) :-
+finish_server_command_2025(error(Error), _, _, _, _, Server, Server,
+                           error(Error)) :- !.
+finish_server_command_2025(ok, Id, Command, Wire, State, Server0, Server,
+                           ok(mcp_server_reply{
+                                  wire:Wire,
+                                  meta:mcp_transport_response_meta{headers:[]},
+                                  status:200})) :-
     trace_emit(server_command_completed,
                State,
                _{request_id:Id, operation:Command.op},
                Server0.trace,
                Trace),
     put_dict(_{adapter_state:State, trace:Trace}, Server0, Server).
+
+handle_server_receive_2026(error(Error), _, Wire, Server0, _, Server0, Outcome) :-
+    !,
+    server_error_outcome_2026(Error, Wire, Outcome).
+handle_server_receive_2026(ok(State), Event, _, Server0, Dispatch,
+                           Server, Outcome) :-
+    server_event_2026(Event,
+                      State,
+                      Server0,
+                      Dispatch,
+                      Server,
+                      Outcome).
+
+server_event_2026(discover(Id, _, _), State, Server0, _, Server, Outcome) :-
+    !,
+    mcp_2026_server_discover_response(State,
+                                      Id,
+                                      Wire,
+                                      ResponseMeta,
+                                      EncodeOutcome),
+    (   EncodeOutcome = ok
+    ->  trace_emit(server_discovered,
+                   State,
+                   _{request_id:Id},
+                   Server0.trace,
+                   Trace),
+        put_dict(_{adapter_2026:State, trace:Trace}, Server0, Server),
+        Outcome = ok(mcp_server_reply{wire:Wire,
+                                      meta:ResponseMeta,
+                                      status:200})
+    ;   EncodeOutcome = error(Error),
+        Server = Server0,
+        Outcome = error(Error)
+    ).
+server_event_2026(command(Id, Command), State, Server0, Dispatch, Server, Outcome) :-
+    call_dispatch(Dispatch, Command, DispatchOutcome),
+    (   DispatchOutcome = ok(CanonicalResult)
+    ->  mcp_2026_server_command_response(State,
+                                         Id,
+                                         Command,
+                                         CanonicalResult,
+                                         Wire,
+                                         EncodeOutcome),
+        finish_server_command_2026(EncodeOutcome,
+                                   Id,
+                                   Command,
+                                   Wire,
+                                   State,
+                                   Server0,
+                                   Server,
+                                   Outcome)
+    ;   DispatchOutcome = error(Error),
+        Server = Server0,
+        Outcome = error(Error)
+    ).
+
+finish_server_command_2026(error(Error), _, _, _, _, Server, Server,
+                           error(Error)) :- !.
+finish_server_command_2026(ok, Id, Command, Wire, State, Server0, Server,
+                           ok(mcp_server_reply{
+                                  wire:Wire,
+                                  meta:mcp_transport_response_meta{headers:[]},
+                                  status:200})) :-
+    trace_emit(server_command_completed,
+               State,
+               _{request_id:Id, operation:Command.op},
+               Server0.trace,
+               Trace),
+    put_dict(_{adapter_2026:State, trace:Trace}, Server0, Server).
+
+server_error_outcome_2026(Error, Wire, Outcome) :-
+    (   is_dict(Error),
+        get_dict(jsonrpc_code, Error, _),
+        is_dict(Wire),
+        get_dict(id, Wire, Id),
+        mcp_2026_server_error_reply(Id, Error, ErrorWire, Status)
+    ->  Outcome = ok(mcp_server_reply{
+                         wire:ErrorWire,
+                         meta:mcp_transport_response_meta{headers:[]},
+                         status:Status})
+    ;   Outcome = error(Error)
+    ).
+
+server_error_outcome_2025(Error, Outcome) :-
+    (   is_dict(Error),
+        get_dict(detail, Error, invalid_session)
+    ->  Outcome = error(mcp_server_transport_error{status:404,
+                                                   cause:Error,
+                                                   message:"MCP session is invalid"})
+    ;   Outcome = error(Error)
+    ).
+
+detect_server_protocol(_, Wire, _, '2025-11-25') :-
+    is_dict(Wire),
+    get_dict(method, Wire, "initialize"),
+    !.
+detect_server_protocol(_, Wire, _, '2026-07-28') :-
+    wire_protocol_metadata(Wire, _),
+    !.
+detect_server_protocol(_, _, RequestMeta, '2026-07-28') :-
+    request_meta_header(RequestMeta, 'MCP-Protocol-Version', Version0),
+    normalize_version_atom(Version0, Version),
+    Version \== '2025-11-25',
+    !.
+detect_server_protocol(_, _, _, '2025-11-25').
+
+wire_protocol_metadata(Wire, Version) :-
+    get_dict(params, Wire, Params),
+    is_dict(Params),
+    get_dict('_meta', Params, Meta),
+    is_dict(Meta),
+    get_dict('io.modelcontextprotocol/protocolVersion', Meta, Version).
+
+request_meta_header(RequestMeta, Name, Value) :-
+    is_dict(RequestMeta),
+    get_dict(headers, RequestMeta, Headers),
+    is_list(Headers),
+    memberchk(Name=Value, Headers).
+
+/* -------------------------------------------------------------------------
+ * Dispatch, trace, cache and validation
+ * ---------------------------------------------------------------------- */
 
 call_dispatch(Dispatch, Command, Outcome) :-
     catch(( call(Dispatch, Command, Raw)
@@ -451,6 +1088,10 @@ normalize_dispatch_outcome(Result,
                                            detail:Result,
                                            message:"MCP dispatch must return a canonical result"})).
 
+dispatch_exception(Exception, _) :-
+    control_exception(Exception),
+    !,
+    throw(Exception).
 dispatch_exception(Exception, error(Error)) :-
     term_string(Exception, Safe, [quoted(true), numbervars(true)]),
     Error = mcp_error{phase:server_dispatch,
@@ -458,22 +1099,9 @@ dispatch_exception(Exception, error(Error)) :-
                       exception:Safe,
                       message:"MCP server dispatch raised an exception"}.
 
-server_error_outcome(Error, Outcome) :-
-    (   is_dict(Error),
-        get_dict(detail, Error, invalid_session)
-    ->  Outcome = error(mcp_server_transport_error{status:404,
-                                                   cause:Error,
-                                                   message:"MCP session is invalid"})
-    ;   Outcome = error(Error)
-    ).
-
 mcp_server_trace(Server, Events) :-
     require_server(Server),
     Events = Server.trace.
-
-/* -------------------------------------------------------------------------
- * Trace and validation
- * ---------------------------------------------------------------------- */
 
 trace_empty([]).
 
@@ -491,11 +1119,52 @@ trace_emit(Type, State, Detail, Trace0, Trace) :-
 
 state_transport(State, Transport) :-
     ( get_dict(transport, State, Transport) -> true ; Transport = unknown ).
+
 state_protocol(State, Protocol) :-
-    ( get_dict(protocol_version, State, Value), Value \== null
-    -> Protocol = Value
-    ; Protocol = '2025-11-25'
+    (   get_dict(protocol_version, State, Value), Value \== null
+    ->  Protocol = Value
+    ;   is_dict(State, mcp_2025_client)
+    ->  Protocol = '2025-11-25'
+    ;   is_dict(State, mcp_2025_server)
+    ->  Protocol = '2025-11-25'
+    ;   Protocol = unknown
     ).
+
+cache_store_quiet(Endpoint, Transport, Versions, Selected, Source, Generation) :-
+    mcp_compat_cache_store(Endpoint,
+                           Transport,
+                           Versions,
+                           Selected,
+                           Source,
+                           Generation,
+                           _).
+
+cache_invalidate_quiet(Endpoint) :-
+    mcp_compat_cache_invalidate(Endpoint, _).
+
+endpoint_identity(TransportSpec, Endpoint) :-
+    term_string(TransportSpec,
+                Endpoint,
+                [quoted(true), numbervars(true)]).
+
+next_connect_generation(Generation) :-
+    with_mutex(rlm_mcp_connect_generation,
+               ( retract(mcp_connect_generation(Current)),
+                 Generation is Current+1,
+                 assertz(mcp_connect_generation(Generation)) )).
+
+normalize_protocol_option(auto, auto) :- !.
+normalize_protocol_option(Value, Protocol) :-
+    normalize_version_atom(Value, Protocol),
+    memberchk(Protocol, ['2025-11-25', '2026-07-28']),
+    !.
+normalize_protocol_option(Value, _) :-
+    throw(mcp_runtime_fault(unsupported_protocol_option(Value))).
+
+normalize_version_atom(Value, Value) :- atom(Value), !.
+normalize_version_atom(Value, Atom) :- string(Value), !, atom_string(Atom, Value).
+normalize_version_atom(Value, _) :-
+    throw(mcp_runtime_fault(invalid_protocol_version(Value))).
 
 require_client(Client) :-
     (   is_dict(Client, mcp_client)
@@ -509,6 +1178,18 @@ require_server(Server) :-
     ;   throw(mcp_runtime_fault(invalid_server(Server)))
     ).
 
+control_exception(time_limit_exceeded).
+control_exception('$aborted').
+control_exception(abort).
+control_exception(cancelled(_)).
+control_exception(rlm_cancelled(_)).
+control_exception(chain_cancelled(_)).
+control_exception(graph_cancelled(_)).
+
+runtime_exception(_, Exception, _) :-
+    control_exception(Exception),
+    !,
+    throw(Exception).
 runtime_exception(_, mcp_runtime_fault(Detail), error(Error)) :-
     !,
     Error = mcp_error{phase:runtime,
