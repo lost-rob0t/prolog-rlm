@@ -94,8 +94,14 @@ fixed_planner(Plan, _, ok(Output)) :-
 live_depth_outcome(Depth, Model, LatencyMs, ok(Result), Case) :-
     !,
     response_quality(Result.value, Quality, OutputPresent, ExpectedPresent),
-    ( OutputPresent == true -> Status = pass ; Status = fail ),
     ProviderCalls is max(0, Result.usage.model_calls-1),
+    ExpectedProviderCalls is Depth+1,
+    (   OutputPresent == true,
+        ProviderCalls =:= ExpectedProviderCalls,
+        Result.recursion.max_depth =:= Depth
+    ->  Status = pass
+    ;   Status = fail
+    ),
     selected_model(Result.value, SelectedModel),
     response_http_status(Result.value, HttpStatus),
     Metrics = _{model_calls:ProviderCalls,
@@ -114,7 +120,10 @@ live_depth_outcome(Depth, Model, LatencyMs, ok(Result), Case) :-
                   expected_token_present:ExpectedPresent,
                   injected_planner:true,
                   injected_planner_provider_calls:0,
-                  actual_provider_calls:ProviderCalls
+                  expected_provider_calls:ExpectedProviderCalls,
+                  actual_provider_calls:ProviderCalls,
+                  expected_recursion_depth:Depth,
+                  actual_recursion_depth:Result.recursion.max_depth
               },
     benchmark_case(Name,
                    live_deep_recursion,
@@ -124,6 +133,7 @@ live_depth_outcome(Depth, Model, LatencyMs, ok(Result), Case) :-
                    Details,
                    Case).
 live_depth_outcome(Depth, Model, LatencyMs, error(Error), Case) :-
+    ExpectedProviderCalls is Depth+1,
     format(atom(Name), 'openrouter_depth_~d', [Depth]),
     benchmark_case(Name,
                    live_deep_recursion,
@@ -133,6 +143,7 @@ live_depth_outcome(Depth, Model, LatencyMs, error(Error), Case) :-
                      recursion_depth:Depth},
                    live_deep_error{
                        requested_model:Model,
+                       expected_provider_calls:ExpectedProviderCalls,
                        error:Error
                    },
                    Case).
