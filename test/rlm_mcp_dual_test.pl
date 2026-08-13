@@ -152,17 +152,6 @@ only_2025_exchange(Wire, Meta, Response) :-
     get_dict(method, Wire, Method),
     legacy_method(Method, Wire, Meta, Response).
 
-only_2025_exchange(Wire, _, Response) :-
-    get_dict(method, Wire, "server/discover"),
-    Response = mcp_transport_response{
-                   status:404,
-                   body:_{jsonrpc:"2.0",
-                          id:Wire.id,
-                          error:_{code: -32601,
-                                  message:"Method not found"}},
-                   headers:transport_headers{},
-                   content_type:'application/json'}.
-
 dual_exchange(Wire, Meta, Response) :-
     get_dict(method, Wire, Method),
     modern_method(Method,
@@ -201,7 +190,7 @@ fallback_method("tools/list", Wire, Meta, Response) :-
                        content_type:'application/json'}
     ;   Phase == legacy_ready,
         require_legacy_meta(Meta),
-        Response = legacy_tools_response(Wire.id, fallback_legacy)
+        legacy_tools_response(Wire.id, fallback_legacy, Response)
     ).
 fallback_method("initialize", Wire, _, Response) :-
     fallback_phase(legacy_init),
@@ -257,7 +246,7 @@ legacy_method("notifications/initialized", _, Meta, null) :-
     require_legacy_meta(Meta).
 legacy_method("tools/list", Wire, Meta, Response) :-
     require_legacy_meta(Meta),
-    Response = legacy_tools_response(Wire.id, legacy).
+    legacy_tools_response(Wire.id, legacy, Response).
 
 legacy_initialize_response(Wire,
                            mcp_transport_response{
@@ -283,9 +272,6 @@ legacy_tools_response(Id, ToolName,
                           headers:transport_headers{},
                           content_type:'application/json'}) :-
     atom_string(ToolName, ToolText).
-
-legacy_tools_response(Id, ToolName, Response) :-
-    legacy_tools_response(Id, ToolName, Response).
 
 require_modern_meta(Wire, Meta) :-
     assertion(Wire.params.'_meta'.'io.modelcontextprotocol/protocolVersion' ==
