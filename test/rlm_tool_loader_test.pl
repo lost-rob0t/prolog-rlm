@@ -26,6 +26,7 @@ fixture_schema(
         name:fixture_pack_echo,
         description:"external tool-pack loading fixture",
         capability:tool(fixture_pack_echo),
+        effect:read,
         arguments:_{type:object,
                     required:[value],
                     additional_properties:false,
