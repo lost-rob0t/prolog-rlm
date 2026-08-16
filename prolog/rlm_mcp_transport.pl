@@ -279,6 +279,10 @@ text_atom(Value, Value) :- atom(Value), !.
 text_atom(Value, Atom) :- string(Value), !, atom_string(Atom, Value).
 text_atom(Value, _) :- throw(mcp_transport_fault(expected_text(Value))).
 
+transport_exception(_, Exception, _) :-
+    transport_control_exception(Exception),
+    !,
+    throw(Exception).
 transport_exception(_, mcp_transport_fault(Detail), error(Error)) :-
     !,
     Error = mcp_transport_error{kind:transport_error,
@@ -290,3 +294,11 @@ transport_exception(Operation, Exception, error(Error)) :-
                                 operation:Operation,
                                 exception:Safe,
                                 message:"MCP transport raised an exception"}.
+
+transport_control_exception(rlm_async_cancelled(_)).
+transport_control_exception(rlm_cancelled(_)).
+transport_control_exception(chain_cancelled(_)).
+transport_control_exception(graph_cancelled(_)).
+transport_control_exception(cancelled(_)).
+transport_control_exception('$aborted').
+transport_control_exception(abort).
