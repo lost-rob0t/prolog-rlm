@@ -146,9 +146,7 @@ capabilities and does not widen any normal budget.
                 default_completion_budget/1
               ]).
 :- use_module(rlm_completion_async,
-              [ rlm_completion_async/4,
-                llm_query_async/3,
-                rlm_query_async/4
+              [ llm_query_async/3
               ]).
 :- use_module(rlm_recursion_policy,
               [ rlm_recursion_policy_ready/0,
@@ -313,6 +311,14 @@ rlm_completion(Query, Context, Options, Outcome) :-
         Outcome = error(Error)
     ).
 
+rlm_completion_async(Query, Context, Options, Future) :-
+    rlm_async:rlm_async_submit(
+        rlm:public_completion_async_task(Query, Context, Options),
+        Future).
+
+public_completion_async_task(Query, Context, Options, Outcome) :-
+    rlm_completion(Query, Context, Options, Outcome).
+
 rlm_query(Query, Context, Options, Outcome) :-
     public_deep_recursion_gate(Options, Gate),
     (   Gate == ok
@@ -320,6 +326,14 @@ rlm_query(Query, Context, Options, Outcome) :-
     ;   Gate = error(Error),
         Outcome = error(Error)
     ).
+
+rlm_query_async(Query, Context, Options, Future) :-
+    rlm_async:rlm_async_submit(
+        rlm:public_query_async_task(Query, Context, Options),
+        Future).
+
+public_query_async_task(Query, Context, Options, Outcome) :-
+    rlm_query(Query, Context, Options, Outcome).
 
 public_deep_recursion_gate(Options, Outcome) :-
     (   is_list(Options),
