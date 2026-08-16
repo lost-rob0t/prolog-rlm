@@ -3,6 +3,9 @@
             rlm_async_runtime_status/1,
             rlm_async_submit/2,
             rlm_async_submit/3,
+            rlm_future_deferred/2,
+            rlm_future_resolve/2,
+            rlm_async_current_metadata/1,
             rlm_future_status/2,
             rlm_future_await/2,
             rlm_future_await/3,
@@ -24,6 +27,11 @@ second execution path.
 Continuation registration is event driven. A continuation is enqueued only
 after its parent reaches a terminal state, so composed Futures do not consume
 worker threads merely waiting for other Futures.
+
+Deferred Futures are host/library promises with no queued worker. They exist for
+external-latency events such as human approval. Trusted library code resolves a
+deferred Future later with rlm_future_resolve/2; callbacks and continuations are
+then dispatched through the same terminal-state machinery as ordinary tasks.
 */
 
 :- use_module(library(gensym)).
@@ -86,8 +94,6 @@ ensure_async_runtime(Queue) :-
     with_mutex(rlm_async_runtime,
                ensure_async_runtime_locked(Queue)).
 
-/* The queue is private to this module and is never exposed or destroyed
-   during normal runtime, so the registered runtime is the source of truth. */
 ensure_async_runtime_locked(Queue) :-
     async_runtime(Queue, _, _),
     !.
@@ -125,6 +131,26 @@ rlm_async_submit(Goal, Metadata0, Future) :-
     with_mutex(rlm_async,
                create_future_locked(Metadata0, Parent, Future, Id)),
     enqueue_future(Queue, Id, Goal).
+
+rlm_future_deferred(Metadata0, Future) :-
+    require_async_runtime,
+    require_metadata(Metadata0),
+    ensure_async_runtime(_),
+    current_parent_task(Parent),
+    with_mutex(rlm_async,
+               create_future_locked(Metadata0, Parent, Future, _)).
+
+rlm_future_resolve(Future, Outcome) :-
+    future_id(Future, Id),
+    async_store_completion(Id, Outcome).
+
+rlm_async_current_metadata(Metadata) :-
+    (   async_current_future(Id),
+        with_mutex(rlm_async,
+                   async_future_metadata(Id, Found))
+    ->  Metadata = Found
+    ;   Metadata = none
+    ).
 
 current_parent_task(Parent) :-
     async_current_future(Parent),
