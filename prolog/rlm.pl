@@ -12,12 +12,16 @@
             default_completion_budget/1,
             rlm_async_ready/0,
             rlm_async_submit/2,
+            rlm_async_submit/3,
             rlm_future_status/2,
             rlm_future_await/2,
             rlm_future_await/3,
             rlm_future_cancel/2,
             rlm_future_destroy/1,
             rlm_future_all/2,
+            rlm_future_then/3,
+            rlm_future_on_complete/2,
+            rlm_future_metadata/2,
             model_complete_async/3,
             model_stream_async/4,
             chain_invoke_async/4,
@@ -113,40 +117,41 @@
 
 Load this module to initialize the public runtime namespaces.
 
-Depth greater than one is an experimental public-API boundary.  Supplying a
+Depth greater than one is an experimental public-API boundary. Supplying a
 larger recursion budget does not by itself enable it: callers must also pass
-`experimental_deep_recursion(true)`.  That flag is only an opt-in; it grants no
+`experimental_deep_recursion(true)`. That flag is only an opt-in; it grants no
 capabilities and does not widen any normal budget.
+
+The public completion/query direction is canonical async -> sync await. The
+recursion gate is evaluated before scheduling, and even a rejected request is
+represented by a Future on the async surface. No public async task calls the
+public synchronous predicate.
 */
 
 :- use_module(rlm_chain).
-:- use_module(rlm_chain_async,
-              [ model_complete_async/3,
-                model_stream_async/4,
-                chain_invoke_async/4,
-                chain_stream_async/5
-              ]).
 :- use_module(rlm_context).
 :- use_module(rlm_plan).
 :- use_module(rlm_tool).
 :- use_module(rlm_async,
               [ rlm_async_ready/0,
                 rlm_async_submit/2,
+                rlm_async_submit/3,
                 rlm_future_status/2,
                 rlm_future_await/2,
                 rlm_future_await/3,
                 rlm_future_cancel/2,
                 rlm_future_destroy/1,
-                rlm_future_all/2
+                rlm_future_all/2,
+                rlm_future_then/3,
+                rlm_future_on_complete/2,
+                rlm_future_metadata/2
               ]).
 :- use_module(rlm_completion,
               [ llm_query/3,
+                llm_query_async/3,
                 rlm_cancellation_token/1,
                 rlm_cancel/1,
                 default_completion_budget/1
-              ]).
-:- use_module(rlm_completion_async,
-              [ llm_query_async/3
               ]).
 :- use_module(rlm_recursion_policy,
               [ rlm_recursion_policy_ready/0,
@@ -303,37 +308,53 @@ rlm_ready :-
 
 /* Public recursion gate -------------------------------------------------- */
 
-rlm_completion(Query, Context, Options, Outcome) :-
-    public_deep_recursion_gate(Options, Gate),
-    (   Gate == ok
-    ->  rlm_completion:rlm_completion(Query, Context, Options, Outcome)
-    ;   Gate = error(Error),
-        Outcome = error(Error)
-    ).
-
 rlm_completion_async(Query, Context, Options, Future) :-
-    rlm_async:rlm_async_submit(
-        rlm:public_completion_async_task(Query, Context, Options),
-        Future).
-
-public_completion_async_task(Query, Context, Options, Outcome) :-
-    rlm_completion(Query, Context, Options, Outcome).
-
-rlm_query(Query, Context, Options, Outcome) :-
     public_deep_recursion_gate(Options, Gate),
-    (   Gate == ok
-    ->  rlm_completion:rlm_query(Query, Context, Options, Outcome)
-    ;   Gate = error(Error),
-        Outcome = error(Error)
-    ).
+    public_completion_async_after_gate(Gate,
+                                       Query,
+                                       Context,
+                                       Options,
+                                       Future).
+
+public_completion_async_after_gate(ok, Query, Context, Options, Future) :-
+    !,
+    rlm_completion:rlm_completion_async(Query, Context, Options, Future).
+public_completion_async_after_gate(error(Error), _, _, _, Future) :-
+    rlm_async:rlm_async_submit(rlm:public_gate_error(Error),
+                               async_metadata{operation:completion_gate},
+                               Future).
+
+rlm_completion(Query, Context, Options, Outcome) :-
+    rlm_completion_async(Query, Context, Options, Future),
+    await_owned_future(Future, Outcome).
 
 rlm_query_async(Query, Context, Options, Future) :-
-    rlm_async:rlm_async_submit(
-        rlm:public_query_async_task(Query, Context, Options),
-        Future).
+    public_deep_recursion_gate(Options, Gate),
+    public_query_async_after_gate(Gate,
+                                  Query,
+                                  Context,
+                                  Options,
+                                  Future).
 
-public_query_async_task(Query, Context, Options, Outcome) :-
-    rlm_query(Query, Context, Options, Outcome).
+public_query_async_after_gate(ok, Query, Context, Options, Future) :-
+    !,
+    rlm_completion:rlm_query_async(Query, Context, Options, Future).
+public_query_async_after_gate(error(Error), _, _, _, Future) :-
+    rlm_async:rlm_async_submit(rlm:public_gate_error(Error),
+                               async_metadata{operation:query_gate},
+                               Future).
+
+rlm_query(Query, Context, Options, Outcome) :-
+    rlm_query_async(Query, Context, Options, Future),
+    await_owned_future(Future, Outcome).
+
+public_gate_error(Error, error(Error)).
+
+await_owned_future(Future, Outcome) :-
+    setup_call_cleanup(
+        true,
+        rlm_async:rlm_future_await(Future, Outcome),
+        rlm_async:rlm_future_destroy(Future)).
 
 public_deep_recursion_gate(Options, Outcome) :-
     (   is_list(Options),

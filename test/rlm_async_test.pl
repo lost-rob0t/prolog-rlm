@@ -2,7 +2,7 @@
 
 :- use_module('../prolog/rlm_async').
 :- use_module('../prolog/rlm_completion').
-:- use_module('../prolog/rlm_completion_async').
+:- use_module('../prolog/rlm_completion_async', []).
 :- use_module('../prolog/rlm_tool').
 :- use_module('../prolog/rlm_tool_async').
 :- use_module('../prolog/rlm', []).
