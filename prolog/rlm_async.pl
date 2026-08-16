@@ -1,5 +1,6 @@
 :- module(rlm_async,
           [ rlm_async_ready/0,
+            rlm_async_runtime_status/1,
             rlm_async_submit/2,
             rlm_future_status/2,
             rlm_future_await/2,
@@ -9,49 +10,90 @@
             rlm_future_all/2
           ]).
 
-/** <module> Small sync/async bridge for prolog-rlm
+/** <module> Bounded sync/async bridge for prolog-rlm
 
 Blocking-capable library operations can share one implementation while exposing
-both synchronous and asynchronous entry points.  The async side schedules a
-callable closure in a supervised SWI-Prolog thread and returns an opaque future.
-The closure receives one final argument containing the operation's ordinary
-result term, so awaiting a future yields exactly the same result shape as the
-synchronous API.
+both synchronous and asynchronous entry points.  The async side submits a
+callable closure to a process-local bounded worker queue and returns an opaque
+future.  The closure receives one final argument containing the operation's
+ordinary result term, so awaiting a future yields exactly the same result shape
+as the synchronous API.
 
-This module deliberately does not know about models, tools, MCP, agents, or
-UI.  Those libraries wrap their existing synchronous operation in
-rlm_async_submit/2 when they need a non-blocking surface.
+The scheduler is intentionally small and domain-neutral.  It knows nothing
+about models, tools, MCP, graphs, authority, or UI; those libraries wrap their
+existing operations in rlm_async_submit/2.
 */
 
 :- use_module(library(gensym)).
 
 :- meta_predicate rlm_async_submit(1, -).
 
+:- dynamic async_runtime/3.
 :- dynamic async_future_state/2.
 :- dynamic async_future_thread/2.
+
+/* Keep the generic scheduler bounded.  Domain-specific runtimes may impose
+   stricter limits on top of these process-wide defaults. */
+default_async_worker_count(8).
+default_async_backlog(64).
 
 rlm_async_ready :-
     current_prolog_flag(threads, true).
 
 /* -------------------------------------------------------------------------
- * Submission
+ * Runtime and submission
  * ---------------------------------------------------------------------- */
+
+rlm_async_runtime_status(Status) :-
+    ensure_async_runtime(Queue),
+    with_mutex(rlm_async,
+               async_state_counts(Pending, Running, Completed, Cancelled)),
+    (   message_queue_property(Queue, size(Queued))
+    ->  true
+    ;   Queued = 0
+    ),
+    async_runtime(Queue, Workers, Backlog),
+    length(Workers, WorkerCount),
+    Status = async_runtime_status{
+                 worker_count:WorkerCount,
+                 backlog_limit:Backlog,
+                 queued:Queued,
+                 pending:Pending,
+                 running:Running,
+                 completed:Completed,
+                 cancelled:Cancelled
+             }.
+
+async_state_counts(Pending, Running, Completed, Cancelled) :-
+    findall(State, async_future_state(_, State), States),
+    count_state(pending, States, Pending),
+    count_state(running, States, Running),
+    count_completed(States, Completed),
+    count_state(cancelled, States, Cancelled).
+
+count_state(Target, States, Count) :-
+    findall(1, member(Target, States), Ones),
+    length(Ones, Count).
+
+count_completed(States, Count) :-
+    findall(1, member(completed(_), States), Ones),
+    length(Ones, Count).
 
 rlm_async_submit(Goal, Future) :-
     require_async_runtime,
     require_callable(Goal),
+    ensure_async_runtime(Queue),
     with_mutex(rlm_async,
                ( gensym(rlm_future_, Id),
                  assertz(async_future_state(Id, pending))
                )),
-    catch(thread_create(rlm_async:async_worker(Id, Goal),
-                        Thread,
-                        [detached(false)]),
-          Exception,
-          async_submit_failed(Id, Exception)),
-    with_mutex(rlm_async,
-               assertz(async_future_thread(Id, Thread))),
-    Future = rlm_future(Id).
+    Future = rlm_future(Id),
+    (   thread_send_message(Queue,
+                            async_task(Id, Goal),
+                            [timeout(0)])
+    ->  true
+    ;   async_backpressure(Id)
+    ).
 
 require_async_runtime :-
     rlm_async_ready,
@@ -69,17 +111,83 @@ require_callable(Goal) :-
                 context(rlm_async_submit/2,
                         'async goal must be callable'))).
 
-async_submit_failed(Id, Exception) :-
-    with_mutex(rlm_async,
-               retractall(async_future_state(Id, _))),
-    throw(Exception).
+ensure_async_runtime(Queue) :-
+    with_mutex(rlm_async_runtime,
+               ensure_async_runtime_locked(Queue)).
 
-async_worker(Id, Goal) :-
-    async_mark_running(Id),
-    catch(async_call_goal(Goal, Outcome),
+ensure_async_runtime_locked(Queue) :-
+    async_runtime(Existing, _, _),
+    is_message_queue(Existing),
+    !,
+    Queue = Existing.
+ensure_async_runtime_locked(Queue) :-
+    retractall(async_runtime(_, _, _)),
+    default_async_worker_count(WorkerCount),
+    default_async_backlog(Backlog),
+    message_queue_create(Queue, [max_size(Backlog)]),
+    catch(create_async_workers(WorkerCount, Queue, Workers),
           Exception,
-          async_exception_outcome(Id, Exception, Outcome)),
-    async_store_completion(Id, Outcome).
+          ( catch(message_queue_destroy(Queue), _, true),
+            throw(Exception)
+          )),
+    assertz(async_runtime(Queue, Workers, Backlog)).
+
+create_async_workers(0, _, []) :- !.
+create_async_workers(Count, Queue, [Thread|Threads]) :-
+    Count > 0,
+    thread_create(rlm_async:async_worker_loop(Queue),
+                  Thread,
+                  [detached(true)]),
+    Next is Count-1,
+    create_async_workers(Next, Queue, Threads).
+
+async_backpressure(Id) :-
+    with_mutex(rlm_async,
+               ( retractall(async_future_state(Id, _)),
+                 assertz(async_future_state(
+                             Id,
+                             completed(error(async_error{
+                                                 kind:backpressure,
+                                                 future:Id,
+                                                 message:"asynchronous runtime backlog is full"
+                                             }))))
+               )).
+
+/* -------------------------------------------------------------------------
+ * Worker pool
+ * ---------------------------------------------------------------------- */
+
+async_worker_loop(Queue) :-
+    catch(thread_get_message(Queue, Message),
+          _,
+          Message = stop),
+    (   Message == stop
+    ->  true
+    ;   Message = async_task(Id, Goal)
+    ->  async_execute_task(Id, Goal),
+        async_worker_loop(Queue)
+    ;   async_worker_loop(Queue)
+    ).
+
+async_execute_task(Id, Goal) :-
+    thread_self(Thread),
+    with_mutex(rlm_async,
+               async_claim_task(Id, Thread, Claimed)),
+    (   Claimed == true
+    ->  catch(async_call_goal(Goal, Outcome),
+              Exception,
+              async_exception_outcome(Id, Exception, Outcome)),
+        async_store_completion(Id, Outcome)
+    ;   true
+    ).
+
+async_claim_task(Id, Thread, true) :-
+    retract(async_future_state(Id, pending)),
+    !,
+    assertz(async_future_state(Id, running)),
+    retractall(async_future_thread(Id, _)),
+    assertz(async_future_thread(Id, Thread)).
+async_claim_task(_, _, false).
 
 async_call_goal(Goal, Outcome) :-
     (   call(Goal, Value)
@@ -110,19 +218,16 @@ safe_exception(Exception, Safe) :-
           _,
           Safe = "<unprintable exception>").
 
-async_mark_running(Id) :-
-    with_mutex(rlm_async,
-               ( retract(async_future_state(Id, pending))
-               -> assertz(async_future_state(Id, running))
-               ;  true
-               )).
-
 async_store_completion(Id, Outcome) :-
     with_mutex(rlm_async,
-               ( async_future_state(Id, cancelled)
-               -> true
-               ;  retractall(async_future_state(Id, _)),
-                  assertz(async_future_state(Id, completed(Outcome)))
+               ( retractall(async_future_thread(Id, _)),
+                 ( async_future_state(Id, cancelled)
+                 -> true
+                 ;  async_future_state(Id, _)
+                 -> retractall(async_future_state(Id, _)),
+                    assertz(async_future_state(Id, completed(Outcome)))
+                 ;  true
+                 )
                )).
 
 /* -------------------------------------------------------------------------
@@ -237,10 +342,7 @@ future_cancel_transition(Id, _, _) :-
 
 apply_cancel_transition(_, already_completed, _, ok(already_completed)) :- !.
 apply_cancel_transition(_, already_cancelled, _, ok(already_cancelled)) :- !.
-apply_cancel_transition(Id, cancel, none, ok(cancelled)) :-
-    !,
-    with_mutex(rlm_async,
-               ( async_future_state(Id, cancelled) -> true ; true )).
+apply_cancel_transition(_, cancel, none, ok(cancelled)) :- !.
 apply_cancel_transition(Id, cancel, Thread, ok(cancelled)) :-
     catch(thread_signal(Thread, throw(rlm_async_cancelled(Id))), _, true).
 
@@ -257,21 +359,27 @@ destroy_existing_future(Id, State) :-
     ->  catch(rlm_future_cancel(rlm_future(Id), _), _, true)
     ;   true
     ),
-    (   with_mutex(rlm_async,
-                   async_future_thread(Id, Thread))
-    ->  join_worker(Thread)
-    ;   true
-    ),
+    wait_for_task_release(Id, 1.0),
     with_mutex(rlm_async,
                ( retractall(async_future_thread(Id, _)),
                  retractall(async_future_state(Id, _))
                )).
 
-join_worker(Thread) :-
-    thread_self(Self),
-    (   Thread == Self
+wait_for_task_release(Id, Timeout) :-
+    get_time(Start),
+    wait_for_task_release_loop(Id, Start, Timeout).
+
+wait_for_task_release_loop(Id, Start, Timeout) :-
+    (   with_mutex(rlm_async,
+                   \+ async_future_thread(Id, _))
     ->  true
-    ;   catch(thread_join(Thread, _), _, true)
+    ;   get_time(Now),
+        Elapsed is Now-Start,
+        (   Elapsed >= Timeout
+        ->  true
+        ;   sleep(0.005),
+            wait_for_task_release_loop(Id, Start, Timeout)
+        )
     ).
 
 rlm_future_all(Futures, Outcomes) :-
