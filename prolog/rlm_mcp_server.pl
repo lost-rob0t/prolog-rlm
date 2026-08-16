@@ -2,13 +2,19 @@
           [ mcp_server_definition/2,
             mcp_server_definitions/1,
             rlm_install_mcp_server/2,
+            rlm_install_mcp_server/3,
             rlm_install_mcp_server_async/2,
+            rlm_install_mcp_server_async/3,
             rlm_run_mcp_server/2,
+            rlm_run_mcp_server/3,
             rlm_run_mcp_server_async/2,
+            rlm_run_mcp_server_async/3,
             rlm_stop_mcp_server/2,
             rlm_stop_mcp_server_async/2,
             rlm_restart_mcp_server/2,
+            rlm_restart_mcp_server/3,
             rlm_restart_mcp_server_async/2,
+            rlm_restart_mcp_server_async/3,
             rlm_connect_mcp_server/5,
             rlm_connect_mcp_server_async/5
           ]).
@@ -174,6 +180,10 @@ rlm_install_mcp_server(Name, Outcome) :-
     rlm_install_mcp_server_async(Name, Future),
     await_owned_future(Future, Outcome).
 
+rlm_install_mcp_server(Name, Options, Outcome) :-
+    rlm_install_mcp_server_async(Name, Options, Future),
+    await_owned_future(Future, Outcome).
+
 rlm_install_mcp_server_execute(Name, Options, Outcome) :-
     catch(rlm_install_mcp_server_(Name, Options, Outcome),
           Exception,
@@ -248,6 +258,10 @@ rlm_run_mcp_server_async(Name, Options, Future) :-
 
 rlm_run_mcp_server(Name, Outcome) :-
     rlm_run_mcp_server_async(Name, Future),
+    await_owned_future(Future, Outcome).
+
+rlm_run_mcp_server(Name, Options, Outcome) :-
+    rlm_run_mcp_server_async(Name, Options, Future),
     await_owned_future(Future, Outcome).
 
 rlm_run_mcp_server_execute(Name, Options, Outcome) :-
@@ -347,6 +361,10 @@ rlm_restart_mcp_server(Handle, Outcome) :-
     rlm_restart_mcp_server_async(Handle, Future),
     await_owned_future(Future, Outcome).
 
+rlm_restart_mcp_server(Handle, Options, Outcome) :-
+    rlm_restart_mcp_server_async(Handle, Options, Future),
+    await_owned_future(Future, Outcome).
+
 rlm_restart_mcp_server_execute(Handle, Options, Outcome) :-
     lifecycle_handle_subject(Handle, Server),
     catch(rlm_restart_mcp_server_(Handle, Options, Outcome),
@@ -441,16 +459,20 @@ lifecycle_authorize(Context, Operation, Continuation, Phase, Server, Outcome) :-
                                           Continuation,
                                           none,
                                           AuthorityOutcome),
-    lifecycle_authority_result(AuthorityOutcome, Continuation,
-                               Phase, Server, Outcome).
+    lifecycle_authority_result(AuthorityOutcome,
+                               Context,
+                               Continuation,
+                               Phase,
+                               Server,
+                               Outcome).
 
-lifecycle_authority_result(execute(_), Continuation, _, _, Outcome) :-
+lifecycle_authority_result(execute(Permit), Context, Continuation, _, _, Outcome) :-
     !,
-    call(Continuation, Outcome).
-lifecycle_authority_result(approval_required(Pending), _, _, _,
+    call_lifecycle_continuation(Permit, Context, Continuation, Outcome).
+lifecycle_authority_result(approval_required(Pending), _, _, _, _,
                            approval_required(Pending)) :- !.
-lifecycle_authority_result(replay(Outcome), _, _, _, Outcome) :- !.
-lifecycle_authority_result(error(Error), _, Phase, Server,
+lifecycle_authority_result(replay(Outcome), _, _, _, _, Outcome) :- !.
+lifecycle_authority_result(error(Error), _, _, Phase, Server,
                            error(mcp_lifecycle_error{
                                      phase:Phase,
                                      kind:authority_denied,
@@ -458,6 +480,26 @@ lifecycle_authority_result(error(Error), _, Phase, Server,
                                      cause:Error,
                                      message:"host authority rejected MCP lifecycle operation"
                                  })).
+
+call_lifecycle_continuation(Permit, Context, Continuation, Outcome) :-
+    catch(call(Continuation, Outcome),
+          Exception,
+          ( complete_lifecycle_exception(Permit, Context, Exception),
+            throw(Exception) )),
+    complete_lifecycle_once(Permit, Context, Outcome).
+
+complete_lifecycle_exception(Permit, Context, Exception) :-
+    term_string(Exception, Safe, [quoted(true), numbervars(true)]),
+    complete_lifecycle_once(Permit, Context,
+                            error(mcp_lifecycle_execution_exception(Safe))).
+
+complete_lifecycle_once(Permit, Context, Outcome) :-
+    (   Permit.kind == allow_once
+    ->  rlm_authority:rlm_authority_complete_once(Context,
+                                                  Permit.fingerprint,
+                                                  Outcome)
+    ;   true
+    ).
 
 authority_context(Server, Options, Context) :-
     ( metadata_option(authority_context, Options, none, Explicit),
