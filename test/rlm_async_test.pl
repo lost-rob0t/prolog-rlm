@@ -4,7 +4,7 @@
 :- use_module('../prolog/rlm_completion').
 :- use_module('../prolog/rlm_completion_async', []).
 :- use_module('../prolog/rlm_tool').
-:- use_module('../prolog/rlm_tool_async').
+:- use_module('../prolog/rlm_tool_async', []).
 :- use_module('../prolog/rlm', []).
 :- use_module('support/completion_test_support').
 
@@ -158,12 +158,12 @@ test(tool_invoke_async_preserves_outcome_and_trace) :-
                         plunit_rlm_async:async_echo,
                         ok(_))
         ),
-        ( tool_invoke_async(Registry,
-                            [tool(async_echo)],
-                            async_echo,
-                            json{value:17},
-                            [],
-                            Future),
+        ( rlm_tool_async:tool_invoke_async(Registry,
+                                           [tool(async_echo)],
+                                           async_echo,
+                                           json{value:17},
+                                           [],
+                                           Future),
           setup_call_cleanup(
               true,
               ( rlm_future_await(Future, 2.0, Result),

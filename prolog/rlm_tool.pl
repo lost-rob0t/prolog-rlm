@@ -5,6 +5,7 @@
             tool_discover/2,
             tool_lookup/3,
             tool_invoke/7,
+            tool_invoke_async/6,
             tool_registry_runtime_tools/3,
             capabilities_normalize/2,
             capability_allowed/2,
@@ -18,12 +19,19 @@ Trusted host code registers handlers and schemas. Model-selected plans may name
 registered tools, but model data never becomes a callable. Invocation performs
 capability authorization, schema validation, wall-time enforcement, normalized
 result validation, and output-byte enforcement before returning a value.
+
+Latency-bearing invocation is canonical async-first: tool_invoke_async/6 submits
+one tool_invoke_execute/6 operation, while tool_invoke/7 starts that same
+operation and awaits its Future. Internal plan execution calls the execute ABI
+directly so code already running inside an async worker never waits on a nested
+Future.
 */
 
 :- use_module(library(gensym)).
 :- use_module(library(lists)).
 :- use_module(library(readutil)).
 :- use_module(library(time)).
+:- use_module(rlm_async, []).
 
 :- dynamic tool_registry_alive/1.
 :- dynamic tool_registry_entry/4.
@@ -199,7 +207,26 @@ tool_lookup_(Registry, Name, Outcome) :-
  * Invocation
  * ---------------------------------------------------------------------- */
 
+tool_invoke_async(Registry, Capabilities, Name, Args, Options, Future) :-
+    tool_task_metadata(Name, Options, Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_tool:tool_invoke_execute(Registry,
+                                     Capabilities,
+                                     Name,
+                                     Args,
+                                     Options),
+        Metadata,
+        Future).
+
 tool_invoke(Registry, Capabilities, Name, Args, Options, Outcome, Trace) :-
+    tool_invoke_async(Registry, Capabilities, Name, Args, Options, Future),
+    setup_call_cleanup(
+        true,
+        rlm_async:rlm_future_await(Future, FutureResult),
+        rlm_async:rlm_future_destroy(Future)),
+    tool_future_result(FutureResult, Name, Outcome, Trace).
+
+tool_invoke_execute(Registry, Capabilities, Name, Args, Options, Result) :-
     get_time(Start),
     catch(tool_invoke_(Registry, Capabilities, Name, Args, Options,
                        CoreOutcome, Auth, Status, Bytes),
@@ -214,7 +241,63 @@ tool_invoke(Registry, Capabilities, Name, Args, Options, Outcome, Trace) :-
                 output_bytes:Bytes,
                 elapsed_ms:ElapsedMs
             },
-    attach_trace(CoreOutcome, Trace, Outcome).
+    attach_trace(CoreOutcome, Trace, Outcome),
+    Result = tool_async_result{outcome:Outcome, trace:Trace}.
+
+tool_future_result(Result, _, Outcome, Trace) :-
+    is_dict(Result, tool_async_result),
+    !,
+    Outcome = Result.outcome,
+    Trace = Result.trace.
+tool_future_result(error(Error), Name, error(Error), Trace) :-
+    !,
+    Trace = tool_trace{
+                tool:Name,
+                authorization:denied,
+                status:async_error,
+                output_bytes:0,
+                elapsed_ms:0
+            }.
+tool_future_result(Other, Name, error(Error), Trace) :-
+    value_shape(Other, Shape),
+    Error = tool_error{
+                phase:invoke,
+                kind:invalid_async_result,
+                detail:Shape,
+                message:"asynchronous tool invocation returned an invalid result"
+            },
+    Trace = tool_trace{
+                tool:Name,
+                authorization:denied,
+                status:invalid_async_result,
+                output_bytes:0,
+                elapsed_ms:0
+            }.
+
+tool_task_metadata(Name0, Options, Metadata) :-
+    metadata_ground(Name0, unknown, Name),
+    metadata_option(trace_id, Options, none, TraceId),
+    metadata_option(session_id, Options, none, SessionId),
+    Metadata = async_metadata{
+                   operation:tool_invoke,
+                   tool:Name,
+                   trace_id:TraceId,
+                   session_id:SessionId
+               }.
+
+metadata_option(Name, Options, Default, Value) :-
+    (   is_list(Options),
+        member(Option, Options),
+        Option =.. [Name, Found],
+        ground(Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
+
+metadata_ground(Value, _, Value) :-
+    ground(Value),
+    !.
+metadata_ground(_, Default, Default).
 
 tool_invoke_(Registry, Capabilities, Name, Args, Options,
              Outcome, Authorization, Status, Bytes) :-
@@ -307,6 +390,10 @@ call_tool_handler(Handler, Args, Outcome) :-
                         })
     ).
 
+timed_tool_exception(Exception, _) :-
+    tool_control_exception(Exception),
+    !,
+    throw(Exception).
 timed_tool_exception(time_limit_exceeded,
                      error(tool_error{
                                phase:invoke,
@@ -329,6 +416,14 @@ timed_tool_exception(Exception,
                                message:"tool handler raised an exception"
                            })) :-
     safe_exception(Exception, Safe).
+
+tool_control_exception(rlm_async_cancelled(_)).
+tool_control_exception(rlm_cancelled(_)).
+tool_control_exception(chain_cancelled(_)).
+tool_control_exception(graph_cancelled(_)).
+tool_control_exception(cancelled(_)).
+tool_control_exception('$aborted').
+tool_control_exception(abort).
 
 invoke_after_call(error(Error), _, _, error(Error), Status, 0) :-
     !,
@@ -393,7 +488,14 @@ tool_registry_runtime_tools(Registry, Capabilities, Tools) :-
             Tools).
 
 registry_plan_handler(Registry, Capabilities, Name, Args, Envelope) :-
-    tool_invoke(Registry, Capabilities, Name, Args, [], Outcome, Trace),
+    tool_invoke_execute(Registry,
+                        Capabilities,
+                        Name,
+                        Args,
+                        [],
+                        Result),
+    Outcome = Result.outcome,
+    Trace = Result.trace,
     (   Outcome = ok(Execution)
     ->  Envelope = tool_result{
                         value:Execution.value,
@@ -830,6 +932,10 @@ tool_api_exception(Phase, Exception, error(Error)) :-
                 message:"tool operation failed"
             }.
 
+invoke_exception(Exception, _, _, _, _) :-
+    tool_control_exception(Exception),
+    !,
+    throw(Exception).
 invoke_exception(tool_fault(Fault), error(Error), denied, invalid_tool, 0) :-
     !,
     Error = tool_error{

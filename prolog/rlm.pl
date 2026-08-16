@@ -281,6 +281,8 @@ public synchronous predicate.
                 cli_usage/1
               ]).
 :- use_module(rlm_mcp).
+:- use_module(rlm_mcp_server, []).
+:- use_module(rlm_mcp_tool, []).
 
 rlm_version('0.1.0-dev').
 
@@ -304,7 +306,8 @@ rlm_ready :-
     rlm_demo:rlm_demo_ready,
     rlm_trace:rlm_trace_ready,
     rlm_cli:rlm_cli_ready,
-    rlm_mcp:rlm_mcp_ready.
+    rlm_mcp:rlm_mcp_ready,
+    rlm_mcp_server:mcp_server_definitions(_).
 
 /* Public recursion gate -------------------------------------------------- */
 

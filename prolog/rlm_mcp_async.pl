@@ -5,54 +5,44 @@
             mcp_server_handle_async/6
           ]).
 
-/** <module> Asynchronous facade for MCP lifecycle and commands
+/** <module> Compatibility facade for canonical asynchronous MCP APIs
 
-These predicates schedule the canonical version-neutral MCP operations through
-rlm_async. Awaiting the future returns the same Outcome term produced by the
-synchronous MCP facade.
+The canonical async/task implementation lives in rlm_mcp. This module is kept
+for source compatibility with callers that import the historical async facade.
+It delegates only to asynchronous predicates and never enters synchronous public
+wrappers.
+
+Stateful operations resolve to structured results:
+
+  * mcp_client_command_async/4 ->
+    mcp_command_async_result{client:Client, outcome:Outcome}
+  * mcp_server_handle_async/6 ->
+    mcp_server_async_result{server:Server, outcome:Outcome}
+
+The third argument of mcp_client_command_async/4 and fifth argument of
+mcp_server_handle_async/6 are host metadata/options lists. Historical output
+variables in those positions could never be returned across a worker boundary.
 */
 
-:- use_module(rlm_async).
-:- use_module(rlm_mcp).
+:- use_module(rlm_mcp, []).
 
 mcp_client_connect_async(TransportSpec, ClientInfo, ClientCaps, Options, Future) :-
-    rlm_async_submit(mcp_connect_task(TransportSpec,
+    rlm_mcp:mcp_client_connect_async(TransportSpec,
                                       ClientInfo,
                                       ClientCaps,
-                                      Options),
-                     Future).
-
-mcp_connect_task(TransportSpec, ClientInfo, ClientCaps, Options, Outcome) :-
-    rlm_mcp:mcp_client_connect(TransportSpec,
-                               ClientInfo,
-                               ClientCaps,
-                               Options,
-                               Outcome).
+                                      Options,
+                                      Future).
 
 mcp_client_command_async(Client, Command, Options, Future) :-
-    rlm_async_submit(mcp_command_task(Client, Command, Options), Future).
-
-mcp_command_task(Client, Command, Options, Outcome) :-
-    rlm_mcp:mcp_client_command(Client, Command, Options, Outcome).
+    rlm_mcp:mcp_client_command_async(Client, Command, Options, Future).
 
 mcp_client_close_async(Client, Future) :-
-    rlm_async_submit(mcp_close_task(Client), Future).
+    rlm_mcp:mcp_client_close_async(Client, Future).
 
-mcp_close_task(Client, Outcome) :-
-    rlm_mcp:mcp_client_close(Client, Outcome).
-
-mcp_server_handle_async(Server, Session, Command, Options, Context, Future) :-
-    rlm_async_submit(mcp_server_handle_task(Server,
-                                            Session,
-                                            Command,
-                                            Options,
-                                            Context),
-                     Future).
-
-mcp_server_handle_task(Server, Session, Command, Options, Context, Outcome) :-
-    rlm_mcp:mcp_server_handle(Server,
-                              Session,
-                              Command,
-                              Options,
-                              Context,
-                              Outcome).
+mcp_server_handle_async(Server, Wire, RequestMeta, Dispatch, Options, Future) :-
+    rlm_mcp:mcp_server_handle_async(Server,
+                                     Wire,
+                                     RequestMeta,
+                                     Dispatch,
+                                     Options,
+                                     Future).
