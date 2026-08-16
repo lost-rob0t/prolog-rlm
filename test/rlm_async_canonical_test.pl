@@ -181,11 +181,13 @@ test(sync_chain_surfaces_call_async_surfaces) :-
 
 test(chain_runtime_transports_use_execute_abi_not_sync_facades) :-
     clause(rlm_chain:chain_invoke_execute(_, _, _, _), InvokeBody),
-    assertion(sub_term(rlm_chain:model_complete_execute, InvokeBody)),
-    assertion(\+ sub_term(rlm_chain:model_complete, InvokeBody)),
+    sub_term(rlm_chain_runtime:InvokeCall, InvokeBody),
+    InvokeCall = chain_invoke_with_transport(_, _, _, InvokeTransport, _),
+    assertion(InvokeTransport == rlm_chain:model_complete_execute),
     clause(rlm_chain:chain_stream_execute(_, _, _, _, _), StreamBody),
-    assertion(sub_term(rlm_chain:model_stream_execute, StreamBody)),
-    assertion(\+ sub_term(rlm_chain:model_stream, StreamBody)).
+    sub_term(rlm_chain_runtime:StreamCall, StreamBody),
+    StreamCall = chain_stream_with_transport(_, _, _, StreamTransport, _, _),
+    assertion(StreamTransport == rlm_chain:model_stream_execute).
 
 test(compatibility_async_modules_never_call_sync_public_wrappers) :-
     forall(member(Module-AsyncPI-SyncModule-SyncPI,
