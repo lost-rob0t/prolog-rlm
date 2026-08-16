@@ -10,19 +10,7 @@
             rlm_future_all/2
           ]).
 
-/** <module> Bounded sync/async bridge for prolog-rlm
-
-Blocking-capable library operations can share one implementation while exposing
-both synchronous and asynchronous entry points.  The async side submits a
-callable closure to a process-local bounded worker queue and returns an opaque
-future.  The closure receives one final argument containing the operation's
-ordinary result term, so awaiting a future yields exactly the same result shape
-as the synchronous API.
-
-The scheduler is intentionally small and domain-neutral.  It knows nothing
-about models, tools, MCP, graphs, authority, or UI; those libraries wrap their
-existing operations in rlm_async_submit/2.
-*/
+/** <module> Bounded sync/async bridge for prolog-rlm */
 
 :- use_module(library(gensym)).
 
@@ -32,24 +20,20 @@ existing operations in rlm_async_submit/2.
 :- dynamic async_future_state/2.
 :- dynamic async_future_thread/2.
 
-/* Keep the generic scheduler bounded.  Domain-specific runtimes may impose
-   stricter limits on top of these process-wide defaults. */
 default_async_worker_count(8).
 default_async_backlog(64).
 
 rlm_async_ready :-
     current_prolog_flag(threads, true).
 
-/* -------------------------------------------------------------------------
- * Runtime and submission
- * ---------------------------------------------------------------------- */
+/* Runtime ---------------------------------------------------------------- */
 
 rlm_async_runtime_status(Status) :-
     ensure_async_runtime(Queue),
     with_mutex(rlm_async,
                async_state_counts(Pending, Running, Completed, Cancelled)),
-    (   message_queue_property(Queue, size(Queued))
-    ->  true
+    (   catch(message_queue_property(Queue, size(Queued0)), _, fail)
+    ->  Queued = Queued0
     ;   Queued = 0
     ),
     async_runtime(Queue, Workers, Backlog),
@@ -68,16 +52,44 @@ async_state_counts(Pending, Running, Completed, Cancelled) :-
     findall(State, async_future_state(_, State), States),
     count_state(pending, States, Pending),
     count_state(running, States, Running),
-    count_completed(States, Completed),
+    findall(1, member(completed(_), States), CompletedOnes),
+    length(CompletedOnes, Completed),
     count_state(cancelled, States, Cancelled).
 
 count_state(Target, States, Count) :-
     findall(1, member(Target, States), Ones),
     length(Ones, Count).
 
-count_completed(States, Count) :-
-    findall(1, member(completed(_), States), Ones),
-    length(Ones, Count).
+ensure_async_runtime(Queue) :-
+    with_mutex(rlm_async_runtime,
+               ensure_async_runtime_locked(Queue)).
+
+/* The queue is private to this module and is never exposed or destroyed
+   during normal runtime, so the registered runtime is the source of truth. */
+ensure_async_runtime_locked(Queue) :-
+    async_runtime(Queue, _, _),
+    !.
+ensure_async_runtime_locked(Queue) :-
+    default_async_worker_count(WorkerCount),
+    default_async_backlog(Backlog),
+    message_queue_create(Queue, [max_size(Backlog)]),
+    catch(create_async_workers(WorkerCount, Queue, Workers),
+          Exception,
+          ( catch(message_queue_destroy(Queue), _, true),
+            throw(Exception)
+          )),
+    assertz(async_runtime(Queue, Workers, Backlog)).
+
+create_async_workers(0, _, []) :- !.
+create_async_workers(Count, Queue, [Thread|Threads]) :-
+    Count > 0,
+    thread_create(rlm_async:async_worker_loop(Queue),
+                  Thread,
+                  [detached(true)]),
+    Next is Count-1,
+    create_async_workers(Next, Queue, Threads).
+
+/* Submission ------------------------------------------------------------- */
 
 rlm_async_submit(Goal, Future) :-
     require_async_runtime,
@@ -92,7 +104,7 @@ rlm_async_submit(Goal, Future) :-
                             async_task(Id, Goal),
                             [timeout(0)])
     ->  true
-    ;   async_backpressure(Id)
+    ;   mark_backpressure(Id)
     ).
 
 require_async_runtime :-
@@ -111,43 +123,7 @@ require_callable(Goal) :-
                 context(rlm_async_submit/2,
                         'async goal must be callable'))).
 
-ensure_async_runtime(Queue) :-
-    with_mutex(rlm_async_runtime,
-               ensure_async_runtime_locked(Queue)).
-
-ensure_async_runtime_locked(Queue) :-
-    async_runtime(Existing, _, _),
-    queue_exists(Existing),
-    !,
-    Queue = Existing.
-ensure_async_runtime_locked(Queue) :-
-    retractall(async_runtime(_, _, _)),
-    default_async_worker_count(WorkerCount),
-    default_async_backlog(Backlog),
-    message_queue_create(Queue, [max_size(Backlog)]),
-    catch(create_async_workers(WorkerCount, Queue, Workers),
-          Exception,
-          ( catch(message_queue_destroy(Queue), _, true),
-            throw(Exception)
-          )),
-    assertz(async_runtime(Queue, Workers, Backlog)).
-
-/* is_message_queue/1 is not available on every SWI-Prolog version supported
-   by this project. message_queue_property/2 provides a compatible existence
-   probe without making the runtime depend on the newer convenience predicate. */
-queue_exists(Queue) :-
-    catch(message_queue_property(Queue, size(_)), _, fail).
-
-create_async_workers(0, _, []) :- !.
-create_async_workers(Count, Queue, [Thread|Threads]) :-
-    Count > 0,
-    thread_create(rlm_async:async_worker_loop(Queue),
-                  Thread,
-                  [detached(true)]),
-    Next is Count-1,
-    create_async_workers(Next, Queue, Threads).
-
-async_backpressure(Id) :-
+mark_backpressure(Id) :-
     with_mutex(rlm_async,
                ( retractall(async_future_state(Id, _)),
                  assertz(async_future_state(
@@ -159,14 +135,10 @@ async_backpressure(Id) :-
                                              }))))
                )).
 
-/* -------------------------------------------------------------------------
- * Worker pool
- * ---------------------------------------------------------------------- */
+/* Workers ---------------------------------------------------------------- */
 
 async_worker_loop(Queue) :-
-    catch(thread_get_message(Queue, Message),
-          _,
-          Message = stop),
+    catch(thread_get_message(Queue, Message), _, Message = stop),
     (   Message == stop
     ->  true
     ;   Message = async_task(Id, Goal)
@@ -236,9 +208,7 @@ async_store_completion(Id, Outcome) :-
                  )
                )).
 
-/* -------------------------------------------------------------------------
- * Status and waiting
- * ---------------------------------------------------------------------- */
+/* Status and await ------------------------------------------------------- */
 
 rlm_future_status(Future, Status) :-
     future_id(Future, Id),
@@ -254,12 +224,9 @@ future_state_snapshot(Id, State) :-
                             'future does not exist or was destroyed')))
     ).
 
-status_term(Id, pending,
-            future_status{id:Id, state:pending}).
-status_term(Id, running,
-            future_status{id:Id, state:running}).
-status_term(Id, cancelled,
-            future_status{id:Id, state:cancelled}).
+status_term(Id, pending, future_status{id:Id, state:pending}).
+status_term(Id, running, future_status{id:Id, state:running}).
+status_term(Id, cancelled, future_status{id:Id, state:cancelled}).
 status_term(Id, completed(Outcome),
             future_status{id:Id, state:completed, outcome:Outcome}).
 
@@ -277,8 +244,7 @@ await_loop(Id, Start, Timeout, Outcome) :-
                future_state_snapshot(Id, State)),
     await_state(State, Id, Start, Timeout, Outcome).
 
-await_state(completed(Outcome), _, _, _, Outcome) :-
-    !.
+await_state(completed(Outcome), _, _, _, Outcome) :- !.
 await_state(cancelled, Id, _, _,
             error(async_error{
                       kind:cancelled,
@@ -307,17 +273,13 @@ normalize_timeout(Timeout, _) :-
                 context(rlm_future_await/3,
                         'timeout must be infinite or a non-negative number'))).
 
-await_timed_out(_, infinite) :-
-    !,
-    fail.
+await_timed_out(_, infinite) :- !, fail.
 await_timed_out(Start, Timeout) :-
     get_time(Now),
     Elapsed is Now-Start,
     Elapsed >= Timeout.
 
-/* -------------------------------------------------------------------------
- * Cancellation and cleanup
- * ---------------------------------------------------------------------- */
+/* Cancellation and cleanup ---------------------------------------------- */
 
 rlm_future_cancel(Future, Outcome) :-
     future_id(Future, Id),
@@ -354,8 +316,7 @@ apply_cancel_transition(Id, cancel, Thread, ok(cancelled)) :-
 
 rlm_future_destroy(Future) :-
     future_id(Future, Id),
-    (   with_mutex(rlm_async,
-                   async_future_state(Id, State))
+    (   with_mutex(rlm_async, async_future_state(Id, State))
     ->  destroy_existing_future(Id, State)
     ;   true
     ).
@@ -376,8 +337,7 @@ wait_for_task_release(Id, Timeout) :-
     wait_for_task_release_loop(Id, Start, Timeout).
 
 wait_for_task_release_loop(Id, Start, Timeout) :-
-    (   with_mutex(rlm_async,
-                   \+ async_future_thread(Id, _))
+    (   with_mutex(rlm_async, \+ async_future_thread(Id, _))
     ->  true
     ;   get_time(Now),
         Elapsed is Now-Start,
