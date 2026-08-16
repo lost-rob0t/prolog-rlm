@@ -18,6 +18,10 @@
             rlm_future_cancel/2,
             rlm_future_destroy/1,
             rlm_future_all/2,
+            model_complete_async/3,
+            model_stream_async/4,
+            chain_invoke_async/4,
+            chain_stream_async/5,
             default_recursion_policy/1,
             recursion_route/3,
             recursion_candidates/3,
@@ -57,11 +61,15 @@
             agent_runtime_destroy/1,
             agent_runtime_status/2,
             agent_spawn/5,
+            agent_spawn_async/5,
             agent_send/5,
+            agent_send_async/5,
             agent_pump/4,
+            agent_pump_async/4,
             agent_status/3,
             agent_children/3,
             agent_cancel/4,
+            agent_cancel_async/4,
             agent_trace/2,
             agent_tool_handler/4,
             default_graph_options/1,
@@ -69,7 +77,9 @@
             graph_backend_open/2,
             graph_backend_close/1,
             graph_run/4,
+            graph_run_async/4,
             graph_resume/6,
+            graph_resume_async/6,
             graph_checkpoint/3,
             graph_history/3,
             graph_cancellation_token/1,
@@ -110,6 +120,12 @@ capabilities and does not widen any normal budget.
 */
 
 :- use_module(rlm_chain).
+:- use_module(rlm_chain_async,
+              [ model_complete_async/3,
+                model_stream_async/4,
+                chain_invoke_async/4,
+                chain_stream_async/5
+              ]).
 :- use_module(rlm_context).
 :- use_module(rlm_plan).
 :- use_module(rlm_tool).
@@ -203,6 +219,12 @@ capabilities and does not widen any normal budget.
                 agent_trace/2,
                 agent_tool_handler/4
               ]).
+:- use_module(rlm_agent_async,
+              [ agent_spawn_async/5,
+                agent_send_async/5,
+                agent_pump_async/4,
+                agent_cancel_async/4
+              ]).
 :- use_module(rlm_graph,
               [ rlm_graph_ready/0,
                 default_graph_options/1,
@@ -215,6 +237,10 @@ capabilities and does not widen any normal budget.
                 graph_history/3,
                 graph_cancellation_token/1,
                 graph_cancel/1
+              ]).
+:- use_module(rlm_graph_async,
+              [ graph_run_async/4,
+                graph_resume_async/6
               ]).
 :- use_module(rlm_benchmark,
               [ rlm_benchmark_ready/0,
