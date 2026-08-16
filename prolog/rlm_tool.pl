@@ -920,7 +920,8 @@ metadata_context(Current, session(Session)) :-
     is_dict(Current),
     get_dict(session_id, Current, Session),
     Session \== none,
-    !.
+    !,
+    Context = session(Session).
 metadata_context(Current, agent(Runtime, Agent)) :-
     is_dict(Current),
     get_dict(runtime_id, Current, Runtime),
@@ -1162,10 +1163,12 @@ normalize_tool_schema(Schema0, Schema) :-
     require_matching_tool_capability(Name, Capability),
     require_schema_key(Schema0, effect, Effect),
     require_effect(Effect),
-    require_schema_key(Schema0, arguments, Arguments),
-    require_schema_key(Schema0, result, Result),
-    validate_schema_definition(Arguments),
-    validate_schema_definition(Result),
+    require_schema_key(Schema0, arguments, Arguments0),
+    require_schema_key(Schema0, result, Result0),
+    validate_schema_definition(Arguments0),
+    validate_schema_definition(Result0),
+    normalize_authority_value(Arguments0, Arguments),
+    normalize_authority_value(Result0, Result),
     schema_description(Schema0, Description),
     schema_limits(Schema0, Limits),
     Schema = tool_schema{
