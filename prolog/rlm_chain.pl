@@ -1,9 +1,17 @@
 :- module(rlm_chain,
           [ rlm_chain_ready/0,
             model_complete/3,
+            model_complete_async/3,
             model_stream/4,
+            model_stream_async/4,
             chain_invoke/4,
+            chain_invoke_async/4,
             chain_stream/5,
+            chain_stream_async/5,
+            model_complete_execute/3,
+            model_stream_execute/4,
+            chain_invoke_execute/4,
+            chain_stream_execute/5,
             message_normalize/2,
             messages_normalize/2,
             prompt_compile/2,
@@ -21,16 +29,19 @@
 
 /** <module> Provider-neutral model-chain runtime
 
-`rlm_chain` owns the canonical public model abstraction.  The low-level
-`model_complete/3` predicate remains backward compatible, while `chain_invoke/4`
-and `chain_stream/5` add provider routing, middleware, bounded retry policy,
-structured output validation, canonical usage and ordered tracing.
+Provider and chain execution follows one direction:
 
-Production providers use explicit configuration terms and return structured
-`ok/1` or `error/1` outcomes.  Deterministic fake providers remain test-only
-and are never fallback targets.
+  canonical execute predicate -> asynchronous Future
+                              -> synchronous await wrapper
+
+The `*_execute` predicates are the internal execution ABI used by canonical
+operations that already own an async worker. Public synchronous predicates never
+contain provider/chain business logic; they start the same async operation and
+wait for its Future. Public asynchronous predicates never call a synchronous
+public wrapper.
 */
 
+:- use_module(rlm_async).
 :- use_module(rlm_chain_schema,
               [ message_normalize/2,
                 messages_normalize/2,
@@ -107,21 +118,96 @@ openai_compatible_provider(Endpoint, Credential, Model,
                                       timeout(30)
                                     ])).
 
-%!  model_complete(+Provider, +Request, -Outcome) is det.
-%
-%   Execute one provider request. Outcome is `ok(ModelResponse)` or
-%   `error(ProviderError)`. Unknown providers and malformed provider terms fail
-%   structurally rather than raising raw provider/network exceptions.
-%
-%   This predicate is the compatibility surface used by pre-#13 callers.
+/* Async/sync bridge ------------------------------------------------------ */
 
-model_complete(provider(Provider, Config), Request, Outcome) :-
+model_complete_async(Provider, Request, Future) :-
+    rlm_async_submit(rlm_chain:model_complete_execute(Provider, Request),
+                     async_metadata{operation:model_complete},
+                     Future).
+
+model_complete(Provider, Request, Outcome) :-
+    model_complete_async(Provider, Request, Future),
+    await_owned_future(Future, Outcome).
+
+model_stream_async(Provider, Request, EventHandler, Future) :-
+    rlm_async_submit(rlm_chain:model_stream_execute(Provider,
+                                                    Request,
+                                                    EventHandler),
+                     async_metadata{operation:model_stream},
+                     Future).
+
+model_stream(Provider, Request, EventHandler, Outcome) :-
+    model_stream_async(Provider, Request, EventHandler, Future),
+    await_owned_future(Future, Outcome).
+
+chain_invoke_async(ProviderSpec, Request, Options, Future) :-
+    chain_task_metadata(chain_invoke, Options, Metadata),
+    rlm_async_submit(rlm_chain:chain_invoke_execute(ProviderSpec,
+                                                   Request,
+                                                   Options),
+                     Metadata,
+                     Future).
+
+chain_invoke(ProviderSpec, Request, Options, Outcome) :-
+    chain_invoke_async(ProviderSpec, Request, Options, Future),
+    await_owned_future(Future, Outcome).
+
+chain_stream_async(ProviderSpec, Request, EventHandler, Options, Future) :-
+    chain_task_metadata(chain_stream, Options, Metadata),
+    rlm_async_submit(rlm_chain:chain_stream_execute(ProviderSpec,
+                                                   Request,
+                                                   Options,
+                                                   EventHandler),
+                     Metadata,
+                     Future).
+
+chain_stream(ProviderSpec, Request, Options, EventHandler, Outcome) :-
+    chain_stream_async(ProviderSpec, Request, EventHandler, Options, Future),
+    await_owned_future(Future, Outcome).
+
+await_owned_future(Future, Outcome) :-
+    setup_call_cleanup(
+        true,
+        rlm_future_await(Future, Outcome),
+        rlm_future_destroy(Future)).
+
+chain_task_metadata(Operation, Options, Metadata) :-
+    metadata_fields(Options, TraceId, SessionId),
+    Metadata = async_metadata{operation:Operation,
+                              trace_id:TraceId,
+                              session_id:SessionId}.
+
+metadata_fields(Options, TraceId, SessionId) :-
+    (   is_list(Options)
+    ->  metadata_option(trace_id, Options, none, TraceId),
+        metadata_option(session_id, Options, none, SessionId)
+    ;   TraceId = none,
+        SessionId = none
+    ).
+
+metadata_option(Name, Options, Default, Value) :-
+    (   member(Option, Options),
+        Option =.. [Name, Found],
+        ground(Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
+
+/* Canonical execution ABI ------------------------------------------------ */
+
+%!  model_complete_execute(+Provider, +Request, -Outcome) is det.
+%
+%   Execute one provider request. This is the canonical implementation used by
+%   the async task and by larger canonical operations already running in an
+%   async worker. It is not a synchronous facade.
+
+model_complete_execute(provider(Provider, Config), Request, Outcome) :-
     !,
     dispatch_provider(Provider, Config, Request, Outcome).
-model_complete(Provider, _,
-               error(provider_error{provider:Provider,
-                                    kind:configuration_error,
-                                    message:"provider must be provider(Name, Config)"})).
+model_complete_execute(Provider, _,
+                       error(provider_error{provider:Provider,
+                                            kind:configuration_error,
+                                            message:"provider must be provider(Name, Config)"})).
 
 dispatch_provider(openrouter, Config, Request, Outcome) :-
     !,
@@ -141,18 +227,19 @@ dispatch_provider(Provider, _, _,
                                        capability:chat_completions,
                                        message:"provider does not implement chat completions"})).
 
-%!  model_stream(+Provider, +Request, +EventHandler, -Outcome) is det.
+%!  model_stream_execute(+Provider, +Request, +EventHandler, -Outcome) is det.
 %
-%   Execute one true provider stream. `EventHandler` is called incrementally for
-%   each normalized stream event before the final response is available.
+%   Execute a true provider stream. The handler is called incrementally as SSE
+%   data arrives; the asynchronous surface therefore remains responsive and does
+%   not buffer an entire synchronous stream before returning events.
 
-model_stream(provider(Provider, Config), Request, EventHandler, Outcome) :-
+model_stream_execute(provider(Provider, Config), Request, EventHandler, Outcome) :-
     !,
     dispatch_stream_provider(Provider, Config, Request, EventHandler, Outcome).
-model_stream(Provider, _, _,
-             error(provider_error{provider:Provider,
-                                  kind:configuration_error,
-                                  message:"provider must be provider(Name, Config)"})).
+model_stream_execute(Provider, _, _,
+                     error(provider_error{provider:Provider,
+                                          kind:configuration_error,
+                                          message:"provider must be provider(Name, Config)"})).
 
 dispatch_stream_provider(openrouter, Config, Request, EventHandler, Outcome) :-
     !,
@@ -175,33 +262,30 @@ dispatch_stream_provider(Provider, _, _, _,
                                               capability:streaming,
                                               message:"provider does not implement streaming"})).
 
-%!  chain_invoke(+ProviderSpec, +Request, +Options, -Outcome) is det.
+%!  chain_invoke_execute(+ProviderSpec, +Request, +Options, -Outcome) is det.
 %
-%   Invoke a direct provider or `route(Candidates)` through the canonical chain
-%   runtime.  Options include `retry_policy/1`, `middleware/1`, `router/1`,
-%   `structured_schema/1`, `trace_handler/1`, and `sleep_handler/1`.
+%   Canonical chain execution. Retry/backoff, structured repair and middleware
+%   run exactly once here. Provider effects use model_complete_execute/3 rather
+%   than re-entering the public synchronous facade.
 
-chain_invoke(ProviderSpec, Request0, Options, Outcome) :-
+chain_invoke_execute(ProviderSpec, Request0, Options, Outcome) :-
     canonical_runtime_request(Request0, Request),
     rlm_chain_runtime:chain_invoke_with_transport(ProviderSpec,
                                                   Request,
                                                   Options,
-                                                  rlm_chain:model_complete,
+                                                  rlm_chain:model_complete_execute,
                                                   Outcome).
 
-%!  chain_stream(+ProviderSpec, +Request, +Options, +EventHandler, -Outcome) is det.
+%!  chain_stream_execute(+ProviderSpec,+Request,+Options,+EventHandler,-Outcome)
 %
-%   Stream a direct or routed provider request through the canonical middleware,
-%   structured-output and trace lifecycle.  Streaming is not simulated from a
-%   completed response; the provider transport calls `EventHandler` as SSE data
-%   arrives.
+%   Canonical incremental chain streaming path.
 
-chain_stream(ProviderSpec, Request0, Options, EventHandler, Outcome) :-
+chain_stream_execute(ProviderSpec, Request0, Options, EventHandler, Outcome) :-
     canonical_runtime_request(Request0, Request),
     rlm_chain_runtime:chain_stream_with_transport(ProviderSpec,
                                                   Request,
                                                   Options,
-                                                  rlm_chain:model_stream,
+                                                  rlm_chain:model_stream_execute,
                                                   EventHandler,
                                                   Outcome).
 
