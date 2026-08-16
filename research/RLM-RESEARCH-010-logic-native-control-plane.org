@@ -1,0 +1,444 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-010-logic-native-control-plane
+:END:
+#+title: RLM-RESEARCH-010 Logic-Native Recursive Control Plane
+#+status: RESEARCHED
+#+filetags: :rlm:rrlm:agents:prolog:verification:transactions:policy:actors:
+
+* Research Question
+
+What architectural changes are justified by the latest recursive-language-model and agent-runtime work if Prolog is treated as the control plane of the recursive system rather than merely as another tool available to an LLM?
+
+* Scope and Relationship to Existing Records
+
+This record does not replace the existing implementation direction.
+
+- =RLM-RESEARCH-008= already establishes adaptive recursion and treats maximum depth as a safety ceiling rather than a quality knob.
+- =RLM-RESEARCH-009= already establishes durable artifact state, fresh reasoning roots, bounded context projection, and immutable provenance-carrying artifact references.
+- Issue #53 already specifies host-controlled authority and approval/diff semantics.
+- Issue #54 already specifies one asynchronous task/future path with synchronous wrappers.
+
+The new question is narrower: which *runtime decisions and result contracts* should become explicit Prolog logic so that recursive agents cannot silently route around verification, authority, evidence, or effect accounting?
+
+* Primary Sources
+
+** Recursive language models and recursive harnesses
+
+- RLM: https://arxiv.org/abs/2512.24601
+- Recursive Agent Harnesses: https://arxiv.org/abs/2606.13643
+- RLM depth reproduction: https://arxiv.org/abs/2603.02615
+- RLMOpt: https://arxiv.org/abs/2608.10471
+
+** Neuro-symbolic / Prolog tool integration
+
+- PrologMCP: https://arxiv.org/abs/2606.14935
+- Euclid-MCP: https://arxiv.org/abs/2607.21412
+
+** Current agent-runtime convergence
+
+- OpenAI Agents SDK: https://openai.github.io/openai-agents-python/
+- OpenAI Agents SDK human-in-the-loop: https://openai.github.io/openai-agents-python/human_in_the_loop/
+- LangGraph persistence: https://docs.langchain.com/oss/python/langgraph/persistence
+- LangGraph subgraphs: https://docs.langchain.com/oss/python/langgraph/use-subgraphs
+- AutoGen Core actor runtime: https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/index.html
+- AutoGen distributed runtime: https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/framework/distributed-agent-runtime.html
+- MCP 2026-07-28 release: https://blog.modelcontextprotocol.io/posts/2026-07-28/
+
+** SWI-Prolog runtime primitives
+
+- Transactions and snapshots: https://www.swi-prolog.org/pldoc/man?section=transactions
+- Incremental tabling: https://www.swi-prolog.org/pldoc/man?section=tabling-incremental
+- Tabled execution: https://www.swi-prolog.org/pldoc/man?section=tabling
+- Thread/message-queue communication: https://www.swi-prolog.org/pldoc/man?section=threadcom
+
+Retrieved/rechecked 2026-08-16.
+
+* Findings
+
+** RLM is best understood as externalized computation, not merely self-calling
+
+The important invariant in RLM is that large problem state is external to the root model and can be inspected, partitioned, transformed, and recursively delegated without repeatedly injecting the whole state into model context.
+
+For prolog-rlm, this validates the existing context-handle and durable-artifact direction. The logic database should store compact facts, relationships, policy, evidence references, and state transitions. Large source trees, documents, model transcripts, binary data, and bulk observations remain outside the logical KB and are referenced through bounded handles.
+
+** Recursive Agent Harnesses move the recursive unit from model call to supervised agent
+
+RAH demonstrates that the recursive child can be a complete tool-capable agent harness rather than a bare model call. This maps directly to the existing =rlm_agent= supervisor and means recursive execution should be expressed as supervised child work with explicit capability, authority, budget, cancellation, and context envelopes.
+
+A child result should not be trusted merely because the child terminated successfully.
+
+** RLMOpt moves adaptation into the control/search policy while retaining deterministic gates
+
+RLMOpt allows an RLM agent to inspect failures, generate candidates, allocate evaluation budget, and decide when to stop, while deterministic machinery still performs objective scoring, regression constraints, and Pareto selection.
+
+The implication for prolog-rlm is not to let the model become the final policy authority. The model may *propose* a recursive strategy, decomposition, candidate, or continuation. Prolog should remain capable of rejecting the proposal because it violates a hard invariant, exceeds budget, lacks evidence, repeats an observation, widens authority, or fails a verifier.
+
+** Current production agent frameworks are converging on explicit runtime state
+
+OpenAI Agents SDK, LangGraph, and AutoGen independently converge on durable state, resumability, nested/sub-agent execution, message-based or graph-based orchestration, human approval, traceability, capability/tool boundaries, and isolated execution contexts.
+
+This supports treating prolog-rlm as a runtime rather than a prompt pattern. Existing engines/message queues, graph checkpoints, artifacts, authority, and future/task work are aligned with that direction.
+
+** PrologMCP and Euclid-MCP validate deterministic symbolic delegation but also expose the architectural ceiling of "Prolog as a tool"
+
+Both systems validate a translate/run/inspect/repair loop in which an LLM delegates formal inference to SWI-Prolog and can consume derivation information.
+
+That is useful but weaker than the architecture available inside prolog-rlm. If Prolog is only exposed as one optional tool, a model can still decide not to invoke it, can formalize the wrong premises, or can use a successful derivation to launder untrusted assumptions.
+
+For prolog-rlm, deterministic verification must therefore be able to sit *outside* the model's discretionary tool loop.
+
+* Core Thesis
+
+The recursive runtime itself should be expressed as a logic-controlled state machine.
+
+The model is a probabilistic worker that may propose plans, decompositions, interpretations, patches, classifications, or candidate facts. Prolog owns the state transition that decides whether those proposals become accepted runtime state.
+
+Conceptually:
+
+#+begin_example
+external context/artifacts
+          |
+          v
+   Prolog control plane
+   /   |    |      \
+policy proof budget supervisor
+   \   |    |      /
+      model/tool actors
+          |
+          v
+ structured observations
+          |
+          v
+ validate -> accept/reject -> transition
+#+end_example
+
+The model participates in transitions. The model is not the authority that defines the transition rules.
+
+* Required Runtime Separation
+
+** Context plane
+
+Owns bulk external state and bounded projections.
+
+Already substantially implemented by =rlm_context= and =rlm_artifact=.
+
+** Logic/policy plane
+
+Owns declarative facts about goals, dependencies, capabilities, authority, budgets, evidence requirements, accepted claims, and verifier obligations.
+
+Illustrative data only:
+
+#+begin_src prolog
+goal(Task, Goal).
+requires(Task, Capability).
+depends_on(Task, Parent).
+requires_verifier(Task, Verifier).
+accepted_claim(Claim, EvidenceRefs).
+#+end_src
+
+These predicates must not become an ambient model-writable database.
+
+** Agent plane
+
+Owns supervised workers, mailboxes, cancellation, bounded concurrency, lifecycle, and narrowing-only delegation.
+
+This maps to existing =rlm_agent= plus issue #54's async abstraction.
+
+** Model/tool plane
+
+Performs probabilistic or effectful work and returns structured observations.
+
+Every real side effect must have stable identity, trace correlation, and authority/capability enforcement.
+
+** Governance plane
+
+Owns acceptance, approval, denial, edit, commit, retry, evidence, and verifier policy.
+
+Issue #53 is the authority component. This record adds the missing evidence/verifier and effect-accounting components.
+
+* Proof-Carrying Agent Results
+
+A child agent's final text should not be its only machine-consumable output.
+
+Introduce a typed result envelope whose exact implementation can evolve but which carries at least:
+
+#+begin_src prolog
+rrlm_result{
+    task:Task,
+    status:Status,
+    value:Value,
+    claims:Claims,
+    evidence:EvidenceRefs,
+    provenance:Provenance,
+    verification:Verification,
+    usage:Usage,
+    trace_ref:TraceRef
+}.
+#+end_src
+
+The result envelope is *not chain-of-thought*. It carries explicit artifacts that the runtime is allowed to inspect and retain: source refs, hashes, tests, solver outcomes, derivation refs, structured claims, tool observations, and verifier reports.
+
+Acceptance should be a separate operation:
+
+#+begin_src prolog
+accept_result(Result, Policy, Outcome).
+#+end_src
+
+The acceptance gate may require properties such as:
+
+- result schema is valid;
+- all mandatory claims have evidence references;
+- evidence references exist and are current enough for the policy;
+- required deterministic verifiers passed;
+- authority/capability envelopes were not widened;
+- provider/tool usage is accounted for;
+- no unresolved side effect remains hidden behind a textual success message.
+
+A child may therefore complete successfully while its proposed result is rejected.
+
+* Evidence Is Not Proof Unless Premises Are Trusted
+
+A successful Prolog derivation proves only that a conclusion follows from the supplied program under the engine's semantics. It does not prove that model-generated premises correspond to reality.
+
+Therefore every fact promoted from model/tool output should distinguish at least:
+
+- asserted by trusted deterministic runtime;
+- observed from external tool/source;
+- generated/extracted by model;
+- derived from accepted premises;
+- disputed/conflicting;
+- unknown/unverified.
+
+The precise vocabulary belongs in implementation design, but the invariant is mandatory: model-generated premises cannot silently become trusted facts merely because a later Prolog query succeeds.
+
+* Effect-Aware Backtracking
+
+Ordinary Prolog backtracking is a poor default around paid or stateful effects.
+
+Naively placing model calls, MCP calls, process execution, network mutations, or repository writes under nondeterministic search can repeat effects when Prolog explores another branch.
+
+The runtime should separate *logical search* from *effect observation*.
+
+Conceptually:
+
+#+begin_src prolog
+observe(CallSpec, Observation) :-
+    prior_observation(CallSpec, Observation),
+    !.
+observe(CallSpec, Observation) :-
+    perform_effect_once(CallSpec, Observation),
+    record_observation(CallSpec, Observation).
+#+end_src
+
+Real implementation must use stable call identity, retry policy, authority fingerprints, and trace IDs rather than relying on a simplistic term cache.
+
+Backtracking should normally search over recorded observations/plans. A fresh external sample or repeated side effect must be an explicit policy decision.
+
+This composes with issue #53: approval is bound to a specific normalized proposal/fingerprint and cannot accidentally authorize a different retry payload.
+
+* Transactions as Epistemic Commit Boundaries
+
+SWI-Prolog transactions provide atomic updates to the dynamic database. =snapshot/1= exposes a consistent view and always discards local modifications.
+
+These are useful runtime primitives if kept behind a controlled state API.
+
+Candidate workflow:
+
+#+begin_example
+model/tool proposes state delta
+       |
+       v
+stage candidate facts/claims
+       |
+       v
+run deterministic invariants/verifiers
+       |
+   +---+---+
+   |       |
+ reject   commit atomically
+#+end_example
+
+=snapshot/1= additionally supports counterfactual evaluation of candidate state without publishing it.
+
+Do not expose unrestricted =assertz/1=, =retract/1=, =transaction/1=, or =snapshot/1= as arbitrary model tools. The host runtime owns the predicates allowed to mutate controlled state.
+
+* Tabling as Dependency-Aware Symbolic Cache
+
+SWI-Prolog tabling memoizes logical answers; incremental tabling maintains dependency information from changing dynamic predicates and invalidates affected tables.
+
+This can become more than an optimization. For deterministic predicates over accepted runtime facts, it provides a dependency-aware semantic cache whose invalidation follows changed premises rather than a raw prompt hash.
+
+Constraints:
+
+- do not table predicates that hide nondeterministic external effects;
+- do not assume shared tabling is ready for every concurrent use case;
+- treat incremental dependency invalidation as a candidate optimization after correctness tests, not as the first implementation dependency;
+- artifact storage remains the durable external memory; Prolog tables are not a replacement for durable artifact provenance.
+
+* Actor Semantics
+
+The current =rlm_agent= direction remains correct.
+
+SWI message queues provide bounded queues and blocking/non-blocking message operations. These make the actor boundary explicit: child workers receive copied messages, produce typed result messages, and do not need shared arbitrary mutable state.
+
+The preferred recursive shape is therefore:
+
+#+begin_example
+supervisor
+  +-- research child
+  +-- coding child
+  +-- verifier child
+  `-- critic child
+#+end_example
+
+Each child receives a narrowed capability/authority/budget/context envelope. Parent acceptance remains separate from child completion.
+
+* Recursion Policy
+
+=RLM-RESEARCH-008= remains authoritative: maximum depth is a hard safety ceiling, not a desired target.
+
+This record adds evidence-aware routing. A recursive proposal may be rejected when:
+
+- the subproblem is already resolved by accepted evidence;
+- equivalent work already has a reusable observation/artifact;
+- expected gain does not justify budget;
+- recursion would repeat an unchanged task/context fingerprint;
+- required authority cannot be narrowed safely;
+- the child could not produce the evidence class required by the parent;
+- the requested verifier cannot be executed inside remaining budget.
+
+RLMOpt suggests that adaptive search policy can improve allocation. Any future learned or model-authored routing policy remains subordinate to hard Prolog invariants.
+
+* MCP and Inter-Agent Boundaries
+
+MCP 2026-07-28 moves toward a more stateless core while adding multi-round-trip requests, routing improvements, extensions, authorization changes, and task-oriented behavior. prolog-rlm already tracks dual-version MCP compatibility in =RLM-RESEARCH-006=.
+
+For RRLM, MCP should continue to be treated as a capability/tool boundary. Long-running or remote work should still return structured task/observation handles that can be attached to the same evidence and trace model.
+
+Distributed/federated agent protocols may be added later, but the local result contract should not depend on a particular transport. A remote agent is acceptable only insofar as its returned claims/evidence/provenance can be represented by the same envelope and policy gate.
+
+* Rejected / Avoided Alternatives
+
+** Replace the existing planner with unrestricted Prolog meta-calls
+
+Rejected. The existing typed-plan boundary exists to prevent arbitrary executable model output. Logic-native control strengthens that boundary; it must not reopen unrestricted =call/1=.
+
+** Put all context directly into Prolog facts
+
+Rejected. This destroys the RLM context-as-object advantage, inflates the logical database, and encourages premature formalization of noisy data.
+
+** Trust a Prolog proof generated entirely from model-authored premises
+
+Rejected. This is proof laundering. Provenance and premise trust remain part of acceptance.
+
+** Repeat external effects automatically under Prolog backtracking
+
+Rejected. Paid/stateful operations require stable observation identity and explicit retry/resample policy.
+
+** Make the model the authority over verifier policy
+
+Rejected. A model may propose a verifier or proof obligation but cannot waive host-required checks or redefine the predicate that accepts its own output.
+
+** Duplicate authority/approval inside RRLM
+
+Rejected. Issue #53 already owns host authority and diff approval. RRLM result verification must compose with it rather than invent a second confirmation system.
+
+* Bounded Implementation Implications
+
+The next implementation should be split into small orthogonal slices.
+
+** Slice A: typed proof/evidence result contract
+
+Add a reusable result/evidence representation and deterministic validation predicates. Integrate it first with supervised child-agent completion without changing every completion API at once.
+
+Acceptance tests:
+
+- valid child result with existing evidence ref passes schema validation;
+- missing required evidence fails structurally;
+- model-authored claim without trusted/observed provenance cannot satisfy a policy requiring observed evidence;
+- child completion and parent acceptance are separately visible in trace output;
+- no private reasoning transcript is required or persisted.
+
+** Slice B: verifier gate
+
+Allow host/runtime code to declare required verifiers for a task/result class. The model cannot remove host-required verifiers.
+
+Acceptance tests:
+
+- required verifier failure rejects an otherwise successful child result;
+- verifier crash/timeout is distinct from verifier=false;
+- verifier policy inherits/narrows across recursive delegation;
+- accepted results record verifier identity and outcome.
+
+** Slice C: effect ledger and once-only observation identity
+
+Give effectful model/tool calls stable execution IDs/fingerprints and distinguish replay/reuse from retry/resample.
+
+Acceptance tests:
+
+- logical backtracking does not duplicate a recorded effect;
+- explicit retry gets a new attempt identity linked to the original call;
+- =allow_once= authority cannot leak onto a modified payload;
+- accounting includes failed downstream branches that already consumed provider/tool work.
+
+This slice should compose with open issues #44, #45, #53, and #54 rather than duplicating their responsibilities.
+
+** Slice D: transactional candidate-state helper
+
+Add a narrow host-controlled API for staging and validating candidate logical state before atomic commit, plus read-only/counterfactual evaluation through snapshots where useful.
+
+Acceptance tests:
+
+- failed invariant leaves persistent logical state unchanged;
+- exception leaves state unchanged;
+- successful transaction commits all intended state atomically;
+- snapshot evaluation never publishes candidate facts;
+- concurrent readers see a consistent state boundary.
+
+* Evaluation
+
+The meaningful comparison is not "Prolog vs LLM". Hold the model, tools, tasks, and context constant and compare runtime policies.
+
+At minimum measure:
+
+- task success;
+- accepted-result rate;
+- unsupported-claim rejection rate;
+- verifier rejection/failure rate;
+- recursive depth and fan-out;
+- provider/tool calls;
+- token/cost/latency accounting;
+- reused observations versus repeated external effects;
+- transaction rollbacks;
+- human approvals;
+- proportion of accepted claims linked to inspectable evidence;
+- recovery after child/worker failure.
+
+A useful ablation is:
+
+#+begin_example
+same model + same tools + same fixtures
+
+existing typed imperative control
+             vs
+logic-native result/evidence/verifier policy
+#+end_example
+
+The logic-native layer is justified only if it improves correctness, auditability, effect safety, recovery, or cost without unacceptable complexity.
+
+* Open Questions
+
+- What minimal evidence taxonomy is sufficient without building a full theorem-proving ontology into core?
+- Should verifier policies be ordinary trusted Prolog clauses, data interpreted by a fixed engine, or both with a strict host/model boundary?
+- Which accepted deterministic predicates benefit enough from incremental tabling to justify dependency tracking?
+- How should remote-agent evidence be signed or authenticated when results cross process/machine trust boundaries?
+- Should candidate-state transactions live in core or in a higher-level RRLM policy library once the minimal result contract is proven?
+- How should contradictory evidence be represented without abusing negation-as-failure as epistemic negation?
+
+* Conclusion
+
+The latest RLM work is moving recursion upward: from recursive model calls, to complete recursive agent harnesses, to adaptive search/control policy. Current agent frameworks are simultaneously moving runtime state outward into durable, resumable, supervised execution systems.
+
+prolog-rlm already implements much of the required substrate: typed plans, bounded recursion, supervised agents, graphs, MCP, artifacts, and adaptive routing. The next non-duplicative step is to make result acceptance itself logic-native.
+
+The target architecture is therefore not "LLM + Prolog tool" and not "replace Python RLM code with Prolog syntax". It is a runtime where probabilistic workers propose work and deterministic Prolog policy decides what may execute, what counts as evidence, what must be verified, and what may become accepted state.
