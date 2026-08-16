@@ -53,7 +53,7 @@ test(timeout_does_not_cancel_future) :-
     setup_call_cleanup(
         rlm_async_submit(async_sleep(0.05, done), Future),
         ( rlm_future_await(Future, 0.001, TimeoutOutcome),
-          assertion(TimeoutOutcome = error(Error)),
+          TimeoutOutcome = error(Error),
           assertion(Error.kind == timeout),
           rlm_future_await(Future, 1.0, Outcome),
           assertion(Outcome == done)
@@ -66,7 +66,7 @@ test(cancel_interrupts_pending_future) :-
         ( rlm_future_cancel(Future, CancelOutcome),
           assertion(CancelOutcome == ok(cancelled)),
           rlm_future_await(Future, Outcome),
-          assertion(Outcome = error(Error)),
+          Outcome = error(Error),
           assertion(Error.kind == cancelled),
           rlm_future_status(Future, Status),
           assertion(Status.state == cancelled)
@@ -77,7 +77,7 @@ test(exception_is_structured) :-
     setup_call_cleanup(
         rlm_async_submit(async_boom, Future),
         ( rlm_future_await(Future, Outcome),
-          assertion(Outcome = error(Error)),
+          Outcome = error(Error),
           assertion(Error.kind == exception),
           assertion(string(Error.exception))
         ),
@@ -102,7 +102,7 @@ test(llm_query_async_preserves_sync_outcome_shape,
     setup_call_cleanup(
         true,
         ( rlm_future_await(Future, 2.0, AsyncOutcome),
-          assertion(AsyncOutcome = ok(Result)),
+          AsyncOutcome = ok(Result),
           assertion(Result.response.text == "FAKE_MODEL_OK"),
           assertion(Result.usage.model_calls =:= 1),
           assertion(\+ (AsyncOutcome = ok(ok(_))))
@@ -122,7 +122,7 @@ test(completion_async_runs_existing_completion_logic,
     setup_call_cleanup(
         true,
         ( rlm_future_await(Future, 2.0, Outcome),
-          assertion(Outcome = ok(Result)),
+          Outcome = ok(Result),
           assertion(Result.value == "direct-ok"),
           assertion(Result.recursion.recursive_calls =:= 0)
         ),
@@ -142,7 +142,7 @@ test(public_completion_async_preserves_sync_recursion_gate,
     setup_call_cleanup(
         true,
         ( rlm_future_await(Future, 2.0, Outcome),
-          assertion(Outcome = error(Error)),
+          Outcome = error(Error),
           assertion(Error.kind == experimental_deep_recursion_required),
           completion_test_support:planner_calls(Calls),
           assertion(Calls =:= 0)
@@ -167,7 +167,7 @@ test(tool_invoke_async_preserves_outcome_and_trace) :-
           setup_call_cleanup(
               true,
               ( rlm_future_await(Future, 2.0, Result),
-                assertion(Result.outcome = ok(Execution)),
+                Result.outcome = ok(Execution),
                 assertion(Execution.value =:= 17),
                 assertion(Result.trace.authorization == allowed),
                 assertion(Result.trace.status == ok)
