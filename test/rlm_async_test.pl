@@ -5,6 +5,7 @@
 :- use_module('../prolog/rlm_completion_async').
 :- use_module('../prolog/rlm_tool').
 :- use_module('../prolog/rlm_tool_async').
+:- use_module('../prolog/rlm', []).
 :- use_module('support/completion_test_support').
 
 async_value(Value, Value).
@@ -124,6 +125,27 @@ test(completion_async_runs_existing_completion_logic,
           assertion(Outcome = ok(Result)),
           assertion(Result.value == "direct-ok"),
           assertion(Result.recursion.recursive_calls =:= 0)
+        ),
+        rlm_future_destroy(Future)).
+
+test(public_completion_async_preserves_sync_recursion_gate,
+     [setup(completion_test_support:reset_calls)]) :-
+    Options = [ planner_handler(completion_test_support:depth_two_planner),
+                capabilities([rlm, model(openrouter)]),
+                child_capabilities([rlm, model(openrouter)]),
+                budget(_{max_recursion_depth:2})
+              ],
+    rlm:rlm_completion_async("too deep for public facade",
+                             text("ctx"),
+                             Options,
+                             Future),
+    setup_call_cleanup(
+        true,
+        ( rlm_future_await(Future, 2.0, Outcome),
+          assertion(Outcome = error(Error)),
+          assertion(Error.kind == experimental_deep_recursion_required),
+          completion_test_support:planner_calls(Calls),
+          assertion(Calls =:= 0)
         ),
         rlm_future_destroy(Future)).
 
