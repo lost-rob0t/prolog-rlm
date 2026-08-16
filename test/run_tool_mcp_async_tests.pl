@@ -100,6 +100,15 @@ diagnostic_mcp_borrowed_sequence :-
     diagnostic_mcp_step(
         client_caps,
         plunit_rlm_tool_mcp_async:client_caps(Caps)),
+    Transport = Handle0.transport,
+    diagnostic_mcp_step(
+        direct_client_execute,
+        rlm_mcp:mcp_client_connect_execute(
+            existing(Transport), Info, Caps, [], ok(_DirectClient))),
+    diagnostic_mcp_step(
+        direct_lifecycle_execute,
+        rlm_mcp_server:rlm_connect_mcp_server_execute(
+            Handle0, Info, Caps, [], ok(_LifecycleClient))),
     diagnostic_mcp_step(
         connect,
         rlm_mcp_server:rlm_connect_mcp_server(
