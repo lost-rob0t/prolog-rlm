@@ -395,7 +395,9 @@ await_loop(Id, Start, Timeout, Outcome) :-
                future_state_snapshot(Id, State)),
     await_state(State, Id, Start, Timeout, Outcome).
 
-await_state(completed(Outcome), _, _, _, Outcome) :- !.
+await_state(completed(StoredOutcome), _, _, _, Outcome) :-
+    !,
+    Outcome = StoredOutcome.
 await_state(cancelled, Id, _, _, Outcome) :-
     !,
     cancellation_outcome(Id, Outcome).
