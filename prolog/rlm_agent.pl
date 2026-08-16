@@ -337,12 +337,6 @@ spawn_after_authority(ok(AuthorityInfo),
                         Spec,
                         Capabilities).
 
-parent_capabilities(_, none, Config,
-                    Config.root_capabilities,
-                    none,
-                    runtime_context) :-
-    !,
-    fail.
 parent_capabilities(RuntimeId, none, Config,
                     Config.root_capabilities,
                     none,
