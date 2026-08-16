@@ -17,13 +17,28 @@ agent_runtime_create(+Options, -Runtime).
 agent_runtime_destroy(+Runtime).
 agent_runtime_status(+Runtime, -Status).
 agent_spawn(+Runtime, +Parent, +Spec, +Capabilities, -Outcome).
+agent_spawn_async(+Runtime, +Parent, +Spec, +Capabilities, -Future).
 agent_send(+Runtime, +Agent, +Message, +Options, -Outcome).
+agent_send_async(+Runtime, +Agent, +Message, +Options, -Future).
 agent_pump(+Runtime, +Agent, +Options, -Outcome).
+agent_pump_async(+Runtime, +Agent, +Options, -Future).
 agent_status(+Runtime, +Agent, -Outcome).
 agent_children(+Runtime, +Agent, -Children).
 agent_cancel(+Runtime, +Agent, +Reason, -Outcome).
+agent_cancel_async(+Runtime, +Agent, +Reason, -Future).
 agent_trace(+Runtime, -Events).
 ```
+
+Spawn, send, pump, and cancellation are canonical async-first operations. Each
+`*_async` predicate submits one `*_execute` operation to `rlm_async`; each sync
+predicate starts that same operation and awaits its Future. Trusted library
+code already running inside a canonical async worker calls the execute ABI
+directly instead of starting and waiting on a nested Future.
+
+The execute predicates are a trusted host/library composition ABI, not part of
+model-generated callable resolution. `rlm_async` schedules public API work; the
+agent runtime's separate bounded worker pool still bounds blocking mailbox host
+work and preserves actor fairness, backpressure, and supervision semantics.
 
 Always destroy a runtime with `setup_call_cleanup/3` or an equivalent host
 lifecycle. Destruction cancels outstanding worker activity, drains the bounded

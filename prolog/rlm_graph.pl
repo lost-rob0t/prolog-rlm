@@ -5,7 +5,9 @@
             graph_backend_open/2,
             graph_backend_close/1,
             graph_run/4,
+            graph_run_async/4,
             graph_resume/6,
+            graph_resume_async/6,
             graph_checkpoint/3,
             graph_history/3,
             graph_cancellation_token/1,
@@ -22,6 +24,11 @@ Execution is bounded by wall time, total node steps and per-node visits.  State
 updates pass through a declared schema and closed reducer vocabulary.  Optional
 memory and SWI persistency backends store serializable checkpoints and ordered
 execution events for interrupt/resume and history inspection.
+
+Graph run/resume are canonical async-first. The asynchronous surfaces submit one
+execute predicate to `rlm_async`; synchronous run/resume start that same
+operation and await its Future. Inline subgraphs call the execute ABI directly,
+so canonical graph work never nests a Future wait merely to compose a subgraph.
 */
 
 :- use_module(library(gensym)).
@@ -30,6 +37,7 @@ execution events for interrupt/resume and history inspection.
 :- use_module(library(ordsets)).
 :- use_module(library(time)).
 :- use_module(library(uuid)).
+:- use_module(rlm_async, []).
 :- use_module(rlm_graph_persist).
 
 :- dynamic graph_memory_backend/1.
@@ -544,7 +552,18 @@ unregister_graph_thread(Token) :-
  * Execution and resume
  * ---------------------------------------------------------------------- */
 
+graph_run_async(Compiled, InitialState0, Options, Future) :-
+    graph_run_task_metadata(Compiled, Options, Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_graph:graph_run_execute(Compiled, InitialState0, Options),
+        Metadata,
+        Future).
+
 graph_run(Compiled, InitialState0, Options, Outcome) :-
+    graph_run_async(Compiled, InitialState0, Options, Future),
+    await_graph_future(Future, Outcome).
+
+graph_run_execute(Compiled, InitialState0, Options, Outcome) :-
     catch(graph_run_guarded(Compiled, InitialState0, Options, Outcome),
           Exception,
           graph_execution_exception(Exception, Outcome)).
@@ -590,7 +609,22 @@ graph_start_execution(Compiled, InitialState0, Config, Token, Outcome) :-
                  Snapshot1,
                  Outcome).
 
+graph_resume_async(Compiled, Backend, RunId, Resume0, Options, Future) :-
+    graph_resume_task_metadata(Compiled, RunId, Options, Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_graph:graph_resume_execute(Compiled,
+                                       Backend,
+                                       RunId,
+                                       Resume0,
+                                       Options),
+        Metadata,
+        Future).
+
 graph_resume(Compiled, Backend, RunId, Resume0, Options, Outcome) :-
+    graph_resume_async(Compiled, Backend, RunId, Resume0, Options, Future),
+    await_graph_future(Future, Outcome).
+
+graph_resume_execute(Compiled, Backend, RunId, Resume0, Options, Outcome) :-
     catch(graph_resume_guarded(Compiled,
                                Backend,
                                RunId,
@@ -790,7 +824,7 @@ execute_node(Node,
                   time_limit(Config.time_limit),
                   backend(none),
                   cancellation_token(Token)],
-    graph_run(Subgraph, State, SubOptions, SubOutcome),
+    graph_run_execute(Subgraph, State, SubOptions, SubOutcome),
     subgraph_node_result(SubOutcome,
                          Compiled.schema,
                          State,
@@ -1049,6 +1083,56 @@ result_from_snapshot(Backend, Snapshot, ok(Result)) :-
  * Runtime configuration and limits
  * ---------------------------------------------------------------------- */
 
+await_graph_future(Future, Outcome) :-
+    setup_call_cleanup(
+        true,
+        rlm_async:rlm_future_await(Future, Outcome),
+        rlm_async:rlm_future_destroy(Future)).
+
+graph_run_task_metadata(Compiled, Options, Metadata) :-
+    metadata_graph_id(Compiled, GraphId),
+    metadata_option(run_id, Options, auto, RunId),
+    graph_task_metadata(graph_run, GraphId, RunId, Options, Metadata).
+
+graph_resume_task_metadata(Compiled, RunId0, Options, Metadata) :-
+    metadata_graph_id(Compiled, GraphId),
+    metadata_ground(RunId0, unknown, RunId),
+    graph_task_metadata(graph_resume, GraphId, RunId, Options, Metadata).
+
+graph_task_metadata(Operation, GraphId, RunId, Options, Metadata) :-
+    metadata_option(trace_id, Options, none, TraceId),
+    metadata_option(session_id, Options, none, SessionId),
+    Metadata = async_metadata{
+                   operation:Operation,
+                   graph_id:GraphId,
+                   graph_run_id:RunId,
+                   trace_id:TraceId,
+                   session_id:SessionId
+               }.
+
+metadata_graph_id(Compiled, GraphId) :-
+    is_dict(Compiled),
+    get_dict(id, Compiled, Id),
+    ground(Id),
+    !,
+    GraphId = Id.
+metadata_graph_id(_, unknown).
+
+metadata_option(Name, Options, Default, Value) :-
+    (   is_list(Options),
+        member(Option, Options),
+        nonvar(Option),
+        Option =.. [Name, Found],
+        ground(Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
+
+metadata_ground(Value, _, Value) :-
+    ground(Value),
+    !.
+metadata_ground(_, Default, Default).
+
 graph_options(Options, Config, Token, OwnToken) :-
     require_options(Options),
     default_graph_options(Default),
@@ -1243,6 +1327,11 @@ graph_compile_exception(Exception, error(Error)) :-
                         exception:Safe,
                         message:"graph compilation raised an exception"}.
 
+graph_execution_exception(Exception, _) :-
+    graph_control_exception(Exception),
+    !,
+    throw(Exception).
+
 graph_execution_exception(graph_cancelled(Token), error(Error)) :-
     !,
     Error = graph_error{phase:execute,
@@ -1266,6 +1355,13 @@ graph_execution_exception(Exception, error(Error)) :-
                         kind:exception,
                         exception:Safe,
                         message:"graph execution raised an exception"}.
+
+graph_control_exception(rlm_async_cancelled(_)).
+graph_control_exception(rlm_cancelled(_)).
+graph_control_exception(chain_cancelled(_)).
+graph_control_exception(cancelled(_)).
+graph_control_exception('$aborted').
+graph_control_exception(abort).
 
 require_compiled_graph(Compiled) :-
     (   is_dict(Compiled),

@@ -27,6 +27,7 @@
 :- consult(rlm_artifact_test).
 :- consult(rlm_agent_test).
 :- consult(rlm_graph_test).
+:- consult(rlm_agent_graph_async_test).
 :- consult(rlm_recursion_policy_test).
 :- consult(rlm_recursion_runtime_test).
 :- consult(rlm_benchmark_test).

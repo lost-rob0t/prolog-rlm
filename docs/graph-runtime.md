@@ -9,6 +9,27 @@ edge structure, router IDs and subgraph IDs. Executable closures are supplied
 separately by trusted host code in a registry. Model-produced graph data never
 becomes a Prolog callable.
 
+## Canonical async execution
+
+Latency-bearing run/resume operations are async-first:
+
+```prolog
+graph_run_async(+Compiled, +InitialState, +Options, -Future).
+graph_run(+Compiled, +InitialState, +Options, -Outcome).
+graph_resume_async(+Compiled, +Backend, +RunId, +Resume, +Options, -Future).
+graph_resume(+Compiled, +Backend, +RunId, +Resume, +Options, -Outcome).
+```
+
+The async surfaces submit `graph_run_execute/4` and `graph_resume_execute/6`.
+The synchronous surfaces start those same operations and await their Futures.
+Inline subgraphs call the execute ABI directly, preventing nested Future waits
+when a graph already occupies an `rlm_async` worker. Compilation, schema
+validation, checkpoint lookup/history, and backend metadata remain immediate.
+
+Future metadata carries operation, graph ID, requested run ID, trace ID and
+session ID when available. Execute predicates remain a trusted host/library
+composition ABI and are not model-callable graph registry entries.
+
 ## Public API
 
 The main `rlm` module exports:

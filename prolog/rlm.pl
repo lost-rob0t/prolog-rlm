@@ -122,10 +122,12 @@ larger recursion budget does not by itself enable it: callers must also pass
 `experimental_deep_recursion(true)`. That flag is only an opt-in; it grants no
 capabilities and does not widen any normal budget.
 
-The public completion/query direction is canonical async -> sync await. The
-recursion gate is evaluated before scheduling, and even a rejected request is
-represented by a Future on the async surface. No public async task calls the
-public synchronous predicate.
+Latency-bearing completion/query, provider/chain, tool/MCP, agent, and graph
+surfaces follow one direction: canonical execute semantics -> async Future ->
+sync await. The recursion gate is evaluated before completion scheduling, and
+even a rejected completion request is represented by a Future on the async
+surface. No public async task calls its public synchronous predicate, and
+internal canonical async work uses execute ABIs instead of nested Future waits.
 */
 
 :- use_module(rlm_chain).
@@ -214,19 +216,17 @@ public synchronous predicate.
                 agent_runtime_destroy/1,
                 agent_runtime_status/2,
                 agent_spawn/5,
+                agent_spawn_async/5,
                 agent_send/5,
+                agent_send_async/5,
                 agent_pump/4,
+                agent_pump_async/4,
                 agent_status/3,
                 agent_children/3,
                 agent_cancel/4,
+                agent_cancel_async/4,
                 agent_trace/2,
                 agent_tool_handler/4
-              ]).
-:- use_module(rlm_agent_async,
-              [ agent_spawn_async/5,
-                agent_send_async/5,
-                agent_pump_async/4,
-                agent_cancel_async/4
               ]).
 :- use_module(rlm_graph,
               [ rlm_graph_ready/0,
@@ -235,15 +235,13 @@ public synchronous predicate.
                 graph_backend_open/2,
                 graph_backend_close/1,
                 graph_run/4,
+                graph_run_async/4,
                 graph_resume/6,
+                graph_resume_async/6,
                 graph_checkpoint/3,
                 graph_history/3,
                 graph_cancellation_token/1,
                 graph_cancel/1
-              ]).
-:- use_module(rlm_graph_async,
-              [ graph_run_async/4,
-                graph_resume_async/6
               ]).
 :- use_module(rlm_benchmark,
               [ rlm_benchmark_ready/0,
