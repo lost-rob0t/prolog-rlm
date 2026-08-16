@@ -42,7 +42,6 @@ run_tool_mcp_async_cases :-
 
 run_case(Name) :-
     format(user_error, 'canonical_async_case=~w~n', [Name]),
-    diagnostic_before_case(Name),
     catch(call_with_time_limit(8,
                                run_tests(rlm_tool_mcp_async:Name)),
           Exception,
@@ -51,87 +50,6 @@ run_case(Name) :-
 run_case(Name) :-
     format(user_error, 'canonical_async_case_failed=~w~n', [Name]),
     fail.
-
-diagnostic_before_case(sync_tool_executes_handler_once) :-
-    !,
-    setup_call_cleanup(
-        rlm_tool:tool_registry_create(Registry),
-        ( plunit_rlm_tool_mcp_async:counting_schema(Schema),
-          rlm_tool:tool_register(
-              Registry,
-              Schema,
-              plunit_rlm_tool_mcp_async:counted_tool,
-              Register),
-          format(user_error, 'authority_probe_register=~q~n', [Register]),
-          rlm_tool:tool_invoke(
-              Registry,
-              [tool(async_counting)],
-              async_counting,
-              _{value:7},
-              [],
-              Outcome,
-              Trace),
-          format(user_error,
-                 'authority_probe_outcome=~q trace=~q~n',
-                 [Outcome, Trace])
-        ),
-        rlm_tool:tool_registry_destroy(Registry)).
-diagnostic_before_case(mcp_run_connect_stop_are_explicit_and_borrowed) :-
-    !,
-    (   catch(diagnostic_mcp_borrowed_sequence,
-              Exception,
-              ( format(user_error,
-                       'mcp_borrowed_diagnostic_exception=~q~n',
-                       [Exception]),
-                fail ))
-    ->  true
-    ;   format(user_error, 'mcp_borrowed_diagnostic_failed~n', [])
-    ).
-diagnostic_before_case(_).
-
-diagnostic_mcp_borrowed_sequence :-
-    plunit_rlm_tool_mcp_async:reset_mcp_fixture,
-    diagnostic_mcp_step(
-        run,
-        rlm_mcp_server:rlm_run_mcp_server(async_fixture, ok(Handle0))),
-    diagnostic_mcp_step(
-        client_info,
-        plunit_rlm_tool_mcp_async:client_info(Info)),
-    diagnostic_mcp_step(
-        client_caps,
-        plunit_rlm_tool_mcp_async:client_caps(Caps)),
-    Transport = Handle0.transport,
-    diagnostic_mcp_step(
-        direct_client_execute,
-        rlm_mcp:mcp_client_connect_execute(
-            existing(Transport), Info, Caps, [], ok(_DirectClient))),
-    diagnostic_mcp_step(
-        direct_lifecycle_execute,
-        rlm_mcp_server:rlm_connect_mcp_server_execute(
-            Handle0, Info, Caps, [], ok(_LifecycleClient))),
-    diagnostic_mcp_step(
-        connect,
-        rlm_mcp_server:rlm_connect_mcp_server(
-            Handle0, Info, Caps, [], ok(Client0))),
-    diagnostic_mcp_step(
-        command,
-        rlm_mcp:mcp_client_command(Client0, list_tools, Client1, ok(_Page))),
-    diagnostic_mcp_step(
-        close,
-        rlm_mcp:mcp_client_close(Client1, ok(closed))),
-    diagnostic_mcp_step(
-        stop,
-        rlm_mcp_server:rlm_stop_mcp_server(Handle0, ok(_Handle1))).
-
-diagnostic_mcp_step(Label, Goal) :-
-    format(user_error, 'mcp_borrowed_step_start=~w~n', [Label]),
-    catch(call_with_time_limit(2, Goal),
-          Exception,
-          ( format(user_error,
-                   'mcp_borrowed_step_exception=~w exception=~q~n',
-                   [Label, Exception]),
-            fail )),
-    format(user_error, 'mcp_borrowed_step_done=~w~n', [Label]).
 
 case_exception(Name, Exception) :-
     format(user_error,
