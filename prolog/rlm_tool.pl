@@ -191,7 +191,8 @@ require_callable_handler(Handler) :-
     value_shape(Handler, Shape),
     throw(tool_fault(invalid_handler(Shape))).
 
-identity_preflight(Args, Args, operation_details{}).
+identity_preflight(Args0, Args, operation_details{}) :-
+    normalize_authority_value(Args0, Args).
 
 register_unique(Id, Name, _, _,
                 error(tool_error{
@@ -533,12 +534,14 @@ preflight_tool(tool_binding(Preflight, _), Args, TimeLimit, Outcome) :-
     catch(call_with_time_limit(TimeLimit,
                                call_preflight(Preflight,
                                               Args,
-                                              NormalizedArgs,
-                                              Details)),
+                                              NormalizedArgs0,
+                                              Details0)),
           Exception,
           preflight_exception(Exception, Outcome)),
     (   var(Outcome)
-    ->  require_ground_preflight(NormalizedArgs, Details),
+    ->  normalize_authority_value(NormalizedArgs0, NormalizedArgs),
+        normalize_authority_value(Details0, Details),
+        require_ground_preflight(NormalizedArgs, Details),
         Outcome = ok(NormalizedArgs, Details)
     ;   true
     ).
@@ -646,7 +649,7 @@ invoke_after_preflight(ok(NormalizedArgs, Details),
                            ApprovalId).
 
 invoke_after_authority(error(Error), _, _, _, _, _, error(ToolError),
-                       denied, AuthorityMode, authority_denied, 0, none, none) :-
+                       denied, _AuthorityMode, authority_denied, 0, none, none) :-
     !,
     ToolError = tool_error{
                     phase:authority,
@@ -657,7 +660,7 @@ invoke_after_authority(error(Error), _, _, _, _, _, error(ToolError),
 invoke_after_authority(approval_required(Pending), _, _, _, _, _,
                        approval_required(Pending),
                        pending,
-                       AuthorityMode,
+                       _AuthorityMode,
                        approval_required,
                        0,
                        Fingerprint,
@@ -683,7 +686,7 @@ invoke_after_authority(execute(Permit),
                        Context,
                        Outcome,
                        allowed,
-                       AuthorityMode,
+                       _AuthorityMode,
                        Status,
                        Bytes,
                        Fingerprint,
@@ -724,7 +727,7 @@ replay_metadata(error(Error), Bytes, Fingerprint) :-
     ).
 replay_metadata(_, 0, none).
 
-tool_pending_execute(Schema, Binding, Args, Limits, Context, Resolution) :-
+tool_pending_execute(Schema, Binding, Args, Limits, _Context, Resolution) :-
     get_time(Start),
     perform_tool_effect(Schema,
                         Binding,
@@ -735,15 +738,6 @@ tool_pending_execute(Schema, Binding, Args, Limits, Context, Resolution) :-
                         Bytes),
     get_time(End),
     ElapsedMs is round((End-Start)*1000),
-    rlm_authority:rlm_operation_fingerprint(
-        Context,
-        authority_operation{name:Schema.name,
-                            effect:Schema.effect,
-                            capability:Schema.capability,
-                            args:Args,
-                            details:operation_details{},
-                            correlation:correlation{}},
-        _),
     Resolution = tool_pending_resolution{
                      outcome:CoreOutcome,
                      status:Status,
@@ -1349,8 +1343,40 @@ schema_fault(Path, Fault,
                    })).
 
 /* -------------------------------------------------------------------------
- * Helpers
+ * Authority-value normalization and helpers
  * ---------------------------------------------------------------------- */
+
+normalize_authority_value(Value, _) :-
+    var(Value),
+    !,
+    throw(tool_fault(nonground_authority_value)).
+normalize_authority_value(Value0, Value) :-
+    is_dict(Value0),
+    !,
+    dict_pairs(Value0, Tag0, Pairs0),
+    normalize_dict_tag(Tag0, Tag),
+    maplist(normalize_authority_pair, Pairs0, Pairs),
+    dict_pairs(Value, Tag, Pairs).
+normalize_authority_value(Value0, Value) :-
+    is_list(Value0),
+    !,
+    maplist(normalize_authority_value, Value0, Value).
+normalize_authority_value(Value0, Value) :-
+    compound(Value0),
+    !,
+    Value0 =.. [Functor|Args0],
+    maplist(normalize_authority_value, Args0, Args),
+    Value =.. [Functor|Args].
+normalize_authority_value(Value, Value) :- atomic(Value), !.
+normalize_authority_value(Value, _) :-
+    throw(tool_fault(invalid_authority_value(Value))).
+
+normalize_dict_tag(Tag0, json) :- var(Tag0), !.
+normalize_dict_tag(Tag, Tag) :- atom(Tag), !.
+normalize_dict_tag(Tag, _) :- throw(tool_fault(invalid_dict_tag(Tag))).
+
+normalize_authority_pair(Key-Value0, Key-Value) :-
+    normalize_authority_value(Value0, Value).
 
 registry_id(tool_registry(Id), Id) :- tool_registry_alive(Id), !.
 registry_id(Registry, _) :-
