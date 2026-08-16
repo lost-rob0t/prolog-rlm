@@ -32,10 +32,13 @@ case(imported_mcp_tool_schema_rejects_before_remote_call).
 case(imported_mcp_tool_capability_denial_precedes_remote_call).
 
 main(_) :-
-    (   forall(case(Name), run_case(Name))
+    (   run_tool_mcp_async_cases
     ->  halt(0)
     ;   halt(1)
     ).
+
+run_tool_mcp_async_cases :-
+    forall(case(Name), run_case(Name)).
 
 run_case(Name) :-
     format(user_error, 'canonical_async_case=~w~n', [Name]),
