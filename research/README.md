@@ -25,6 +25,7 @@ Each record should contain:
 - `RLM-RESEARCH-007-langchain-langgraph-port.org` — minimum useful Prolog-native chain/graph semantics.
 - `RLM-RESEARCH-008-adaptive-recursion.org` — depth/cost evidence and adaptive recursion policy.
 - `RLM-RESEARCH-009-durable-artifact-context.org` — fresh reasoning roots, blackboards and durable task state.
+- `RLM-RESEARCH-010-logic-native-control-plane.org` — proof-carrying results, verifier gates, effect-aware recursion, transactional candidate state, and Prolog as the RRLM control plane.
 
 ## Rule
 
