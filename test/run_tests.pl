@@ -18,6 +18,7 @@
 :- consult(rlm_plan_test).
 :- consult(rlm_tool_test).
 :- consult(rlm_tool_loader_test).
+:- consult(rlm_authority_test).
 :- consult(run_tool_mcp_async_tests).
 :- consult(rlm_tool_mcp_scheduler_test).
 :- consult(rlm_completion_test).
