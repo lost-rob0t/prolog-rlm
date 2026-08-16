@@ -1,0 +1,1364 @@
+diff --git a/prolog/rlm_agent.pl b/prolog/rlm_agent.pl
+index 4022758..0000000 100644
+--- a/prolog/rlm_agent.pl
++++ b/prolog/rlm_agent.pl
+@@ -5,13 +5,17 @@
+             agent_runtime_destroy/1,
+             agent_runtime_status/2,
+             agent_spawn/5,
++            agent_spawn_async/5,
+             agent_send/5,
++            agent_send_async/5,
+             agent_pump/4,
++            agent_pump_async/4,
+             agent_status/3,
+             agent_children/3,
+             agent_cancel/4,
++            agent_cancel_async/4,
+             agent_trace/2,
+             agent_plan_handler/5,
+             agent_tool_handler/4
+@@ -27,11 +31,19 @@ Mailboxes are finite SWI message queues.  A full mailbox therefore produces an
+ explicit backpressure outcome instead of allowing unbounded message growth.
+ Capabilities are inherited by subset: a child may drop parent authority but can
+ never add authority the parent did not have.
++
++Latency-bearing public operations are canonical async-first.  The async API
++submits one execute predicate to `rlm_async`; the synchronous API starts that
++same operation and awaits its Future.  Code already executing inside canonical
++asynchronous work uses the execute ABI directly rather than nesting a Future
++wait.  The runtime's separate bounded worker pool remains responsible for
++logical-agent host work and mailbox/backpressure semantics.
+ */
+ 
+ :- use_module(library(gensym)).
+ :- use_module(library(lists)).
+ :- use_module(library(option)).
+ :- use_module(library(thread_pool)).
++:- use_module(rlm_async, []).
+ :- use_module(rlm_tool,
+               [ capabilities_normalize/2,
+                 capabilities_narrow/3
+@@ -149,12 +161,28 @@ require_worker_handler(Handler) :-
+  * Spawn and supervision
+  * ---------------------------------------------------------------------- */
+ 
+-agent_spawn(Runtime, Parent, Spec0, RequestedCapabilities, Outcome) :-
++agent_spawn_async(Runtime, Parent, Spec0, RequestedCapabilities, Future) :-
++    agent_spawn_task_metadata(Runtime, Parent, Metadata),
++    rlm_async:rlm_async_submit(
++        rlm_agent:agent_spawn_execute(Runtime,
++                                      Parent,
++                                      Spec0,
++                                      RequestedCapabilities),
++        Metadata,
++        Future).
++
++agent_spawn(Runtime, Parent, Spec0, RequestedCapabilities, Outcome) :-
++    agent_spawn_async(Runtime, Parent, Spec0, RequestedCapabilities, Future),
++    await_agent_future(Future, Outcome).
++
++agent_spawn_execute(Runtime, Parent, Spec0, RequestedCapabilities, Outcome) :-
+     catch(agent_spawn_(Runtime,
+                        Parent,
+                        Spec0,
+                        RequestedCapabilities,
+                        Outcome),
+           Exception,
+           agent_api_exception(spawn, Exception, Outcome)).
+ 
+ agent_spawn_(Runtime, Parent, Spec0, RequestedCapabilities, Outcome) :-
+@@ -305,11 +333,24 @@ normalize_agent_metadata_pair(Key-_, _) :-
+  * Mailboxes and engine scheduling
+  * ---------------------------------------------------------------------- */
+ 
++agent_send_async(Runtime, Agent, Message, Options, Future) :-
++    agent_task_metadata(agent_send, Runtime, Agent, Options, Metadata),
++    rlm_async:rlm_async_submit(
++        rlm_agent:agent_send_execute(Runtime, Agent, Message, Options),
++        Metadata,
++        Future).
++
+ agent_send(Runtime, Agent, Message, Options, Outcome) :-
++    agent_send_async(Runtime, Agent, Message, Options, Future),
++    await_agent_future(Future, Outcome).
++
++agent_send_execute(Runtime, Agent, Message, Options, Outcome) :-
+     catch(agent_send_(Runtime, Agent, Message, Options, Outcome),
+           Exception,
+           agent_api_exception(send, Exception, Outcome)).
+ 
+ agent_send_(Runtime, agent(AgentId), Message, Options, Outcome) :-
+@@ -336,11 +377,24 @@ agent_send_(_, Agent, _, _, _) :-
+     throw(agent_fault(invalid_agent(Agent))).
+ 
++agent_pump_async(Runtime, Agent, Options, Future) :-
++    agent_task_metadata(agent_pump, Runtime, Agent, Options, Metadata),
++    rlm_async:rlm_async_submit(
++        rlm_agent:agent_pump_execute(Runtime, Agent, Options),
++        Metadata,
++        Future).
++
+ agent_pump(Runtime, Agent, Options, Outcome) :-
++    agent_pump_async(Runtime, Agent, Options, Future),
++    await_agent_future(Future, Outcome).
++
++agent_pump_execute(Runtime, Agent, Options, Outcome) :-
+     catch(agent_pump_(Runtime, Agent, Options, Outcome),
+           Exception,
+           agent_api_exception(pump, Exception, Outcome)).
+ 
+ agent_pump_(Runtime, agent(AgentId), Options, Outcome) :-
+@@ -726,11 +780,24 @@ agent_children(Runtime, agent(AgentId), Children) :-
+             agent_record(RuntimeId, ChildId, AgentId, _, _, _, _),
+             Children0),
+     sort(Children0, Children).
+ 
++agent_cancel_async(Runtime, Agent, Reason, Future) :-
++    agent_task_metadata(agent_cancel, Runtime, Agent, [], Metadata),
++    rlm_async:rlm_async_submit(
++        rlm_agent:agent_cancel_execute(Runtime, Agent, Reason),
++        Metadata,
++        Future).
++
+ agent_cancel(Runtime, agent(AgentId), Reason, Outcome) :-
++    agent_cancel_async(Runtime, agent(AgentId), Reason, Future),
++    await_agent_future(Future, Outcome).
++agent_cancel(Runtime, Agent, Reason, Outcome) :-
++    agent_cancel_async(Runtime, Agent, Reason, Future),
++    await_agent_future(Future, Outcome).
++
++agent_cancel_execute(Runtime, agent(AgentId), Reason, Outcome) :-
+     catch(agent_cancel_(Runtime, AgentId, Reason, Outcome),
+           Exception,
+           agent_api_exception(cancel, Exception, Outcome)).
++agent_cancel_execute(_, Agent, _, Outcome) :-
++    agent_api_exception(cancel, agent_fault(invalid_agent(Agent)), Outcome).
+ 
+ agent_cancel_(Runtime, AgentId, Reason, Outcome) :-
+     runtime_record(Runtime, RuntimeId, _, _),
+@@ -750,7 +817,7 @@ agent_cancel_(Runtime, AgentId, Reason, Outcome) :-
+ 
+ cancel_children(_, [], _).
+ cancel_children(Runtime, [Child|Children], Reason) :-
+-    agent_cancel(Runtime, Child, Reason, _),
++    agent_cancel_execute(Runtime, Child, Reason, _),
+     cancel_children(Runtime, Children, Reason).
+ 
+ cancel_reply(error(Error), _, error(Error)) :- !.
+@@ -792,7 +859,7 @@ notify_parent_from_reply(_, _, _).
+  * ---------------------------------------------------------------------- */
+ 
+ agent_plan_handler(Runtime, Parent, Spec, Capabilities, Child) :-
+-    agent_spawn(Runtime, Parent, Spec, Capabilities, Outcome),
++    agent_spawn_execute(Runtime, Parent, Spec, Capabilities, Outcome),
+     (   Outcome = ok(Child)
+     ->  true
+     ;   Outcome = error(Error),
+@@ -1021,6 +1088,56 @@ destroy_agent_data(agent_data(_, Engine, Queue)) :-
+     catch(engine_destroy(Engine), _, true),
+     catch(message_queue_destroy(Queue), _, true).
+ 
++await_agent_future(Future, Outcome) :-
++    setup_call_cleanup(
++        true,
++        rlm_async:rlm_future_await(Future, Outcome),
++        rlm_async:rlm_future_destroy(Future)).
++
++agent_spawn_task_metadata(Runtime0, Parent0, Metadata) :-
++    metadata_runtime_id(Runtime0, RuntimeId),
++    metadata_agent_id(Parent0, ParentId),
++    Metadata = async_metadata{
++                   operation:agent_spawn,
++                   runtime_id:RuntimeId,
++                   parent_agent:ParentId,
++                   trace_id:none,
++                   session_id:none
++               }.
++
++agent_task_metadata(Operation, Runtime0, Agent0, Options, Metadata) :-
++    metadata_runtime_id(Runtime0, RuntimeId),
++    metadata_agent_id(Agent0, AgentId),
++    metadata_option(trace_id, Options, none, TraceId),
++    metadata_option(session_id, Options, none, SessionId),
++    Metadata = async_metadata{
++                   operation:Operation,
++                   runtime_id:RuntimeId,
++                   agent_id:AgentId,
++                   trace_id:TraceId,
++                   session_id:SessionId
++               }.
++
++metadata_runtime_id(agent_runtime(Id), Id) :-
++    ground(Id),
++    !.
++metadata_runtime_id(_, unknown).
++
++metadata_agent_id(none, none) :- !.
++metadata_agent_id(agent(Id), Id) :-
++    ground(Id),
++    !.
++metadata_agent_id(_, unknown).
++
++metadata_option(Name, Options, Default, Value) :-
++    (   is_list(Options),
++        member(Option, Options),
++        nonvar(Option),
++        Option =.. [Name, Found],
++        ground(Found)
++    ->  Value = Found
++    ;   Value = Default
++    ).
++
++agent_api_exception(_, Exception, _) :-
++    agent_control_exception(Exception),
++    !,
++    throw(Exception).
+ agent_api_exception(Phase, agent_fault(Fault), error(Error)) :-
+     !,
+     Error = agent_error{phase:Phase,
+@@ -1036,5 +1153,9 @@ agent_api_exception(Phase, Exception, error(Error)) :-
+                         exception:Safe,
+                         message:"agent runtime operation raised an exception"}.
+ 
++agent_control_exception(rlm_async_cancelled(_)).
++agent_control_exception('$aborted').
++agent_control_exception(abort).
++
+ safe_exception(Exception, Safe) :-
+     term_string(Exception, Safe, [quoted(true), numbervars(true)]).
+diff --git a/prolog/rlm_agent_async.pl b/prolog/rlm_agent_async.pl
+index 3b94ac9..0000000 100644
+--- a/prolog/rlm_agent_async.pl
++++ b/prolog/rlm_agent_async.pl
+@@ -5,37 +5,28 @@
+             agent_cancel_async/4
+           ]).
+ 
+-/** <module> Asynchronous facade for supervised agent operations */
++/** <module> Compatibility facade for canonical asynchronous agent operations
+ 
+-:- use_module(rlm_async).
+-:- use_module(rlm_agent).
++The canonical async/task implementation lives in `rlm_agent`.  This module is
++kept for callers importing the historical async facade directly and delegates
++only to the canonical asynchronous predicates.  It never enters a synchronous
++public wrapper.
++*/
+ 
+-agent_spawn_async(Runtime, Parent, Spec, Options, Future) :-
+-    rlm_async_submit(agent_spawn_task(Runtime, Parent, Spec, Options), Future).
++:- use_module(rlm_agent, []).
+ 
+-agent_spawn_task(Runtime, Parent, Spec, Options, Outcome) :-
+-    rlm_agent:agent_spawn(Runtime, Parent, Spec, Options, Outcome).
++agent_spawn_async(Runtime, Parent, Spec, Capabilities, Future) :-
++    rlm_agent:agent_spawn_async(Runtime, Parent, Spec, Capabilities, Future).
+ 
+ agent_send_async(Runtime, Agent, Message, Options, Future) :-
+-    rlm_async_submit(agent_send_task(Runtime, Agent, Message, Options), Future).
+-
+-agent_send_task(Runtime, Agent, Message, Options, Outcome) :-
+-    rlm_agent:agent_send(Runtime, Agent, Message, Options, Outcome).
++    rlm_agent:agent_send_async(Runtime, Agent, Message, Options, Future).
+ 
+ agent_pump_async(Runtime, Agent, Options, Future) :-
+-    rlm_async_submit(agent_pump_task(Runtime, Agent, Options), Future).
+-
+-agent_pump_task(Runtime, Agent, Options, Outcome) :-
+-    rlm_agent:agent_pump(Runtime, Agent, Options, Outcome).
++    rlm_agent:agent_pump_async(Runtime, Agent, Options, Future).
+ 
+ agent_cancel_async(Runtime, Agent, Reason, Future) :-
+-    rlm_async_submit(agent_cancel_task(Runtime, Agent, Reason), Future).
+-
+-agent_cancel_task(Runtime, Agent, Reason, Outcome) :-
+-    rlm_agent:agent_cancel(Runtime, Agent, Reason, Outcome).
++    rlm_agent:agent_cancel_async(Runtime, Agent, Reason, Future).
+diff --git a/prolog/rlm_graph.pl b/prolog/rlm_graph.pl
+index ed9a1e6..0000000 100644
+--- a/prolog/rlm_graph.pl
++++ b/prolog/rlm_graph.pl
+@@ -5,8 +5,10 @@
+             graph_backend_open/2,
+             graph_backend_close/1,
+             graph_run/4,
++            graph_run_async/4,
+             graph_resume/6,
++            graph_resume_async/6,
+             graph_checkpoint/3,
+             graph_history/3,
+             graph_cancellation_token/1,
+@@ -21,12 +23,19 @@ separate registry that resolves those IDs to closures or compiled subgraphs.
+ Execution is bounded by wall time, total node steps and per-node visits.  State
+ updates pass through a declared schema and closed reducer vocabulary.  Optional
+ memory and SWI persistency backends store serializable checkpoints and ordered
+ execution events for interrupt/resume and history inspection.
++
++Graph run/resume are canonical async-first.  The asynchronous surfaces submit
++one execute predicate to `rlm_async`; synchronous run/resume start that same
++operation and await its Future.  Inline subgraphs call the execute ABI directly,
++so canonical graph work never nests a Future wait merely to compose a subgraph.
+ */
+ 
+ :- use_module(library(gensym)).
+ :- use_module(library(lists)).
+ :- use_module(library(option)).
+ :- use_module(library(ordsets)).
+ :- use_module(library(time)).
+ :- use_module(library(uuid)).
++:- use_module(rlm_async, []).
+ :- use_module(rlm_graph_persist).
+@@ -546,11 +555,25 @@ unregister_graph_thread(Token) :-
+  * Execution and resume
+  * ---------------------------------------------------------------------- */
+ 
++graph_run_async(Compiled, InitialState0, Options, Future) :-
++    graph_run_task_metadata(Compiled, Options, Metadata),
++    rlm_async:rlm_async_submit(
++        rlm_graph:graph_run_execute(Compiled, InitialState0, Options),
++        Metadata,
++        Future).
++
+ graph_run(Compiled, InitialState0, Options, Outcome) :-
++    graph_run_async(Compiled, InitialState0, Options, Future),
++    await_graph_future(Future, Outcome).
++
++graph_run_execute(Compiled, InitialState0, Options, Outcome) :-
+     catch(graph_run_guarded(Compiled, InitialState0, Options, Outcome),
+           Exception,
+           graph_execution_exception(Exception, Outcome)).
+ 
+ graph_run_guarded(Compiled, InitialState0, Options, Outcome) :-
+@@ -590,8 +613,23 @@ graph_start_execution(Compiled, InitialState0, Config, Token, Outcome) :-
+                  Snapshot1,
+                  Outcome).
+ 
++graph_resume_async(Compiled, Backend, RunId, Resume0, Options, Future) :-
++    graph_resume_task_metadata(Compiled, RunId, Options, Metadata),
++    rlm_async:rlm_async_submit(
++        rlm_graph:graph_resume_execute(Compiled,
++                                       Backend,
++                                       RunId,
++                                       Resume0,
++                                       Options),
++        Metadata,
++        Future).
++
+ graph_resume(Compiled, Backend, RunId, Resume0, Options, Outcome) :-
++    graph_resume_async(Compiled, Backend, RunId, Resume0, Options, Future),
++    await_graph_future(Future, Outcome).
++
++graph_resume_execute(Compiled, Backend, RunId, Resume0, Options, Outcome) :-
+     catch(graph_resume_guarded(Compiled,
+                                Backend,
+                                RunId,
+@@ -758,7 +796,7 @@ execute_node(Node,
+                   time_limit(Config.time_limit),
+                   backend(none),
+                   cancellation_token(Token)],
+-    graph_run(Subgraph, State, SubOptions, SubOutcome),
++    graph_run_execute(Subgraph, State, SubOptions, SubOutcome),
+     subgraph_node_result(SubOutcome,
+                          Compiled.schema,
+                          State,
+@@ -978,6 +1016,62 @@ result_from_snapshot(Backend, Snapshot, ok(Result)) :-
+  * Runtime configuration and limits
+  * ---------------------------------------------------------------------- */
+ 
++await_graph_future(Future, Outcome) :-
++    setup_call_cleanup(
++        true,
++        rlm_async:rlm_future_await(Future, Outcome),
++        rlm_async:rlm_future_destroy(Future)).
++
++graph_run_task_metadata(Compiled, Options, Metadata) :-
++    metadata_graph_id(Compiled, GraphId),
++    metadata_option(run_id, Options, auto, RunId),
++    graph_task_metadata(graph_run, GraphId, RunId, Options, Metadata).
++
++graph_resume_task_metadata(Compiled, RunId0, Options, Metadata) :-
++    metadata_graph_id(Compiled, GraphId),
++    metadata_ground(RunId0, unknown, RunId),
++    graph_task_metadata(graph_resume, GraphId, RunId, Options, Metadata).
++
++graph_task_metadata(Operation, GraphId, RunId, Options, Metadata) :-
++    metadata_option(trace_id, Options, none, TraceId),
++    metadata_option(session_id, Options, none, SessionId),
++    Metadata = async_metadata{
++                   operation:Operation,
++                   graph_id:GraphId,
++                   graph_run_id:RunId,
++                   trace_id:TraceId,
++                   session_id:SessionId
++               }.
++
++metadata_graph_id(Compiled, GraphId) :-
++    is_dict(Compiled),
++    get_dict(id, Compiled, Id),
++    ground(Id),
++    !,
++    GraphId = Id.
++metadata_graph_id(_, unknown).
++
++metadata_option(Name, Options, Default, Value) :-
++    (   is_list(Options),
++        member(Option, Options),
++        nonvar(Option),
++        Option =.. [Name, Found],
++        ground(Found)
++    ->  Value = Found
++    ;   Value = Default
++    ).
++
++metadata_ground(Value, _, Value) :-
++    ground(Value),
++    !.
++metadata_ground(_, Default, Default).
++
+ graph_options(Options, Config, Token, OwnToken) :-
+     require_options(Options),
+     default_graph_options(Default),
+@@ -1174,6 +1268,11 @@ graph_compile_exception(Exception, error(Error)) :-
+                         exception:Safe,
+                         message:"graph compilation raised an exception"}.
+ 
++graph_execution_exception(Exception, _) :-
++    graph_control_exception(Exception),
++    !,
++    throw(Exception).
+ graph_execution_exception(graph_cancelled(Token), error(Error)) :-
+     !,
+     Error = graph_error{phase:execute,
+@@ -1200,6 +1299,13 @@ graph_execution_exception(Exception, error(Error)) :-
+                         exception:Safe,
+                         message:"graph execution raised an exception"}.
+ 
++graph_control_exception(rlm_async_cancelled(_)).
++graph_control_exception(rlm_cancelled(_)).
++graph_control_exception(chain_cancelled(_)).
++graph_control_exception(cancelled(_)).
++graph_control_exception('$aborted').
++graph_control_exception(abort).
++
+ require_compiled_graph(Compiled) :-
+     (   is_dict(Compiled),
+         get_dict(kind, Compiled, rlm_graph),
+diff --git a/prolog/rlm_graph_async.pl b/prolog/rlm_graph_async.pl
+index 6f77fd6..0000000 100644
+--- a/prolog/rlm_graph_async.pl
++++ b/prolog/rlm_graph_async.pl
+@@ -2,35 +2,27 @@
+           [ graph_run_async/4,
+             graph_resume_async/6
+           ]).
+ 
+-/** <module> Asynchronous facade for graph execution and resume */
++/** <module> Compatibility facade for canonical asynchronous graph operations
+ 
+-:- use_module(rlm_async).
+-:- use_module(rlm_graph).
++The canonical async/task implementation lives in `rlm_graph`.  This module is
++kept for callers importing the historical async facade directly and delegates
++only to the canonical asynchronous predicates.  It never enters a synchronous
++public wrapper.
++*/
+ 
+-graph_run_async(Compiled, Input, Options, Future) :-
+-    rlm_async_submit(graph_run_task(Compiled, Input, Options), Future).
++:- use_module(rlm_graph, []).
+ 
+-graph_run_task(Compiled, Input, Options, Outcome) :-
+-    rlm_graph:graph_run(Compiled, Input, Options, Outcome).
++graph_run_async(Compiled, Input, Options, Future) :-
++    rlm_graph:graph_run_async(Compiled, Input, Options, Future).
+ 
+ graph_resume_async(Compiled, RunId, State, Input, Options, Future) :-
+-    rlm_async_submit(graph_resume_task(Compiled,
+-                                       RunId,
+-                                       State,
+-                                       Input,
+-                                       Options),
+-                     Future).
+-
+-graph_resume_task(Compiled, RunId, State, Input, Options, Outcome) :-
+-    rlm_graph:graph_resume(Compiled,
+-                           RunId,
+-                           State,
+-                           Input,
+-                           Options,
+-                           Outcome).
++    rlm_graph:graph_resume_async(Compiled,
++                                 RunId,
++                                 State,
++                                 Input,
++                                 Options,
++                                 Future).
+diff --git a/prolog/rlm.pl b/prolog/rlm.pl
+index 02e6e05..0000000 100644
+--- a/prolog/rlm.pl
++++ b/prolog/rlm.pl
+@@ -120,10 +120,12 @@ Load this module to initialize the public runtime namespaces.
+ larger recursion budget does not by itself enable it: callers must also pass
+ `experimental_deep_recursion(true)`. That flag is only an opt-in; it grants no
+ capabilities and does not widen any normal budget.
+ 
+-The public completion/query direction is canonical async -> sync await. The
+-recursion gate is evaluated before scheduling, and even a rejected request is
+-represented by a Future on the async surface. No public async task calls the
+-public synchronous predicate.
++Latency-bearing completion/query, provider/chain, tool/MCP, agent, and graph
++surfaces follow one direction: canonical execute semantics -> async Future ->
++sync await. The recursion gate is evaluated before completion scheduling, and
++even a rejected completion request is represented by a Future on the async
++surface. No public async task calls its public synchronous predicate, and
++internal canonical async work uses execute ABIs instead of nesting Future waits.
+ */
+@@ -224,27 +226,23 @@ Depth greater than one is an experimental public-API boundary. Supplying a
+                 agent_runtime_destroy/1,
+                 agent_runtime_status/2,
+                 agent_spawn/5,
++                agent_spawn_async/5,
+                 agent_send/5,
++                agent_send_async/5,
+                 agent_pump/4,
++                agent_pump_async/4,
+                 agent_status/3,
+                 agent_children/3,
+                 agent_cancel/4,
++                agent_cancel_async/4,
+                 agent_trace/2,
+                 agent_tool_handler/4
+               ]).
+-:- use_module(rlm_agent_async,
+-              [ agent_spawn_async/5,
+-                agent_send_async/5,
+-                agent_pump_async/4,
+-                agent_cancel_async/4
+-              ]).
+ :- use_module(rlm_graph,
+               [ rlm_graph_ready/0,
+                 default_graph_options/1,
+                 graph_compile/4,
+                 graph_backend_open/2,
+                 graph_backend_close/1,
+                 graph_run/4,
++                graph_run_async/4,
+                 graph_resume/6,
++                graph_resume_async/6,
+                 graph_checkpoint/3,
+                 graph_history/3,
+                 graph_cancellation_token/1,
+                 graph_cancel/1
+               ]).
+-:- use_module(rlm_graph_async,
+-              [ graph_run_async/4,
+-                graph_resume_async/6
+-              ]).
+ :- use_module(rlm_benchmark,
+               [ rlm_benchmark_ready/0,
+                 benchmark_case/7,
+diff --git a/test/run_tests.pl b/test/run_tests.pl
+index 89f5202..0000000 100644
+--- a/test/run_tests.pl
++++ b/test/run_tests.pl
+@@ -27,6 +27,7 @@
+ :- consult(rlm_outcome_test).
+ :- consult(rlm_artifact_test).
+ :- consult(rlm_agent_test).
+ :- consult(rlm_graph_test).
++:- consult(rlm_agent_graph_async_test).
+ :- consult(rlm_recursion_policy_test).
+ :- consult(rlm_recursion_runtime_test).
+ :- consult(rlm_benchmark_test).
+diff --git a/test/rlm_agent_graph_async_test.pl b/test/rlm_agent_graph_async_test.pl
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/test/rlm_agent_graph_async_test.pl
+@@ -0,0 +1,527 @@
++:- begin_tests(rlm_agent_graph_async).
++
++:- use_module(library(time)).
++:- use_module('../prolog/rlm_async').
++:- use_module('../prolog/rlm_agent').
++:- use_module('../prolog/rlm_agent_async', []).
++:- use_module('../prolog/rlm_graph').
++:- use_module('../prolog/rlm_graph_async', []).
++
++:- dynamic execution_count/2.
++
++reset_count(Key) :-
++    retractall(execution_count(Key, _)),
++    assertz(execution_count(Key, 0)).
++
++bump_count(Key) :-
++    with_mutex(plunit_rlm_agent_graph_async_count,
++               ( retract(execution_count(Key, Count0)),
++                 Count is Count0+1,
++                 assertz(execution_count(Key, Count))
++               )).
++
++read_count(Key, Count) :-
++    execution_count(Key, Count).
++
++counted_node(Key, Patch, _, _, update(Patch)) :-
++    bump_count(Key).
++
++blocking_node(Key, Queue, _, _, update(_{})) :-
++    bump_count(Key),
++    thread_send_message(Queue, started),
++    sleep(5.0).
++
++interrupt_node(Key, _, _, interrupt(needs_resume, _{log:[paused]})) :-
++    bump_count(Key).
++
++resume_node(Key, _, Context, update(_{log:[Context.resume]})) :-
++    bump_count(Key).
++
++counted_router(Key, _, done) :-
++    bump_count(Key).
++
++agent_worker(work(block, Seconds), done) :-
++    sleep(Seconds).
++agent_worker(work(echo, Value), Value).
++
++block_async(Queue, done) :-
++    thread_get_message(Queue, release).
++
++canonical_submit(Module, AsyncName/AsyncArity, ExecuteName/ExecuteArity) :-
++    functor(Head, AsyncName, AsyncArity),
++    clause(Module:Head, Body),
++    submit_closure(Body, Closure),
++    strip_module(Closure, ClosureModule, PlainClosure),
++    ClosureModule == Module,
++    functor(PlainClosure, ExecuteName, ClosureArity),
++    ExecuteArity is ClosureArity+1,
++    !.
++
++submit_closure(Body, Closure) :-
++    sub_term(SubTerm, Body),
++    nonvar(SubTerm),
++    (   SubTerm = rlm_async_submit(Closure, _, _)
++    ;   SubTerm = rlm_async:rlm_async_submit(Closure, _, _)
++    ).
++
++sync_calls_async(Module, SyncName/SyncArity, AsyncName/AsyncArity) :-
++    functor(Head, SyncName, SyncArity),
++    clause(Module:Head, Body),
++    body_contains_call(Body, AsyncName, AsyncArity),
++    !.
++
++body_contains_call(Body, Name, Arity) :-
++    sub_term(Call, Body),
++    nonvar(Call),
++    source_call_functor(Call, Name, Arity).
++
++source_call_functor(_Module:Goal, Name, Arity) :-
++    !,
++    callable(Goal),
++    functor(Goal, Name, Arity).
++source_call_functor(Goal, Name, Arity) :-
++    callable(Goal),
++    functor(Goal, Name, Arity).
++
++body_contains_qualified(Body, Module, Name, Arity) :-
++    sub_term(SubTerm, Body),
++    nonvar(SubTerm),
++    SubTerm = Module:Goal,
++    callable(Goal),
++    functor(Goal, Name, Arity).
++
++body_contains_local(Body, Name, Arity) :-
++    sub_term(SubTerm, Body),
++    nonvar(SubTerm),
++    callable(SubTerm),
++    functor(SubTerm, Name, Arity).
++
++count_trace_type(Trace, Type, Count) :-
++    findall(1,
++            ( member(Event, Trace),
++              Event.type == Type
++            ),
++            Ones),
++    length(Ones, Count).
++
++trace_types(Trace, Types) :-
++    findall(Type,
++            ( member(Event, Trace),
++              Type = Event.type
++            ),
++            Types).
++
++count_history_type(History, Type, Count) :-
++    findall(1,
++            ( member(Event, History),
++              Event.type == Type
++            ),
++            Ones),
++    length(Ones, Count).
++
++await_future(Future, Timeout, Outcome) :-
++    setup_call_cleanup(
++        true,
++        rlm_future_await(Future, Timeout, Outcome),
++        rlm_future_destroy(Future)).
++
++with_runtime(Options, Goal) :-
++    setup_call_cleanup(
++        agent_runtime_create(Options, Runtime),
++        call(Goal, Runtime),
++        agent_runtime_destroy(Runtime)).
++
++basic_schema([
++    field(count, integer, 0, sum),
++    field(log, list, [], append)
++]).
++
++single_graph(Key, Compiled) :-
++    basic_schema(Schema),
++    Spec = graph(single_graph,
++                 Schema,
++                 [node(one, one_handler)],
++                 [edge(start, one), edge(one, end)]),
++    Registry = [handler(one_handler,
++                        plunit_rlm_agent_graph_async:counted_node(
++                            Key,
++                            _{count:1, log:[one]}))],
++    graph_compile(Spec, Registry, [], ok(Compiled)).
++
++route_graph(Compiled) :-
++    basic_schema(Schema),
++    Spec = graph(route_graph,
++                 Schema,
++                 [node(first, first_handler), node(finish, finish_handler)],
++                 [ edge(start, first),
++                   conditional(first, route_handler, [route(done, finish)]),
++                   edge(finish, end)
++                 ]),
++    Registry = [ handler(first_handler,
++                         plunit_rlm_agent_graph_async:counted_node(
++                             route_first,
++                             _{count:1, log:[first]})),
++                 handler(finish_handler,
++                         plunit_rlm_agent_graph_async:counted_node(
++                             route_finish,
++                             _{count:1, log:[finish]})),
++                 router(route_handler,
++                        plunit_rlm_agent_graph_async:counted_router(
++                            route_router))
++               ],
++    graph_compile(Spec, Registry, [], ok(Compiled)).
++
++interrupt_graph(Compiled) :-
++    basic_schema(Schema),
++    Spec = graph(interrupt_async_graph,
++                 Schema,
++                 [node(wait, wait_handler), node(resume, resume_handler)],
++                 [edge(start, wait), edge(wait, resume), edge(resume, end)]),
++    Registry = [ handler(wait_handler,
++                         plunit_rlm_agent_graph_async:interrupt_node(
++                             interrupt_wait)),
++                 handler(resume_handler,
++                         plunit_rlm_agent_graph_async:resume_node(
++                             interrupt_resume))
++               ],
++    graph_compile(Spec, Registry, [], ok(Compiled)).
++
++blocking_graph(Key, Queue, Compiled) :-
++    basic_schema(Schema),
++    Spec = graph(blocking_graph,
++                 Schema,
++                 [node(block, blocker)],
++                 [edge(start, block), edge(block, end)]),
++    Registry = [handler(blocker,
++                        plunit_rlm_agent_graph_async:blocking_node(Key,
++                                                                  Queue))],
++    graph_compile(Spec, Registry, [], ok(Compiled)).
++
++subgraph_parent(Compiled) :-
++    basic_schema(Schema),
++    ChildSpec = graph(child_graph,
++                      Schema,
++                      [node(child, child_handler)],
++                      [edge(start, child), edge(child, end)]),
++    ChildRegistry = [handler(child_handler,
++                             plunit_rlm_agent_graph_async:counted_node(
++                                 nested_child,
++                                 _{count:1, log:[child]}))],
++    graph_compile(ChildSpec, ChildRegistry, [], ok(Child)),
++    ParentSpec = graph(parent_graph,
++                       Schema,
++                       [subgraph(child_step, child_graph)],
++                       [edge(start, child_step), edge(child_step, end)]),
++    graph_compile(ParentSpec,
++                  [subgraph(child_graph, Child)],
++                  [],
++                  ok(Compiled)).
++
++wait_all_running([], _).
++wait_all_running([Future|Futures], Attempts) :-
++    Attempts > 0,
++    rlm_future_status(Future, Status),
++    (   Status.state == running
++    ->  wait_all_running(Futures, Attempts)
++    ;   sleep(0.005),
++        Next is Attempts-1,
++        wait_all_running([Future|Futures], Next)
++    ).
++
++cancel_and_destroy_futures([]).
++cancel_and_destroy_futures([Future|Futures]) :-
++    catch(rlm_future_cancel(Future, _), _, true),
++    catch(rlm_future_destroy(Future), _, true),
++    cancel_and_destroy_futures(Futures).
++
++test(agent_async_surfaces_submit_execute_predicates) :-
++    assertion(canonical_submit(rlm_agent,
++                               agent_spawn_async/5,
++                               agent_spawn_execute/5)),
++    assertion(canonical_submit(rlm_agent,
++                               agent_send_async/5,
++                               agent_send_execute/5)),
++    assertion(canonical_submit(rlm_agent,
++                               agent_pump_async/4,
++                               agent_pump_execute/4)),
++    assertion(canonical_submit(rlm_agent,
++                               agent_cancel_async/4,
++                               agent_cancel_execute/4)).
++
++test(agent_sync_surfaces_start_async_surfaces) :-
++    assertion(sync_calls_async(rlm_agent, agent_spawn/5, agent_spawn_async/5)),
++    assertion(sync_calls_async(rlm_agent, agent_send/5, agent_send_async/5)),
++    assertion(sync_calls_async(rlm_agent, agent_pump/4, agent_pump_async/4)),
++    assertion(sync_calls_async(rlm_agent, agent_cancel/4, agent_cancel_async/4)).
++
++test(agent_compatibility_facade_never_calls_sync_public_wrappers) :-
++    forall(member(AsyncPI-SyncPI,
++                  [ agent_spawn_async/5-agent_spawn/5,
++                    agent_send_async/5-agent_send/5,
++                    agent_pump_async/4-agent_pump/4,
++                    agent_cancel_async/4-agent_cancel/4
++                  ]),
++           ( AsyncPI = AsyncName/AsyncArity,
++             functor(Head, AsyncName, AsyncArity),
++             clause(rlm_agent_async:Head, Body),
++             SyncPI = SyncName/SyncArity,
++             assertion(\+ body_contains_qualified(Body,
++                                                  rlm_agent,
++                                                  SyncName,
++                                                  SyncArity))
++           )).
++
++test(agent_internal_composition_uses_execute_abi) :-
++    clause(rlm_agent:agent_plan_handler(_, _, _, _, _), PlanBody),
++    assertion(body_contains_local(PlanBody, agent_spawn_execute, 5)),
++    assertion(\+ body_contains_local(PlanBody, agent_spawn, 5)),
++    functor(CancelHead, cancel_children, 3),
++    clause(rlm_agent:CancelHead, CancelBody),
++    body_contains_local(CancelBody, agent_cancel_execute, 4),
++    assertion(\+ body_contains_local(CancelBody, agent_cancel, 4)).
++
++test(sync_agent_spawn_mutates_once) :-
++    with_runtime([], sync_agent_spawn_once_case).
++
++sync_agent_spawn_once_case(Runtime) :-
++    agent_spawn(Runtime, none, agent_spec(sync_once), [], ok(_)),
++    agent_trace(Runtime, Trace),
++    count_trace_type(Trace, spawn, Count),
++    assertion(Count =:= 1).
++
++test(async_agent_spawn_mutates_once) :-
++    with_runtime([], async_agent_spawn_once_case).
++
++async_agent_spawn_once_case(Runtime) :-
++    agent_spawn_async(Runtime, none, agent_spec(async_once), [], Future),
++    await_future(Future, 1.0, ok(_)),
++    agent_trace(Runtime, Trace),
++    count_trace_type(Trace, spawn, Count),
++    assertion(Count =:= 1).
++
++test(async_agent_capability_narrowing_has_one_child_side_effect) :-
++    with_runtime([root_capabilities([tool(read)])],
++                 async_agent_capability_case).
++
++async_agent_capability_case(Runtime) :-
++    agent_spawn(Runtime, none, agent_spec(root), [tool(read)], ok(Root)),
++    agent_spawn_async(Runtime,
++                      Root,
++                      agent_spec(child),
++                      [tool(read)],
++                      Future),
++    await_future(Future, 1.0, ok(Child)),
++    agent_status(Runtime, Child, ok(Status)),
++    assertion(Status.capabilities == [tool(read)]),
++    agent_children(Runtime, Root, Children),
++    assertion(Children == [Child]).
++
++test(async_agent_mailbox_admission_and_backpressure_happen_once) :-
++    with_runtime([mailbox_size(1), send_timeout(0.0)],
++                 async_agent_mailbox_case).
++
++async_agent_mailbox_case(Runtime) :-
++    Runtime = agent_runtime(RunId),
++    agent_spawn(Runtime, none, agent_spec(root), [], ok(Root)),
++    agent_send_async(Runtime,
++                     Root,
++                     checkpoint(RunId, first),
++                     [],
++                     FirstFuture),
++    await_future(FirstFuture, 1.0, ok(_)),
++    agent_send_async(Runtime,
++                     Root,
++                     checkpoint(RunId, second),
++                     [],
++                     SecondFuture),
++    await_future(SecondFuture, 1.0, SecondOutcome),
++    SecondOutcome = error(SecondError),
++    assertion(SecondError.kind == mailbox_full),
++    agent_status(Runtime, Root, ok(Status)),
++    assertion(Status.mailbox_size =:= 1),
++    agent_trace(Runtime, Trace),
++    count_trace_type(Trace, mailbox_enqueued, Enqueued),
++    count_trace_type(Trace, mailbox_backpressure, Backpressure),
++    assertion(Enqueued =:= 1),
++    assertion(Backpressure =:= 1).
++
++test(agent_sync_async_trace_shapes_are_equivalent) :-
++    with_runtime([], agent_sync_trace_case),
++    with_runtime([], agent_async_trace_case).
++
++agent_sync_trace_case(Runtime) :-
++    Runtime = agent_runtime(RunId),
++    agent_spawn(Runtime, none, agent_spec(root), [], ok(Root)),
++    agent_send(Runtime, Root, checkpoint(RunId, sync), [], ok(_)),
++    agent_pump(Runtime, Root, [], ok(_)),
++    agent_trace(Runtime, Trace),
++    trace_types(Trace, Types),
++    nb_setval(agent_sync_trace_types, Types).
++
++agent_async_trace_case(Runtime) :-
++    Runtime = agent_runtime(RunId),
++    agent_spawn_async(Runtime, none, agent_spec(root), [], SpawnFuture),
++    await_future(SpawnFuture, 1.0, ok(Root)),
++    agent_send_async(Runtime,
++                     Root,
++                     checkpoint(RunId, sync),
++                     [],
++                     SendFuture),
++    await_future(SendFuture, 1.0, ok(_)),
++    agent_pump_async(Runtime, Root, [], PumpFuture),
++    await_future(PumpFuture, 1.0, ok(_)),
++    agent_trace(Runtime, Trace),
++    trace_types(Trace, Types),
++    nb_getval(agent_sync_trace_types, SyncTypes),
++    assertion(Types == SyncTypes).
++
++test(agent_await_timeout_does_not_restart_pump) :-
++    with_runtime([], agent_timeout_case).
++
++agent_timeout_case(Runtime) :-
++    agent_spawn(Runtime, none, agent_spec(root), [], ok(Root)),
++    agent_pump_async(Runtime, Root, [timeout(0.20)], Future),
++    setup_call_cleanup(
++        true,
++        ( rlm_future_await(Future, 0.01, TimeoutOutcome),
++          TimeoutOutcome = error(TimeoutError),
++          assertion(TimeoutError.kind == timeout),
++          rlm_future_await(Future, 1.0, ok(Pump)),
++          assertion(Pump.status == idle),
++          agent_status(Runtime, Root, ok(Status)),
++          assertion(Status.processed =:= 0)
++        ),
++        rlm_future_destroy(Future)).
++
++test(agent_future_cancellation_interrupts_active_pump_without_state_mutation) :-
++    with_runtime([], agent_future_cancel_case).
++
++agent_future_cancel_case(Runtime) :-
++    agent_spawn(Runtime, none, agent_spec(root), [], ok(Root)),
++    agent_pump_async(Runtime, Root, [timeout(5.0)], Future),
++    sleep(0.03),
++    rlm_future_cancel(Future, ok(cancelled)),
++    rlm_future_await(Future, Cancelled),
++    Cancelled = error(Error),
++    assertion(Error.kind == cancelled),
++    rlm_future_destroy(Future),
++    agent_status(Runtime, Root, ok(Status)),
++    assertion(Status.status == active),
++    assertion(Status.processed =:= 0).
++
++test(async_agent_cancel_cleans_owned_child_work) :-
++    with_runtime([worker_count(1),
++                  worker_handler(plunit_rlm_agent_graph_async:agent_worker)],
++                 async_agent_cancel_owned_case).
++
++async_agent_cancel_owned_case(Runtime) :-
++    Runtime = agent_runtime(RunId),
++    agent_spawn(Runtime, none, agent_spec(parent), [], ok(Parent)),
++    agent_spawn(Runtime, Parent, agent_spec(child), [], ok(Child)),
++    agent_send(Runtime,
++               Child,
++               request(RunId, blocking, work(block, 5.0)),
++               [],
++               ok(_)),
++    agent_pump(Runtime, Child, [], ok(_)),
++    agent_cancel_async(Runtime, Parent, test_cancel, Future),
++    await_future(Future, 1.0, ok(_)),
++    agent_status(Runtime, Parent, ok(ParentStatus)),
++    agent_status(Runtime, Child, ok(ChildStatus)),
++    assertion(ParentStatus.status == cancelled(test_cancel)),
++    assertion(ChildStatus.status == cancelled(test_cancel)).
++
++test(agent_host_worker_pool_remains_bounded_and_distinct) :-
++    with_runtime([worker_count(2)], agent_pool_bound_case).
++
++agent_pool_bound_case(Runtime) :-
++    forall(between(1, 12, N),
++           ( format(atom(Name), 'agent_~d', [N]),
++             agent_spawn(Runtime, none, agent_spec(Name), [], ok(_))
++           )),
++    agent_runtime_status(Runtime, Status),
++    assertion(Status.agent_count =:= 12),
++    assertion(Status.worker_pool_size =:= 2),
++    assertion(Status.worker_running =:= 0).
++
++test(agent_future_metadata_is_host_controlled) :-
++    with_runtime([], agent_metadata_case).
++
++agent_metadata_case(Runtime) :-
++    agent_spawn_async(Runtime, none, agent_spec(root), [], Future),
++    setup_call_cleanup(
++        true,
++        ( rlm_future_metadata(Future, Metadata),
++          assertion(Metadata.operation == agent_spawn),
++          Runtime = agent_runtime(RuntimeId),
++          assertion(Metadata.runtime_id == RuntimeId),
++          assertion(Metadata.parent_agent == none),
++          rlm_future_await(Future, 1.0, ok(_))
++        ),
++        rlm_future_destroy(Future)).
++
++test(graph_async_surfaces_submit_execute_predicates) :-
++    assertion(canonical_submit(rlm_graph,
++                               graph_run_async/4,
++                               graph_run_execute/4)),
++    assertion(canonical_submit(rlm_graph,
++                               graph_resume_async/6,
++                               graph_resume_execute/6)).
++
++test(graph_sync_surfaces_start_async_surfaces) :-
++    assertion(sync_calls_async(rlm_graph, graph_run/4, graph_run_async/4)),
++    assertion(sync_calls_async(rlm_graph, graph_resume/6, graph_resume_async/6)).
++
++test(graph_compatibility_facade_never_calls_sync_public_wrappers) :-
++    forall(member(AsyncPI-SyncPI,
++                  [ graph_run_async/4-graph_run/4,
++                    graph_resume_async/6-graph_resume/6
++                  ]),
++           ( AsyncPI = AsyncName/AsyncArity,
++             functor(Head, AsyncName, AsyncArity),
++             clause(rlm_graph_async:Head, Body),
++             SyncPI = SyncName/SyncArity,
++             assertion(\+ body_contains_qualified(Body,
++                                                  rlm_graph,
++                                                  SyncName,
++                                                  SyncArity))
++           )).
++
++test(graph_subgraph_composition_uses_execute_abi) :-
++    functor(Head, execute_node, 7),
++    clause(rlm_graph:Head, Body),
++    body_contains_local(Body, graph_run_execute, 4),
++    assertion(\+ body_contains_local(Body, graph_run, 4)).
++
++test(sync_graph_executes_node_once) :-
++    reset_count(sync_node),
++    single_graph(sync_node, Compiled),
++    graph_run(Compiled, _{}, [run_id(sync_once)], ok(Result)),
++    read_count(sync_node, Count),
++    assertion(Count =:= 1),
++    assertion(Result.state.count =:= 1).
++
++test(async_graph_executes_node_once) :-
++    reset_count(async_node),
++    single_graph(async_node, Compiled),
++    graph_run_async(Compiled, _{}, [run_id(async_once)], Future),
++    await_future(Future, 1.0, ok(Result)),
++    read_count(async_node, Count),
++    assertion(Count =:= 1),
++    assertion(Result.state.count =:= 1).
++
++test(graph_router_reducer_history_and_checkpoint_are_not_duplicated) :-
++    reset_count(route_first),
++    reset_count(route_finish),
++    reset_count(route_router),
++    route_graph(Compiled),
++    setup_call_cleanup(
++        graph_backend_open(memory, Backend),
++        ( graph_run_async(Compiled,
++                          _{},
++                          [backend(Backend), run_id(route_once)],
++                          Future),
++          await_future(Future, 1.0, ok(Result)),
++          read_count(route_first, FirstCount),
++          read_count(route_finish, FinishCount),
++          read_count(route_router, RouterCount),
++          assertion(FirstCount =:= 1),
++          assertion(FinishCount =:= 1),
++          assertion(RouterCount =:= 1),
++          assertion(Result.state.count =:= 2),
++          assertion(Result.state.log == [first,finish]),
++          count_history_type(Result.history, node_started, Started),
++          count_history_type(Result.history, node_completed, Completed),
++          count_history_type(Result.history, edge_selected, Edges),
++          assertion(Started =:= 2),
++          assertion(Completed =:= 2),
++          assertion(Edges =:= 2),
++          graph_checkpoint(Backend, route_once, Snapshot),
++          assertion(Snapshot.status == completed),
++          assertion(Snapshot.event_sequence =:= Result.event_sequence)
++        ),
++        graph_backend_close(Backend)).
++
++test(graph_sync_async_state_outcome_and_history_are_equivalent) :-
++    reset_count(route_first),
++    reset_count(route_finish),
++    reset_count(route_router),
++    route_graph(Compiled),
++    setup_call_cleanup(
++        graph_backend_open(memory, SyncBackend),
++        graph_run(Compiled,
++                  _{},
++                  [backend(SyncBackend), run_id(equivalent_run)],
++                  SyncOutcome),
++        graph_backend_close(SyncBackend)),
++    reset_count(route_first),
++    reset_count(route_finish),
++    reset_count(route_router),
++    setup_call_cleanup(
++        graph_backend_open(memory, AsyncBackend),
++        ( graph_run_async(Compiled,
++                          _{},
++                          [backend(AsyncBackend), run_id(equivalent_run)],
++                          Future),
++          await_future(Future, 1.0, AsyncOutcome)
++        ),
++        graph_backend_close(AsyncBackend)),
++    assertion(SyncOutcome =@= AsyncOutcome).
++
++test(graph_timeout_does_not_restart_active_node) :-
++    reset_count(timeout_node),
++    message_queue_create(Queue),
++    setup_call_cleanup(
++        true,
++        ( blocking_graph(timeout_node, Queue, Compiled),
++          graph_run_async(Compiled, _{}, [time_limit(0.05)], Future),
++          setup_call_cleanup(
++              true,
++              ( thread_get_message(Queue, started, [timeout(1.0)]),
++                rlm_future_await(Future, 1.0, Outcome),
++                Outcome = error(Error),
++                assertion(Error.kind == timeout),
++                read_count(timeout_node, Count),
++                assertion(Count =:= 1)
++              ),
++              rlm_future_destroy(Future))
++        ),
++        message_queue_destroy(Queue)).
++
++test(graph_future_cancellation_does_not_orphan_active_node) :-
++    reset_count(cancel_node),
++    message_queue_create(Queue),
++    setup_call_cleanup(
++        true,
++        ( blocking_graph(cancel_node, Queue, Compiled),
++          graph_run_async(Compiled, _{}, [time_limit(10.0)], Future),
++          setup_call_cleanup(
++              true,
++              ( thread_get_message(Queue, started, [timeout(1.0)]),
++                rlm_future_cancel(Future, ok(cancelled)),
++                rlm_future_await(Future, Outcome),
++                Outcome = error(Error),
++                assertion(Error.kind == cancelled),
++                read_count(cancel_node, Count),
++                assertion(Count =:= 1)
++              ),
++              rlm_future_destroy(Future))
++        ),
++        message_queue_destroy(Queue)).
++
++test(graph_token_cancellation_reaches_active_async_graph) :-
++    reset_count(token_cancel_node),
++    message_queue_create(Queue),
++    graph_cancellation_token(Token),
++    setup_call_cleanup(
++        true,
++        ( blocking_graph(token_cancel_node, Queue, Compiled),
++          graph_run_async(Compiled,
++                          _{},
++                          [cancellation_token(Token), time_limit(10.0)],
++                          Future),
++          setup_call_cleanup(
++              true,
++              ( thread_get_message(Queue, started, [timeout(1.0)]),
++                graph_cancel(Token),
++                rlm_future_await(Future, 1.0, Outcome),
++                Outcome = error(Error),
++                assertion(Error.kind == cancelled)
++              ),
++              rlm_future_destroy(Future))
++        ),
++        message_queue_destroy(Queue)).
++
++test(graph_resume_does_not_repeat_precheckpoint_node) :-
++    reset_count(interrupt_wait),
++    reset_count(interrupt_resume),
++    interrupt_graph(Compiled),
++    setup_call_cleanup(
++        graph_backend_open(memory, Backend),
++        ( graph_run_async(Compiled,
++                          _{},
++                          [backend(Backend), run_id(resume_once)],
++                          RunFuture),
++          await_future(RunFuture, 1.0, ok(Paused)),
++          assertion(Paused.status == paused(needs_resume)),
++          read_count(interrupt_wait, WaitBefore),
++          assertion(WaitBefore =:= 1),
++          graph_resume_async(Compiled,
++                             Backend,
++                             resume_once,
++                             approved,
++                             [],
++                             ResumeFuture),
++          await_future(ResumeFuture, 1.0, ok(Completed)),
++          assertion(Completed.status == completed),
++          read_count(interrupt_wait, WaitAfter),
++          read_count(interrupt_resume, ResumeCount),
++          assertion(WaitAfter =:= 1),
++          assertion(ResumeCount =:= 1),
++          count_history_type(Completed.history, node_completed, NodeCompleted),
++          assertion(NodeCompleted =:= 2)
++        ),
++        graph_backend_close(Backend)).
++
++test(graph_future_metadata_carries_graph_and_run_identity) :-
++    reset_count(metadata_node),
++    single_graph(metadata_node, Compiled),
++    graph_run_async(Compiled,
++                    _{},
++                    [run_id(metadata_run),
++                     trace_id(trace_54),
++                     session_id(session_54)],
++                    Future),
++    setup_call_cleanup(
++        true,
++        ( rlm_future_metadata(Future, Metadata),
++          assertion(Metadata.operation == graph_run),
++          assertion(Metadata.graph_id == single_graph),
++          assertion(Metadata.graph_run_id == metadata_run),
++          assertion(Metadata.trace_id == trace_54),
++          assertion(Metadata.session_id == session_54),
++          rlm_future_await(Future, 1.0, ok(_))
++        ),
++        rlm_future_destroy(Future)).
++
++test(subgraph_execute_abi_avoids_nested_future_deadlock_under_saturation) :-
++    reset_count(nested_child),
++    message_queue_create(Queue),
++    setup_call_cleanup(
++        ( findall(Future,
++                  ( between(1, 7, _),
++                    rlm_async_submit(
++                        plunit_rlm_agent_graph_async:block_async(Queue),
++                        Future)
++                  ),
++                  Blockers),
++          wait_all_running(Blockers, 400)
++        ),
++        ( subgraph_parent(Compiled),
++          graph_run_async(Compiled, _{}, [run_id(no_nested_wait)], GraphFuture),
++          setup_call_cleanup(
++              true,
++              ( rlm_future_await(GraphFuture, 0.75, GraphOutcome),
++                GraphOutcome = ok(Result),
++                assertion(Result.status == completed),
++                read_count(nested_child, ChildCount),
++                assertion(ChildCount =:= 1)
++              ),
++              rlm_future_destroy(GraphFuture))
++        ),
++        ( cancel_and_destroy_futures(Blockers),
++          message_queue_destroy(Queue)
++        )).
++
++:- end_tests(rlm_agent_graph_async).
+diff --git a/docs/agent-runtime.md b/docs/agent-runtime.md
+index fe95a7b..0000000 100644
+--- a/docs/agent-runtime.md
++++ b/docs/agent-runtime.md
+@@ -17,17 +17,34 @@ The main `rlm` module exports the host-facing agent API:
+ agent_runtime_destroy(+Runtime).
+ agent_runtime_status(+Runtime, -Status).
+ agent_spawn(+Runtime, +Parent, +Spec, +Capabilities, -Outcome).
++agent_spawn_async(+Runtime, +Parent, +Spec, +Capabilities, -Future).
+ agent_send(+Runtime, +Agent, +Message, +Options, -Outcome).
++agent_send_async(+Runtime, +Agent, +Message, +Options, -Future).
+ agent_pump(+Runtime, +Agent, +Options, -Outcome).
++agent_pump_async(+Runtime, +Agent, +Options, -Future).
+ agent_status(+Runtime, +Agent, -Outcome).
+ agent_children(+Runtime, +Agent, -Children).
+ agent_cancel(+Runtime, +Agent, +Reason, -Outcome).
++agent_cancel_async(+Runtime, +Agent, +Reason, -Future).
+ agent_trace(+Runtime, -Events).
+ ```
+ 
++Spawn, send, pump, and cancellation are canonical async-first operations.  Each
++`*_async` predicate submits one `*_execute` operation to `rlm_async`; each sync
++predicate starts that same operation and awaits its Future.  Trusted library
++code that is already running inside a canonical async worker calls the execute
++ABI directly instead of starting and waiting on a nested Future.
++
++The execute predicates are an internal host/library composition ABI.  They are
++not part of model-generated callable resolution.  Future metadata records the
++operation plus runtime/agent identity and, where options carry them, trace and
++session IDs.
++
++This does **not** replace the agent runtime's bounded worker pool. `rlm_async`
++schedules public API operations; the agent pool separately bounds blocking host
++work dispatched by logical mailboxes and therefore preserves actor fairness,
++backpressure, and supervision semantics.
++
+ Always destroy a runtime with `setup_call_cleanup/3` or an equivalent host
+ lifecycle. Destruction cancels outstanding worker activity, drains the bounded
+ worker pool, destroys engines/mailboxes, and clears the runtime registry.
+diff --git a/docs/graph-runtime.md b/docs/graph-runtime.md
+index e3bcd0a..0000000 100644
+--- a/docs/graph-runtime.md
++++ b/docs/graph-runtime.md
+@@ -1,6 +1,25 @@
+ # Durable graph orchestration
+ 
+ `rlm_graph` provides a validated, bounded graph runtime with durable checkpoint
+ and resume support.
++
++## Canonical async execution
++
++Latency-bearing run/resume operations are async-first:
++
++```prolog
++graph_run_async(+Compiled, +InitialState, +Options, -Future).
++graph_run(+Compiled, +InitialState, +Options, -Outcome).
++graph_resume_async(+Compiled, +Backend, +RunId, +Resume, +Options, -Future).
++graph_resume(+Compiled, +Backend, +RunId, +Resume, +Options, -Outcome).
++```
++
++The async surfaces submit `graph_run_execute/4` and `graph_resume_execute/6`.
++The synchronous surfaces start those same operations and await their Futures.
++Inline subgraphs call the execute ABI directly, which prevents nested Future
++waits when a graph already occupies an `rlm_async` worker.  Compilation, schema
++validation, checkpoint lookup/history, and backend metadata remain immediate.
++
++Future metadata carries the operation, graph ID, requested run ID, trace ID and
++session ID when available.  Execute predicates remain a trusted host/library
++composition ABI and are not model-callable graph registry entries.
