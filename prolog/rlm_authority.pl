@@ -14,6 +14,7 @@
             rlm_pending_approvals/2,
             rlm_pending_resolution_async/2,
             rlm_pending_resolution/2,
+            rlm_authority_events/2,
             rlm_approve/2,
             rlm_deny/3,
             rlm_edit/3,
@@ -22,58 +23,69 @@
 
 /** <module> Host-controlled authority and pending operations
 
-Authority is a host/library policy layered after hard validation and capability
-checks. It never widens capabilities or makes an invalid operation executable.
-Human approval is represented as durable-in-process pending state plus a
-manually-resolved Future. No rlm_async worker is occupied while approval is
-pending.
+Authority mediates an already valid, capability-permitted, normalized host
+operation. It does not replace schemas, confinement, process/network policy,
+budgets or any other hard boundary.
 
-The only canonical public authority modes are approve_diff, allow_once,
-allow_session, and dangerous. Unset contexts read as approve_diff. Child
-contexts may inherit the same or a stricter mode, never a wider one.
+The canonical modes are exactly:
+
+  approve_diff < allow_once < allow_session < dangerous
+
+Unset contexts read as approve_diff. Trusted host code may set a context policy;
+children may only inherit the same or a stricter policy. No yolo alias exists.
+
+Human approval is represented by in-process pending state and a deferred Future.
+Creating a pending operation queues no scheduler task and occupies no worker.
+Approval later atomically changes state and schedules only the trusted exact
+continuation. Denial resolves the deferred Future without executing the target.
+Editing supersedes the old approval ID and creates a new proposal/fingerprint,
+so stale approval cannot authorize edited work.
 */
 
 :- use_module(library(crypto)).
 :- use_module(library(gensym)).
-:- use_module(library(lists)).
 :- use_module(rlm_async, []).
 
 :- dynamic authority_mode/2.
 :- dynamic authority_once/4.
 :- dynamic authority_pending/3.
-:- dynamic authority_pending_control/4.
+:- dynamic authority_pending_control/5.
 :- dynamic authority_sequence/2.
 :- dynamic authority_event/3.
 
 /* -------------------------------------------------------------------------
- * Modes and narrowing
+ * Modes
  * ---------------------------------------------------------------------- */
+
+mode_rank(approve_diff, 0).
+mode_rank(allow_once, 1).
+mode_rank(allow_session, 2).
+mode_rank(dangerous, 3).
 
 rlm_authority(Context, Mode) :-
     require_context(Context),
     with_mutex(rlm_authority,
-               (   authority_mode(Context, Found)
-               ->  Mode = Found
-               ;   Mode = approve_diff
-               )).
+               current_mode_locked(Context, Mode)).
 
 rlm_set_authority_if_unset(Context, Mode, Outcome) :-
     catch(( require_context(Context),
             require_mode(Mode),
             with_mutex(rlm_authority,
-                       set_authority_if_unset_locked(Context, Mode, Outcome))
+                       set_if_unset_locked(Context, Mode, Outcome))
           ),
           Exception,
           authority_exception(set_if_unset, Exception, Outcome)).
 
-set_authority_if_unset_locked(Context, _, ok(authority_unchanged{context:Context,
-                                                                  mode:Existing})) :-
+set_if_unset_locked(Context, _,
+                    ok(authority_unchanged{context:Context, mode:Existing})) :-
     authority_mode(Context, Existing),
     !.
-set_authority_if_unset_locked(Context, Mode,
-                              ok(authority_set{context:Context, mode:Mode})) :-
+set_if_unset_locked(Context, Mode,
+                    ok(authority_set{context:Context, mode:Mode})) :-
     assertz(authority_mode(Context, Mode)),
-    event_locked(Context, authority_set, _{mode:Mode, source:set_if_unset}).
+    event_locked(Context,
+                 authority_set,
+                 _{mode:Mode, source:set_if_unset}).
 
 rlm_set_authority(Context, Mode, Outcome) :-
     catch(( require_context(Context),
@@ -90,8 +102,11 @@ set_authority_locked(Context, Mode,
                                       mode:Mode})) :-
     current_mode_locked(Context, Previous),
     retractall(authority_mode(Context, _)),
+    retractall(authority_once(Context, _, _, _)),
     assertz(authority_mode(Context, Mode)),
-    event_locked(Context, authority_set, _{mode:Mode, previous:Previous, source:trusted_host}).
+    event_locked(Context,
+                 authority_set,
+                 _{mode:Mode, previous:Previous, source:trusted_host}).
 
 rlm_authority_narrow(Parent, Requested, Outcome) :-
     catch(( require_mode(Parent),
@@ -127,27 +142,26 @@ child_requested_mode(none, Parent, Parent) :- !.
 child_requested_mode(Requested, _, Requested) :- require_mode(Requested).
 
 child_after_narrow(error(Error), _, error(Error)) :- !.
-child_after_narrow(ok(Mode), Context, Outcome) :-
+child_after_narrow(ok(Mode), Context,
+                   ok(authority_child{context:Context, mode:Mode})) :-
     with_mutex(rlm_authority,
                ( retractall(authority_mode(Context, _)),
+                 retractall(authority_once(Context, _, _, _)),
                  assertz(authority_mode(Context, Mode)),
-                 event_locked(Context, authority_inherited, _{mode:Mode}),
-                 Outcome = ok(authority_child{context:Context, mode:Mode})
+                 event_locked(Context, authority_inherited, _{mode:Mode})
                )).
 
-mode_rank(approve_diff, 0).
-mode_rank(allow_once, 1).
-mode_rank(allow_session, 2).
-mode_rank(dangerous, 3).
+require_mode(Mode) :- mode_rank(Mode, _), !.
+require_mode(Mode) :- throw(authority_fault(invalid_mode(Mode))).
 
-require_mode(Mode) :-
-    mode_rank(Mode, _),
-    !.
-require_mode(Mode) :-
-    throw(authority_fault(invalid_mode(Mode))).
+current_mode_locked(Context, Mode) :-
+    (   authority_mode(Context, Found)
+    ->  Mode = Found
+    ;   Mode = approve_diff
+    ).
 
 /* -------------------------------------------------------------------------
- * Effect vocabulary and exact fingerprints
+ * Closed effect vocabulary and canonical fingerprints
  * ---------------------------------------------------------------------- */
 
 rlm_effect_class(read).
@@ -162,14 +176,12 @@ rlm_effect_class(repository_mutation).
 rlm_operation_fingerprint(Context, Operation0, Fingerprint) :-
     require_context(Context),
     normalize_operation(Operation0, Operation),
-    Canonical0 = authority_fingerprint{context:Context, operation:Operation},
-    canonical_value(Canonical0, Canonical),
+    canonical_value(authority_fingerprint{context:Context,
+                                          operation:Operation},
+                    Canonical),
     term_string(Canonical,
                 Serialized,
-                [ quoted(true),
-                  numbervars(true),
-                  ignore_ops(true)
-                ]),
+                [quoted(true), numbervars(true), ignore_ops(true)]),
     crypto_data_hash(Serialized,
                      Hex,
                      [algorithm(sha256), encoding(utf8)]),
@@ -178,35 +190,30 @@ rlm_operation_fingerprint(Context, Operation0, Fingerprint) :-
 normalize_operation(Operation0, Operation) :-
     is_dict(Operation0),
     !,
-    required_operation_field(Operation0, name, Name),
-    required_operation_field(Operation0, effect, Effect),
-    required_operation_field(Operation0, capability, Capability),
+    require_operation_field(Operation0, name, Name),
+    require_operation_field(Operation0, effect, Effect),
+    require_operation_field(Operation0, capability, Capability),
     require_operation_name(Name),
     require_effect(Effect),
-    ground(Capability),
+    require_ground(Capability, capability),
     canonical_value(Operation0, Operation).
 normalize_operation(Operation, _) :-
     throw(authority_fault(invalid_operation(Operation))).
 
-required_operation_field(Operation, Key, Value) :-
+require_operation_field(Operation, Key, Value) :-
     (   get_dict(Key, Operation, Value)
     ->  true
     ;   throw(authority_fault(missing_operation_field(Key)))
     ).
 
-require_operation_name(Name) :-
-    atom(Name), Name \== '',
-    !.
+require_operation_name(Name) :- atom(Name), Name \== '', !.
 require_operation_name(Name) :-
     throw(authority_fault(invalid_operation_name(Name))).
 
-require_effect(Effect) :-
-    rlm_effect_class(Effect),
-    !.
-require_effect(Effect) :-
-    throw(authority_fault(invalid_effect(Effect))).
+require_effect(Effect) :- rlm_effect_class(Effect), !.
+require_effect(Effect) :- throw(authority_fault(invalid_effect(Effect))).
 
-canonical_value(Value, Value) :-
+canonical_value(Value, _) :-
     var(Value),
     !,
     throw(authority_fault(nonground_authority_value)).
@@ -231,14 +238,17 @@ canonical_value(Value, Value) :- atomic(Value), !.
 canonical_value(Value, _) :-
     throw(authority_fault(invalid_authority_value(Value))).
 
-canonical_pair(Key-Value0, Key-Value) :-
-    canonical_value(Value0, Value).
+canonical_pair(Key-Value0, Key-Value) :- canonical_value(Value0, Value).
 
 /* -------------------------------------------------------------------------
- * Authority decision
+ * Decision boundary and allow-once exactness
  * ---------------------------------------------------------------------- */
 
-rlm_authorize_operation(Context, Operation0, Continuation, EditValidator, Outcome) :-
+rlm_authorize_operation(Context,
+                        Operation0,
+                        Continuation,
+                        EditValidator,
+                        Outcome) :-
     catch(authorize_operation_(Context,
                                Operation0,
                                Continuation,
@@ -247,55 +257,56 @@ rlm_authorize_operation(Context, Operation0, Continuation, EditValidator, Outcom
           Exception,
           authority_exception(authorize, Exception, Outcome)).
 
-authorize_operation_(Context, Operation0, Continuation, EditValidator, Outcome) :-
+authorize_operation_(Context,
+                     Operation0,
+                     Continuation,
+                     EditValidator,
+                     Outcome) :-
     require_context(Context),
     require_host_continuation(Continuation),
     require_edit_validator(EditValidator),
     normalize_operation(Operation0, Operation),
     rlm_operation_fingerprint(Context, Operation, Fingerprint),
-    rlm_authority(Context, Mode),
-    authorize_mode(Mode,
-                   Context,
-                   Operation,
-                   Fingerprint,
-                   Continuation,
-                   EditValidator,
-                   Outcome).
+    authorize_normalized(Context,
+                         Operation,
+                         Fingerprint,
+                         Continuation,
+                         EditValidator,
+                         Outcome).
 
-authorize_mode(_, _, Operation, Fingerprint, _, _,
-               execute(authority_permit{kind:read,
-                                        fingerprint:Fingerprint})) :-
+authorize_normalized(_, Operation, Fingerprint, _, _,
+                     execute(authority_permit{kind:read,
+                                              fingerprint:Fingerprint})) :-
     Operation.effect == read,
     !.
-authorize_mode(dangerous, _, _, Fingerprint, _, _,
-               execute(authority_permit{kind:dangerous,
-                                        fingerprint:Fingerprint})) :- !.
-authorize_mode(allow_session, _, _, Fingerprint, _, _,
-               execute(authority_permit{kind:allow_session,
-                                        fingerprint:Fingerprint})) :- !.
-authorize_mode(allow_once, Context, Operation, Fingerprint, _, _, Outcome) :-
-    !,
+authorize_normalized(Context,
+                     Operation,
+                     Fingerprint,
+                     Continuation,
+                     EditValidator,
+                     Outcome) :-
     with_mutex(rlm_authority,
-               allow_once_locked(Context, Operation, Fingerprint, Outcome)).
-authorize_mode(approve_diff,
-               Context,
-               Operation,
-               Fingerprint,
-               Continuation,
-               EditValidator,
-               Outcome) :-
-    create_pending(Context,
-                   Operation,
-                   Fingerprint,
-                   Continuation,
-                   EditValidator,
-                   Outcome).
+               nonread_decision_locked(Context,
+                                       Fingerprint,
+                                       Decision)),
+    apply_nonread_decision(Decision,
+                           Context,
+                           Operation,
+                           Fingerprint,
+                           Continuation,
+                           EditValidator,
+                           Outcome).
 
-allow_once_locked(Context, _, Fingerprint,
-                  execute(authority_permit{kind:allow_once,
-                                           fingerprint:Fingerprint})) :-
+nonread_decision_locked(Context, Fingerprint,
+                        replay(Saved)) :-
+    authority_once(Context, Fingerprint, completed, Saved),
+    !.
+nonread_decision_locked(Context, Fingerprint,
+                        once_in_progress) :-
+    authority_once(Context, Fingerprint, started, _),
+    !.
+nonread_decision_locked(Context, Fingerprint, execute(allow_once)) :-
     current_mode_locked(Context, allow_once),
-    \+ authority_once(Context, _, started, _),
     !,
     retractall(authority_mode(Context, _)),
     assertz(authority_mode(Context, approve_diff)),
@@ -303,36 +314,68 @@ allow_once_locked(Context, _, Fingerprint,
     event_locked(Context,
                  allow_once_consumed,
                  _{fingerprint:Fingerprint, next_mode:approve_diff}).
-allow_once_locked(Context, _, Fingerprint,
-                  error(authority_error{
-                            kind:allow_once_already_started,
-                            fingerprint:Fingerprint,
-                            message:"single-use authority was already consumed"
-                        })) :-
-    authority_once(Context, Fingerprint, started, _),
+nonread_decision_locked(Context, _, execute(Mode)) :-
+    current_mode_locked(Context, Mode),
+    memberchk(Mode, [allow_session, dangerous]),
     !.
-allow_once_locked(Context, _, Fingerprint,
-                  error(authority_error{
-                            kind:allow_once_consumed,
-                            fingerprint:Fingerprint,
-                            message:"single-use authority is no longer available"
-                        })).
+nonread_decision_locked(Context, _, pending) :-
+    current_mode_locked(Context, approve_diff),
+    !.
+nonread_decision_locked(Context, _, invalid(Mode)) :-
+    current_mode_locked(Context, Mode).
+
+apply_nonread_decision(replay(Saved), _, _, Fingerprint, _, _,
+                       replay(authority_replay{fingerprint:Fingerprint,
+                                               outcome:Saved})) :- !.
+apply_nonread_decision(once_in_progress, _, _, Fingerprint, _, _,
+                       error(authority_error{
+                                 kind:allow_once_in_progress,
+                                 fingerprint:Fingerprint,
+                                 message:"the exact single-use operation has already started"
+                             })) :- !.
+apply_nonread_decision(execute(Mode), _, _, Fingerprint, _, _,
+                       execute(authority_permit{kind:Mode,
+                                                fingerprint:Fingerprint})) :- !.
+apply_nonread_decision(pending,
+                       Context,
+                       Operation,
+                       Fingerprint,
+                       Continuation,
+                       EditValidator,
+                       Outcome) :-
+    create_pending(Context,
+                   Operation,
+                   Fingerprint,
+                   Continuation,
+                   EditValidator,
+                   none,
+                   Outcome).
+apply_nonread_decision(invalid(Mode), _, _, _, _, _,
+                       error(authority_error{
+                                 kind:invalid_runtime_mode,
+                                 mode:Mode,
+                                 message:"authority context contains an invalid mode"
+                             })).
 
 rlm_authority_complete_once(Context, Fingerprint, Outcome) :-
+    require_context(Context),
     with_mutex(rlm_authority,
-               (   retract(authority_once(Context, Fingerprint, started, _))
-               ->  assertz(authority_once(Context,
-                                          Fingerprint,
-                                          completed,
-                                          Outcome)),
-                   event_locked(Context,
-                                allow_once_completed,
-                                _{fingerprint:Fingerprint})
-               ;   true
-               )).
+               complete_once_locked(Context, Fingerprint, Outcome)).
+
+complete_once_locked(Context, Fingerprint, Outcome) :-
+    (   retract(authority_once(Context, Fingerprint, started, _))
+    ->  assertz(authority_once(Context,
+                              Fingerprint,
+                              completed,
+                              Outcome)),
+        event_locked(Context,
+                     allow_once_completed,
+                     _{fingerprint:Fingerprint})
+    ;   true
+    ).
 
 /* -------------------------------------------------------------------------
- * Pending operations and non-blocking approval wait
+ * Pending operation contract
  * ---------------------------------------------------------------------- */
 
 create_pending(Context,
@@ -340,40 +383,77 @@ create_pending(Context,
                Fingerprint,
                Continuation,
                EditValidator,
+               EditedFrom,
                approval_required(Public)) :-
+    resolution_metadata(Context, Fingerprint, Metadata),
+    rlm_async:rlm_future_deferred(Metadata, ResolutionFuture),
+    catch(with_mutex(rlm_authority,
+                     create_pending_locked(Context,
+                                           Operation,
+                                           Fingerprint,
+                                           Continuation,
+                                           EditValidator,
+                                           ResolutionFuture,
+                                           EditedFrom,
+                                           Public)),
+          Exception,
+          ( rlm_async:rlm_future_destroy(ResolutionFuture),
+            throw(Exception)
+          )).
+
+create_pending_locked(Context,
+                      Operation,
+                      Fingerprint,
+                      Continuation,
+                      EditValidator,
+                      ResolutionFuture,
+                      EditedFrom,
+                      Public) :-
+    gensym(approval_, ApprovalId),
+    get_time(CreatedAt),
     pending_public_operation(Operation, PublicOperation),
-    rlm_async:rlm_future_deferred(
-        async_metadata{operation:authority_pending_resolution,
-                       authority_context:Context,
-                       fingerprint:Fingerprint},
-        ResolutionFuture),
-    with_mutex(rlm_authority,
-               ( gensym(approval_, ApprovalId),
-                 get_time(CreatedAt),
-                 Record = pending_operation{
-                              id:ApprovalId,
-                              operation:PublicOperation,
-                              name:Operation.name,
-                              effect:Operation.effect,
-                              capability:Operation.capability,
-                              context:Context,
-                              authority:approve_diff,
-                              fingerprint:Fingerprint,
-                              created_at:CreatedAt,
-                              state:pending
-                          },
-                 assertz(authority_pending(ApprovalId, Context, Record)),
-                 assertz(authority_pending_control(ApprovalId,
-                                                   Continuation,
-                                                   EditValidator,
-                                                   ResolutionFuture)),
-                 event_locked(Context,
-                              approval_pending,
-                              _{approval_id:ApprovalId,
-                                fingerprint:Fingerprint,
-                                effect:Operation.effect}),
-                 Public = Record
-               )).
+    pending_correlation(Operation, Correlation),
+    Base = pending_operation{
+               id:ApprovalId,
+               operation:PublicOperation,
+               name:Operation.name,
+               effect:Operation.effect,
+               capability:Operation.capability,
+               context:Context,
+               correlation:Correlation,
+               authority:approve_diff,
+               fingerprint:Fingerprint,
+               created_at:CreatedAt,
+               state:pending
+           },
+    add_edited_from(EditedFrom, Base, Record),
+    assertz(authority_pending(ApprovalId, Context, Record)),
+    assertz(authority_pending_control(ApprovalId,
+                                      Continuation,
+                                      EditValidator,
+                                      ResolutionFuture,
+                                      none)),
+    event_locked(Context,
+                 approval_pending,
+                 _{approval_id:ApprovalId,
+                   fingerprint:Fingerprint,
+                   effect:Operation.effect}),
+    Public = Record.
+
+add_edited_from(none, Record, Record) :- !.
+add_edited_from(OldId, Record0, Record) :-
+    put_dict(edited_from, Record0, OldId, Record).
+
+pending_correlation(Operation, Correlation) :-
+    (   get_dict(correlation, Operation, Found)
+    ->  sanitize_value(Found, Correlation)
+    ;   Correlation = correlation{}
+    ).
+
+resolution_metadata(Context, Fingerprint,
+                    async_metadata{operation:authority_pending_resolution,
+                                   authority_context:Context,
+                                   fingerprint:Fingerprint}).
 
 pending_public_operation(Operation, Public) :-
     sanitize_value(Operation, Public).
@@ -419,14 +499,24 @@ rlm_pending_approvals(Context, Approvals) :-
     pairs_values(Pairs, Approvals).
 
 rlm_pending_resolution_async(ApprovalId, Future) :-
-    (   authority_pending_control(ApprovalId, _, _, Found)
-    ->  Future = Found
+    (   authority_pending_control(ApprovalId, _, _, Future, _)
+    ->  true
     ;   throw(error(existence_error(rlm_pending_operation, ApprovalId), _))
     ).
 
 rlm_pending_resolution(ApprovalId, Outcome) :-
     rlm_pending_resolution_async(ApprovalId, Future),
     rlm_async:rlm_future_await(Future, Outcome).
+
+rlm_authority_events(Context, Events) :-
+    require_context(Context),
+    findall(Seq-Event, authority_event(Context, Seq, Event), Pairs0),
+    keysort(Pairs0, Pairs),
+    pairs_values(Pairs, Events).
+
+/* -------------------------------------------------------------------------
+ * Approve / deny / edit
+ * ---------------------------------------------------------------------- */
 
 rlm_approve(ApprovalId, Outcome) :-
     catch(approve_(ApprovalId, Outcome),
@@ -435,104 +525,146 @@ rlm_approve(ApprovalId, Outcome) :-
 
 approve_(ApprovalId, Outcome) :-
     with_mutex(rlm_authority,
-               approval_transition_locked(ApprovalId,
-                                          Transition,
-                                          Context,
-                                          Record,
-                                          Continuation,
-                                          ResolutionFuture)),
-    approve_transition(Transition,
-                       ApprovalId,
-                       Context,
-                       Record,
-                       Continuation,
-                       ResolutionFuture,
-                       Outcome).
+               approve_transition_locked(ApprovalId,
+                                         Transition,
+                                         Context,
+                                         Record,
+                                         Continuation,
+                                         ResolutionFuture)),
+    apply_approve_transition(Transition,
+                             ApprovalId,
+                             Context,
+                             Record,
+                             Continuation,
+                             ResolutionFuture,
+                             Outcome).
 
-approval_transition_locked(ApprovalId,
-                           schedule,
-                           Context,
-                           Updated,
-                           Continuation,
-                           ResolutionFuture) :-
+approve_transition_locked(ApprovalId,
+                          schedule,
+                          Context,
+                          Approved,
+                          Continuation,
+                          ResolutionFuture) :-
     retract(authority_pending(ApprovalId, Context, Record)),
     Record.state == pending,
     !,
     authority_pending_control(ApprovalId,
                               Continuation,
                               _,
-                              ResolutionFuture),
-    put_dict(state, Record, approved, Updated),
-    assertz(authority_pending(ApprovalId, Context, Updated)),
+                              ResolutionFuture,
+                              none),
+    put_dict(state, Record, approved, Approved),
+    assertz(authority_pending(ApprovalId, Context, Approved)),
     event_locked(Context,
                  approval_granted,
                  _{approval_id:ApprovalId,
                    fingerprint:Record.fingerprint}).
-approval_transition_locked(ApprovalId,
-                           existing,
-                           Context,
-                           Record,
-                           none,
-                           none) :-
+approve_transition_locked(ApprovalId,
+                          not_pending(State),
+                          Context,
+                          Record,
+                          none,
+                          none) :-
     authority_pending(ApprovalId, Context, Record),
-    !.
-approval_transition_locked(ApprovalId, _, _, _, _, _) :-
+    !,
+    State = Record.state.
+approve_transition_locked(ApprovalId, _, _, _, _, _) :-
     throw(authority_fault(unknown_approval(ApprovalId))).
 
-approve_transition(existing, ApprovalId, _, Record, _, _,
-                   ok(approval_transition{id:ApprovalId,
-                                          state:Record.state,
-                                          fingerprint:Record.fingerprint})) :- !.
-approve_transition(schedule,
-                   ApprovalId,
-                   Context,
-                   Record,
-                   Continuation,
-                   ResolutionFuture,
-                   Outcome) :-
+apply_approve_transition(not_pending(State), ApprovalId, _, Record, _, _,
+                         error(authority_error{
+                                   kind:approval_not_pending,
+                                   approval_id:ApprovalId,
+                                   state:State,
+                                   fingerprint:Record.fingerprint,
+                                   message:"approval is no longer pending"
+                               })) :- !.
+apply_approve_transition(schedule,
+                         ApprovalId,
+                         Context,
+                         Record,
+                         Continuation,
+                         ResolutionFuture,
+                         Outcome) :-
     approval_execution_metadata(Record, Metadata),
-    rlm_async:rlm_async_submit(
-        rlm_authority:pending_execution(ApprovalId, Continuation),
-        Metadata,
-        ExecutionFuture),
-    rlm_async:rlm_future_on_complete(
-        ExecutionFuture,
-        rlm_authority:pending_execution_complete(ApprovalId,
-                                                 Context,
-                                                 ResolutionFuture)),
+    catch(rlm_async:rlm_async_submit(
+              rlm_authority:pending_execution(Continuation),
+              Metadata,
+              ExecutionFuture),
+          Exception,
+          approval_schedule_failed(ApprovalId,
+                                   Context,
+                                   ResolutionFuture,
+                                   Exception,
+                                   Outcome)),
+    (   var(Outcome)
+    ->  rlm_async:rlm_future_on_complete(
+            ExecutionFuture,
+            rlm_authority:pending_execution_complete(ApprovalId,
+                                                     Context,
+                                                     ResolutionFuture)),
+        with_mutex(rlm_authority,
+                   mark_execution_locked(ApprovalId,
+                                         Context,
+                                         ExecutionFuture,
+                                         Executing)),
+        Outcome = ok(approval_transition{
+                         id:ApprovalId,
+                         state:executing,
+                         fingerprint:Record.fingerprint,
+                         approval:Executing
+                     })
+    ;   true
+    ).
+
+pending_execution(Continuation, Outcome) :- call(Continuation, Outcome).
+
+approval_schedule_failed(ApprovalId,
+                         Context,
+                         ResolutionFuture,
+                         Exception,
+                         Outcome) :-
+    safe_exception(Exception, Safe),
+    Error = authority_error{
+                kind:resume_schedule_failed,
+                approval_id:ApprovalId,
+                exception:Safe,
+                message:"approved operation could not be scheduled"
+            },
     with_mutex(rlm_authority,
-               mark_execution_future_locked(ApprovalId,
-                                            Context,
-                                            ExecutionFuture,
-                                            Updated)),
-    Outcome = ok(approval_transition{id:ApprovalId,
-                                     state:executing,
-                                     fingerprint:Record.fingerprint,
-                                     execution_future:ExecutionFuture,
-                                     approval:Updated}).
+               resolve_record_locked(ApprovalId, Context, error(Error))),
+    catch(rlm_async:rlm_future_resolve(ResolutionFuture, error(Error)), _, true),
+    Outcome = error(Error).
 
-pending_execution(_, Continuation, Outcome) :-
-    call(Continuation, Outcome).
-
-pending_execution_complete(ApprovalId, Context, ResolutionFuture, Outcome) :-
-    with_mutex(rlm_authority,
-               complete_pending_locked(ApprovalId, Context, Outcome)),
-    catch(rlm_async:rlm_future_resolve(ResolutionFuture, Outcome), _, true).
-
-mark_execution_future_locked(ApprovalId, Context, Future, Updated) :-
+mark_execution_locked(ApprovalId, Context, Future, Executing) :-
     retract(authority_pending(ApprovalId, Context, Record)),
-    put_dict(_{state:executing, execution_future:Future}, Record, Updated),
-    assertz(authority_pending(ApprovalId, Context, Updated)).
+    put_dict(_{state:executing, execution_future:Future}, Record, Executing),
+    assertz(authority_pending(ApprovalId, Context, Executing)),
+    retract(authority_pending_control(ApprovalId,
+                                      Continuation,
+                                      Validator,
+                                      Resolution,
+                                      none)),
+    assertz(authority_pending_control(ApprovalId,
+                                      Continuation,
+                                      Validator,
+                                      Resolution,
+                                      Future)).
 
-complete_pending_locked(ApprovalId, Context, Outcome) :-
+pending_execution_complete(ApprovalId, Context, ResolutionFuture, Result) :-
+    with_mutex(rlm_authority,
+               resolve_record_locked(ApprovalId, Context, Result)),
+    catch(rlm_async:rlm_future_resolve(ResolutionFuture, Result), _, true).
+
+resolve_record_locked(ApprovalId, Context, Result) :-
     (   retract(authority_pending(ApprovalId, Context, Record))
-    ->  put_dict(_{state:resolved, resolution:Outcome}, Record, Updated),
-        assertz(authority_pending(ApprovalId, Context, Updated)),
+    ->  put_dict(_{state:resolved, resolution:Result}, Record, Resolved),
+        assertz(authority_pending(ApprovalId, Context, Resolved)),
         event_locked(Context,
                      approval_resolved,
                      _{approval_id:ApprovalId,
                        fingerprint:Record.fingerprint,
-                       outcome:Outcome})
+                       outcome:Result})
     ;   true
     ).
 
@@ -548,54 +680,68 @@ rlm_deny(ApprovalId, Reason, Outcome) :-
           authority_exception(deny, Exception, Outcome)).
 
 deny_(ApprovalId, Reason, Outcome) :-
-    require_ground_reason(Reason),
+    require_ground(Reason, denial_reason),
     with_mutex(rlm_authority,
-               deny_locked(ApprovalId,
-                           Reason,
-                           Transition,
-                           Context,
-                           Record,
-                           ResolutionFuture)),
-    deny_transition(Transition,
-                    ApprovalId,
-                    Reason,
-                    Record,
-                    ResolutionFuture,
-                    Outcome),
-    (Context = _ -> true).
+               deny_transition_locked(ApprovalId,
+                                      Reason,
+                                      Transition,
+                                      Context,
+                                      Record,
+                                      ResolutionFuture)),
+    apply_deny_transition(Transition,
+                          ApprovalId,
+                          Reason,
+                          Record,
+                          ResolutionFuture,
+                          Outcome),
+    (Context = Context -> true).
 
-deny_locked(ApprovalId,
-            Reason,
-            denied,
-            Context,
-            Updated,
-            ResolutionFuture) :-
+deny_transition_locked(ApprovalId,
+                       Reason,
+                       deny,
+                       Context,
+                       Denied,
+                       ResolutionFuture) :-
     retract(authority_pending(ApprovalId, Context, Record)),
     Record.state == pending,
     !,
-    authority_pending_control(ApprovalId, _, _, ResolutionFuture),
-    put_dict(_{state:denied, denial_reason:Reason}, Record, Updated),
-    assertz(authority_pending(ApprovalId, Context, Updated)),
+    authority_pending_control(ApprovalId, _, _, ResolutionFuture, none),
+    put_dict(_{state:denied, denial_reason:Reason}, Record, Denied),
+    assertz(authority_pending(ApprovalId, Context, Denied)),
     event_locked(Context,
                  approval_denied,
                  _{approval_id:ApprovalId,
                    fingerprint:Record.fingerprint,
                    reason:Reason}).
-deny_locked(ApprovalId, _, existing, Context, Record, none) :-
+deny_transition_locked(ApprovalId,
+                       _,
+                       not_pending(State),
+                       Context,
+                       Record,
+                       none) :-
     authority_pending(ApprovalId, Context, Record),
-    !.
-deny_locked(ApprovalId, _, _, _, _, _) :-
+    !,
+    State = Record.state.
+deny_transition_locked(ApprovalId, _, _, _, _, _) :-
     throw(authority_fault(unknown_approval(ApprovalId))).
 
-deny_transition(existing, ApprovalId, _, Record, _,
-                ok(approval_transition{id:ApprovalId,
-                                       state:Record.state,
-                                       fingerprint:Record.fingerprint})) :- !.
-deny_transition(denied, ApprovalId, Reason, Record, ResolutionFuture,
-                ok(approval_transition{id:ApprovalId,
-                                       state:denied,
-                                       fingerprint:Record.fingerprint,
-                                       reason:Reason})) :-
+apply_deny_transition(not_pending(State), ApprovalId, _, Record, _,
+                      error(authority_error{
+                                kind:approval_not_pending,
+                                approval_id:ApprovalId,
+                                state:State,
+                                fingerprint:Record.fingerprint,
+                                message:"approval is no longer pending"
+                            })) :- !.
+apply_deny_transition(deny,
+                      ApprovalId,
+                      Reason,
+                      Record,
+                      ResolutionFuture,
+                      ok(approval_transition{id:ApprovalId,
+                                             state:denied,
+                                             fingerprint:Record.fingerprint,
+                                             reason:Reason})) :-
     catch(rlm_async:rlm_future_resolve(
               ResolutionFuture,
               denied(authority_denial{approval_id:ApprovalId,
@@ -610,136 +756,237 @@ rlm_edit(ApprovalId, EditedOperation0, Outcome) :-
           authority_exception(edit, Exception, Outcome)).
 
 edit_(ApprovalId, EditedOperation0, Outcome) :-
-    (   authority_pending(ApprovalId, Context, Record),
-        Record.state == pending,
-        authority_pending_control(ApprovalId,
-                                  _,
-                                  EditValidator,
-                                  ResolutionFuture)
-    ->  true
-    ;   throw(authority_fault(approval_not_editable(ApprovalId)))
-    ),
-    require_editable_validator(EditValidator),
-    call(EditValidator,
+    editable_snapshot(ApprovalId,
+                      Context,
+                      Record,
+                      Validator,
+                      OldResolution),
+    require_editable_validator(Validator),
+    call(Validator,
          EditedOperation0,
          NormalizedOperation0,
          NewContinuation),
+    require_host_continuation(NewContinuation),
     normalize_operation(NormalizedOperation0, NormalizedOperation),
-    rlm_operation_fingerprint(Context, NormalizedOperation, NewFingerprint),
-    pending_public_operation(NormalizedOperation, PublicOperation),
-    with_mutex(rlm_authority,
-               edit_locked(ApprovalId,
-                           Context,
-                           Record.fingerprint,
-                           PublicOperation,
-                           NormalizedOperation,
-                           NewFingerprint,
-                           NewContinuation,
-                           EditValidator,
-                           ResolutionFuture,
-                           Updated)),
-    Outcome = ok(approval_edit{id:ApprovalId,
-                               old_fingerprint:Record.fingerprint,
-                               fingerprint:NewFingerprint,
-                               approval:Updated}).
+    rlm_operation_fingerprint(Context,
+                              NormalizedOperation,
+                              NewFingerprint),
+    resolution_metadata(Context, NewFingerprint, Metadata),
+    rlm_async:rlm_future_deferred(Metadata, NewResolution),
+    catch(with_mutex(rlm_authority,
+                     edit_transition_locked(ApprovalId,
+                                            Context,
+                                            Record.fingerprint,
+                                            NormalizedOperation,
+                                            NewFingerprint,
+                                            NewContinuation,
+                                            Validator,
+                                            OldResolution,
+                                            NewResolution,
+                                            NewRecord)),
+          Exception,
+          ( rlm_async:rlm_future_destroy(NewResolution),
+            throw(Exception)
+          )),
+    NewId = NewRecord.id,
+    catch(rlm_async:rlm_future_resolve(
+              OldResolution,
+              superseded(authority_edit{old_id:ApprovalId,
+                                        new_id:NewId,
+                                        old_fingerprint:Record.fingerprint,
+                                        fingerprint:NewFingerprint})),
+          _,
+          true),
+    Outcome = ok(authority_edit{old_id:ApprovalId,
+                                id:NewId,
+                                old_fingerprint:Record.fingerprint,
+                                fingerprint:NewFingerprint,
+                                approval:NewRecord}).
 
-edit_locked(ApprovalId,
-            Context,
-            ExpectedFingerprint,
-            PublicOperation,
-            Operation,
-            NewFingerprint,
-            NewContinuation,
-            EditValidator,
-            ResolutionFuture,
-            Updated) :-
+editable_snapshot(ApprovalId, Context, Record, Validator, Resolution) :-
+    with_mutex(rlm_authority,
+               (   authority_pending(ApprovalId, Context, Found),
+                   Found.state == pending,
+                   authority_pending_control(ApprovalId,
+                                             _,
+                                             Validator,
+                                             Resolution,
+                                             none)
+               ->  Record = Found
+               ;   throw(authority_fault(approval_not_editable(ApprovalId)))
+               )).
+
+edit_transition_locked(ApprovalId,
+                       Context,
+                       ExpectedFingerprint,
+                       Operation,
+                       NewFingerprint,
+                       NewContinuation,
+                       Validator,
+                       OldResolution,
+                       NewResolution,
+                       NewRecord) :-
     retract(authority_pending(ApprovalId, Context, Current)),
     Current.state == pending,
     Current.fingerprint == ExpectedFingerprint,
     !,
-    put_dict(_{operation:PublicOperation,
-               name:Operation.name,
-               effect:Operation.effect,
-               capability:Operation.capability,
-               fingerprint:NewFingerprint,
-               edited_from:ExpectedFingerprint},
+    gensym(approval_, NewId),
+    get_time(CreatedAt),
+    put_dict(_{state:superseded(NewId),
+               superseded_by:NewId},
              Current,
-             Updated),
-    assertz(authority_pending(ApprovalId, Context, Updated)),
-    retractall(authority_pending_control(ApprovalId, _, _, _)),
+             Superseded),
+    assertz(authority_pending(ApprovalId, Context, Superseded)),
+    retractall(authority_pending_control(ApprovalId, _, _, _, _)),
     assertz(authority_pending_control(ApprovalId,
+                                      none,
+                                      none,
+                                      OldResolution,
+                                      none)),
+    pending_public_operation(Operation, PublicOperation),
+    pending_correlation(Operation, Correlation),
+    NewRecord = pending_operation{
+                    id:NewId,
+                    operation:PublicOperation,
+                    name:Operation.name,
+                    effect:Operation.effect,
+                    capability:Operation.capability,
+                    context:Context,
+                    correlation:Correlation,
+                    authority:approve_diff,
+                    fingerprint:NewFingerprint,
+                    created_at:CreatedAt,
+                    state:pending,
+                    edited_from:ApprovalId
+                },
+    assertz(authority_pending(NewId, Context, NewRecord)),
+    assertz(authority_pending_control(NewId,
                                       NewContinuation,
-                                      EditValidator,
-                                      ResolutionFuture)),
+                                      Validator,
+                                      NewResolution,
+                                      none)),
     event_locked(Context,
                  approval_edited,
                  _{approval_id:ApprovalId,
+                   new_approval_id:NewId,
                    old_fingerprint:ExpectedFingerprint,
                    fingerprint:NewFingerprint}).
-edit_locked(ApprovalId, _, _, _, _, _, _, _, _, _) :-
+edit_transition_locked(ApprovalId, _, _, _, _, _, _, _, _, _) :-
     throw(authority_fault(stale_edit(ApprovalId))).
 
 /* -------------------------------------------------------------------------
- * Cleanup and ownership
+ * Cancellation and teardown
  * ---------------------------------------------------------------------- */
 
 rlm_pending_cancel_owner(Context, Reason) :-
     require_context(Context),
-    findall(Id,
+    findall(Id-State,
             ( authority_pending(Id, Context, Record),
-              memberchk(Record.state, [pending, approved, executing])
+              State = Record.state,
+              pending_active_state(State)
             ),
-            Ids),
-    maplist(cancel_pending(Reason), Ids).
+            Pending),
+    maplist(cancel_owned_pending(Reason), Pending).
 
-cancel_pending(Reason, ApprovalId) :-
-    (   authority_pending(ApprovalId, _, Record), Record.state == pending
-    ->  rlm_deny(ApprovalId, cancelled(Reason), _)
+pending_active_state(pending).
+pending_active_state(approved).
+pending_active_state(executing).
+
+cancel_owned_pending(Reason, ApprovalId-pending) :-
+    !,
+    rlm_deny(ApprovalId, cancelled(Reason), _).
+cancel_owned_pending(_, ApprovalId-State) :-
+    memberchk(State, [approved, executing]),
+    !,
+    (   authority_pending_control(ApprovalId, _, _, Resolution, Future),
+        Future \== none
+    ->  catch(rlm_async:rlm_future_cancel(Future, _), _, true),
+        catch(rlm_async:rlm_future_resolve(
+                  Resolution,
+                  error(authority_error{kind:cancelled,
+                                        approval_id:ApprovalId,
+                                        message:"owned pending operation was cancelled"})),
+              _,
+              true)
     ;   true
     ).
+cancel_owned_pending(_, _).
 
 rlm_authority_clear(Context) :-
     require_context(Context),
     rlm_pending_cancel_owner(Context, authority_context_destroyed),
+    findall(control(Resolution, Execution),
+            authority_pending_control(_, _, _, Resolution, Execution),
+            Controls0),
     with_mutex(rlm_authority,
-               ( retractall(authority_mode(Context, _)),
-                 retractall(authority_once(Context, _, _, _)),
-                 retractall(authority_sequence(Context, _)),
-                 retractall(authority_event(Context, _, _))
-               )).
+               clear_context_locked(Context, Controls0, Controls)),
+    maplist(destroy_control_futures, Controls).
+
+clear_context_locked(Context, Controls0, Controls) :-
+    findall(Id, authority_pending(Id, Context, _), Ids),
+    include(control_for_ids(Ids), Controls0, Controls),
+    retractall(authority_mode(Context, _)),
+    retractall(authority_once(Context, _, _, _)),
+    forall(member(Id, Ids),
+           ( retractall(authority_pending(Id, Context, _)),
+             retractall(authority_pending_control(Id, _, _, _, _))
+           )),
+    retractall(authority_sequence(Context, _)),
+    retractall(authority_event(Context, _, _)).
+
+control_for_ids(_, control(_, _)).
+
+/* Controls are selected from a context-owned snapshot before retraction.
+   Destroy is idempotent and occurs outside the authority mutex. */
+destroy_control_futures(control(Resolution, Execution)) :-
+    (   Execution \== none
+    ->  catch(rlm_async:rlm_future_cancel(Execution, _), _, true),
+        catch(rlm_async:rlm_future_destroy(Execution), _, true)
+    ;   true
+    ),
+    catch(rlm_async:rlm_future_destroy(Resolution), _, true).
 
 rlm_authority_clear_runtime(Runtime) :-
     require_context(Runtime),
     findall(Context,
-            runtime_owned_context(Runtime, Context),
+            runtime_context(Runtime, Context),
             Contexts0),
-    sort([Runtime|Contexts0], Contexts),
+    sort(Contexts0, Contexts),
     maplist(rlm_authority_clear, Contexts).
 
-runtime_owned_context(Runtime, Context) :- authority_mode(Context, _), context_owned_by(Runtime, Context).
-runtime_owned_context(Runtime, Context) :- authority_pending(_, Context, _), context_owned_by(Runtime, Context).
+runtime_context(Runtime, runtime(Runtime)).
+runtime_context(Runtime, Context) :-
+    authority_mode(Context, _),
+    context_owned_by(Runtime, Context).
+runtime_context(Runtime, Context) :-
+    authority_once(Context, _, _, _),
+    context_owned_by(Runtime, Context).
+runtime_context(Runtime, Context) :-
+    authority_pending(_, Context, _),
+    context_owned_by(Runtime, Context).
 
 context_owned_by(Runtime, agent(Runtime, _)).
-context_owned_by(Runtime, graph(Runtime, _)).
+context_owned_by(Runtime, graph(Runtime, _, _)).
 context_owned_by(Runtime, session(Runtime)).
 context_owned_by(Runtime, runtime(Runtime)).
 
 /* -------------------------------------------------------------------------
- * Helpers
+ * Events and helpers
  * ---------------------------------------------------------------------- */
 
-current_mode_locked(Context, Mode) :-
-    (   authority_mode(Context, Found)
-    ->  Mode = Found
-    ;   Mode = approve_diff
-    ).
+event_locked(Context, Type, Fields) :-
+    (   retract(authority_sequence(Context, Seq0))
+    ->  true
+    ;   Seq0 = 0
+    ),
+    Seq is Seq0+1,
+    assertz(authority_sequence(Context, Seq)),
+    get_time(At),
+    put_dict(_{sequence:Seq, type:Type, at:At}, Fields, Event),
+    assertz(authority_event(Context, Seq, Event)).
 
-require_context(Context) :-
-    ground(Context),
-    nonvar(Context),
-    !.
-require_context(Context) :-
-    throw(authority_fault(invalid_context(Context))).
+require_context(Context) :- ground(Context), nonvar(Context), !.
+require_context(Context) :- throw(authority_fault(invalid_context(Context))).
 
 require_host_continuation(Continuation) :-
     callable(Continuation),
@@ -760,22 +1007,12 @@ require_editable_validator(none) :-
     throw(authority_fault(edit_not_supported)).
 require_editable_validator(Validator) :- require_edit_validator(Validator).
 
-require_ground_reason(Reason) :- ground(Reason), !.
-require_ground_reason(Reason) :- throw(authority_fault(invalid_denial_reason(Reason))).
+require_ground(Value, _) :- ground(Value), !.
+require_ground(Value, Field) :-
+    throw(authority_fault(nonground(Field, Value))).
 
 pairs_values([], []).
 pairs_values([_-Value|Pairs], [Value|Values]) :- pairs_values(Pairs, Values).
-
-event_locked(Context, Type, Fields) :-
-    (   retract(authority_sequence(Context, Seq0))
-    ->  true
-    ;   Seq0 = 0
-    ),
-    Seq is Seq0+1,
-    assertz(authority_sequence(Context, Seq)),
-    get_time(At),
-    put_dict(_{sequence:Seq, type:Type, at:At}, Fields, Event),
-    assertz(authority_event(Context, Seq, Event)).
 
 authority_exception(_, Exception, _) :-
     control_exception(Exception),
@@ -783,20 +1020,16 @@ authority_exception(_, Exception, _) :-
     throw(Exception).
 authority_exception(Phase, authority_fault(Detail), error(Error)) :-
     !,
-    Error = authority_error{
-                phase:Phase,
-                kind:invalid_authority_operation,
-                detail:Detail,
-                message:"authority operation is invalid"
-            }.
+    Error = authority_error{phase:Phase,
+                            kind:invalid_authority_operation,
+                            detail:Detail,
+                            message:"authority operation is invalid"}.
 authority_exception(Phase, Exception, error(Error)) :-
-    term_string(Exception, Safe, [quoted(true), numbervars(true)]),
-    Error = authority_error{
-                phase:Phase,
-                kind:authority_exception,
-                exception:Safe,
-                message:"authority operation raised an exception"
-            }.
+    safe_exception(Exception, Safe),
+    Error = authority_error{phase:Phase,
+                            kind:authority_exception,
+                            exception:Safe,
+                            message:"authority operation raised an exception"}.
 
 control_exception(rlm_async_cancelled(_)).
 control_exception(rlm_cancelled(_)).
@@ -805,3 +1038,6 @@ control_exception(graph_cancelled(_)).
 control_exception(cancelled(_)).
 control_exception('$aborted').
 control_exception(abort).
+
+safe_exception(Exception, Safe) :-
+    term_string(Exception, Safe, [quoted(true), numbervars(true)]).
