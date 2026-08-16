@@ -25,6 +25,7 @@ async_echo_schema(
         name:async_echo,
         description:"Echo one integer through the async tool facade",
         capability:tool(async_echo),
+        effect:read,
         arguments:_{
             type:object,
             required:[value],
