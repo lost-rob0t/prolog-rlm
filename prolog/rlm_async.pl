@@ -2,23 +2,45 @@
           [ rlm_async_ready/0,
             rlm_async_runtime_status/1,
             rlm_async_submit/2,
+            rlm_async_submit/3,
             rlm_future_status/2,
             rlm_future_await/2,
             rlm_future_await/3,
             rlm_future_cancel/2,
             rlm_future_destroy/1,
-            rlm_future_all/2
+            rlm_future_all/2,
+            rlm_future_then/3,
+            rlm_future_on_complete/2,
+            rlm_future_metadata/2
           ]).
 
-/** <module> Bounded sync/async bridge for prolog-rlm */
+/** <module> Bounded asynchronous task runtime for prolog-rlm
+
+The scheduler owns a fixed worker pool and finite backlog. Futures are opaque
+handles over task state; domain libraries submit canonical operation predicates
+and synchronous facades wait on the same Future rather than implementing a
+second execution path.
+
+Continuation registration is event driven. A continuation is enqueued only
+after its parent reaches a terminal state, so composed Futures do not consume
+worker threads merely waiting for other Futures.
+*/
 
 :- use_module(library(gensym)).
 
 :- meta_predicate rlm_async_submit(1, -).
+:- meta_predicate rlm_async_submit(1, +, -).
+:- meta_predicate rlm_future_then(+, 2, -).
+:- meta_predicate rlm_future_on_complete(+, 1).
 
 :- dynamic async_runtime/3.
 :- dynamic async_future_state/2.
 :- dynamic async_future_thread/2.
+:- dynamic async_future_metadata/2.
+:- dynamic async_future_callback/2.
+:- dynamic async_future_continuation/3.
+:- dynamic async_future_child/2.
+:- thread_local async_current_future/1.
 
 default_async_worker_count(8).
 default_async_backlog(64).
@@ -92,20 +114,58 @@ create_async_workers(Count, Queue, [Thread|Threads]) :-
 /* Submission ------------------------------------------------------------- */
 
 rlm_async_submit(Goal, Future) :-
+    rlm_async_submit(Goal, _{}, Future).
+
+rlm_async_submit(Goal, Metadata0, Future) :-
     require_async_runtime,
     require_callable(Goal),
+    require_metadata(Metadata0),
     ensure_async_runtime(Queue),
+    current_parent_task(Parent),
     with_mutex(rlm_async,
-               ( gensym(rlm_future_, Id),
-                 assertz(async_future_state(Id, pending))
-               )),
-    Future = rlm_future(Id),
+               create_future_locked(Metadata0, Parent, Future, Id)),
+    enqueue_future(Queue, Id, Goal).
+
+current_parent_task(Parent) :-
+    async_current_future(Parent),
+    !.
+current_parent_task(none).
+
+create_future_locked(Metadata0, Parent, rlm_future(Id), Id) :-
+    gensym(rlm_future_, Id),
+    get_time(CreatedAt),
+    metadata_operation(Metadata0, Operation),
+    put_dict(_{id:Id,
+               parent_task:Parent,
+               operation:Operation,
+               created_at:CreatedAt},
+             Metadata0,
+             Metadata),
+    assertz(async_future_state(Id, pending)),
+    assertz(async_future_metadata(Id, Metadata)),
+    link_parent_child(Parent, Id).
+
+metadata_operation(Metadata, Operation) :-
+    (   get_dict(operation, Metadata, Found)
+    ->  Operation = Found
+    ;   Operation = generic
+    ).
+
+link_parent_child(none, _) :- !.
+link_parent_child(Parent, Child) :-
+    assertz(async_future_child(Parent, Child)).
+
+enqueue_future(Queue, Id, Goal) :-
     (   thread_send_message(Queue,
                             async_task(Id, Goal),
                             [timeout(0)])
     ->  true
     ;   mark_backpressure(Id)
     ).
+
+enqueue_existing_future(Id, Goal) :-
+    ensure_async_runtime(Queue),
+    enqueue_future(Queue, Id, Goal).
 
 require_async_runtime :-
     rlm_async_ready,
@@ -123,17 +183,22 @@ require_callable(Goal) :-
                 context(rlm_async_submit/2,
                         'async goal must be callable'))).
 
+require_metadata(Metadata) :-
+    is_dict(Metadata),
+    ground(Metadata),
+    !.
+require_metadata(Metadata) :-
+    throw(error(type_error(async_metadata, Metadata),
+                context(rlm_async_submit/3,
+                        'task metadata must be a ground dict'))).
+
 mark_backpressure(Id) :-
-    with_mutex(rlm_async,
-               ( retractall(async_future_state(Id, _)),
-                 assertz(async_future_state(
-                             Id,
-                             completed(error(async_error{
-                                                 kind:backpressure,
-                                                 future:Id,
-                                                 message:"asynchronous runtime backlog is full"
-                                             }))))
-               )).
+    Outcome = error(async_error{
+                        kind:backpressure,
+                        future:Id,
+                        message:"asynchronous runtime backlog is full"
+                    }),
+    async_store_completion(Id, Outcome).
 
 /* Workers ---------------------------------------------------------------- */
 
@@ -152,9 +217,12 @@ async_execute_task(Id, Goal) :-
     with_mutex(rlm_async,
                async_claim_task(Id, Thread, Claimed)),
     (   Claimed == true
-    ->  catch(async_call_goal(Goal, Outcome),
-              Exception,
-              async_exception_outcome(Id, Exception, Outcome)),
+    ->  setup_call_cleanup(
+            asserta(async_current_future(Id)),
+            catch(async_call_goal(Goal, Outcome),
+                  Exception,
+                  async_exception_outcome(Id, Exception, Outcome)),
+            retractall(async_current_future(Id))),
         async_store_completion(Id, Outcome)
     ;   true
     ).
@@ -191,22 +259,69 @@ async_exception_outcome(_, Exception,
                               })) :-
     safe_exception(Exception, Safe).
 
-safe_exception(Exception, Safe) :-
-    catch(term_string(Exception, Safe, [quoted(true)]),
-          _,
-          Safe = "<unprintable exception>").
-
 async_store_completion(Id, Outcome) :-
     with_mutex(rlm_async,
-               ( retractall(async_future_thread(Id, _)),
-                 ( async_future_state(Id, cancelled)
-                 -> true
-                 ;  async_future_state(Id, _)
-                 -> retractall(async_future_state(Id, _)),
-                    assertz(async_future_state(Id, completed(Outcome)))
-                 ;  true
-                 )
-               )).
+               completion_transition_locked(Id,
+                                            Outcome,
+                                            Transition,
+                                            Callbacks,
+                                            Continuations)),
+    run_completion_transition(Transition,
+                              Outcome,
+                              Callbacks,
+                              Continuations).
+
+completion_transition_locked(Id, _, ignored, [], []) :-
+    \+ async_future_state(Id, _),
+    !,
+    retractall(async_future_thread(Id, _)).
+completion_transition_locked(Id, _, ignored, [], []) :-
+    async_future_state(Id, cancelled),
+    !,
+    retractall(async_future_thread(Id, _)).
+completion_transition_locked(Id,
+                             Outcome,
+                             completed,
+                             Callbacks,
+                             Continuations) :-
+    async_future_state(Id, State),
+    memberchk(State, [pending, running]),
+    !,
+    retractall(async_future_thread(Id, _)),
+    retractall(async_future_state(Id, _)),
+    assertz(async_future_state(Id, completed(Outcome))),
+    take_terminal_handlers_locked(Id, Callbacks, Continuations),
+    retractall(async_future_child(Id, _)).
+completion_transition_locked(_, _, ignored, [], []).
+
+run_completion_transition(ignored, _, _, _) :- !.
+run_completion_transition(completed, Outcome, Callbacks, Continuations) :-
+    run_completion_callbacks(Callbacks, Outcome),
+    schedule_continuations(Continuations, Outcome).
+
+take_terminal_handlers_locked(Id, Callbacks, Continuations) :-
+    findall(Callback, async_future_callback(Id, Callback), Callbacks),
+    findall(continuation(Callback, NextId),
+            async_future_continuation(Id, Callback, NextId),
+            Continuations),
+    retractall(async_future_callback(Id, _)),
+    retractall(async_future_continuation(Id, _, _)),
+    forall(member(continuation(_, NextId), Continuations),
+           retractall(async_future_child(Id, NextId))).
+
+run_completion_callbacks([], _).
+run_completion_callbacks([Callback|Callbacks], Outcome) :-
+    catch(call(Callback, Outcome), _, true),
+    run_completion_callbacks(Callbacks, Outcome).
+
+schedule_continuations([], _).
+schedule_continuations([continuation(Callback, NextId)|Continuations], Outcome) :-
+    enqueue_existing_future(NextId,
+                            continuation_task(Callback, Outcome)),
+    schedule_continuations(Continuations, Outcome).
+
+continuation_task(Callback, ParentOutcome, Outcome) :-
+    call(Callback, ParentOutcome, Outcome).
 
 /* Status and await ------------------------------------------------------- */
 
@@ -230,6 +345,16 @@ status_term(Id, cancelled, future_status{id:Id, state:cancelled}).
 status_term(Id, completed(Outcome),
             future_status{id:Id, state:completed, outcome:Outcome}).
 
+rlm_future_metadata(Future, Metadata) :-
+    future_id(Future, Id),
+    with_mutex(rlm_async,
+               (   async_future_metadata(Id, Found)
+               ->  Metadata = Found
+               ;   throw(error(existence_error(rlm_future, Future),
+                               context(rlm_future_metadata/2,
+                                       'future does not exist or was destroyed')))
+               )).
+
 rlm_future_await(Future, Outcome) :-
     rlm_future_await(Future, infinite, Outcome).
 
@@ -245,13 +370,9 @@ await_loop(Id, Start, Timeout, Outcome) :-
     await_state(State, Id, Start, Timeout, Outcome).
 
 await_state(completed(Outcome), _, _, _, Outcome) :- !.
-await_state(cancelled, Id, _, _,
-            error(async_error{
-                      kind:cancelled,
-                      future:Id,
-                      message:"asynchronous operation was cancelled"
-                  })) :-
-    !.
+await_state(cancelled, Id, _, _, Outcome) :-
+    !,
+    cancellation_outcome(Id, Outcome).
 await_state(_, Id, Start, Timeout, Outcome) :-
     (   await_timed_out(Start, Timeout)
     ->  Outcome = error(async_error{
@@ -279,21 +400,117 @@ await_timed_out(Start, Timeout) :-
     Elapsed is Now-Start,
     Elapsed >= Timeout.
 
+/* Continuations ---------------------------------------------------------- */
+
+rlm_future_on_complete(Future, Callback) :-
+    require_callback(Callback, rlm_future_on_complete/2),
+    future_id(Future, Id),
+    with_mutex(rlm_async,
+               register_completion_callback_locked(Id, Callback, Action)),
+    apply_completion_callback_action(Action, Callback).
+
+register_completion_callback_locked(Id, Callback, wait) :-
+    async_future_state(Id, State),
+    memberchk(State, [pending, running]),
+    !,
+    assertz(async_future_callback(Id, Callback)).
+register_completion_callback_locked(Id, _, call(Outcome)) :-
+    async_future_state(Id, completed(Outcome)),
+    !.
+register_completion_callback_locked(Id, _, call(Outcome)) :-
+    async_future_state(Id, cancelled),
+    !,
+    cancellation_outcome(Id, Outcome).
+register_completion_callback_locked(Id, _, _) :-
+    throw(error(existence_error(rlm_future, rlm_future(Id)),
+                context(rlm_future_on_complete/2,
+                        'future does not exist or was destroyed'))).
+
+apply_completion_callback_action(wait, _) :- !.
+apply_completion_callback_action(call(Outcome), Callback) :-
+    call(Callback, Outcome).
+
+rlm_future_then(Future, Callback, NextFuture) :-
+    require_callback(Callback, rlm_future_then/3),
+    future_id(Future, ParentId),
+    with_mutex(rlm_async,
+               register_continuation_locked(ParentId,
+                                            Callback,
+                                            NextFuture,
+                                            NextId,
+                                            Action)),
+    apply_continuation_action(Action, Callback, NextId).
+
+register_continuation_locked(ParentId,
+                             Callback,
+                             NextFuture,
+                             NextId,
+                             Action) :-
+    (   async_future_state(ParentId, ParentState)
+    ->  true
+    ;   throw(error(existence_error(rlm_future, rlm_future(ParentId)),
+                    context(rlm_future_then/3,
+                            'future does not exist or was destroyed')))
+    ),
+    create_future_locked(_{operation:continuation},
+                         ParentId,
+                         NextFuture,
+                         NextId),
+    continuation_action_locked(ParentState,
+                               ParentId,
+                               Callback,
+                               NextId,
+                               Action).
+
+continuation_action_locked(State, ParentId, Callback, NextId, wait) :-
+    memberchk(State, [pending, running]),
+    !,
+    assertz(async_future_continuation(ParentId, Callback, NextId)).
+continuation_action_locked(completed(Outcome), ParentId, _, NextId, run(Outcome)) :-
+    !,
+    retractall(async_future_child(ParentId, NextId)).
+continuation_action_locked(cancelled, ParentId, _, NextId, cancel) :-
+    retractall(async_future_child(ParentId, NextId)).
+
+apply_continuation_action(wait, _, _) :- !.
+apply_continuation_action(run(Outcome), Callback, NextId) :-
+    enqueue_existing_future(NextId,
+                            continuation_task(Callback, Outcome)).
+apply_continuation_action(cancel, _, NextId) :-
+    catch(rlm_future_cancel(rlm_future(NextId), _), _, true).
+
+require_callback(Callback, _) :-
+    callable(Callback),
+    !.
+require_callback(Callback, Context) :-
+    throw(error(type_error(callable, Callback),
+                context(Context,
+                        'Future callback must be a host/library callable'))).
+
 /* Cancellation and cleanup ---------------------------------------------- */
 
 rlm_future_cancel(Future, Outcome) :-
     future_id(Future, Id),
     with_mutex(rlm_async,
-               future_cancel_transition(Id, Transition, Thread)),
-    apply_cancel_transition(Id, Transition, Thread, Outcome).
+               future_cancel_transition(Id,
+                                        Transition,
+                                        Thread,
+                                        Callbacks,
+                                        Children)),
+    apply_cancel_transition(Id,
+                            Transition,
+                            Thread,
+                            Callbacks,
+                            Children,
+                            Outcome).
 
-future_cancel_transition(Id, already_completed, none) :-
+future_cancel_transition(Id, already_completed, none, [], []) :-
     async_future_state(Id, completed(_)),
     !.
-future_cancel_transition(Id, already_cancelled, none) :-
+future_cancel_transition(Id, already_cancelled, none, [], []) :-
     async_future_state(Id, cancelled),
     !.
-future_cancel_transition(Id, cancel, Thread) :-
+future_cancel_transition(Id, cancel, Thread, Callbacks, Children) :-
     async_future_state(Id, State),
     memberchk(State, [pending, running]),
     !,
@@ -302,17 +519,41 @@ future_cancel_transition(Id, cancel, Thread) :-
     (   async_future_thread(Id, Worker)
     ->  Thread = Worker
     ;   Thread = none
-    ).
-future_cancel_transition(Id, _, _) :-
+    ),
+    findall(Callback, async_future_callback(Id, Callback), Callbacks),
+    findall(Child, async_future_child(Id, Child), Children0),
+    sort(Children0, Children),
+    retractall(async_future_callback(Id, _)),
+    retractall(async_future_continuation(Id, _, _)),
+    retractall(async_future_child(Id, _)).
+future_cancel_transition(Id, _, _, _, _) :-
     throw(error(existence_error(rlm_future, rlm_future(Id)),
                 context(rlm_future_cancel/2,
                         'future does not exist or was destroyed'))).
 
-apply_cancel_transition(_, already_completed, _, ok(already_completed)) :- !.
-apply_cancel_transition(_, already_cancelled, _, ok(already_cancelled)) :- !.
-apply_cancel_transition(_, cancel, none, ok(cancelled)) :- !.
-apply_cancel_transition(Id, cancel, Thread, ok(cancelled)) :-
+apply_cancel_transition(_, already_completed, _, _, _, ok(already_completed)) :- !.
+apply_cancel_transition(_, already_cancelled, _, _, _, ok(already_cancelled)) :- !.
+apply_cancel_transition(Id, cancel, Thread, Callbacks, Children, ok(cancelled)) :-
+    signal_async_cancel(Id, Thread),
+    cancellation_outcome(Id, CancelOutcome),
+    run_completion_callbacks(Callbacks, CancelOutcome),
+    cancel_children(Children).
+
+signal_async_cancel(_, none) :- !.
+signal_async_cancel(Id, Thread) :-
     catch(thread_signal(Thread, throw(rlm_async_cancelled(Id))), _, true).
+
+cancel_children([]).
+cancel_children([Child|Children]) :-
+    catch(rlm_future_cancel(rlm_future(Child), _), _, true),
+    cancel_children(Children).
+
+cancellation_outcome(Id,
+                     error(async_error{
+                               kind:cancelled,
+                               future:Id,
+                               message:"asynchronous operation was cancelled"
+                           })).
 
 rlm_future_destroy(Future) :-
     future_id(Future, Id),
@@ -329,7 +570,12 @@ destroy_existing_future(Id, State) :-
     wait_for_task_release(Id, 1.0),
     with_mutex(rlm_async,
                ( retractall(async_future_thread(Id, _)),
-                 retractall(async_future_state(Id, _))
+                 retractall(async_future_state(Id, _)),
+                 retractall(async_future_metadata(Id, _)),
+                 retractall(async_future_callback(Id, _)),
+                 retractall(async_future_continuation(Id, _, _)),
+                 retractall(async_future_child(Id, _)),
+                 retractall(async_future_child(_, Id))
                )).
 
 wait_for_task_release(Id, Timeout) :-
@@ -364,3 +610,8 @@ future_id(Future, _) :-
     throw(error(type_error(rlm_future, Future),
                 context(rlm_async,
                         'expected an opaque rlm_future/1 handle'))).
+
+safe_exception(Exception, Safe) :-
+    catch(term_string(Exception, Safe, [quoted(true)]),
+          _,
+          Safe = "<unprintable exception>").
