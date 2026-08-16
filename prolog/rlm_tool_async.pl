@@ -2,35 +2,19 @@
           [ tool_invoke_async/6
           ]).
 
-/** <module> Asynchronous facade for tool invocation
+/** <module> Compatibility facade for canonical asynchronous tool invocation
 
-The future resolves to a single tool_async_result dict containing the ordinary
-Outcome and Trace returned by tool_invoke/7.  This keeps the async API to one
-opaque future while preserving the complete synchronous result surface.
+The canonical async/task implementation lives in rlm_tool. This module remains
+for callers that import the historical async facade directly and delegates only
+to the asynchronous predicate. It never enters the synchronous public wrapper.
 */
 
-:- use_module(rlm_async).
-:- use_module(rlm_tool).
+:- use_module(rlm_tool, []).
 
 tool_invoke_async(Registry, Capabilities, Name, Args, Options, Future) :-
-    rlm_async_submit(tool_invoke_task(Registry,
-                                      Capabilities,
-                                      Name,
-                                      Args,
-                                      Options),
-                     Future).
-
-tool_invoke_task(Registry,
-                 Capabilities,
-                 Name,
-                 Args,
-                 Options,
-                 Result) :-
-    rlm_tool:tool_invoke(Registry,
-                         Capabilities,
-                         Name,
-                         Args,
-                         Options,
-                         Outcome,
-                         Trace),
-    Result = tool_async_result{outcome:Outcome, trace:Trace}.
+    rlm_tool:tool_invoke_async(Registry,
+                               Capabilities,
+                               Name,
+                               Args,
+                               Options,
+                               Future).
