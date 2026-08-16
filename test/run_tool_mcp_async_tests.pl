@@ -42,6 +42,7 @@ run_tool_mcp_async_cases :-
 
 run_case(Name) :-
     format(user_error, 'canonical_async_case=~w~n', [Name]),
+    diagnostic_before_case(Name),
     catch(call_with_time_limit(8,
                                run_tests(rlm_tool_mcp_async:Name)),
           Exception,
@@ -50,6 +51,32 @@ run_case(Name) :-
 run_case(Name) :-
     format(user_error, 'canonical_async_case_failed=~w~n', [Name]),
     fail.
+
+diagnostic_before_case(sync_tool_executes_handler_once) :-
+    !,
+    setup_call_cleanup(
+        rlm_tool:tool_registry_create(Registry),
+        ( plunit_rlm_tool_mcp_async:counting_schema(Schema),
+          rlm_tool:tool_register(
+              Registry,
+              Schema,
+              plunit_rlm_tool_mcp_async:counted_tool,
+              Register),
+          format(user_error, 'authority_probe_register=~q~n', [Register]),
+          rlm_tool:tool_invoke(
+              Registry,
+              [tool(async_counting)],
+              async_counting,
+              _{value:7},
+              [],
+              Outcome,
+              Trace),
+          format(user_error,
+                 'authority_probe_outcome=~q trace=~q~n',
+                 [Outcome, Trace])
+        ),
+        rlm_tool:tool_registry_destroy(Registry)).
+diagnostic_before_case(_).
 
 case_exception(Name, Exception) :-
     format(user_error,
