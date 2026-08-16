@@ -32,6 +32,7 @@
 :- consult(rlm_trace_test).
 :- consult(rlm_demo_test).
 :- consult(rlm_cli_test).
+:- consult(rlm_async_test).
 
 main(_) :-
     (   run_tests

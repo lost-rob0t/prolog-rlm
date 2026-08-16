@@ -2,11 +2,26 @@
           [ rlm_version/1,
             rlm_ready/0,
             rlm_completion/4,
+            rlm_completion_async/4,
             llm_query/3,
+            llm_query_async/3,
             rlm_query/4,
+            rlm_query_async/4,
             rlm_cancellation_token/1,
             rlm_cancel/1,
             default_completion_budget/1,
+            rlm_async_ready/0,
+            rlm_async_submit/2,
+            rlm_future_status/2,
+            rlm_future_await/2,
+            rlm_future_await/3,
+            rlm_future_cancel/2,
+            rlm_future_destroy/1,
+            rlm_future_all/2,
+            model_complete_async/3,
+            model_stream_async/4,
+            chain_invoke_async/4,
+            chain_stream_async/5,
             default_recursion_policy/1,
             recursion_route/3,
             recursion_candidates/3,
@@ -46,11 +61,15 @@
             agent_runtime_destroy/1,
             agent_runtime_status/2,
             agent_spawn/5,
+            agent_spawn_async/5,
             agent_send/5,
+            agent_send_async/5,
             agent_pump/4,
+            agent_pump_async/4,
             agent_status/3,
             agent_children/3,
             agent_cancel/4,
+            agent_cancel_async/4,
             agent_trace/2,
             agent_tool_handler/4,
             default_graph_options/1,
@@ -58,7 +77,9 @@
             graph_backend_open/2,
             graph_backend_close/1,
             graph_run/4,
+            graph_run_async/4,
             graph_resume/6,
+            graph_resume_async/6,
             graph_checkpoint/3,
             graph_history/3,
             graph_cancellation_token/1,
@@ -99,14 +120,33 @@ capabilities and does not widen any normal budget.
 */
 
 :- use_module(rlm_chain).
+:- use_module(rlm_chain_async,
+              [ model_complete_async/3,
+                model_stream_async/4,
+                chain_invoke_async/4,
+                chain_stream_async/5
+              ]).
 :- use_module(rlm_context).
 :- use_module(rlm_plan).
 :- use_module(rlm_tool).
+:- use_module(rlm_async,
+              [ rlm_async_ready/0,
+                rlm_async_submit/2,
+                rlm_future_status/2,
+                rlm_future_await/2,
+                rlm_future_await/3,
+                rlm_future_cancel/2,
+                rlm_future_destroy/1,
+                rlm_future_all/2
+              ]).
 :- use_module(rlm_completion,
               [ llm_query/3,
                 rlm_cancellation_token/1,
                 rlm_cancel/1,
                 default_completion_budget/1
+              ]).
+:- use_module(rlm_completion_async,
+              [ llm_query_async/3
               ]).
 :- use_module(rlm_recursion_policy,
               [ rlm_recursion_policy_ready/0,
@@ -177,6 +217,12 @@ capabilities and does not widen any normal budget.
                 agent_trace/2,
                 agent_tool_handler/4
               ]).
+:- use_module(rlm_agent_async,
+              [ agent_spawn_async/5,
+                agent_send_async/5,
+                agent_pump_async/4,
+                agent_cancel_async/4
+              ]).
 :- use_module(rlm_graph,
               [ rlm_graph_ready/0,
                 default_graph_options/1,
@@ -189,6 +235,10 @@ capabilities and does not widen any normal budget.
                 graph_history/3,
                 graph_cancellation_token/1,
                 graph_cancel/1
+              ]).
+:- use_module(rlm_graph_async,
+              [ graph_run_async/4,
+                graph_resume_async/6
               ]).
 :- use_module(rlm_benchmark,
               [ rlm_benchmark_ready/0,
@@ -234,6 +284,7 @@ rlm_ready :-
     rlm_context:context_backend(memory, _),
     rlm_plan:default_plan_budget(_),
     rlm_tool:capabilities_normalize([], ok([])),
+    rlm_async:rlm_async_ready,
     rlm_completion:default_completion_budget(_),
     rlm_recursion_policy:rlm_recursion_policy_ready,
     rlm_recursion_runtime:rlm_recursion_runtime_ready,
@@ -260,6 +311,14 @@ rlm_completion(Query, Context, Options, Outcome) :-
         Outcome = error(Error)
     ).
 
+rlm_completion_async(Query, Context, Options, Future) :-
+    rlm_async:rlm_async_submit(
+        rlm:public_completion_async_task(Query, Context, Options),
+        Future).
+
+public_completion_async_task(Query, Context, Options, Outcome) :-
+    rlm_completion(Query, Context, Options, Outcome).
+
 rlm_query(Query, Context, Options, Outcome) :-
     public_deep_recursion_gate(Options, Gate),
     (   Gate == ok
@@ -267,6 +326,14 @@ rlm_query(Query, Context, Options, Outcome) :-
     ;   Gate = error(Error),
         Outcome = error(Error)
     ).
+
+rlm_query_async(Query, Context, Options, Future) :-
+    rlm_async:rlm_async_submit(
+        rlm:public_query_async_task(Query, Context, Options),
+        Future).
+
+public_query_async_task(Query, Context, Options, Outcome) :-
+    rlm_query(Query, Context, Options, Outcome).
 
 public_deep_recursion_gate(Options, Outcome) :-
     (   is_list(Options),
