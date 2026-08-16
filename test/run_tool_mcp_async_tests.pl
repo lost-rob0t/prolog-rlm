@@ -1,4 +1,4 @@
-:- initialization(main, main).
+:- initialization(focused_main, main).
 
 :- use_module(library(plunit)).
 :- use_module(library(time)).
@@ -31,7 +31,7 @@ case(imported_mcp_tool_flows_through_tool_contract_once).
 case(imported_mcp_tool_schema_rejects_before_remote_call).
 case(imported_mcp_tool_capability_denial_precedes_remote_call).
 
-main(_) :-
+focused_main(_) :-
     (   run_tool_mcp_async_cases
     ->  halt(0)
     ;   halt(1)
