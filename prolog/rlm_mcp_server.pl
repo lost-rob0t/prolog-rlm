@@ -439,15 +439,7 @@ rlm_connect_mcp_server_(Handle, ClientInfo, ClientCapabilities,
                                        ClientInfo,
                                        ClientCapabilities,
                                        Options,
-                                       Result),
-    (   is_dict(Result, mcp_connect_async_result)
-    ->  Outcome = Result.outcome
-    ;   Outcome = error(mcp_lifecycle_error{
-                            phase:connect,
-                            kind:invalid_async_result,
-                            message:"canonical MCP connect execute ABI returned an invalid result"
-                        })
-    ).
+                                       Outcome).
 
 /* -------------------------------------------------------------------------
  * Authority helpers
