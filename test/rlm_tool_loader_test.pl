@@ -34,7 +34,8 @@ fixture_schema(
         limits:_{time_limit:1.0, max_output_bytes:1024}
     }).
 
-fixture_handler(Args, Args.value).
+fixture_handler(Args, Value) :-
+    Value = Args.value.
 
 test(pack_discovery_is_immediate_and_declarative) :-
     rlm_tool_packs(Packs),
