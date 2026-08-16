@@ -5,11 +5,15 @@
             agent_runtime_destroy/1,
             agent_runtime_status/2,
             agent_spawn/5,
+            agent_spawn_async/5,
             agent_send/5,
+            agent_send_async/5,
             agent_pump/4,
+            agent_pump_async/4,
             agent_status/3,
             agent_children/3,
             agent_cancel/4,
+            agent_cancel_async/4,
             agent_trace/2,
             agent_plan_handler/5,
             agent_tool_handler/4
@@ -26,12 +30,20 @@ Mailboxes are finite SWI message queues.  A full mailbox therefore produces an
 explicit backpressure outcome instead of allowing unbounded message growth.
 Capabilities are inherited by subset: a child may drop parent authority but can
 never add authority the parent did not have.
+
+Latency-bearing public operations are canonical async-first. The async API
+submits one execute predicate to `rlm_async`; the synchronous API starts that
+same operation and awaits its Future. Code already executing inside canonical
+asynchronous work uses the execute ABI directly rather than nesting a Future
+wait. The runtime's separate bounded worker pool remains responsible for
+logical-agent host work and mailbox/backpressure semantics.
 */
 
 :- use_module(library(gensym)).
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(thread_pool)).
+:- use_module(rlm_async, []).
 :- use_module(rlm_tool,
               [ capabilities_normalize/2,
                 capabilities_narrow/3
@@ -162,7 +174,21 @@ require_worker_handler(Handler) :-
  * Spawn and supervision
  * ---------------------------------------------------------------------- */
 
+agent_spawn_async(Runtime, Parent, Spec0, RequestedCapabilities, Future) :-
+    agent_spawn_task_metadata(Runtime, Parent, Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_agent:agent_spawn_execute(Runtime,
+                                      Parent,
+                                      Spec0,
+                                      RequestedCapabilities),
+        Metadata,
+        Future).
+
 agent_spawn(Runtime, Parent, Spec0, RequestedCapabilities, Outcome) :-
+    agent_spawn_async(Runtime, Parent, Spec0, RequestedCapabilities, Future),
+    await_agent_future(Future, Outcome).
+
+agent_spawn_execute(Runtime, Parent, Spec0, RequestedCapabilities, Outcome) :-
     catch(agent_spawn_(Runtime,
                        Parent,
                        Spec0,
@@ -301,7 +327,18 @@ normalize_agent_metadata_pair(Key-_, _) :-
  * Mailboxes and engine scheduling
  * ---------------------------------------------------------------------- */
 
+agent_send_async(Runtime, Agent, Message, Options, Future) :-
+    agent_task_metadata(agent_send, Runtime, Agent, Options, Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_agent:agent_send_execute(Runtime, Agent, Message, Options),
+        Metadata,
+        Future).
+
 agent_send(Runtime, Agent, Message, Options, Outcome) :-
+    agent_send_async(Runtime, Agent, Message, Options, Future),
+    await_agent_future(Future, Outcome).
+
+agent_send_execute(Runtime, Agent, Message, Options, Outcome) :-
     catch(agent_send_(Runtime, Agent, Message, Options, Outcome),
           Exception,
           agent_api_exception(send, Exception, Outcome)).
@@ -330,7 +367,18 @@ agent_send_(Runtime, agent(AgentId), Message, Options, Outcome) :-
 agent_send_(_, Agent, _, _, _) :-
     throw(agent_fault(invalid_agent(Agent))).
 
+agent_pump_async(Runtime, Agent, Options, Future) :-
+    agent_task_metadata(agent_pump, Runtime, Agent, Options, Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_agent:agent_pump_execute(Runtime, Agent, Options),
+        Metadata,
+        Future).
+
 agent_pump(Runtime, Agent, Options, Outcome) :-
+    agent_pump_async(Runtime, Agent, Options, Future),
+    await_agent_future(Future, Outcome).
+
+agent_pump_execute(Runtime, Agent, Options, Outcome) :-
     catch(agent_pump_(Runtime, Agent, Options, Outcome),
           Exception,
           agent_api_exception(pump, Exception, Outcome)).
@@ -758,10 +806,26 @@ agent_children(Runtime, agent(AgentId), Children) :-
             Children0),
     sort(Children0, Children).
 
-agent_cancel(Runtime, agent(AgentId), Reason, Outcome) :-
-    catch(agent_cancel_(Runtime, AgentId, Reason, Outcome),
+agent_cancel_async(Runtime, Agent, Reason, Future) :-
+    agent_task_metadata(agent_cancel, Runtime, Agent, [], Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_agent:agent_cancel_execute(Runtime, Agent, Reason),
+        Metadata,
+        Future).
+
+agent_cancel(Runtime, Agent, Reason, Outcome) :-
+    agent_cancel_async(Runtime, Agent, Reason, Future),
+    await_agent_future(Future, Outcome).
+
+agent_cancel_execute(Runtime, Agent, Reason, Outcome) :-
+    catch(agent_cancel_execute_(Runtime, Agent, Reason, Outcome),
           Exception,
           agent_api_exception(cancel, Exception, Outcome)).
+
+agent_cancel_execute_(Runtime, agent(AgentId), Reason, Outcome) :-
+    agent_cancel_(Runtime, AgentId, Reason, Outcome).
+agent_cancel_execute_(_, Agent, _, _) :-
+    throw(agent_fault(invalid_agent(Agent))).
 
 agent_cancel_(Runtime, AgentId, Reason, Outcome) :-
     runtime_record(Runtime, RuntimeId, _, _),
@@ -780,7 +844,7 @@ agent_cancel_(Runtime, AgentId, Reason, Outcome) :-
 
 cancel_children(_, [], _).
 cancel_children(Runtime, [Child|Children], Reason) :-
-    agent_cancel(Runtime, Child, Reason, _),
+    agent_cancel_execute(Runtime, Child, Reason, _),
     cancel_children(Runtime, Children, Reason).
 
 cancel_reply(error(Error), _, error(Error)) :- !.
@@ -821,7 +885,7 @@ notify_parent_from_reply(_, _, _).
  * ---------------------------------------------------------------------- */
 
 agent_plan_handler(Runtime, Parent, Spec, Capabilities, Child) :-
-    agent_spawn(Runtime, Parent, Spec, Capabilities, Outcome),
+    agent_spawn_execute(Runtime, Parent, Spec, Capabilities, Outcome),
     (   Outcome = ok(Child)
     ->  true
     ;   Outcome = error(Error),
@@ -1044,6 +1108,62 @@ destroy_agent_data(agent_data(_, Engine, Queue)) :-
     catch(engine_destroy(Engine), _, true),
     catch(message_queue_destroy(Queue), _, true).
 
+await_agent_future(Future, Outcome) :-
+    setup_call_cleanup(
+        true,
+        rlm_async:rlm_future_await(Future, Outcome),
+        rlm_async:rlm_future_destroy(Future)).
+
+agent_spawn_task_metadata(Runtime0, Parent0, Metadata) :-
+    metadata_runtime_id(Runtime0, RuntimeId),
+    metadata_agent_id(Parent0, ParentId),
+    Metadata = async_metadata{
+                   operation:agent_spawn,
+                   runtime_id:RuntimeId,
+                   parent_agent:ParentId,
+                   trace_id:none,
+                   session_id:none
+               }.
+
+agent_task_metadata(Operation, Runtime0, Agent0, Options, Metadata) :-
+    metadata_runtime_id(Runtime0, RuntimeId),
+    metadata_agent_id(Agent0, AgentId),
+    metadata_option(trace_id, Options, none, TraceId),
+    metadata_option(session_id, Options, none, SessionId),
+    Metadata = async_metadata{
+                   operation:Operation,
+                   runtime_id:RuntimeId,
+                   agent_id:AgentId,
+                   trace_id:TraceId,
+                   session_id:SessionId
+               }.
+
+metadata_runtime_id(agent_runtime(Id), Id) :-
+    ground(Id),
+    !.
+metadata_runtime_id(_, unknown).
+
+metadata_agent_id(none, none) :- !.
+metadata_agent_id(agent(Id), Id) :-
+    ground(Id),
+    !.
+metadata_agent_id(_, unknown).
+
+metadata_option(Name, Options, Default, Value) :-
+    (   is_list(Options),
+        member(Option, Options),
+        nonvar(Option),
+        Option =.. [Name, Found],
+        ground(Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
+
+agent_api_exception(_, Exception, _) :-
+    agent_control_exception(Exception),
+    !,
+    throw(Exception).
+
 agent_api_exception(Phase, agent_fault(Fault), error(Error)) :-
     !,
     Error = agent_error{phase:Phase,
@@ -1056,6 +1176,10 @@ agent_api_exception(Phase, Exception, error(Error)) :-
                         kind:exception,
                         exception:Safe,
                         message:"agent runtime operation raised an exception"}.
+
+agent_control_exception(rlm_async_cancelled(_)).
+agent_control_exception('$aborted').
+agent_control_exception(abort).
 
 safe_exception(Exception, Safe) :-
     term_string(Exception, Safe, [quoted(true), numbervars(true)]).

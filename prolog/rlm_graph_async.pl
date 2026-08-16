@@ -3,29 +3,22 @@
             graph_resume_async/6
           ]).
 
-/** <module> Asynchronous facade for graph execution and resume */
+/** <module> Compatibility facade for canonical asynchronous graph operations
 
-:- use_module(rlm_async).
-:- use_module(rlm_graph).
+The canonical async/task implementation lives in rlm_graph. This module remains
+for callers that import the historical async facade directly and delegates only
+to asynchronous predicates. It never enters a synchronous public wrapper.
+*/
+
+:- use_module(rlm_graph, []).
 
 graph_run_async(Compiled, Input, Options, Future) :-
-    rlm_async_submit(graph_run_task(Compiled, Input, Options), Future).
+    rlm_graph:graph_run_async(Compiled, Input, Options, Future).
 
-graph_run_task(Compiled, Input, Options, Outcome) :-
-    rlm_graph:graph_run(Compiled, Input, Options, Outcome).
-
-graph_resume_async(Compiled, RunId, State, Input, Options, Future) :-
-    rlm_async_submit(graph_resume_task(Compiled,
-                                       RunId,
-                                       State,
-                                       Input,
-                                       Options),
-                     Future).
-
-graph_resume_task(Compiled, RunId, State, Input, Options, Outcome) :-
-    rlm_graph:graph_resume(Compiled,
-                           RunId,
-                           State,
-                           Input,
-                           Options,
-                           Outcome).
+graph_resume_async(Compiled, Backend, RunId, Resume, Options, Future) :-
+    rlm_graph:graph_resume_async(Compiled,
+                                 Backend,
+                                 RunId,
+                                 Resume,
+                                 Options,
+                                 Future).
