@@ -114,7 +114,7 @@ create_async_workers(Count, Queue, [Thread|Threads]) :-
 /* Submission ------------------------------------------------------------- */
 
 rlm_async_submit(Goal, Future) :-
-    rlm_async_submit(Goal, _{}, Future).
+    rlm_async_submit(Goal, async_metadata{}, Future).
 
 rlm_async_submit(Goal, Metadata0, Future) :-
     require_async_runtime,
@@ -135,10 +135,10 @@ create_future_locked(Metadata0, Parent, rlm_future(Id), Id) :-
     gensym(rlm_future_, Id),
     get_time(CreatedAt),
     metadata_operation(Metadata0, Operation),
-    put_dict(_{id:Id,
-               parent_task:Parent,
-               operation:Operation,
-               created_at:CreatedAt},
+    put_dict(async_metadata{id:Id,
+                            parent_task:Parent,
+                            operation:Operation,
+                            created_at:CreatedAt},
              Metadata0,
              Metadata),
     assertz(async_future_state(Id, pending)),
@@ -428,7 +428,7 @@ register_completion_callback_locked(Id, _, _) :-
 
 apply_completion_callback_action(wait, _) :- !.
 apply_completion_callback_action(call(Outcome), Callback) :-
-    call(Callback, Outcome).
+    catch(call(Callback, Outcome), _, true).
 
 rlm_future_then(Future, Callback, NextFuture) :-
     require_callback(Callback, rlm_future_then/3),
@@ -452,7 +452,7 @@ register_continuation_locked(ParentId,
                     context(rlm_future_then/3,
                             'future does not exist or was destroyed')))
     ),
-    create_future_locked(_{operation:continuation},
+    create_future_locked(async_metadata{operation:continuation},
                          ParentId,
                          NextFuture,
                          NextId),
