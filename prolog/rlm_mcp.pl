@@ -1,12 +1,16 @@
 :- module(rlm_mcp,
           [ rlm_mcp_ready/0,
             mcp_client_connect/5,
+            mcp_client_connect_async/5,
             mcp_client_command/4,
+            mcp_client_command_async/4,
             mcp_client_close/2,
+            mcp_client_close_async/2,
             mcp_client_trace/2,
             mcp_client_protocol/2,
             mcp_server_new/5,
             mcp_server_handle/6,
+            mcp_server_handle_async/6,
             mcp_server_trace/2,
             mcp_command_normalize/2,
             mcp_tool_normalize/2,
@@ -19,6 +23,12 @@
 The public runtime is command-oriented and version-neutral. Protocol selection,
 wire methods, HTTP routing metadata, and legacy session state terminate at this
 facade and its version adapters.
+
+Latency-bearing client and server operations are canonical async-first. Async
+predicates submit only execute predicates through rlm_async; synchronous
+predicates start the same Future and await it. Stateful async command/server
+operations return the updated state in their Future result rather than relying
+on output variables copied into worker threads.
 */
 
 :- use_module(rlm_mcp_model,
@@ -32,6 +42,7 @@ facade and its version adapters.
 :- use_module(rlm_mcp_v2025_11_25).
 :- use_module(rlm_mcp_v2026_07_28).
 :- use_module(rlm_mcp_compat).
+:- use_module(rlm_async, []).
 :- use_module(library(option)).
 
 :- dynamic mcp_connect_generation/1.
@@ -43,10 +54,107 @@ rlm_mcp_ready :-
     mcp_2026_protocol_version('2026-07-28').
 
 /* -------------------------------------------------------------------------
+ * Canonical async helpers
+ * ---------------------------------------------------------------------- */
+
+mcp_client_connect_async(TransportSpec, ClientInfo, ClientCaps, Options, Future) :-
+    mcp_subject(TransportSpec, Subject),
+    mcp_task_metadata(mcp_connect, Subject, Options, Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_mcp:mcp_client_connect_execute(TransportSpec,
+                                           ClientInfo,
+                                           ClientCaps,
+                                           Options),
+        Metadata,
+        Future).
+
+mcp_client_command_async(Client0, Command0, Options, Future) :-
+    mcp_client_subject(Client0, Subject),
+    mcp_task_metadata(mcp_command, Subject, Options, Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_mcp:mcp_client_command_execute(Client0, Command0),
+        Metadata,
+        Future).
+
+mcp_client_close_async(Client, Future) :-
+    mcp_client_subject(Client, Subject),
+    mcp_task_metadata(mcp_close, Subject, [], Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_mcp:mcp_client_close_execute(Client),
+        Metadata,
+        Future).
+
+mcp_server_handle_async(Server0, Wire, RequestMeta, Dispatch, Options, Future) :-
+    mcp_task_metadata(mcp_server_handle, server, Options, Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_mcp:mcp_server_handle_execute(Server0,
+                                          Wire,
+                                          RequestMeta,
+                                          Dispatch),
+        Metadata,
+        Future).
+
+await_mcp_future(Future, Result) :-
+    setup_call_cleanup(
+        true,
+        rlm_async:rlm_future_await(Future, Result),
+        rlm_async:rlm_future_destroy(Future)).
+
+mcp_task_metadata(Operation, Subject0, Options, Metadata) :-
+    metadata_ground(Subject0, unknown, Subject),
+    metadata_option(trace_id, Options, none, TraceId),
+    metadata_option(session_id, Options, none, SessionId),
+    Metadata = async_metadata{
+                   operation:Operation,
+                   mcp_subject:Subject,
+                   trace_id:TraceId,
+                   session_id:SessionId
+               }.
+
+metadata_option(Name, Options, Default, Value) :-
+    (   is_list(Options),
+        member(Option, Options),
+        Option =.. [Name, Found],
+        ground(Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
+
+metadata_ground(Value, _, Value) :-
+    ground(Value),
+    !.
+metadata_ground(_, Default, Default).
+
+mcp_subject(Spec, Subject) :-
+    catch(endpoint_identity(Spec, Subject0), _, fail),
+    ground(Subject0),
+    !,
+    Subject = Subject0.
+mcp_subject(_, unknown).
+
+mcp_client_subject(Client, Subject) :-
+    is_dict(Client, mcp_client),
+    get_dict(endpoint, Client, Endpoint),
+    ground(Endpoint),
+    !,
+    Subject = Endpoint.
+mcp_client_subject(_, unknown).
+
+/* -------------------------------------------------------------------------
  * Client negotiation
  * ---------------------------------------------------------------------- */
 
 mcp_client_connect(TransportSpec, ClientInfo, ClientCaps, Options, Outcome) :-
+    mcp_client_connect_async(TransportSpec,
+                             ClientInfo,
+                             ClientCaps,
+                             Options,
+                             Future),
+    await_mcp_future(Future, FutureResult),
+    mcp_simple_future_result(FutureResult, Outcome).
+
+mcp_client_connect_execute(TransportSpec, ClientInfo, ClientCaps, Options,
+                           Outcome) :-
     catch(client_connect(TransportSpec,
                          ClientInfo,
                          ClientCaps,
@@ -54,6 +162,9 @@ mcp_client_connect(TransportSpec, ClientInfo, ClientCaps, Options, Outcome) :-
                          Outcome),
           Exception,
           runtime_exception(connect, Exception, Outcome)).
+
+mcp_simple_future_result(error(Error), error(Error)) :- !.
+mcp_simple_future_result(Result, Result).
 
 client_connect(TransportSpec, ClientInfo, ClientCaps, Options, Outcome) :-
     mcp_transport_open(TransportSpec, Options, TransportOutcome),
@@ -491,9 +602,30 @@ normalize_ready_state_2025(_, State0, State) :-
  * ---------------------------------------------------------------------- */
 
 mcp_client_command(Client0, Command0, Client, Outcome) :-
+    mcp_client_command_async(Client0, Command0, [], Future),
+    await_mcp_future(Future, FutureResult),
+    mcp_command_future_result(FutureResult, Client0, Client, Outcome).
+
+mcp_client_command_execute(Client0, Command0, Result) :-
     catch(client_command(Client0, Command0, Client, Outcome),
           Exception,
-          runtime_exception(command, Exception, Outcome)).
+          ( Client = Client0,
+            runtime_exception(command, Exception, Outcome)
+          )),
+    Result = mcp_command_async_result{client:Client, outcome:Outcome}.
+
+mcp_command_future_result(Result, _, Client, Outcome) :-
+    is_dict(Result, mcp_command_async_result),
+    !,
+    Client = Result.client,
+    Outcome = Result.outcome.
+mcp_command_future_result(error(Error), Client0, Client0, error(Error)) :- !.
+mcp_command_future_result(Other, Client0, Client0, error(Error)) :-
+    term_string(Other, Safe, [quoted(true), numbervars(true)]),
+    Error = mcp_error{phase:runtime,
+                      kind:invalid_async_result,
+                      detail:Safe,
+                      message:"asynchronous MCP command returned an invalid result"}.
 
 client_command(Client0, Command0, Client, Outcome) :-
     require_client(Client0),
@@ -768,6 +900,11 @@ retry_after_reinitialize_2025(ok(State), Client0, Command, InitId, Trace,
     command_once_2025(Temp, Command, false, Client, Outcome).
 
 mcp_client_close(Client, Outcome) :-
+    mcp_client_close_async(Client, Future),
+    await_mcp_future(Future, FutureResult),
+    mcp_simple_future_result(FutureResult, Outcome).
+
+mcp_client_close_execute(Client, Outcome) :-
     (   is_dict(Client, mcp_client)
     ->  mcp_transport_close(Client.transport, Outcome)
     ;   Outcome = error(mcp_error{phase:runtime,
@@ -818,6 +955,16 @@ server_new_states(ok(State2025), ok(State2026), TransportKind, ok(Server)) :-
                         trace:Trace}.
 
 mcp_server_handle(Server0, Wire, RequestMeta, Dispatch, Server, Outcome) :-
+    mcp_server_handle_async(Server0,
+                            Wire,
+                            RequestMeta,
+                            Dispatch,
+                            [],
+                            Future),
+    await_mcp_future(Future, FutureResult),
+    mcp_server_future_result(FutureResult, Server0, Server, Outcome).
+
+mcp_server_handle_execute(Server0, Wire, RequestMeta, Dispatch, Result) :-
     catch(server_handle(Server0,
                         Wire,
                         RequestMeta,
@@ -825,7 +972,23 @@ mcp_server_handle(Server0, Wire, RequestMeta, Dispatch, Server, Outcome) :-
                         Server,
                         Outcome),
           Exception,
-          runtime_exception(server, Exception, Outcome)).
+          ( Server = Server0,
+            runtime_exception(server, Exception, Outcome)
+          )),
+    Result = mcp_server_async_result{server:Server, outcome:Outcome}.
+
+mcp_server_future_result(Result, _, Server, Outcome) :-
+    is_dict(Result, mcp_server_async_result),
+    !,
+    Server = Result.server,
+    Outcome = Result.outcome.
+mcp_server_future_result(error(Error), Server0, Server0, error(Error)) :- !.
+mcp_server_future_result(Other, Server0, Server0, error(Error)) :-
+    term_string(Other, Safe, [quoted(true), numbervars(true)]),
+    Error = mcp_error{phase:runtime,
+                      kind:invalid_async_result,
+                      detail:Safe,
+                      message:"asynchronous MCP server operation returned an invalid result"}.
 
 server_handle(Server0, Wire, RequestMeta, Dispatch, Server, Outcome) :-
     require_server(Server0),
@@ -1182,6 +1345,7 @@ control_exception(time_limit_exceeded).
 control_exception('$aborted').
 control_exception(abort).
 control_exception(cancelled(_)).
+control_exception(rlm_async_cancelled(_)).
 control_exception(rlm_cancelled(_)).
 control_exception(chain_cancelled(_)).
 control_exception(graph_cancelled(_)).
