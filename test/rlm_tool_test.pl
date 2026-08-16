@@ -43,7 +43,8 @@ test(registry_discovery_exposes_schema_not_handler) :-
           assertion(length(Schemas, 1)),
           Schemas = [Discovered],
           assertion(Discovered.name == counting),
-          assertion(Discovered.capability == tool(counting))
+          assertion(Discovered.capability == tool(counting)),
+          assertion(Discovered.effect == read)
         ),
         cleanup_registry(Registry)).
 
@@ -59,6 +60,7 @@ test(allowed_project_read_succeeds_and_traces_authorization) :-
                       ok(Execution),
                       Trace),
           assertion(Trace.authorization == allowed),
+          assertion(Trace.authority == approve_diff),
           assertion(Trace.status == ok),
           assertion(Execution.value.truncated == false),
           assertion(sub_string(Execution.value.content, _, _, _,
@@ -110,6 +112,25 @@ test(malformed_arguments_fail_schema_before_handler) :-
         ),
         cleanup_registry(Registry)).
 
+test(malformed_arguments_win_before_capability_denial) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( counting_schema(Schema),
+          tool_register(Registry, Schema,
+                        tool_test_support:counting_tool,
+                        ok(_)),
+          tool_invoke(Registry,
+                      [],
+                      counting,
+                      json{},
+                      [],
+                      error(Error),
+                      Trace),
+          assertion(Error.kind == schema_validation_failed),
+          assertion(Trace.status == malformed_args)
+        ),
+        cleanup_registry(Registry)).
+
 test(tool_timeout_is_structured) :-
     setup_call_cleanup(
         setup_registry(Registry),
@@ -149,7 +170,7 @@ test(oversized_tool_output_is_rejected) :-
         ),
         cleanup_registry(Registry)).
 
-test(project_read_rejects_parent_traversal) :-
+test(project_read_rejects_parent_traversal_during_preflight) :-
     setup_call_cleanup(
         setup_registry(Registry),
         ( register_project_read_tool(Registry, '.', [], ok(_)),
@@ -160,8 +181,8 @@ test(project_read_rejects_parent_traversal) :-
                       [],
                       error(Error),
                       Trace),
-          assertion(Error.kind == handler_failed),
-          assertion(Trace.status == handler_failed)
+          assertion(Error.kind == confinement_denied),
+          assertion(Trace.status == confinement_denied)
         ),
         cleanup_registry(Registry)).
 
@@ -218,6 +239,7 @@ counting_schema(
     tool_schema{name:counting,
                 description:"counting test tool",
                 capability:tool(counting),
+                effect:read,
                 arguments:_{type:object,
                             required:[value],
                             additional_properties:false,
@@ -232,6 +254,7 @@ slow_schema(
     tool_schema{name:slow,
                 description:"timeout fixture",
                 capability:tool(slow),
+                effect:read,
                 arguments:_{type:object,
                             required:[],
                             additional_properties:false,
@@ -246,6 +269,7 @@ large_schema(
     tool_schema{name:large,
                 description:"oversized output fixture",
                 capability:tool(large),
+                effect:read,
                 arguments:_{type:object,
                             required:[],
                             additional_properties:false,
