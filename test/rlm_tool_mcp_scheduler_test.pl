@@ -17,8 +17,9 @@ slow_tool_schema(
         limits:_{time_limit:2.0, max_output_bytes:1024}
     }).
 
-slow_tool(Args, Args.value) :-
-    sleep(0.03).
+slow_tool(Args, Value) :-
+    sleep(0.03),
+    Value = Args.value.
 
 scheduler_client_info(_{name:"scheduler-client", version:"1.0"}).
 scheduler_client_caps(_{roots:_{listChanged:false}}).
