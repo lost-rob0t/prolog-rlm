@@ -22,6 +22,19 @@
             rlm_future_then/3,
             rlm_future_on_complete/2,
             rlm_future_metadata/2,
+            rlm_authority/2,
+            rlm_set_authority_if_unset/3,
+            rlm_set_authority/3,
+            rlm_authority_narrow/3,
+            rlm_authority_child/4,
+            rlm_pending_approval/3,
+            rlm_pending_approvals/2,
+            rlm_pending_resolution_async/2,
+            rlm_pending_resolution/2,
+            rlm_authority_events/2,
+            rlm_approve/2,
+            rlm_deny/3,
+            rlm_edit/3,
             model_complete_async/3,
             model_stream_async/4,
             chain_invoke_async/4,
@@ -128,6 +141,11 @@ sync await. The recursion gate is evaluated before completion scheduling, and
 even a rejected completion request is represented by a Future on the async
 surface. No public async task calls its public synchronous predicate, and
 internal canonical async work uses execute ABIs instead of nested Future waits.
+
+Authority setters and approve/deny/edit are trusted host/library APIs. They are
+ordinary immediate state transitions, not model-callable tools. Human approval
+latency is represented by a deferred pending-operation Future; no shared
+`rlm_async` worker waits for a person.
 */
 
 :- use_module(rlm_chain).
@@ -147,6 +165,21 @@ internal canonical async work uses execute ABIs instead of nested Future waits.
                 rlm_future_then/3,
                 rlm_future_on_complete/2,
                 rlm_future_metadata/2
+              ]).
+:- use_module(rlm_authority,
+              [ rlm_authority/2,
+                rlm_set_authority_if_unset/3,
+                rlm_set_authority/3,
+                rlm_authority_narrow/3,
+                rlm_authority_child/4,
+                rlm_pending_approval/3,
+                rlm_pending_approvals/2,
+                rlm_pending_resolution_async/2,
+                rlm_pending_resolution/2,
+                rlm_authority_events/2,
+                rlm_approve/2,
+                rlm_deny/3,
+                rlm_edit/3
               ]).
 :- use_module(rlm_completion,
               [ llm_query/3,
@@ -290,6 +323,7 @@ rlm_ready :-
     rlm_plan:default_plan_budget(_),
     rlm_tool:capabilities_normalize([], ok([])),
     rlm_async:rlm_async_ready,
+    rlm_authority:rlm_authority(runtime(ready_probe), approve_diff),
     rlm_completion:default_completion_budget(_),
     rlm_recursion_policy:rlm_recursion_policy_ready,
     rlm_recursion_runtime:rlm_recursion_runtime_ready,
