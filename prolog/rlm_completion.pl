@@ -1,7 +1,10 @@
 :- module(rlm_completion,
           [ rlm_completion/4,
+            rlm_completion_async/4,
             llm_query/3,
+            llm_query_async/3,
             rlm_query/4,
+            rlm_query_async/4,
             rlm_cancellation_token/1,
             rlm_cancel/1,
             default_completion_budget/1
@@ -14,11 +17,17 @@ capabilities, recursion ceilings, budgets, cancellation and trajectory data.
 Recursive `rlm(...)` nodes remain closed symbolic plans; a child model call is
 still executed by the production provider registry, never by model-generated
 Prolog code.
+
+Completion execution follows one direction: the async predicate schedules the
+canonical guarded operation; the sync predicate starts that same operation and
+awaits its Future. Internal recursive/model steps call canonical execution
+predicates directly and never re-enter a synchronous public facade.
 */
 
 :- use_module(library(lists)).
 :- use_module(library(time)).
 :- use_module(library(uuid)).
+:- use_module(rlm_async).
 :- use_module(rlm_chain).
 :- use_module(rlm_context).
 :- use_module(rlm_plan).
@@ -40,23 +49,85 @@ default_completion_budget(
                       time_limit:30.0}).
 
 /* -------------------------------------------------------------------------
- * Public API
+ * Public API and canonical task entrypoints
  * ---------------------------------------------------------------------- */
 
+rlm_completion_async(Query, Context, Options, Future) :-
+    completion_task_metadata(completion, Options, Metadata),
+    rlm_async_submit(rlm_completion:rlm_completion_execute(Query,
+                                                           Context,
+                                                           Options),
+                     Metadata,
+                     Future).
+
 rlm_completion(Query, Context, Options, Outcome) :-
+    rlm_completion_async(Query, Context, Options, Future),
+    await_owned_future(Future, Outcome).
+
+rlm_completion_execute(Query, Context, Options, Outcome) :-
     catch(rlm_completion_guarded(Query, Context, Options, Outcome),
           Exception,
           completion_exception(Exception, Outcome)).
 
+llm_query_async(Prompt, Options, Future) :-
+    completion_task_metadata(llm_query, Options, Metadata),
+    rlm_async_submit(rlm_completion:llm_query_execute(Prompt, Options),
+                     Metadata,
+                     Future).
+
 llm_query(Prompt, Options, Outcome) :-
+    llm_query_async(Prompt, Options, Future),
+    await_owned_future(Future, Outcome).
+
+llm_query_execute(Prompt, Options, Outcome) :-
     catch(llm_query_guarded(Prompt, Options, Outcome),
           Exception,
           completion_exception(Exception, Outcome)).
 
+rlm_query_async(Query, SubContext, Options, Future) :-
+    completion_task_metadata(rlm_query, Options, Metadata),
+    rlm_async_submit(rlm_completion:rlm_query_execute(Query,
+                                                       SubContext,
+                                                       Options),
+                     Metadata,
+                     Future).
+
 rlm_query(Query, SubContext, Options, Outcome) :-
+    rlm_query_async(Query, SubContext, Options, Future),
+    await_owned_future(Future, Outcome).
+
+rlm_query_execute(Query, SubContext, Options, Outcome) :-
     catch(rlm_query_guarded(Query, SubContext, Options, Outcome),
           Exception,
           completion_exception(Exception, Outcome)).
+
+await_owned_future(Future, Outcome) :-
+    setup_call_cleanup(
+        true,
+        rlm_future_await(Future, Outcome),
+        rlm_future_destroy(Future)).
+
+completion_task_metadata(Operation, Options, Metadata) :-
+    completion_metadata_fields(Options, TraceId, SessionId),
+    Metadata = async_metadata{operation:Operation,
+                              trace_id:TraceId,
+                              session_id:SessionId}.
+
+completion_metadata_fields(Options, TraceId, SessionId) :-
+    (   is_list(Options)
+    ->  metadata_option(trace_id, Options, none, TraceId),
+        metadata_option(session_id, Options, none, SessionId)
+    ;   TraceId = none,
+        SessionId = none
+    ).
+
+metadata_option(Name, Options, Default, Value) :-
+    (   member(Option, Options),
+        Option =.. [Name, Found],
+        ground(Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
 
 rlm_cancellation_token(Token) :-
     uuid(Id, [version(4)]),
@@ -375,7 +446,7 @@ rlm_query_with_context(Query, ContextRef, Depth, Options, Outcome) :-
     format(string(Prompt),
            "Recursive subquery at depth ~d.\nGoal: ~s\nOpaque context metadata: ~q\nAnswer only from information actually supplied to you; metadata is not context content.",
            [Depth, Query, MetadataRef.metadata]),
-    llm_query(Prompt, Options, ModelOutcome),
+    llm_query_execute(Prompt, Options, ModelOutcome),
     rlm_query_result(ModelOutcome, Depth, Outcome).
 
 rlm_query_result(error(Error), _, error(Error)) :- !.
@@ -544,7 +615,7 @@ planner_parse_result(error(ParseError), _, Usage, Attempt, _, _, _, _, _, _, _, 
 call_planner(Options, Provider, Request, Outcome) :-
     option_value(planner_handler, Options, none, Handler),
     (   Handler == none
-    ->  model_complete(Provider, Request, Outcome)
+    ->  rlm_chain:model_complete_execute(Provider, Request, Outcome)
     ;   require_callable(Handler, planner_handler),
         catch(call(Handler, Request, RawOutcome),
               Exception,
@@ -555,7 +626,7 @@ call_planner(Options, Provider, Request, Outcome) :-
 call_model(Options, Provider, Request, Outcome) :-
     option_value(model_handler, Options, none, Handler),
     (   Handler == none
-    ->  model_complete(Provider, Request, Outcome)
+    ->  rlm_chain:model_complete_execute(Provider, Request, Outcome)
     ;   require_callable(Handler, model_handler),
         catch(call(Handler, Request, RawOutcome),
               Exception,
