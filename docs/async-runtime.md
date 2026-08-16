@@ -1,14 +1,20 @@
-# Dual synchronous / asynchronous runtime
+# Canonical asynchronous runtime
 
-`prolog-rlm` exposes both blocking and non-blocking surfaces for operations that can take meaningful time.
+`prolog-rlm` exposes blocking and non-blocking surfaces for operations that can take meaningful time.
 
-The synchronous API remains the simplest interface:
+For completion and provider/chain execution, asynchronous work is the canonical implementation path. Synchronous predicates are convenience wrappers that start the same task, await its Future, and destroy the Future with cleanup protection.
 
-```prolog
-llm_query("hello", Options, Outcome).
+The architectural invariant is:
+
+```text
+canonical execute semantics
+        |
+        +-- async API -> Future
+        |
+        +-- sync API  -> same async API -> await Future
 ```
 
-The asynchronous API schedules the same operation and returns an opaque future:
+Never implement an asynchronous facade by scheduling its synchronous public counterpart.
 
 ```prolog
 llm_query_async("hello", Options, Future),
@@ -16,13 +22,31 @@ rlm_future_await(Future, Outcome),
 rlm_future_destroy(Future).
 ```
 
-`Outcome` has the same shape as the synchronous call. The future layer does not wrap successful results in another `ok/1`.
+The equivalent blocking call is:
+
+```prolog
+llm_query("hello", Options, Outcome).
+```
+
+`Outcome` has the same shape on both surfaces. The Future layer does not add another `ok/1` wrapper.
+
+## Execution ABI
+
+Completion and provider/chain modules separate three concerns:
+
+- operation semantics live in internal `*_execute` predicates;
+- asynchronous predicates submit those execution predicates to `rlm_async`;
+- synchronous predicates call the async surface and await/destroy its Future.
+
+Canonical operations that are already executing on an async worker call the internal execution ABI directly. They do not call a public synchronous wrapper and create a nested Future wait. This matters because the worker pool is intentionally bounded.
+
+Examples include planner/model calls from completion, model steps in typed plans, and chain retry/stream transports.
 
 ## Scheduler
 
-The generic async runtime is resource-bounded. It uses a fixed process-local worker set and a finite submission backlog rather than creating one operating-system thread for every future.
+The generic async runtime is resource-bounded. It uses a fixed process-local worker set and a finite submission backlog rather than creating one operating-system thread for every Future.
 
-Current defaults are eight workers and a backlog of 64 queued tasks. A full backlog resolves the submitted future to a structured `async_error` with `kind:backpressure` instead of blocking the caller indefinitely or creating more workers.
+Current defaults are eight workers and a backlog of 64 queued tasks. A full backlog resolves the submitted Future to a structured `async_error` with `kind:backpressure` instead of blocking the caller indefinitely or creating more workers.
 
 Runtime counters are available through:
 
@@ -36,12 +60,16 @@ The status includes worker count, backlog limit, queued, pending, running, compl
 
 ```prolog
 rlm_async_submit(Closure, Future).
+rlm_async_submit(Closure, Metadata, Future).
 rlm_async_runtime_status(Status).
 rlm_future_status(Future, Status).
+rlm_future_metadata(Future, Metadata).
 rlm_future_await(Future, Outcome).
 rlm_future_await(Future, TimeoutSeconds, Outcome).
 rlm_future_cancel(Future, CancelOutcome).
 rlm_future_all(Futures, Outcomes).
+rlm_future_then(Future, Callback, NextFuture).
+rlm_future_on_complete(Future, Callback).
 rlm_future_destroy(Future).
 ```
 
@@ -54,11 +82,21 @@ work(Input, Result) :-
 ?- rlm_async_submit(work(Input), Future).
 ```
 
-The future is intentionally opaque. Callers should inspect it only through the public predicates.
+`rlm_async_submit/3` also accepts a ground metadata dict. Runtime metadata includes the Future/task ID, parent task ID, operation kind and creation time. Callers may add host-controlled correlation fields such as `trace_id` and `session_id`.
+
+The Future is intentionally opaque. Callers should inspect it only through the public predicates.
+
+### Continuations and callbacks
+
+`rlm_future_then/3` creates a child Future. The continuation is enqueued only after the parent reaches a terminal state, so composition does not consume a worker merely waiting on another Future.
+
+`rlm_future_on_complete/2` registers a host/library callback. Completion callbacks run once. They are not a model-callable execution surface.
+
+Parent cancellation propagates to composed child Futures where the runtime owns that parent/child relationship.
 
 ### Timeout behavior
 
-An await timeout does **not** cancel the task:
+An await timeout does **not** restart or cancel the task:
 
 ```prolog
 rlm_future_await(Future, 0.25, TimeoutOutcome),
@@ -68,15 +106,15 @@ rlm_future_await(Future, FinalOutcome).
 
 Use `rlm_future_cancel/2` when cancellation is intended.
 
-### Cancellation
+### Cancellation and cleanup
 
-Cancellation marks the future cancelled. If the task is already running, the scheduler signals the worker currently executing that task; if it is still queued, the worker skips it when dequeued. Awaiting a cancelled future returns a structured `async_error` with `kind:cancelled`.
+Cancellation marks the Future cancelled. If the task is already running, the scheduler signals the worker currently executing that task; if it is still queued, the worker skips it when dequeued. Awaiting a cancelled Future returns a structured `async_error` with `kind:cancelled`.
 
-Destroy futures when the caller no longer needs their result so per-future state is reclaimed.
+Synchronous wrappers use `setup_call_cleanup/3` around await/destroy so interruption or an exception during the wait does not leak owned Future state.
 
-## Library facades
+Destroy Futures when the caller no longer needs their result so per-Future metadata and composition state are reclaimed.
 
-The dual-surface APIs cover:
+## Canonical library surfaces in this slice
 
 ### Completion
 
@@ -91,62 +129,37 @@ rlm_query(Query, Context, Options, Outcome).
 rlm_query_async(Query, Context, Options, Future).
 ```
 
-The top-level `rlm` facade applies the same public recursion policy to synchronous and asynchronous completion calls.
+The top-level `rlm` facade applies the same public recursion policy before synchronous and asynchronous execution. A synchronous call then waits on the same async path.
 
 ### Provider / chain
 
 ```prolog
+model_complete(Provider, Request, Outcome).
 model_complete_async(Provider, Request, Future).
+
+model_stream(Provider, Request, Handler, Outcome).
 model_stream_async(Provider, Request, Handler, Future).
+
+chain_invoke(Chain, Request, Options, Outcome).
 chain_invoke_async(Chain, Request, Options, Future).
+
+chain_stream(Chain, Request, Options, Handler, Outcome).
 chain_stream_async(Chain, Request, Handler, Options, Future).
 ```
 
-### Tools
+Streaming uses the provider streaming transport incrementally inside the asynchronous task. It does not wait for a complete synchronous stream and replay it afterward.
 
-`tool_invoke/7` has two result outputs (`Outcome` and `Trace`), so its async facade resolves to one structured value:
+## Remaining #54 migrations
 
-```prolog
-tool_invoke_async(Registry, Caps, Name, Args, Options, Future),
-rlm_future_await(Future, Result).
+The generic Future runtime is shared by tools, MCP, agents and graphs, but those libraries still contain compatibility async facades that schedule synchronous public operations. They are intentionally not described as canonical yet.
 
-% Result = tool_async_result{
-%              outcome: Outcome,
-%              trace: Trace
-%          }
-```
+The next #54 slice must migrate latency-bearing operations in:
 
-### MCP
+- `rlm_tool`;
+- `rlm_mcp`, including the declarative lifecycle work tracked by #52;
+- `rlm_agent`;
+- `rlm_graph`.
 
-```prolog
-mcp_client_connect_async(TransportSpec, ClientInfo, ClientCaps, Options, Future).
-mcp_client_command_async(Client, Command, Options, Future).
-mcp_client_close_async(Client, Future).
-mcp_server_handle_async(Server, Session, Command, Options, Context, Future).
-```
+Pure or immediate predicates should not be forced through Futures.
 
-These call the canonical, version-neutral MCP facade; protocol adapters are not duplicated in the async layer.
-
-### Agents
-
-```prolog
-agent_spawn_async(Runtime, Parent, Spec, Options, Future).
-agent_send_async(Runtime, Agent, Message, Options, Future).
-agent_pump_async(Runtime, Agent, Options, Future).
-agent_cancel_async(Runtime, Agent, Reason, Future).
-```
-
-### Graphs
-
-```prolog
-graph_run_async(Compiled, Input, Options, Future).
-graph_resume_async(Compiled, RunId, State, Input, Options, Future).
-```
-
-## Design rule
-
-Async facades do not duplicate model/tool/MCP/agent/graph business logic. They schedule the existing operation through `rlm_async` and preserve its ordinary result term.
-
-This makes the async layer suitable for responsive clients such as a future `agentProlog` TUI while keeping synchronous scripts and simple expert systems straightforward.
-
-Async execution does not bypass capability checks, budgets, cancellation rules, tool confinement, or any later authority policy. Those checks remain inside the underlying operation.
+The same hard rule applies to those migrations: canonical task/async execution first, synchronous await wrappers second. Loading tools is not authorization, and async execution never bypasses capabilities, schemas, confinement, budgets, network restrictions, validation, tracing, or host-controlled authority policy.
