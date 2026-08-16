@@ -4,8 +4,10 @@
 
 /** <module> Send-only MCP transport operation
 
-Notifications must not wait for a stdio response.  HTTP notifications may use
-the ordinary request path and ignore the response body.
+Notifications must not wait for a stdio response. HTTP notifications may use
+the ordinary request path and ignore the response body. Borrowed transports
+preserve the lifecycle owner's process ownership while forwarding protocol
+notifications to the underlying transport.
 */
 
 :- use_module(library(http/json)).
@@ -24,6 +26,9 @@ send_transport(Transport, Wire, Meta) :-
     get_dict(backend, Transport, Backend),
     send_backend(Backend, Transport, Wire, Meta).
 
+send_backend(borrowed(Transport), _, Wire, Meta) :-
+    !,
+    send_transport(Transport, Wire, Meta).
 send_backend(fixture(Handler), _, Wire, Meta) :-
     !,
     (   call(Handler, Wire, Meta, _)
@@ -46,6 +51,10 @@ send_backend(http(_, _), Transport, Wire, Meta) :-
 send_backend(Backend, _, _, _) :-
     throw(mcp_send_fault(unsupported_backend(Backend))).
 
+send_exception(Exception, _) :-
+    send_control_exception(Exception),
+    !,
+    throw(Exception).
 send_exception(mcp_send_fault(Detail), error(Error)) :-
     !,
     Error = mcp_transport_error{kind:transport_error,
@@ -56,3 +65,11 @@ send_exception(Exception, error(Error)) :-
     Error = mcp_transport_error{kind:transport_exception,
                                 exception:Safe,
                                 message:"MCP notification send raised an exception"}.
+
+send_control_exception(rlm_async_cancelled(_)).
+send_control_exception(rlm_cancelled(_)).
+send_control_exception(chain_cancelled(_)).
+send_control_exception(graph_cancelled(_)).
+send_control_exception(cancelled(_)).
+send_control_exception('$aborted').
+send_control_exception(abort).
