@@ -167,13 +167,21 @@ rlm_effect_class(repository_mutation).
 rlm_operation_fingerprint(Context, Operation0, Fingerprint) :-
     require_context(Context),
     normalize_operation(Operation0, Operation),
+    fingerprint_operation(Operation, ExecutableOperation),
     canonical_value(authority_fingerprint{context:Context,
-                                          operation:Operation}, Canonical),
+                                          operation:ExecutableOperation},
+                    Canonical),
     term_string(Canonical, Serialized,
                 [quoted(true), numbervars(true), ignore_ops(true)]),
     crypto_data_hash(Serialized, Hex,
                      [algorithm(sha256), encoding(utf8)]),
     atom_concat('sha256:', Hex, Fingerprint).
+
+fingerprint_operation(Operation, ExecutableOperation) :-
+    (   del_dict(correlation, Operation, _, WithoutCorrelation)
+    ->  ExecutableOperation = WithoutCorrelation
+    ;   ExecutableOperation = Operation
+    ).
 
 normalize_operation(Operation0, Operation) :-
     is_dict(Operation0),
