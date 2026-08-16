@@ -17,7 +17,6 @@
 :- consult(rlm_context_test).
 :- consult(rlm_plan_test).
 :- consult(rlm_tool_test).
-:- consult(rlm_async_test).
 :- consult(rlm_completion_test).
 :- consult(rlm_completion_hardening_test).
 :- consult(rlm_nested_usage_test).
@@ -33,6 +32,7 @@
 :- consult(rlm_trace_test).
 :- consult(rlm_demo_test).
 :- consult(rlm_cli_test).
+:- consult(rlm_async_test).
 
 main(_) :-
     (   run_tests
