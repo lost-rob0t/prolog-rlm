@@ -17,6 +17,7 @@
 :- consult(rlm_context_test).
 :- consult(rlm_plan_test).
 :- consult(rlm_tool_test).
+:- consult(rlm_tool_mcp_async_test).
 :- consult(rlm_completion_test).
 :- consult(rlm_completion_hardening_test).
 :- consult(rlm_nested_usage_test).
