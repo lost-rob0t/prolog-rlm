@@ -1,5 +1,6 @@
 :- begin_tests(rlm_async).
 
+:- use_module(library(time)).
 :- use_module('../prolog/rlm_async').
 :- use_module('../prolog/rlm_completion').
 :- use_module('../prolog/rlm_completion_async', []).
@@ -47,6 +48,15 @@ test(submit_await_preserves_plain_result_shape) :-
           rlm_future_status(Future, Status),
           assertion(Status.state == completed),
           assertion(Status.outcome == answer(42))
+        ),
+        rlm_future_destroy(Future)).
+
+test(completed_future_prebound_mismatch_fails_without_polling) :-
+    setup_call_cleanup(
+        rlm_async_submit(async_value(actual), Future),
+        ( rlm_future_await(Future, actual),
+          call_with_time_limit(0.2,
+                               \+ rlm_future_await(Future, expected))
         ),
         rlm_future_destroy(Future)).
 
