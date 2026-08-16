@@ -25,10 +25,8 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-
           patch_path = Path('.github/agent-graph-canonical.patch')
           text = patch_path.read_text()
-
           test_marker = 'diff --git a/test/rlm_agent_graph_async_test.pl b/test/rlm_agent_graph_async_test.pl\n'
           docs_marker = 'diff --git a/docs/agent-runtime.md b/docs/agent-runtime.md\n'
           start = text.index(test_marker)
@@ -41,7 +39,6 @@ jobs:
               if line.startswith('+') and not line.startswith('+++'):
                   output.append(line[1:])
           Path('test/rlm_agent_graph_async_test.pl').write_text('\n'.join(output) + '\n')
-
           skipped = {
               'a/test/rlm_agent_graph_async_test.pl b/test/rlm_agent_graph_async_test.pl',
               'a/docs/graph-runtime.md b/docs/graph-runtime.md',
@@ -62,50 +59,13 @@ jobs:
           git apply --check /tmp/agent-graph-source.patch
           git apply /tmp/agent-graph-source.patch
 
-      - name: Document graph async contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('docs/graph-runtime.md')
-          text = path.read_text()
-          marker = '## Public API\n'
-          section = '''## Canonical async execution
-
-Latency-bearing run/resume operations are async-first:
-
-```prolog
-graph_run_async(+Compiled, +InitialState, +Options, -Future).
-graph_run(+Compiled, +InitialState, +Options, -Outcome).
-graph_resume_async(+Compiled, +Backend, +RunId, +Resume, +Options, -Future).
-graph_resume(+Compiled, +Backend, +RunId, +Resume, +Options, -Outcome).
-```
-
-The async surfaces submit `graph_run_execute/4` and `graph_resume_execute/6`.
-The synchronous surfaces start those same operations and await their Futures.
-Inline subgraphs call the execute ABI directly, preventing nested Future waits
-when a graph already occupies an `rlm_async` worker. Compilation, schema
-validation, checkpoint lookup/history, and backend metadata stay immediate.
-
-Future metadata carries operation, graph ID, requested run ID, trace ID and
-session ID when available. Execute predicates are a trusted host/library
-composition ABI and are not model-callable graph registry entries.
-
-'''
-          if section not in text:
-              text = text.replace(marker, section + marker, 1)
-          path.write_text(text)
-          PY
-
       - name: Remove staging helpers and verify diff
         shell: bash
         run: |
           set -euo pipefail
           git rm .github/agent-graph-canonical.patch
           git rm .github/workflows/apply-agent-graph-slice.yml
-          git add prolog test docs
+          git add prolog test docs/agent-runtime.md
           git diff --cached --check
           grep -q 'agent_send_execute' prolog/rlm_agent.pl
           grep -q 'graph_run_execute' prolog/rlm_graph.pl
