@@ -9,6 +9,7 @@ slow_tool_schema(
         name:scheduler_echo,
         description:"shared scheduler fixture",
         capability:tool(scheduler_echo),
+        effect:read,
         arguments:_{type:object,
                     required:[value],
                     additional_properties:false,
