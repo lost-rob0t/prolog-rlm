@@ -2,11 +2,22 @@
           [ rlm_version/1,
             rlm_ready/0,
             rlm_completion/4,
+            rlm_completion_async/4,
             llm_query/3,
+            llm_query_async/3,
             rlm_query/4,
+            rlm_query_async/4,
             rlm_cancellation_token/1,
             rlm_cancel/1,
             default_completion_budget/1,
+            rlm_async_ready/0,
+            rlm_async_submit/2,
+            rlm_future_status/2,
+            rlm_future_await/2,
+            rlm_future_await/3,
+            rlm_future_cancel/2,
+            rlm_future_destroy/1,
+            rlm_future_all/2,
             default_recursion_policy/1,
             recursion_route/3,
             recursion_candidates/3,
@@ -102,11 +113,26 @@ capabilities and does not widen any normal budget.
 :- use_module(rlm_context).
 :- use_module(rlm_plan).
 :- use_module(rlm_tool).
+:- use_module(rlm_async,
+              [ rlm_async_ready/0,
+                rlm_async_submit/2,
+                rlm_future_status/2,
+                rlm_future_await/2,
+                rlm_future_await/3,
+                rlm_future_cancel/2,
+                rlm_future_destroy/1,
+                rlm_future_all/2
+              ]).
 :- use_module(rlm_completion,
               [ llm_query/3,
                 rlm_cancellation_token/1,
                 rlm_cancel/1,
                 default_completion_budget/1
+              ]).
+:- use_module(rlm_completion_async,
+              [ rlm_completion_async/4,
+                llm_query_async/3,
+                rlm_query_async/4
               ]).
 :- use_module(rlm_recursion_policy,
               [ rlm_recursion_policy_ready/0,
@@ -234,6 +260,7 @@ rlm_ready :-
     rlm_context:context_backend(memory, _),
     rlm_plan:default_plan_budget(_),
     rlm_tool:capabilities_normalize([], ok([])),
+    rlm_async:rlm_async_ready,
     rlm_completion:default_completion_budget(_),
     rlm_recursion_policy:rlm_recursion_policy_ready,
     rlm_recursion_runtime:rlm_recursion_runtime_ready,
