@@ -117,7 +117,7 @@ ensure_async_runtime(Queue) :-
 
 ensure_async_runtime_locked(Queue) :-
     async_runtime(Existing, _, _),
-    is_message_queue(Existing),
+    queue_exists(Existing),
     !,
     Queue = Existing.
 ensure_async_runtime_locked(Queue) :-
@@ -131,6 +131,12 @@ ensure_async_runtime_locked(Queue) :-
             throw(Exception)
           )),
     assertz(async_runtime(Queue, Workers, Backlog)).
+
+/* is_message_queue/1 is not available on every SWI-Prolog version supported
+   by this project. message_queue_property/2 provides a compatible existence
+   probe without making the runtime depend on the newer convenience predicate. */
+queue_exists(Queue) :-
+    catch(message_queue_property(Queue, size(_)), _, fail).
 
 create_async_workers(0, _, []) :- !.
 create_async_workers(Count, Queue, [Thread|Threads]) :-
