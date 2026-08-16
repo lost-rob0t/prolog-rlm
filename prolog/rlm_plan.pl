@@ -900,7 +900,7 @@ execute_step(model(ProviderName, PromptExpr, RequestOptions, Bind), Runtime,
             Request = model_request{messages:[message{role:user,
                                                       content:Prompt}],
                                     options:RequestOptions},
-            model_complete(Provider, Request, ModelOutcome),
+            rlm_chain:model_complete_execute(Provider, Request, ModelOutcome),
             handle_model_result(ModelOutcome, ProviderName, Bind, State0,
                                 Outcome)
         ;   Outcome = error(plan_error{phase:execute,
