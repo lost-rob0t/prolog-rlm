@@ -91,6 +91,7 @@ canonical_submit(Module, AsyncName/AsyncArity, ExecuteName/ExecuteArity) :-
 
 submit_closure(Body, Closure) :-
     sub_term(SubTerm, Body),
+    nonvar(SubTerm),
     (   SubTerm = rlm_async_submit(Closure, _, _)
     ;   SubTerm = rlm_async:rlm_async_submit(Closure, _, _)
     ).
@@ -99,6 +100,7 @@ sync_calls_async(Module, SyncName/SyncArity, AsyncName/AsyncArity) :-
     functor(Head, SyncName, SyncArity),
     clause(Module:Head, Body),
     sub_term(Call, Body),
+    nonvar(Call),
     source_call_functor(Call, AsyncName, AsyncArity),
     !.
 
@@ -111,9 +113,21 @@ source_call_functor(Goal, Name, Arity) :-
     functor(Goal, Name, Arity).
 
 body_contains_qualified(Body, Module, Name, Arity) :-
-    sub_term(Module:Goal, Body),
+    sub_term(SubTerm, Body),
+    nonvar(SubTerm),
+    SubTerm = Module:Goal,
     callable(Goal),
     functor(Goal, Name, Arity).
+
+runtime_transport(Body, RuntimeName, RuntimeArity, Transport) :-
+    sub_term(SubTerm, Body),
+    nonvar(SubTerm),
+    SubTerm = rlm_chain_runtime:RuntimeCall,
+    nonvar(RuntimeCall),
+    functor(RuntimeCall, RuntimeName, RuntimeArity),
+    arg(4, RuntimeCall, Transport),
+    nonvar(Transport),
+    !.
 
 completion_options([
     planner_handler(completion_test_support:direct_planner),
@@ -181,12 +195,16 @@ test(sync_chain_surfaces_call_async_surfaces) :-
 
 test(chain_runtime_transports_use_execute_abi_not_sync_facades) :-
     clause(rlm_chain:chain_invoke_execute(_, _, _, _), InvokeBody),
-    sub_term(rlm_chain_runtime:InvokeCall, InvokeBody),
-    InvokeCall = chain_invoke_with_transport(_, _, _, InvokeTransport, _),
+    runtime_transport(InvokeBody,
+                      chain_invoke_with_transport,
+                      5,
+                      InvokeTransport),
     assertion(InvokeTransport == rlm_chain:model_complete_execute),
     clause(rlm_chain:chain_stream_execute(_, _, _, _, _), StreamBody),
-    sub_term(rlm_chain_runtime:StreamCall, StreamBody),
-    StreamCall = chain_stream_with_transport(_, _, _, StreamTransport, _, _),
+    runtime_transport(StreamBody,
+                      chain_stream_with_transport,
+                      6,
+                      StreamTransport),
     assertion(StreamTransport == rlm_chain:model_stream_execute).
 
 test(compatibility_async_modules_never_call_sync_public_wrappers) :-
