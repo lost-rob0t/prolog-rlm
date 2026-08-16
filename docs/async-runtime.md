@@ -18,10 +18,25 @@ rlm_future_destroy(Future).
 
 `Outcome` has the same shape as the synchronous call. The future layer does not wrap successful results in another `ok/1`.
 
+## Scheduler
+
+The generic async runtime is resource-bounded. It uses a fixed process-local worker set and a finite submission backlog rather than creating one operating-system thread for every future.
+
+Current defaults are eight workers and a backlog of 64 queued tasks. A full backlog resolves the submitted future to a structured `async_error` with `kind:backpressure` instead of blocking the caller indefinitely or creating more workers.
+
+Runtime counters are available through:
+
+```prolog
+rlm_async_runtime_status(Status).
+```
+
+The status includes worker count, backlog limit, queued, pending, running, completed, and cancelled counts. Downstream runtimes may impose stricter limits.
+
 ## Future API
 
 ```prolog
 rlm_async_submit(Closure, Future).
+rlm_async_runtime_status(Status).
 rlm_future_status(Future, Status).
 rlm_future_await(Future, Outcome).
 rlm_future_await(Future, TimeoutSeconds, Outcome).
@@ -55,13 +70,13 @@ Use `rlm_future_cancel/2` when cancellation is intended.
 
 ### Cancellation
 
-Cancellation marks the future cancelled and signals its worker thread. Awaiting a cancelled future returns a structured `async_error` with `kind:cancelled`.
+Cancellation marks the future cancelled. If the task is already running, the scheduler signals the worker currently executing that task; if it is still queued, the worker skips it when dequeued. Awaiting a cancelled future returns a structured `async_error` with `kind:cancelled`.
 
-Destroy futures when the caller no longer needs them so joinable worker resources can be reclaimed deterministically.
+Destroy futures when the caller no longer needs their result so per-future state is reclaimed.
 
 ## Library facades
 
-The first dual-surface APIs cover:
+The dual-surface APIs cover:
 
 ### Completion
 
@@ -75,6 +90,8 @@ llm_query_async(Prompt, Options, Future).
 rlm_query(Query, Context, Options, Outcome).
 rlm_query_async(Query, Context, Options, Future).
 ```
+
+The top-level `rlm` facade applies the same public recursion policy to synchronous and asynchronous completion calls.
 
 ### Provider / chain
 
@@ -99,6 +116,17 @@ rlm_future_await(Future, Result).
 %          }
 ```
 
+### MCP
+
+```prolog
+mcp_client_connect_async(TransportSpec, ClientInfo, ClientCaps, Options, Future).
+mcp_client_command_async(Client, Command, Options, Future).
+mcp_client_close_async(Client, Future).
+mcp_server_handle_async(Server, Session, Command, Options, Context, Future).
+```
+
+These call the canonical, version-neutral MCP facade; protocol adapters are not duplicated in the async layer.
+
 ### Agents
 
 ```prolog
@@ -117,7 +145,7 @@ graph_resume_async(Compiled, RunId, State, Input, Options, Future).
 
 ## Design rule
 
-Async facades do not duplicate model/tool/agent/graph business logic. They schedule the existing operation through `rlm_async` and preserve its ordinary result term.
+Async facades do not duplicate model/tool/MCP/agent/graph business logic. They schedule the existing operation through `rlm_async` and preserve its ordinary result term.
 
 This makes the async layer suitable for responsive clients such as a future `agentProlog` TUI while keeping synchronous scripts and simple expert systems straightforward.
 
