@@ -99,18 +99,26 @@ sync_calls_async(Module, SyncName/SyncArity, AsyncName/AsyncArity) :-
     functor(Head, SyncName, SyncArity),
     clause(Module:Head, Body),
     sub_term(Call, Body),
-    callable(Call),
-    strip_module(Call, CallModule0, PlainCall),
-    functor(PlainCall, AsyncName, AsyncArity),
-    (   CallModule0 == Module
-    ;   CallModule0 == user
-    ),
+    source_call_functor(Call, AsyncName, AsyncArity),
     !.
+
+source_call_functor(_Module:Goal, Name, Arity) :-
+    !,
+    callable(Goal),
+    functor(Goal, Name, Arity).
+source_call_functor(Goal, Name, Arity) :-
+    callable(Goal),
+    functor(Goal, Name, Arity).
 
 body_contains_qualified(Body, Module, Name, Arity) :-
     sub_term(Module:Goal, Body),
     callable(Goal),
     functor(Goal, Name, Arity).
+
+body_contains_call(Body, Name, Arity) :-
+    sub_term(Call, Body),
+    source_call_functor(Call, Name, Arity),
+    !.
 
 completion_options([
     planner_handler(completion_test_support:direct_planner),
@@ -175,6 +183,20 @@ test(sync_chain_surfaces_call_async_surfaces) :-
     assertion(sync_calls_async(rlm_chain,
                                chain_stream/5,
                                chain_stream_async/5)).
+
+test(chain_runtime_transports_use_execute_abi_not_sync_facades) :-
+    clause(rlm_chain:chain_invoke_execute(_, _, _, _), InvokeBody),
+    assertion(body_contains_qualified(InvokeBody,
+                                      rlm_chain,
+                                      model_complete_execute,
+                                      3)),
+    assertion(\+ body_contains_call(InvokeBody, model_complete, 3)),
+    clause(rlm_chain:chain_stream_execute(_, _, _, _, _), StreamBody),
+    assertion(body_contains_qualified(StreamBody,
+                                      rlm_chain,
+                                      model_stream_execute,
+                                      4)),
+    assertion(\+ body_contains_call(StreamBody, model_stream, 4)).
 
 test(compatibility_async_modules_never_call_sync_public_wrappers) :-
     forall(member(Module-AsyncPI-SyncModule-SyncPI,
@@ -260,9 +282,14 @@ test(sync_and_async_completion_outcomes_accounting_and_trace_match) :-
         rlm_future_await(Future, 2.0, AsyncOutcome),
         rlm_future_destroy(Future)),
     completion_test_support:planner_calls(AsyncCalls),
+    SyncOutcome = ok(SyncResult),
+    AsyncOutcome = ok(AsyncResult),
     assertion(SyncCalls =:= 1),
     assertion(AsyncCalls =:= 1),
-    assertion(SyncOutcome == AsyncOutcome).
+    assertion(SyncResult.usage == AsyncResult.usage),
+    assertion(SyncResult.trajectory == AsyncResult.trajectory),
+    assertion(SyncResult.recursion == AsyncResult.recursion),
+    assertion(SyncOutcome =@= AsyncOutcome).
 
 test(sync_and_async_llm_query_outcomes_accounting_and_trace_match) :-
     Options = [model_handler(completion_test_support:fake_model)],
@@ -276,9 +303,13 @@ test(sync_and_async_llm_query_outcomes_accounting_and_trace_match) :-
         rlm_future_await(Future, 2.0, AsyncOutcome),
         rlm_future_destroy(Future)),
     completion_test_support:model_calls(AsyncCalls),
+    SyncOutcome = ok(SyncResult),
+    AsyncOutcome = ok(AsyncResult),
     assertion(SyncCalls =:= 1),
     assertion(AsyncCalls =:= 1),
-    assertion(SyncOutcome == AsyncOutcome).
+    assertion(SyncResult.usage == AsyncResult.usage),
+    assertion(SyncResult.trajectory == AsyncResult.trajectory),
+    assertion(SyncOutcome =@= AsyncOutcome).
 
 test(tool_effect_executes_once_for_sync_and_async_completion) :-
     tool_completion_options(Options),
@@ -298,9 +329,14 @@ test(tool_effect_executes_once_for_sync_and_async_completion) :-
         rlm_future_await(Future, 2.0, AsyncOutcome),
         rlm_future_destroy(Future)),
     tool_call_count(AsyncCalls),
+    SyncOutcome = ok(SyncResult),
+    AsyncOutcome = ok(AsyncResult),
     assertion(SyncCalls =:= 1),
     assertion(AsyncCalls =:= 1),
-    assertion(SyncOutcome == AsyncOutcome).
+    assertion(SyncResult.usage == AsyncResult.usage),
+    assertion(SyncResult.trajectory == AsyncResult.trajectory),
+    assertion(SyncResult.transitions == AsyncResult.transitions),
+    assertion(SyncOutcome =@= AsyncOutcome).
 
 test(timeout_during_active_completion_does_not_restart_model,
      [setup(completion_test_support:reset_calls)]) :-
