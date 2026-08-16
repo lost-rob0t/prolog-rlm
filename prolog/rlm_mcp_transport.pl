@@ -2,14 +2,19 @@
           [ mcp_transport_open/3,
             mcp_transport_exchange/4,
             mcp_transport_close/2,
+            mcp_transport_stop/2,
             mcp_transport_kind/2
           ]).
 
 /** <module> MCP transport boundary
 
 Transport code moves JSON-RPC envelopes but does not interpret MCP methods,
-versions, capabilities, or sessions.  Version adapters provide request headers
+versions, capabilities, or sessions. Version adapters provide request headers
 and consume response metadata.
+
+An existing(Transport) spec creates a borrowed transport view. Borrowed clients
+can connect and close without taking ownership of a server process/endpoint;
+the lifecycle owner remains responsible for mcp_transport_stop/2.
 */
 
 :- use_module(library(http/http_open)).
@@ -29,6 +34,11 @@ mcp_transport_open(Spec, Options, Outcome) :-
     ;   true
     ).
 
+open_transport(existing(Transport), _,
+               mcp_transport{kind:Kind,
+                             backend:borrowed(Transport)}) :-
+    !,
+    mcp_transport_kind(Transport, Kind).
 open_transport(fixture(Kind, Handler), _,
                mcp_transport{kind:Kind,
                              backend:fixture(Handler)}) :-
@@ -77,6 +87,9 @@ exchange_transport(Transport, Wire, RequestMeta, Response) :-
     get_dict(backend, Transport, Backend),
     exchange_backend(Backend, Wire, RequestMeta, Response).
 
+exchange_backend(borrowed(Transport), Wire, RequestMeta, Response) :-
+    !,
+    exchange_transport(Transport, Wire, RequestMeta, Response).
 exchange_backend(fixture(Handler), Wire, RequestMeta, Response) :-
     !,
     (   call(Handler, Wire, RequestMeta, Raw)
@@ -225,6 +238,7 @@ close_transport(Transport) :-
     get_dict(backend, Transport, Backend),
     close_backend(Backend).
 
+close_backend(borrowed(_)) :- !.
 close_backend(fixture(_)) :- !.
 close_backend(http(_, _)) :- !.
 close_backend(stdio(Pid, In, Out, Err)) :-
@@ -233,6 +247,31 @@ close_backend(stdio(Pid, In, Out, Err)) :-
     close_quietly(Out),
     close_quietly(Err),
     process_wait(Pid, _).
+
+mcp_transport_stop(Transport, Outcome) :-
+    catch(stop_transport(Transport),
+          Exception,
+          transport_exception(stop, Exception, Outcome)),
+    (   var(Outcome)
+    ->  Outcome = ok(stopped)
+    ;   true
+    ).
+
+stop_transport(Transport) :-
+    is_dict(Transport, mcp_transport),
+    get_dict(backend, Transport, Backend),
+    stop_backend(Backend).
+
+stop_backend(borrowed(_)) :- !.
+stop_backend(fixture(_)) :- !.
+stop_backend(http(_, _)) :- !.
+stop_backend(stdio(Pid, In, Out, Err)) :-
+    !,
+    catch(process_kill(Pid, term), _, true),
+    close_quietly(In),
+    close_quietly(Out),
+    close_quietly(Err),
+    catch(process_wait(Pid, _), _, true).
 
 close_quietly(Stream) :- catch(close(Stream), _, true).
 
