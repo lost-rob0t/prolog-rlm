@@ -30,6 +30,7 @@
 :- consult(rlm_effect_hardening_test).
 :- consult(rlm_effect_adversarial_test).
 :- consult(rlm_effect_migration_test).
+:- consult(rlm_effect_migration_restart_test).
 :- consult(run_tool_mcp_async_tests).
 :- consult(rlm_tool_mcp_scheduler_test).
 :- consult(rlm_completion_test).

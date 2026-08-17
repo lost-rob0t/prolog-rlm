@@ -37,7 +37,9 @@ write_fixture(Details) :-
                             [admitted,dispatching,observed]),
     write_attempt_revisions(legacy_attempt_uncertain, Call2, Fingerprint2,
                             'legacy-provider-key-uncertain',
-                            [admitted,dispatching]),
+                            [admitted,dispatching],
+                            metadata{executor_identity:
+                                     executor_identity{adapter:spoofed_adapter}}),
     Observation = observation{status:succeeded,
                               value:legacy_value,
                               usage:usage{units:7},
@@ -58,9 +60,14 @@ write_fixture(Details) :-
 
 write_attempt_revisions(AttemptId, CallId, Fingerprint, ProviderKey,
                         Statuses) :-
+    write_attempt_revisions(AttemptId, CallId, Fingerprint, ProviderKey,
+                            Statuses, metadata{}).
+
+write_attempt_revisions(AttemptId, CallId, Fingerprint, ProviderKey,
+                        Statuses, Metadata) :-
     forall(nth1(Revision, Statuses, Status),
            ( UpdatedAt is float(Revision),
              assert_effect_attempt_record(
                  AttemptId, Revision, CallId, Fingerprint, 1, none, initial,
                  Status, ProviderKey, authority_ref{tier:dangerous},
-                 metadata{}, 1.0, UpdatedAt) )).
+                 Metadata, 1.0, UpdatedAt) )).

@@ -147,7 +147,8 @@ migrate_locked(Schema, Snapshot, Source, Destination, Options, Base, Report) :-
     unresolved_attempts(Snapshot, Unresolved),
     attempts_without_bindings(Unresolved, Bindings, Snapshot,
                               MissingBindings),
-    deterministic_migration_identity(SourceDigest, MigrationId, StoreId),
+    deterministic_migration_identity(SourceDigest, Destination,
+                                     MigrationId, StoreId),
     counts(Snapshot, Counts),
     warnings(MissingBindings, Warnings),
     canonical_destination_preflight(Source, Destination, Options),
@@ -162,6 +163,7 @@ migrate_locked(Schema, Snapshot, Source, Destination, Options, Base, Report) :-
                    Validation, Warnings, Report).
 
 existing_v2_report(Snapshot, Base, Report) :-
+    effect_migration_validate_snapshot(Snapshot, _),
     metadata_value(Snapshot.metadata, namespace, StoreId),
     ( member(migration(MigrationId, SourceSchema, SourceDigest,
                        Destination, _, complete), Snapshot.migrations)
@@ -321,7 +323,12 @@ validate_attempts(Calls, Attempts) :-
     forall(member(Attempt, Attempts), validate_attempt_shape(Attempt)),
     findall(Id, (member(Attempt, Attempts), Id = Attempt.attempt_id), Ids0),
     sort(Ids0, Ids),
-    forall(member(Id, Ids), validate_attempt_chain(Id, Calls, Attempts)).
+    forall(member(Id, Ids), validate_attempt_chain(Id, Calls, Attempts)),
+    findall(Key,
+            ( member(Id, Ids), latest_attempt(Id, Attempts, A),
+              Key = A.idempotency_key ),
+            ProviderKeys),
+    require_unique(ProviderKeys, duplicate_provider_idempotency_key).
 
 validate_attempt_shape(Attempt) :-
     ( is_dict(Attempt, effect_attempt),
@@ -344,6 +351,7 @@ validate_attempt_chain(Id, Calls, Attempts) :-
     keysort(RevisionPairs, SortedPairs),
     pairs_values(SortedPairs, Revisions),
     validate_revision_numbers(Revisions, 1),
+    validate_status_transitions(Revisions),
     Revisions = [First|_],
     forall(member(Revision, Revisions), same_attempt_identity(First, Revision)),
     ( member(Call, Calls), Call.call_id == First.call_id,
@@ -355,6 +363,34 @@ validate_attempt_chain(Id, Calls, Attempts) :-
 attempt_has_id(Id, Attempt) :- Attempt.attempt_id == Id.
 compare_attempt_revision(Order, A, B) :- compare(Order, A.revision, B.revision).
 attempt_revision(Attempt, Attempt.revision).
+
+validate_status_transitions([First|Rest]) :-
+    ( memberchk(First.status, [admitted,cancelled_before_claim]) -> true
+    ; throw(migration_fault(corrupt,
+                            invalid_initial_status(First.attempt_id,
+                                                   First.status))) ),
+    validate_status_transitions_(First, Rest).
+
+validate_status_transitions_(_, []).
+validate_status_transitions_(Previous, [Next|Rest]) :-
+    ( allowed_status_transition(Previous.status, Next.status) -> true
+    ; throw(migration_fault(corrupt,
+                            invalid_status_transition(Next.attempt_id,
+                                                      Previous.status,
+                                                      Next.status))) ),
+    validate_status_transitions_(Next, Rest).
+
+allowed_status_transition(admitted, dispatching).
+allowed_status_transition(admitted, cancelled_pre_dispatch).
+allowed_status_transition(dispatching, cancellation_requested).
+allowed_status_transition(dispatching, indeterminate).
+allowed_status_transition(dispatching, observed).
+allowed_status_transition(cancellation_requested, indeterminate).
+allowed_status_transition(cancellation_requested, observed).
+allowed_status_transition(indeterminate, retry_authorized).
+allowed_status_transition(indeterminate, abandoned).
+allowed_status_transition(indeterminate, observed).
+allowed_status_transition(retry_authorized, observed).
 
 validate_revision_numbers([], _).
 validate_revision_numbers([Attempt|Rest], Expected) :-
@@ -414,8 +450,11 @@ validate_observations(Attempts, Observations) :-
                                    missing_observation(Attempt.attempt_id))) )).
 
 validate_observation(Id, Observation, Attempts) :-
-    latest_attempt(Id, Attempts, _),
+    latest_attempt(Id, Attempts, Attempt),
     ( is_dict(Observation), ground(Observation),
+      memberchk(Attempt.status,
+                [dispatching,cancellation_requested,indeterminate,
+                 retry_authorized,observed]),
       get_dict(status, Observation, Status),
       memberchk(Status, [succeeded,failed,cancelled]),
       get_dict(value, Observation, _), get_dict(usage, Observation, _),
@@ -431,13 +470,17 @@ latest_attempt_member(Attempts, Latest) :-
 validate_events(Calls, Events) :-
     findall(CallId-Sequence, member(CallId-Sequence-_, Events), Keys),
     require_unique(Keys, duplicate_event_sequence),
+    findall(EventId,
+            ( member(_-_-Event0, Events), EventId = Event0.event_id ),
+            EventIds),
+    require_unique(EventIds, duplicate_event_id),
     forall(member(CallId-_-Event, Events),
            ( member(Call, Calls), Call.call_id == CallId,
              is_dict(Event), ground(Event), get_dict(event_id, Event, _)
            -> true
            ; throw(migration_fault(corrupt, invalid_event(CallId))) )).
 
-require_unique(Values, Kind) :-
+require_unique(Values, _) :-
     sort(Values, Unique),
     length(Values, N), length(Unique, N),
     !.
@@ -481,22 +524,9 @@ validate_binding(Snapshot, Dict, binding(AttemptId, Adapter)) :-
       valid_adapter_atom(Dict.adapter)
     -> AttemptId = Dict.attempt_id, Adapter = Dict.adapter
     ; throw(migration_fault(ambiguous_adapter, invalid_binding)) ),
-    ( latest_attempt(AttemptId, Snapshot.attempts, Attempt) -> true
+    ( latest_attempt(AttemptId, Snapshot.attempts, _) -> true
     ; throw(migration_fault(ambiguous_adapter,
-                            nonexistent_attempt_binding(AttemptId))) ),
-    ( attempt_existing_adapter(Attempt, Existing), Existing \== Adapter
-    -> throw(migration_fault(ambiguous_adapter,
-                             conflicting_adapter_binding(AttemptId,
-                                                         Existing,Adapter)))
-    ;  true ).
-
-attempt_existing_adapter(Attempt, Adapter) :-
-    is_dict(Attempt.metadata),
-    get_dict(executor_identity, Attempt.metadata, Identity),
-    is_dict(Identity, executor_identity),
-    get_dict(adapter, Identity, Adapter),
-    atom(Adapter),
-    Adapter \== ''.
+                            nonexistent_attempt_binding(AttemptId))) ).
 
 valid_adapter_atom(Adapter) :-
     atom_codes(Adapter, [First|Rest]),
@@ -519,12 +549,10 @@ unresolved_attempts(Snapshot, Unresolved) :-
             Unresolved0),
     sort(Unresolved0, Unresolved).
 
-attempts_without_bindings(Unresolved, Bindings, Snapshot, Missing) :-
+attempts_without_bindings(Unresolved, Bindings, _, Missing) :-
     findall(Id,
             ( member(Id, Unresolved),
-              \+ memberchk(binding(Id,_), Bindings),
-              \+ ( latest_attempt(Id, Snapshot.attempts, Attempt),
-                   attempt_existing_adapter(Attempt, _) ) ),
+              \+ memberchk(binding(Id,_), Bindings) ),
             Missing).
 
 warnings([], []).
@@ -574,10 +602,11 @@ report_success(Base, Schema, SourceDigest, MigrationId, StoreId,
 schema_number(v1, 1).
 schema_number(empty, 1).
 
-deterministic_migration_identity(SourceDigest, MigrationId, StoreId) :-
-    term_string(migration(SourceDigest), MigrationMaterial,
+deterministic_migration_identity(SourceDigest, Destination,
+                                 MigrationId, StoreId) :-
+    term_string(migration(SourceDigest,Destination), MigrationMaterial,
                 [quoted(true),ignore_ops(true)]),
-    term_string(namespace(SourceDigest), NamespaceMaterial,
+    term_string(namespace(SourceDigest,Destination), NamespaceMaterial,
                 [quoted(true),ignore_ops(true)]),
     crypto_data_hash(MigrationMaterial, MigrationHex,
                      [algorithm(sha256),encoding(utf8)]),
@@ -643,6 +672,12 @@ migration_phase(Phase) :-
     -> directory_file_path(Directory, Phase, Marker),
        setup_call_cleanup(open(Marker, write, Stream, [encoding(utf8)]),
                           format(Stream, '~w~n', [Phase]), close(Stream))
+    ;  true ),
+    ( getenv('RLM_EFFECT_MIGRATION_PAUSE_AT', Paused),
+      Paused == Phase
+    -> format('migration_phase_ready ~w~n', [Phase]),
+       flush_output,
+       read_line_to_string(user_input, _)
     ;  true ),
     ( getenv('RLM_EFFECT_MIGRATION_CRASH_AT', Requested),
       Requested == Phase
