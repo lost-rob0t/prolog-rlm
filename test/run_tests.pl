@@ -25,6 +25,7 @@
 :- consult(rlm_authority_lifecycle_test).
 :- consult(rlm_effect_test).
 :- consult(rlm_effect_authority_test).
+:- consult(rlm_effect_executor_test).
 :- consult(rlm_effect_restart_test).
 :- consult(run_tool_mcp_async_tests).
 :- consult(rlm_tool_mcp_scheduler_test).
