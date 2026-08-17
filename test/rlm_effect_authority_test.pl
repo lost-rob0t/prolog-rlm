@@ -2,6 +2,7 @@
 
 :- use_module('../prolog/rlm_effect').
 :- use_module('../prolog/rlm_effect_authority').
+:- use_module('../prolog/rlm_effect_executor').
 :- use_module('../prolog/rlm_authority').
 
 setup_fixture(File, Context) :-
@@ -86,6 +87,21 @@ test(changed_payload_cannot_reuse_allow_once) :-
           assertion(A.fingerprint \== B.fingerprint),
           authorize(Context, B, approval_required(Pending)),
           rlm_deny(Pending.id, test_cleanup, ok(_)) ),
+        cleanup_fixture(File, Context)).
+
+test(changed_adapter_has_distinct_exact_authority_identity) :-
+    setup_call_cleanup(
+        setup_fixture(File, Context),
+        ( Request = request{target:adapter_authority},
+          effect_prepare(authority_adapter_a, tool, Request, _{}, execute(A)),
+          effect_prepare(authority_adapter_b, tool, Request, _{}, execute(B)),
+          base_operation(A, BaseA),
+          base_operation(B, BaseB),
+          effect_authority_operation(A, BaseA, correlation{}, OperationA),
+          effect_authority_operation(B, BaseB, correlation{}, OperationB),
+          rlm_operation_fingerprint(Context, OperationA, FingerprintA),
+          rlm_operation_fingerprint(Context, OperationB, FingerprintB),
+          assertion(FingerprintA \== FingerprintB) ),
         cleanup_fixture(File, Context)).
 
 test(parallel_allow_once_has_one_authority_owner) :-

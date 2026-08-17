@@ -2,6 +2,7 @@
           [ rlm_effect_store_open/1,
             rlm_effect_store_close/0,
             rlm_effect_store_attached/1,
+            rlm_effect_store_id/1,
             rlm_effect_normalize/2,
             rlm_effect_prepare/4,
             rlm_effect_admit/3,
@@ -52,6 +53,9 @@ rlm_effect_store_close :-
 
 rlm_effect_store_attached(File) :-
     rlm_effect_persist:effect_persist_attached(File).
+
+rlm_effect_store_id(StoreId) :-
+    rlm_effect_persist:effect_persist_store_id(StoreId).
 
 /* Deterministic normalization ------------------------------------------ */
 
@@ -104,24 +108,29 @@ canonical_pair(Key-Value0, Key-Value) :-
 /* Planning -------------------------------------------------------------- */
 
 rlm_effect_prepare(Kind, Request0, Options0, Outcome) :-
-    catch(effect_prepare_(Kind, Request0, Options0, Outcome),
+    catch(with_mutex(rlm_effect_state,
+                     effect_prepare_(Kind, Request0, Options0, Outcome)),
           Exception,
           effect_exception(Exception, Outcome)).
 
 effect_prepare_(Kind, Request0, Options0, Outcome) :-
     require_store,
+    rlm_effect_persist:effect_persist_store_id(StoreId),
     require_kind(Kind),
     rlm_effect_normalize(Request0, Request),
     normalize_options(Options0, Options),
     executable_fingerprint(Kind, Request, Options.semantics, Fingerprint),
-    logical_call_id(Kind, Request, Options.semantics,
-                    Options.logical_key, CallId, LogicalKey),
-    ensure_call(CallId, Fingerprint, Kind, Request, LogicalKey),
+    logical_call_base_id(Kind, Request, Options.semantics,
+                         Options.logical_key, BaseCallId, LogicalKey),
+    rlm_effect_persist:effect_persist_current_epoch(BaseCallId, Epoch),
+    scoped_call_id(StoreId, BaseCallId, Epoch, CallId),
+    ensure_call(CallId, StoreId, BaseCallId, Epoch,
+                Fingerprint, Kind, Request, LogicalKey),
     prepare_mode(Options.mode, CallId, Fingerprint, Kind, Request,
-                 LogicalKey, Options, Outcome).
+                 LogicalKey, StoreId, BaseCallId, Epoch, Options, Outcome).
 
 normalize_options(Options0, Options) :-
-    (   is_dict(Options0), ground(Options0)
+    (   is_dict(Options0), dict_payload_ground(Options0)
     ->  true
     ;   throw(effect_fault(invalid_options))
     ),
@@ -141,6 +150,10 @@ normalize_options(Options0, Options) :-
                            metadata:Metadata,
                            logical_key:LogicalKey,
                            parent_attempt:Parent}).
+
+dict_payload_ground(Dict) :-
+    dict_pairs(Dict, _, Pairs),
+    ground(Pairs).
 
 validate_option_keys(Options) :-
     dict_keys(Options, Keys),
@@ -185,15 +198,21 @@ executable_fingerprint(Kind, Request, Semantics, Fingerprint) :-
                                  semantics:Semantics},
                 'sha256:', Fingerprint).
 
-logical_call_id(Kind, Request, Semantics, auto, CallId, auto) :-
+logical_call_base_id(Kind, Request, Semantics, auto, CallId, auto) :-
     !,
     stable_hash(effect_logical_call{kind:Kind,
                                     request:Request,
                                     semantics:Semantics},
                 'effect-call:', CallId).
-logical_call_id(Kind, _, _, LogicalKey, CallId, LogicalKey) :-
+logical_call_base_id(Kind, _, _, LogicalKey, CallId, LogicalKey) :-
     stable_hash(effect_logical_call{kind:Kind,
                                     logical_key:LogicalKey},
+                'effect-call:', CallId).
+
+scoped_call_id(StoreId, BaseCallId, Epoch, CallId) :-
+    stable_hash(effect_call_scope{store_id:StoreId,
+                                  base_call_id:BaseCallId,
+                                  epoch:Epoch},
                 'effect-call:', CallId).
 
 stable_hash(Term, Prefix, Hash) :-
@@ -203,7 +222,8 @@ stable_hash(Term, Prefix, Hash) :-
                      [algorithm(sha256), encoding(utf8)]),
     atom_concat(Prefix, Hex, Hash).
 
-ensure_call(CallId, Fingerprint, Kind, Request, LogicalKey) :-
+ensure_call(CallId, StoreId, BaseCallId, Epoch,
+            Fingerprint, Kind, Request, LogicalKey) :-
     get_time(Now),
     Call = effect_call{call_id:CallId,
                        fingerprint:Fingerprint,
@@ -211,38 +231,42 @@ ensure_call(CallId, Fingerprint, Kind, Request, LogicalKey) :-
                        request:Request,
                        logical_key:LogicalKey,
                        created_at:Now},
+    rlm_effect_persist:effect_persist_put_call_scope(
+                           CallId, StoreId, BaseCallId, Epoch),
     rlm_effect_persist:effect_persist_put_call(Call).
 
 prepare_mode(initial, CallId, Fingerprint, Kind, Request, LogicalKey,
-             Options, Outcome) :-
+             StoreId, BaseCallId, Epoch, Options, Outcome) :-
     !,
     rlm_effect_persist:effect_persist_attempts(CallId, Fingerprint, Attempts),
     prepare_initial(Attempts, CallId, Fingerprint, Kind, Request, LogicalKey,
-                    Options, Outcome).
+                    StoreId, BaseCallId, Epoch, Options, Outcome).
 prepare_mode(Mode, CallId, Fingerprint, Kind, Request, LogicalKey,
-             Options, Outcome) :-
+             StoreId, BaseCallId, Epoch, Options, Outcome) :-
     memberchk(Mode, [retry,resample]),
     require_explicit_parent(Options.parent_attempt, Parent),
     rlm_effect_persist:effect_persist_get_attempt(Parent, ParentAttempt),
     validate_retry_parent(ParentAttempt, CallId, Fingerprint),
     prepare_explicit(Mode, ParentAttempt, Kind, Request, LogicalKey,
-                     Options, Outcome).
+                     StoreId, BaseCallId, Epoch, Options, Outcome).
 
 prepare_initial([], CallId, Fingerprint, Kind, Request, LogicalKey,
-                Options, execute(Ticket)) :-
+                StoreId, BaseCallId, Epoch, Options, execute(Ticket)) :-
     !,
     make_ticket(CallId, Fingerprint, Kind, Request, LogicalKey,
-                1, none, initial, Options.semantics, Options.metadata, Ticket).
-prepare_initial(Attempts, _, _, _, _, _, _, Outcome) :-
+                StoreId, BaseCallId, Epoch, 1, none, initial,
+                Options.semantics, Options.metadata, Ticket).
+prepare_initial(Attempts, _, _, _, _, _, _, _, _, _, Outcome) :-
     last(Attempts, Latest),
     decision_for_existing(Latest, Outcome).
 
-prepare_explicit(Mode, Parent, Kind, Request, LogicalKey, Options, Outcome) :-
+prepare_explicit(Mode, Parent, Kind, Request, LogicalKey,
+                 StoreId, BaseCallId, Epoch, Options, Outcome) :-
     allowed_explicit_parent_status(Parent.status, Parent),
     Sequence is Parent.sequence+1,
     make_ticket(Parent.call_id, Parent.fingerprint, Kind, Request, LogicalKey,
-                Sequence, Parent.attempt_id, Mode, Options.semantics,
-                Options.metadata, Ticket),
+                StoreId, BaseCallId, Epoch, Sequence, Parent.attempt_id, Mode,
+                Options.semantics, Options.metadata, Ticket),
     (   rlm_effect_persist:effect_persist_get_attempt(Ticket.attempt_id, Existing)
     ->  decision_for_existing(Existing, Outcome)
     ;   Outcome = execute(Ticket)
@@ -264,7 +288,9 @@ allowed_explicit_parent_status(observed, _) :- !.
 allowed_explicit_parent_status(cancelled_before_claim, _) :- !.
 allowed_explicit_parent_status(cancelled_pre_dispatch, _) :- !.
 allowed_explicit_parent_status(retry_authorized, _) :- !.
-allowed_explicit_parent_status(abandoned, _) :- !.
+allowed_explicit_parent_status(abandoned, _) :-
+    !,
+    throw(effect_fault(abandoned_retry_not_authorized)).
 allowed_explicit_parent_status(dispatching, _) :-
     !,
     throw(effect_fault(indeterminate_requires_resolution)).
@@ -280,8 +306,9 @@ allowed_explicit_parent_status(admitted, _) :-
 allowed_explicit_parent_status(_, _) :-
     throw(effect_fault(invalid_parent_status)).
 
-make_ticket(CallId, Fingerprint, Kind, Request, LogicalKey, Sequence,
-            ParentAttempt, Mode, Semantics, Metadata, Ticket) :-
+make_ticket(CallId, Fingerprint, Kind, Request, LogicalKey,
+            StoreId, BaseCallId, Epoch, Sequence,
+            ParentAttempt, Mode, Semantics, Metadata0, Ticket) :-
     stable_hash(effect_attempt_identity{call_id:CallId,
                                         fingerprint:Fingerprint,
                                         sequence:Sequence,
@@ -290,7 +317,12 @@ make_ticket(CallId, Fingerprint, Kind, Request, LogicalKey, Sequence,
                 'effect-attempt:', AttemptId),
     rlm_effect_idempotency_key(AttemptId, IdempotencyKey),
     get_time(Now),
+    Metadata = Metadata0.put(_{effect_store_id:StoreId,
+                               effect_execution_epoch:Epoch}),
     Ticket = effect_ticket{call_id:CallId,
+                           store_id:StoreId,
+                           base_call_id:BaseCallId,
+                           execution_epoch:Epoch,
                            fingerprint:Fingerprint,
                            kind:Kind,
                            request:Request,
@@ -304,25 +336,30 @@ make_ticket(CallId, Fingerprint, Kind, Request, LogicalKey, Sequence,
                            metadata:Metadata,
                            created_at:Now}.
 
-decision_for_existing(Attempt, replay(Observation)) :-
+decision_for_existing(Attempt, Outcome) :-
+    repair_attempt_projection(Attempt),
+    decision_for_existing_(Attempt, Outcome).
+
+decision_for_existing_(Attempt, replay(Observation)) :-
     rlm_effect_persist:effect_persist_get_observation(Attempt.attempt_id,
                                                       Observation),
-    !.
-decision_for_existing(Attempt, in_progress(Attempt)) :-
+    !,
+    repair_observation_projection(Attempt.attempt_id, Observation, _).
+decision_for_existing_(Attempt, in_progress(Attempt)) :-
     Attempt.status == admitted,
     !.
-decision_for_existing(Attempt, reconciliation_required(Attempt)) :-
+decision_for_existing_(Attempt, reconciliation_required(Attempt)) :-
     memberchk(Attempt.status,
               [dispatching,cancellation_requested,indeterminate,retry_authorized]),
     !.
-decision_for_existing(Attempt, terminal(Attempt)) :-
+decision_for_existing_(Attempt, terminal(Attempt)) :-
     memberchk(Attempt.status,
               [cancelled_before_claim,cancelled_pre_dispatch,abandoned]),
     !.
-decision_for_existing(Attempt, error(effect_error{kind:missing_observation})) :-
+decision_for_existing_(Attempt, error(effect_error{kind:missing_observation})) :-
     Attempt.status == observed,
     !.
-decision_for_existing(_, error(effect_error{kind:invalid_attempt_state})).
+decision_for_existing_(_, error(effect_error{kind:invalid_attempt_state})).
 
 /* Admission ------------------------------------------------------------- */
 
@@ -333,14 +370,16 @@ rlm_effect_admit(Ticket, Authority0, Outcome) :-
 
 effect_admit_(Ticket, Authority0, Outcome) :-
     require_store,
-    validate_ticket(Ticket),
     rlm_effect_normalize(Authority0, Authority),
     with_mutex(rlm_effect_state,
-               admit_locked(Ticket, Authority, Outcome)).
+               ( validate_ticket(Ticket),
+                 admit_locked(Ticket, Authority, Outcome)
+               )).
 
 admit_locked(Ticket, _, Outcome) :-
     rlm_effect_persist:effect_persist_get_attempt(Ticket.attempt_id, Existing),
     !,
+    repair_attempt_projection(Existing),
     admission_existing(Existing, Outcome).
 admit_locked(Ticket, Authority, execute(Attempt)) :-
     ticket_attempt(Ticket, Authority, admitted, 1, Attempt),
@@ -350,7 +389,8 @@ admit_locked(Ticket, Authority, execute(Attempt)) :-
 admission_existing(Attempt, replay(Observation)) :-
     rlm_effect_persist:effect_persist_get_observation(Attempt.attempt_id,
                                                       Observation),
-    !.
+    !,
+    repair_observation_projection(Attempt.attempt_id, Observation, _).
 admission_existing(Attempt, in_progress(Attempt)) :-
     memberchk(Attempt.status, [admitted,dispatching,cancellation_requested,
                                indeterminate,retry_authorized]),
@@ -378,12 +418,19 @@ ticket_shape_valid(Ticket) :-
     ground(Ticket),
     dict_keys(Ticket, Keys0),
     sort(Keys0, Keys),
-    sort([call_id,fingerprint,kind,request,logical_key,attempt_id,sequence,
+    sort([call_id,store_id,base_call_id,execution_epoch,
+          fingerprint,kind,request,logical_key,attempt_id,sequence,
           parent_attempt,mode,idempotency_key,semantics,metadata,created_at],
          ExpectedKeys),
     Keys == ExpectedKeys,
     atom(Ticket.call_id),
     Ticket.call_id \== '',
+    atom(Ticket.store_id),
+    Ticket.store_id \== '',
+    atom(Ticket.base_call_id),
+    Ticket.base_call_id \== '',
+    integer(Ticket.execution_epoch),
+    Ticket.execution_epoch >= 1,
     atom(Ticket.fingerprint),
     Ticket.fingerprint \== '',
     require_kind(Ticket.kind),
@@ -400,6 +447,8 @@ ticket_shape_valid(Ticket) :-
     is_dict(Ticket.metadata).
 
 ticket_identity_valid(Ticket) :-
+    rlm_effect_persist:effect_persist_store_id(CurrentStoreId),
+    Ticket.store_id == CurrentStoreId,
     rlm_effect_normalize(Ticket.request, Request),
     Request == Ticket.request,
     normalize_named_dict(semantics, Ticket.semantics, Semantics),
@@ -411,10 +460,19 @@ ticket_identity_valid(Ticket) :-
     executable_fingerprint(Ticket.kind, Request, Semantics,
                            ExpectedFingerprint),
     Ticket.fingerprint == ExpectedFingerprint,
-    logical_call_id(Ticket.kind, Request, Semantics, LogicalKey,
-                    ExpectedCallId, ExpectedLogicalKey),
+    logical_call_base_id(Ticket.kind, Request, Semantics, LogicalKey,
+                         ExpectedBaseCallId, ExpectedLogicalKey),
+    Ticket.base_call_id == ExpectedBaseCallId,
+    rlm_effect_persist:effect_persist_current_epoch(ExpectedBaseCallId,
+                                                    CurrentEpoch),
+    Ticket.execution_epoch =:= CurrentEpoch,
+    scoped_call_id(CurrentStoreId, ExpectedBaseCallId, CurrentEpoch,
+                   ExpectedCallId),
     Ticket.call_id == ExpectedCallId,
     Ticket.logical_key == ExpectedLogicalKey,
+    rlm_effect_persist:effect_persist_get_call_scope(
+        Ticket.call_id, Ticket.store_id, Ticket.base_call_id,
+        Ticket.execution_epoch),
     rlm_effect_persist:effect_persist_get_call(
         Ticket.call_id, Ticket.fingerprint, Call),
     Call.kind == Ticket.kind,
@@ -477,7 +535,8 @@ effect_dispatch_(AttemptId, Outcome) :-
 
 dispatch_locked(AttemptId, replay(Observation)) :-
     rlm_effect_persist:effect_persist_get_observation(AttemptId, Observation),
-    !.
+    !,
+    repair_observation_projection(AttemptId, Observation, _).
 dispatch_locked(AttemptId, dispatch(Updated)) :-
     rlm_effect_persist:effect_persist_get_attempt(AttemptId, Attempt),
     Attempt.status == admitted,
@@ -556,7 +615,7 @@ record_observation_locked(_, AttemptId, ObservationBody,
     rlm_effect_persist:effect_persist_get_observation(AttemptId, Existing),
     Existing == ObservationBody,
     !,
-    settle_observed_status(AttemptId).
+    repair_observation_projection(AttemptId, Existing, _).
 record_observation_locked(_, AttemptId, _,
                           error(effect_error{kind:observation_conflict})) :-
     rlm_effect_persist:effect_persist_get_observation(AttemptId, _),
@@ -570,11 +629,7 @@ record_observation_locked(Source, AttemptId, ObservationBody,
                                                       ObservationBody),
     update_attempt_status(Attempt, observed, Attempt.authority,
                           Attempt.metadata, Updated),
-    append_attempt_event(Updated, observation_recorded,
-                         _{source:Source,
-                           observation_status:ObservationBody.status,
-                           usage:ObservationBody.usage,
-                           provenance:ObservationBody.provenance}).
+    ensure_observation_event(Updated, ObservationBody, Source).
 record_observation_locked(_, AttemptId, _,
                           error(effect_error{kind:observation_not_admissible})) :-
     rlm_effect_persist:effect_persist_get_attempt(AttemptId, _),
@@ -587,15 +642,82 @@ observation_allowed_status(cancellation_requested).
 observation_allowed_status(indeterminate).
 observation_allowed_status(retry_authorized).
 
-settle_observed_status(AttemptId) :-
+repair_observation_projection(AttemptId, Observation, Updated) :-
     rlm_effect_persist:effect_persist_get_attempt(AttemptId, Attempt),
     (   Attempt.status == observed
-    ->  true
+    ->  Updated = Attempt
     ;   observation_allowed_status(Attempt.status)
     ->  update_attempt_status(Attempt, observed, Attempt.authority,
-                              Attempt.metadata, _)
+                              Attempt.metadata, Updated)
+    ;   Updated = Attempt
+    ),
+    repair_attempt_projection(Updated),
+    ensure_observation_event(Updated, Observation, repair).
+
+repair_attempt_projection(Attempt) :-
+    repair_admission_projection(Attempt),
+    repair_dispatch_projection(Attempt),
+    repair_cancellation_projection(Attempt),
+    repair_indeterminate_projection(Attempt),
+    repair_resolution_projection(Attempt).
+
+repair_admission_projection(Attempt) :-
+    (   Attempt.status == cancelled_before_claim
+    ->  true
+    ;   append_attempt_event(Attempt, attempt_admitted,
+                             _{authority:Attempt.authority})
+    ).
+
+repair_dispatch_projection(Attempt) :-
+    (   memberchk(Attempt.status,
+                  [dispatching,cancellation_requested,indeterminate,
+                   retry_authorized,abandoned,observed])
+    ->  append_attempt_event(Attempt, attempt_dispatched,
+                             _{idempotency_key:Attempt.idempotency_key})
     ;   true
     ).
+
+repair_cancellation_projection(Attempt) :-
+    (   Attempt.status == cancelled_before_claim
+    ->  metadata_reason(Attempt.metadata, cancellation_reason, Reason),
+        append_attempt_event(Attempt, attempt_cancelled,
+                             _{phase:before_claim,reason:Reason})
+    ;   Attempt.status == cancelled_pre_dispatch
+    ->  metadata_reason(Attempt.metadata, cancellation_reason, Reason),
+        append_attempt_event(Attempt, attempt_cancelled,
+                             _{phase:pre_dispatch,reason:Reason})
+    ;   get_dict(cancellation_reason, Attempt.metadata, Reason)
+    ->  append_attempt_event(Attempt, cancellation_requested,
+                             _{reason:Reason})
+    ;   true
+    ).
+
+repair_indeterminate_projection(Attempt) :-
+    (   get_dict(indeterminate_reason, Attempt.metadata, Reason),
+        memberchk(Attempt.status,
+                  [indeterminate,retry_authorized,abandoned,observed])
+    ->  append_attempt_event(Attempt, attempt_indeterminate,
+                             _{reason:Reason})
+    ;   true
+    ).
+
+repair_resolution_projection(Attempt) :-
+    (   get_dict(indeterminate_resolution, Attempt.metadata, Resolution),
+        memberchk(Attempt.status, [retry_authorized,abandoned,observed])
+    ->  append_attempt_event(Attempt, indeterminate_resolved,
+                             _{resolution:Resolution})
+    ;   true
+    ).
+
+metadata_reason(Metadata, Key, Reason) :-
+    ( get_dict(Key, Metadata, Found) -> Reason = Found ; Reason = unknown ).
+
+ensure_observation_event(Attempt, Observation, _) :-
+    append_attempt_event(Attempt, observation_recorded,
+                         _{source:authoritative_observation,
+                           observation_status:Observation.status,
+                           usage:Observation.usage,
+                           provenance:Observation.provenance}).
 
 rlm_effect_mark_indeterminate(AttemptId, Reason0, Outcome) :-
     catch(effect_mark_indeterminate_(AttemptId, Reason0, Outcome),
@@ -610,7 +732,8 @@ effect_mark_indeterminate_(AttemptId, Reason0, Outcome) :-
 
 mark_indeterminate_locked(AttemptId, _, replay(Observation)) :-
     rlm_effect_persist:effect_persist_get_observation(AttemptId, Observation),
-    !.
+    !,
+    repair_observation_projection(AttemptId, Observation, _).
 mark_indeterminate_locked(AttemptId, Reason, indeterminate(Updated)) :-
     rlm_effect_persist:effect_persist_get_attempt(AttemptId, Attempt),
     memberchk(Attempt.status, [dispatching,cancellation_requested]),
@@ -645,7 +768,8 @@ effect_resolve_indeterminate_(AttemptId, Resolution, Outcome) :-
 
 resolve_indeterminate_locked(AttemptId, _, replay(Observation)) :-
     rlm_effect_persist:effect_persist_get_observation(AttemptId, Observation),
-    !.
+    !,
+    repair_observation_projection(AttemptId, Observation, _).
 resolve_indeterminate_locked(AttemptId, Resolution, resolved(Updated)) :-
     rlm_effect_persist:effect_persist_get_attempt(AttemptId, Attempt),
     Attempt.status == indeterminate,
@@ -670,10 +794,11 @@ rlm_effect_cancel_ticket(Ticket, Reason0, Outcome) :-
 
 effect_cancel_ticket_(Ticket, Reason0, Outcome) :-
     require_store,
-    validate_ticket(Ticket),
     rlm_effect_normalize(Reason0, Reason),
     with_mutex(rlm_effect_state,
-               cancel_ticket_locked(Ticket, Reason, Outcome)).
+               ( validate_ticket(Ticket),
+                 cancel_ticket_locked(Ticket, Reason, Outcome)
+               )).
 
 cancel_ticket_locked(Ticket, _, Outcome) :-
     rlm_effect_persist:effect_persist_get_attempt(Ticket.attempt_id, Attempt),
@@ -701,7 +826,8 @@ effect_cancel_(AttemptId, Reason0, Outcome) :-
 
 cancel_locked(AttemptId, _, replay(Observation)) :-
     rlm_effect_persist:effect_persist_get_observation(AttemptId, Observation),
-    !.
+    !,
+    repair_observation_projection(AttemptId, Observation, _).
 cancel_locked(AttemptId, Reason, cancelled(Updated)) :-
     rlm_effect_persist:effect_persist_get_attempt(AttemptId, Attempt),
     Attempt.status == admitted,
@@ -741,7 +867,8 @@ cancel_locked(_, _, error(effect_error{kind:invalid_cancel_transition})).
 cancellation_existing(Attempt, replay(Observation)) :-
     rlm_effect_persist:effect_persist_get_observation(Attempt.attempt_id,
                                                       Observation),
-    !.
+    !,
+    repair_observation_projection(Attempt.attempt_id, Observation, _).
 cancellation_existing(Attempt, cancelled(Attempt)) :-
     memberchk(Attempt.status,
               [cancelled_before_claim,cancelled_pre_dispatch]),
@@ -769,16 +896,13 @@ effect_status_(AttemptId, Outcome) :-
                status_locked(AttemptId, Outcome)).
 
 status_locked(AttemptId, Attempt) :-
-    rlm_effect_persist:effect_persist_get_observation(AttemptId, _),
-    rlm_effect_persist:effect_persist_get_attempt(AttemptId, Current),
-    Current.status \== observed,
-    observation_allowed_status(Current.status),
+    rlm_effect_persist:effect_persist_get_observation(AttemptId, Observation),
     !,
-    update_attempt_status(Current, observed, Current.authority,
-                          Current.metadata, Attempt).
+    repair_observation_projection(AttemptId, Observation, Attempt).
 status_locked(AttemptId, Attempt) :-
     rlm_effect_persist:effect_persist_get_attempt(AttemptId, Attempt),
-    !.
+    !,
+    repair_attempt_projection(Attempt).
 status_locked(_, error(effect_error{kind:unknown_attempt})).
 
 rlm_effect_observation(AttemptId, Outcome) :-
@@ -789,15 +913,35 @@ rlm_effect_observation(AttemptId, Outcome) :-
 effect_observation_(AttemptId, Observation) :-
     require_store,
     require_attempt_id(AttemptId),
+    with_mutex(rlm_effect_state,
+               observation_locked(AttemptId, Observation)).
+
+observation_locked(AttemptId, Observation) :-
     rlm_effect_persist:effect_persist_get_observation(AttemptId, Observation),
-    !.
-effect_observation_(_, error(effect_error{kind:no_observation})).
+    !,
+    repair_observation_projection(AttemptId, Observation, _).
+observation_locked(_, error(effect_error{kind:no_observation})).
 
 rlm_effect_attempts(CallId, Fingerprint, Attempts) :-
     rlm_effect_persist:effect_persist_attempts(CallId, Fingerprint, Attempts).
 
 rlm_effect_history(CallId, Events) :-
+    with_mutex(rlm_effect_state,
+               history_locked(CallId, Events)).
+
+history_locked(CallId, Events) :-
+    rlm_effect_persist:effect_persist_attempts(CallId, _, Attempts),
+    forall(member(Attempt, Attempts),
+           repair_attempt_observation_if_present(Attempt)),
     rlm_effect_persist:effect_persist_events(CallId, Events).
+
+repair_attempt_observation_if_present(Attempt) :-
+    repair_attempt_projection(Attempt),
+    (   rlm_effect_persist:effect_persist_get_observation(
+            Attempt.attempt_id, Observation)
+    ->  repair_observation_projection(Attempt.attempt_id, Observation, _)
+    ;   true
+    ).
 
 rlm_effect_idempotency_key(AttemptId, Key) :-
     require_attempt_id(AttemptId),
@@ -812,10 +956,18 @@ rlm_effect_prune(CallId, Outcome) :-
 effect_prune_(CallId, Outcome) :-
     require_store,
     atom(CallId),
+    with_mutex(rlm_effect_state,
+               prune_locked(CallId, Outcome)).
+
+prune_locked(CallId, Outcome) :-
     rlm_effect_persist:effect_persist_attempts(CallId, _, Attempts),
-    (   forall(member(Attempt, Attempts), prunable_status(Attempt.status))
-    ->  rlm_effect_persist:effect_persist_delete_call(CallId),
+    (   Attempts \== [],
+        forall(member(Attempt, Attempts), prunable_status(Attempt.status))
+    ->  rlm_effect_persist:effect_persist_advance_epoch(CallId, _),
+        rlm_effect_persist:effect_persist_delete_call(CallId),
         Outcome = pruned
+    ;   Attempts == []
+    ->  Outcome = error(effect_error{kind:unknown_call})
     ;   Outcome = error(effect_error{kind:active_or_indeterminate_attempt})
     ).
 
@@ -838,12 +990,18 @@ update_attempt_status(Attempt, Status, Authority, Metadata, Updated) :-
 
 append_attempt_event(Attempt, Type, Detail0) :-
     get_time(Now),
-    Detail = Detail0.put(_{attempt_id:Attempt.attempt_id,
-                           fingerprint:Attempt.fingerprint,
-                           mode:Attempt.mode,
-                           status:Attempt.status,
-                           timestamp:Now}),
-    Event = effect_event{type:Type,
+    dict_pairs(Detail0, _, DetailPairs),
+    dict_pairs(DetailBase, event_detail, DetailPairs),
+    Detail = DetailBase.put(_{attempt_id:Attempt.attempt_id,
+                              fingerprint:Attempt.fingerprint,
+                              mode:Attempt.mode,
+                              status:Attempt.status,
+                              timestamp:Now}),
+    stable_hash(effect_event_identity{attempt_id:Attempt.attempt_id,
+                                      type:Type},
+                'effect-event:', EventId),
+    Event = effect_event{event_id:EventId,
+                         type:Type,
                          detail:Detail},
     rlm_effect_persist:effect_persist_append_event(Attempt.call_id, Event).
 

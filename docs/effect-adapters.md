@@ -16,8 +16,19 @@ They are deliberately not dynamic model-writable facts.
 
 ## Canonical request contract
 
+Callers of an effect adapter must prepare with:
+
+```prolog
+effect_prepare(Adapter, Kind, Request, Options, Decision).
+```
+
+The executor overwrites the reserved `executor_identity` semantics and metadata
+with the code-selected adapter. That identity participates in the executable
+fingerprint and is recorded with the attempt. Do not prepare adapter work by
+calling `rlm_effect_prepare/4` directly.
+
 The request passed to adapters is the canonical normalized executable request
-produced by `rlm_effect_prepare/4`, not the caller's pre-normalization term.
+produced beneath `effect_prepare/5`, not the caller's pre-normalization term.
 The same canonical representation is persisted with the logical call and is
 used again for later reconciliation.
 
@@ -101,6 +112,11 @@ in_progress(remote_job(JobId))
 If no reconciliation hook exists, an unresolved dispatched attempt remains
 indeterminate. The executor does not silently resubmit.
 
+Reconciliation first checks the adapter against the trusted identity persisted
+with the attempt. A mismatch returns `adapter_identity_mismatch` without
+invoking any provider callback. If an authoritative local observation already
+exists, it is returned directly and no remote reconciliation hook is called.
+
 ## Cancellation
 
 A provider may implement `effect_adapter_cancel/4`. Confirmed remote
@@ -120,6 +136,8 @@ uses #53 should build the exact authority operation with
 An explicit retry/resample has a different attempt identity and therefore a new
 authority fingerprint. A changed normalized request has a new executable
 fingerprint. `allow_once` cannot silently carry across either boundary.
+Changing the adapter also changes the executable and authority fingerprints,
+call ID, attempt ID, and provider idempotency key.
 
 If an `approve_diff` proposal is edited, the edit validator must normalize the
 edited request again, obtain the new #57 ticket/fingerprint, and construct the
