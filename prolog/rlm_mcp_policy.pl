@@ -39,8 +39,8 @@ mcp_install_recipe_normalize(package(Profile0, Package0, Version0),
     process_profile(installer, Profile, Spec),
     normalize_package(Spec.package_format, Package0, Package),
     normalize_version(Version0, Version).
-mcp_install_recipe_normalize(Recipe, _) :-
-    throw(mcp_policy_fault(invalid_install_recipe(Recipe))).
+mcp_install_recipe_normalize(_, _) :-
+    throw(mcp_policy_fault(invalid_install_recipe)).
 
 mcp_stdio_recipe_normalize(profile(Profile0), profile(Profile)) :-
     !,
@@ -53,16 +53,16 @@ mcp_stdio_recipe_normalize(package(Profile0, Package0, Version0),
     process_profile(stdio, Profile, Spec),
     normalize_package(Spec.package_format, Package0, Package),
     normalize_version(Version0, Version).
-mcp_stdio_recipe_normalize(Recipe, _) :-
-    throw(mcp_policy_fault(invalid_stdio_recipe(Recipe))).
+mcp_stdio_recipe_normalize(_, _) :-
+    throw(mcp_policy_fault(invalid_stdio_recipe)).
 
 normalize_profile_name(Name, Name) :-
     atom(Name),
     Name \== '',
     safe_identifier_atom(Name),
     !.
-normalize_profile_name(Name, _) :-
-    throw(mcp_policy_fault(invalid_profile_name(Name))).
+normalize_profile_name(_, _) :-
+    throw(mcp_policy_fault(invalid_profile_name)).
 
 /* -------------------------------------------------------------------------
  * First-class configuration references
@@ -79,15 +79,15 @@ mcp_environment_normalize(Environment0, Environment) :-
     ->  true
     ;   throw(mcp_policy_fault(duplicate_environment_binding))
     ).
-mcp_environment_normalize(Environment, _) :-
-    throw(mcp_policy_fault(invalid_environment(Environment))).
+mcp_environment_normalize(_, _) :-
+    throw(mcp_policy_fault(invalid_environment)).
 
 normalize_environment_binding(env(Name0, Ref0), env(Name, Ref)) :-
     !,
     normalize_environment_name(Name0, Name),
     normalize_config_reference(Ref0, Ref).
-normalize_environment_binding(Binding, _) :-
-    throw(mcp_policy_fault(invalid_environment_binding(Binding))).
+normalize_environment_binding(_, _) :-
+    throw(mcp_policy_fault(invalid_environment_binding)).
 
 environment_names([], []).
 environment_names([env(Name, _)|Bindings], [Name|Names]) :-
@@ -99,8 +99,8 @@ normalize_environment_name(Name0, Name) :-
     environment_first_char(First),
     maplist(environment_rest_char, Rest),
     !.
-normalize_environment_name(Name, _) :-
-    throw(mcp_policy_fault(invalid_environment_name(Name))).
+normalize_environment_name(_, _) :-
+    throw(mcp_policy_fault(invalid_environment_name)).
 
 environment_first_char(Char) :-
     char_type(Char, alpha),
@@ -120,8 +120,8 @@ normalize_config_reference(config_ref(Key), config_ref(Key)) :-
     Key \== '',
     safe_identifier_atom(Key),
     !.
-normalize_config_reference(Ref, _) :-
-    throw(mcp_policy_fault(invalid_config_reference(Ref))).
+normalize_config_reference(_, _) :-
+    throw(mcp_policy_fault(invalid_config_reference)).
 
 mcp_environment_metadata(Environment, Metadata) :-
     maplist(environment_binding_metadata, Environment, Metadata).
@@ -145,10 +145,10 @@ mcp_working_directory_normalize(directory(Path0), directory(Path)) :-
     text_atom(Path0, Path),
     (   is_absolute_file_name(Path), Path \== '/'
     ->  true
-    ;   throw(mcp_policy_fault(invalid_working_directory(directory(configured))))
+    ;   throw(mcp_policy_fault(invalid_working_directory(configured)))
     ).
-mcp_working_directory_normalize(Value, _) :-
-    throw(mcp_policy_fault(invalid_working_directory(Value))).
+mcp_working_directory_normalize(_, _) :-
+    throw(mcp_policy_fault(invalid_working_directory)).
 
 mcp_working_directory_metadata(inherit, inherit).
 mcp_working_directory_metadata(directory(_), configured).
@@ -338,8 +338,8 @@ normalize_process_profile(Spec0, Spec) :-
                                timeout:Timeout,
                                max_output_bytes:MaxOutputBytes},
     !.
-normalize_process_profile(Spec, _) :-
-    throw(mcp_policy_fault(invalid_execution_profile(Spec))).
+normalize_process_profile(_, _) :-
+    throw(mcp_policy_fault(invalid_execution_profile)).
 
 closed_profile_dict(Spec) :-
     dict_pairs(Spec, mcp_process_profile, Pairs),
@@ -366,8 +366,8 @@ normalize_executable(file(Path0), file(Path)) :-
     file_base_name(Path, Base),
     safe_executable_name(Base),
     !.
-normalize_executable(Executable, _) :-
-    throw(mcp_policy_fault(invalid_profile_executable(Executable))).
+normalize_executable(_, _) :-
+    throw(mcp_policy_fault(invalid_profile_executable)).
 
 safe_executable_name(Name) :-
     \+ memberchk(Name, [sh,bash,zsh,dash,ksh,fish,powershell,pwsh,cmd,'cmd.exe']).
@@ -377,12 +377,12 @@ validate_static_argv(Args) :-
     ground(Args),
     maplist(valid_static_arg, Args),
     !.
-validate_static_argv(Args) :-
-    throw(mcp_policy_fault(invalid_profile_argv(Args))).
+validate_static_argv(_) :-
+    throw(mcp_policy_fault(invalid_profile_argv)).
 
 valid_static_arg(Arg) :- atomic(Arg), !.
-valid_static_arg(Arg) :-
-    throw(mcp_policy_fault(invalid_profile_argument(Arg))).
+valid_static_arg(_) :-
+    throw(mcp_policy_fault(invalid_profile_argument)).
 
 valid_package_format(npm).
 valid_package_format(pip).
@@ -393,8 +393,8 @@ validate_cwd_roots(Roots) :-
     ground(Roots),
     maplist(valid_cwd_root, Roots),
     !.
-validate_cwd_roots(Roots) :-
-    throw(mcp_policy_fault(invalid_cwd_roots(Roots))).
+validate_cwd_roots(_) :-
+    throw(mcp_policy_fault(invalid_cwd_roots)).
 
 valid_cwd_root(Root0) :-
     text_atom(Root0, Root),
@@ -419,8 +419,8 @@ normalize_package(Format, Package0, Package) :-
     text_atom(Package0, Package),
     package_atom_valid(Format, Package),
     !.
-normalize_package(_, Package, _) :-
-    throw(mcp_policy_fault(invalid_package_name(Package))).
+normalize_package(_, _, _) :-
+    throw(mcp_policy_fault(invalid_package_name)).
 
 normalize_version(Version0, Version) :-
     text_atom(Version0, Version),
@@ -432,8 +432,8 @@ normalize_version(Version0, Version) :-
     First \== '-',
     maplist(version_char, Chars),
     !.
-normalize_version(Version, _) :-
-    throw(mcp_policy_fault(invalid_package_version(Version))).
+normalize_version(_, _) :-
+    throw(mcp_policy_fault(invalid_package_version)).
 
 package_atom_valid(npm, Package) :-
     atom_length(Package, Length),
@@ -547,8 +547,8 @@ identifier_char(Char) :- memberchk(Char, ['_','-','.',':']).
 
 text_atom(Value, Value) :- atom(Value), !.
 text_atom(Value, Atom) :- string(Value), !, atom_string(Atom, Value).
-text_atom(Value, _) :-
-    throw(mcp_policy_fault(expected_text(Value))).
+text_atom(_, _) :-
+    throw(mcp_policy_fault(expected_text)).
 
 text_value(Value) :- atom(Value), !.
 text_value(Value) :- string(Value).
