@@ -2,6 +2,13 @@
           [ effect_persist_open/1,
             effect_persist_close/0,
             effect_persist_attached/1,
+            effect_persist_store_id/1,
+            effect_persist_acquire_lease/2,
+            effect_persist_release_lease/1,
+            effect_persist_current_epoch/2,
+            effect_persist_advance_epoch/2,
+            effect_persist_put_call_scope/4,
+            effect_persist_get_call_scope/4,
             effect_persist_put_call/1,
             effect_persist_get_call/3,
             effect_persist_put_attempt/1,
@@ -30,6 +37,7 @@ exits, including abrupt process death, so a fresh process can resume/reconcile.
 
 :- use_module(library(lists)).
 :- use_module(library(persistency)).
+:- use_module(library(uuid)).
 
 :- persistent
        effect_call_record(call_id:atom, fingerprint:atom, kind:atom,
@@ -40,9 +48,14 @@ exits, including abrupt process death, so a fresh process can resume/reconcile.
                              idempotency_key:atom, authority:any,
                              metadata:any, created_at:float, updated_at:float),
        effect_observation_record(attempt_id:atom, observation:any),
-       effect_event_record(call_id:atom, sequence:integer, event:any).
+       effect_event_record(call_id:atom, sequence:integer, event:any),
+       effect_store_metadata(key:atom, value:any),
+       effect_call_scope_record(call_id:atom, store_id:atom,
+                                base_call_id:atom, epoch:integer),
+       effect_epoch_record(store_id:atom, base_call_id:atom, epoch:integer).
 
 :- dynamic effect_store_lock/3.
+:- dynamic effect_store_lease/2.
 
 effect_persist_open(File) :-
     with_mutex(rlm_effect_persist_db, effect_persist_open_locked(File)).
@@ -50,8 +63,10 @@ effect_persist_open(File) :-
 effect_persist_open_locked(File) :-
     (   db_attached(Current)
     ->  (   same_file_or_atom(Current, File)
-        ->  ensure_effect_store_lock(File)
-        ;   effect_persist_detach_locked,
+        ->  ensure_effect_store_lock(File),
+            ensure_effect_store_metadata
+        ;   require_no_active_effect_leases(switch, Current),
+            effect_persist_detach_locked,
             effect_persist_attach_locked(File)
         )
     ;   effect_persist_attach_locked(File)
@@ -61,11 +76,57 @@ effect_persist_attach_locked(File) :-
     canonical_store_file(File, Canonical),
     effect_store_lock_file(Canonical, LockFile),
     acquire_effect_store_lock(Canonical, LockFile, Stream),
-    catch(db_attach(File, [sync(close)]),
+    catch(( db_attach(File, [sync(close)]),
+            ensure_effect_store_metadata ),
           Exception,
-          ( close_effect_store_lock_stream(Stream),
+          ( catch(db_detach, _, true),
+            close_effect_store_lock_stream(Stream),
             throw(Exception) )),
     assertz(effect_store_lock(Canonical, LockFile, Stream)).
+
+ensure_effect_store_metadata :-
+    findall(StoreId, effect_store_metadata(namespace, StoreId), StoreIds),
+    ensure_single_store_namespace(StoreIds),
+    ensure_schema_version.
+
+ensure_single_store_namespace([StoreId]) :-
+    atom(StoreId),
+    StoreId \== '',
+    !.
+ensure_single_store_namespace([]) :-
+    !,
+    (   legacy_effect_records_exist
+    ->  db_attached(File),
+        throw(error(permission_error(open,
+                                     legacy_effect_store_requires_migration,
+                                     File), _))
+    ;   uuid(UUID, [version(4)]),
+        atom_concat('effect-store:', UUID, StoreId),
+        assert_effect_store_metadata(namespace, StoreId)
+    ).
+ensure_single_store_namespace(_) :-
+    throw(error(domain_error(effect_store_namespace, corrupt), _)).
+
+ensure_schema_version :-
+    findall(Version, effect_store_metadata(schema_version, Version), Versions),
+    (   Versions == []
+    ->  assert_effect_store_metadata(schema_version, 2)
+    ;   Versions == [2]
+    ->  true
+    ;   throw(error(domain_error(effect_store_schema_version, Versions), _))
+    ).
+
+legacy_effect_records_exist :-
+    effect_call_record(_, _, _, _, _, _),
+    !.
+legacy_effect_records_exist :-
+    effect_attempt_record(_, _, _, _, _, _, _, _, _, _, _, _, _),
+    !.
+legacy_effect_records_exist :-
+    effect_observation_record(_, _),
+    !.
+legacy_effect_records_exist :-
+    effect_event_record(_, _, _).
 
 ensure_effect_store_lock(File) :-
     canonical_store_file(File, Canonical),
@@ -96,7 +157,13 @@ canonical_store_file(File, Canonical) :-
 canonical_store_file(File, File).
 
 effect_persist_close :-
-    with_mutex(rlm_effect_persist_db, effect_persist_detach_locked).
+    with_mutex(rlm_effect_persist_db,
+               ( ( db_attached(Current)
+                 -> require_no_active_effect_leases(close, Current)
+                 ;  true
+                 ),
+                 effect_persist_detach_locked
+               )).
 
 effect_persist_detach_locked :-
     call_cleanup(
@@ -118,6 +185,84 @@ close_effect_store_lock_stream(Stream) :-
 
 effect_persist_attached(File) :-
     db_attached(File).
+
+effect_persist_store_id(StoreId) :-
+    require_attached,
+    effect_store_metadata(namespace, StoreId).
+
+effect_persist_acquire_lease(ExpectedStoreId, Lease) :-
+    with_mutex(rlm_effect_persist_db,
+               acquire_effect_lease_locked(ExpectedStoreId, Lease)).
+
+acquire_effect_lease_locked(ExpectedStoreId, Lease) :-
+    effect_persist_store_id(CurrentStoreId),
+    (   CurrentStoreId == ExpectedStoreId
+    ->  uuid(UUID, [version(4)]),
+        atom_concat('effect-lease:', UUID, Lease),
+        assertz(effect_store_lease(Lease, CurrentStoreId))
+    ;   throw(error(permission_error(acquire, effect_store_lease,
+                                     ExpectedStoreId-CurrentStoreId), _))
+    ).
+
+effect_persist_release_lease(Lease) :-
+    with_mutex(rlm_effect_persist_db,
+               retractall(effect_store_lease(Lease, _))).
+
+require_no_active_effect_leases(Action, Store) :-
+    (   effect_store_lease(_, StoreId)
+    ->  throw(error(permission_error(Action, effect_store,
+                                     active_effects(Store, StoreId)), _))
+    ;   true
+    ).
+
+effect_persist_current_epoch(BaseCallId, Epoch) :-
+    require_attached,
+    effect_persist_store_id(StoreId),
+    with_mutex(rlm_effect_persist_db,
+               current_epoch_locked(StoreId, BaseCallId, Epoch)).
+
+current_epoch_locked(StoreId, BaseCallId, Epoch) :-
+    findall(E, effect_epoch_record(StoreId, BaseCallId, E), Epochs),
+    (   Epochs == []
+    ->  Epoch = 1,
+        assert_effect_epoch_record(StoreId, BaseCallId, Epoch)
+    ;   max_list(Epochs, Epoch)
+    ).
+
+effect_persist_advance_epoch(CallId, NextEpoch) :-
+    require_attached,
+    with_mutex(rlm_effect_persist_db,
+               advance_epoch_locked(CallId, NextEpoch)).
+
+advance_epoch_locked(CallId, NextEpoch) :-
+    effect_call_scope_record(CallId, StoreId, BaseCallId, CallEpoch),
+    current_epoch_locked(StoreId, BaseCallId, CurrentEpoch),
+    (   CurrentEpoch =:= CallEpoch
+    ->  NextEpoch is CurrentEpoch+1,
+        assert_effect_epoch_record(StoreId, BaseCallId, NextEpoch)
+    ;   NextEpoch = CurrentEpoch
+    ).
+
+effect_persist_put_call_scope(CallId, StoreId, BaseCallId, Epoch) :-
+    require_attached,
+    with_mutex(rlm_effect_persist_db,
+               put_call_scope_locked(CallId, StoreId, BaseCallId, Epoch)).
+
+put_call_scope_locked(CallId, StoreId, BaseCallId, Epoch) :-
+    (   effect_call_scope_record(CallId, ExistingStore, ExistingBase,
+                                 ExistingEpoch)
+    ->  ( ExistingStore == StoreId,
+          ExistingBase == BaseCallId,
+          ExistingEpoch =:= Epoch
+        -> true
+        ;  throw(error(permission_error(redefine, effect_call_scope,
+                                        CallId), _)) )
+    ;   assert_effect_call_scope_record(CallId, StoreId, BaseCallId, Epoch)
+    ).
+
+effect_persist_get_call_scope(CallId, StoreId, BaseCallId, Epoch) :-
+    require_attached,
+    effect_call_scope_record(CallId, StoreId, BaseCallId, Epoch).
 
 effect_persist_put_call(Call) :-
     require_attached,
@@ -291,10 +436,17 @@ effect_persist_append_event(CallId, Event0) :-
     require_attached,
     require_ground(Event0),
     with_mutex(rlm_effect_persist_db,
-               ( next_event_sequence_locked(CallId, Sequence),
-                 put_dict(sequence, Event0, Sequence, Event),
-                 assert_effect_event_record(CallId, Sequence, Event)
-               )).
+               append_event_locked(CallId, Event0)).
+
+append_event_locked(CallId, Event0) :-
+    get_dict(event_id, Event0, EventId),
+    (   effect_event_record(CallId, _, Existing),
+        get_dict(event_id, Existing, EventId)
+    ->  true
+    ;   next_event_sequence_locked(CallId, Sequence),
+        put_dict(sequence, Event0, Sequence, Event),
+        assert_effect_event_record(CallId, Sequence, Event)
+    ).
 
 next_event_sequence_locked(CallId, Sequence) :-
     findall(N, effect_event_record(CallId, N, _), Ns),
