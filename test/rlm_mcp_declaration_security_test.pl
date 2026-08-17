@@ -211,13 +211,6 @@ term_does_not_contain(Term, Needle) :-
     term_string(Term, Text, [quoted(true), numbervars(true)]),
     \+ sub_string(Text, _, _, _, Needle).
 
-policy_error_for(Server, DetailPattern) :-
-    mcp_server_definition(Server, error(Error)),
-    assertion(Error.phase == definition),
-    assertion(Error.kind == execution_policy_denied),
-    Detail = Error.detail,
-    assertion(Detail = DetailPattern).
-
 test(stdio_and_non_stdio_definitions_are_inert_and_normalized,
      [setup(reset_markers), cleanup(reset_markers)]) :-
     mcp_server_definition(secure_stdio_52, ok(Stdio)),
@@ -369,6 +362,8 @@ test(package_name_injection_fails_before_trusted_profile_spawn,
                                  error(Error)),
           assertion(Error.phase == definition),
           assertion(Error.kind == execution_policy_denied),
+          assertion(Error.detail == invalid_package_name),
+          assertion(term_does_not_contain(Error, "bad;touch-install-probe")),
           assertion(markers_absent) )).
 
 test(malformed_package_version_fails_before_spawn,
@@ -382,15 +377,22 @@ test(malformed_package_version_fails_before_spawn,
                                  error(Error)),
           assertion(Error.phase == definition),
           assertion(Error.kind == execution_policy_denied),
+          assertion(Error.detail == invalid_package_version),
+          assertion(term_does_not_contain(Error, "1.0.0;touch")),
           assertion(markers_absent) )).
 
-test(raw_environment_values_are_not_a_valid_reference) :-
-    policy_error_for(raw_environment_52, invalid_config_reference("RAW_SECRET_52")).
+test(raw_environment_values_are_not_a_valid_reference_and_are_redacted) :-
+    mcp_server_definition(raw_environment_52, error(Error)),
+    assertion(Error.phase == definition),
+    assertion(Error.kind == execution_policy_denied),
+    assertion(Error.detail == invalid_config_reference),
+    assertion(term_does_not_contain(Error, "RAW_SECRET_52")).
 
 test(legacy_direct_process_installer_is_rejected_without_spawn,
      [setup(reset_markers), cleanup(reset_markers)]) :-
     mcp_server_definition(legacy_process_install_52, error(Error)),
     assertion(Error.kind == execution_policy_denied),
+    assertion(Error.detail == invalid_install_recipe),
     assertion(markers_absent).
 
 test(legacy_direct_stdio_exec_argv_is_rejected_without_spawn,
@@ -403,7 +405,7 @@ test(legacy_direct_stdio_exec_argv_is_rejected_without_spawn,
 test(shell_execution_profile_is_hard_rejected) :-
     mcp_server_definition(shell_stdio_52, error(Error)),
     assertion(Error.kind == execution_policy_denied),
-    assertion(Error.detail == invalid_profile_executable(path(sh))).
+    assertion(Error.detail == invalid_profile_executable).
 
 test(model_environment_option_is_not_interpreted_as_host_configuration) :-
     Context = session(mcp_raw_call_env_52),
