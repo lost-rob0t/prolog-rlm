@@ -8,19 +8,20 @@
             effect_adapter_cancel/4
           ]).
 
-/** <module> Canonical execution harness for #57 effects
+/** <module> Canonical execution harness for durable external effects
 
-Provider/tool libraries extend the static multifile adapter hooks below.  They
-are code-owned extension points, not runtime/model-writable facts.
+Provider and tool libraries extend the static multifile adapter hooks below.
+These are code-owned extension points, never runtime/model-writable facts.
 
-Execution direction is the #54 invariant:
+The #54 direction remains:
 
   effect_execute_execute/6 -> rlm_async Future -> sync await wrapper
 
-The harness owns lifecycle sequencing.  An adapter is called only after the
-attempt is durably `dispatching`, and receives the stable attempt including its
-provider idempotency key.  Adapter exceptions after that boundary are treated
-conservatively as uncertain external outcomes.
+The harness crosses the external boundary only after #57 has durably recorded
+`dispatching`.  Any ordinary adapter exception after that point is therefore
+preserved as an indeterminate remote outcome rather than being interpreted as
+permission to submit again.  Async cancellation remains a control signal and is
+re-thrown after the attempt lifecycle is updated conservatively.
 */
 
 :- use_module(rlm_async, []).
@@ -37,14 +38,13 @@ conservatively as uncertain external outcomes.
 
 %! effect_adapter_reconcile(+Adapter,+Attempt,+NormalizedRequest,-Outcome)
 %
-%  Optional read-only remote reconciliation hook.  The same outcome protocol
-%  applies.  No matching clause means reconciliation is unsupported.
+%  Optional read-only remote reconciliation hook.  No matching clause means
+%  reconciliation is unsupported.
 
 %! effect_adapter_cancel(+Adapter,+Attempt,+NormalizedRequest,-Outcome)
 %
-%  Optional remote cancellation hook.  A confirmed cancellation should return
-%  `observed(Observation)` with status `cancelled`; an uncertain result should
-%  return `indeterminate(Reason)`.
+%  Optional cancellation hook.  Confirmed cancellation returns an observed
+%  cancellation; uncertain cancellation returns indeterminate(Reason).
 
 effect_execute_async(Adapter, Kind, Request, EffectOptions, AuthorityRef,
                      Future) :-
@@ -133,14 +133,21 @@ execute_after_dispatch(dispatch(Attempt), Adapter, Request, Outcome) :-
     apply_adapter_outcome(submit, Attempt, AdapterOutcome, Outcome).
 
 call_submit_adapter(Adapter, Attempt, Request, Outcome) :-
-    catch((   effect_adapter_submit(Adapter, Attempt, Request, Found)
-          ->  Outcome = Found
-          ;   Outcome = indeterminate(adapter_failed_without_outcome)
-          ),
-          rlm_async_cancelled(Id),
-          throw(rlm_async_cancelled(Id))),
-    !.
-call_submit_adapter(_, _, _, indeterminate(adapter_failed_without_outcome)).
+    catch(call_submit_adapter_(Adapter, Attempt, Request, Outcome),
+          Exception,
+          submit_exception(Exception, Outcome)).
+
+call_submit_adapter_(Adapter, Attempt, Request, Outcome) :-
+    (   effect_adapter_submit(Adapter, Attempt, Request, Found)
+    ->  Outcome = Found
+    ;   Outcome = indeterminate(adapter_failed_without_outcome)
+    ).
+
+submit_exception(rlm_async_cancelled(Id), _) :-
+    !,
+    throw(rlm_async_cancelled(Id)).
+submit_exception(Exception, indeterminate(adapter_exception(Safe))) :-
+    safe_exception(Exception, Safe).
 
 apply_adapter_outcome(Source, Attempt, observed(Observation0), Outcome) :-
     !,
@@ -173,6 +180,7 @@ adapter_record_result(_, Attempt, error(Error),
                                     source:observation_rejected,
                                     error:Error,
                                     attempt:Unknown}) :-
+    !,
     rlm_effect:rlm_effect_mark_indeterminate(
                    Attempt.attempt_id,
                    observation_rejected(Error),
@@ -216,8 +224,14 @@ call_reconcile_adapter(Adapter, Attempt, Request, Outcome) :-
           ;   Outcome = indeterminate(reconciliation_unsupported)
           ),
           Exception,
-          ( safe_exception(Exception, Safe),
-            Outcome = indeterminate(reconciliation_exception(Safe)) )).
+          reconcile_exception(Exception, Outcome)).
+
+reconcile_exception(rlm_async_cancelled(Id), _) :-
+    !,
+    throw(rlm_async_cancelled(Id)).
+reconcile_exception(Exception,
+                    indeterminate(reconciliation_exception(Safe))) :-
+    safe_exception(Exception, Safe).
 
 apply_reconcile_outcome(Attempt, observed(Observation0),
                         effect_result{state:observed,
@@ -257,9 +271,9 @@ cancel_interrupted_ticket(Adapter, Ticket, Request, FutureId) :-
     cancel_from_status(Status, Adapter, Ticket, Request, FutureId).
 
 cancel_from_status(error(_), _, Ticket, _, FutureId) :-
+    !,
     rlm_effect:rlm_effect_cancel_ticket(Ticket,
-                                        async_cancelled(FutureId), _),
-    !.
+                                        async_cancelled(FutureId), _).
 cancel_from_status(Attempt, Adapter, _, Request, FutureId) :-
     (   Attempt.status == dispatching
     ->  try_adapter_cancel(Adapter, Attempt, Request, FutureId)
@@ -290,7 +304,7 @@ apply_cancel_adapter_outcome(Attempt, Invalid) :-
 preserve_cancel_uncertainty(reconciliation_required(_)) :- !.
 preserve_cancel_uncertainty(_).
 
-/* Metadata -------------------------------------------------------------- */
+/* Future metadata ------------------------------------------------------- */
 
 executor_metadata(Adapter, Kind, Options,
                   async_metadata{operation:effect_execute,
