@@ -8,16 +8,21 @@
 Import is explicit and requires an already connected MCP client. It never starts
 or installs a server and never grants capabilities. Each remote tool is
 registered in rlm_tool under a deterministic namespaced local atom and therefore
-passes through the ordinary capability gate, schema validation, time/output
-limits and canonical async invocation path exactly once.
+passes through ordinary schema, capability, confinement, authority, budget and
+canonical async execution exactly once.
+
+Remote MCP schemas do not standardize a trustworthy side-effect classification.
+Accordingly imported tools are conservatively `write` unless trusted host import
+options provide `effect(Effect)` or `effects([Remote-Effect,...])`. Unknown or
+model-provided effect atoms never become policy.
 
 The imported handler calls rlm_mcp's canonical command execute ABI directly.
-That is deliberate: tool handlers already run inside an rlm_async worker, so
-submitting a second Future and waiting on it would recreate the nested-wait bug
-fixed by the canonical async architecture.
+Tool handlers already run inside canonical async work, so submitting a second
+Future and waiting on it would recreate the nested-wait bug prevented by PR #60.
 */
 
 :- use_module(library(gensym)).
+:- use_module(rlm_authority, []).
 :- use_module(rlm_mcp, []).
 :- use_module(rlm_tool, []).
 
@@ -60,18 +65,22 @@ import_after_list(ok(Page), Registry, Server, Client, Options, Outcome) :-
     finish_import(RegisterOutcome, StateId, Server, Imported, Outcome).
 
 finish_import(ok, StateId, Server, Imported,
-              ok(mcp_tool_import{
-                     server:Server,
-                     state:mcp_import_state(StateId),
-                     tools:Imported
-                 })) :- !.
+              ok(mcp_tool_import{server:Server,
+                                 state:mcp_import_state(StateId),
+                                 tools:Imported})) :- !.
 finish_import(error(Error), StateId, _, _, error(Error)) :-
     retractall(imported_client_state(StateId, _, _)).
 
 register_imported_tools([], _, _, _, _, [], ok).
 register_imported_tools([Tool|Tools], Registry, Server, StateId, Options,
                         [Imported|ImportedTools], Outcome) :-
-    imported_schema(Server, Tool, Options, Schema, LocalName, RemoteName),
+    imported_schema(Server,
+                    Tool,
+                    Options,
+                    Schema,
+                    LocalName,
+                    RemoteName,
+                    Effect),
     Handler = rlm_mcp_tool:imported_tool_handler(StateId, RemoteName),
     rlm_tool:tool_register(Registry, Schema, Handler, RegisterOutcome),
     register_after_one(RegisterOutcome,
@@ -82,16 +91,18 @@ register_imported_tools([Tool|Tools], Registry, Server, StateId, Options,
                        Options,
                        LocalName,
                        RemoteName,
+                       Effect,
                        Imported,
                        ImportedTools,
                        Outcome).
 
-register_after_one(error(Error), _, _, _, _, _, _, _, _, [], error(Error)) :- !.
+register_after_one(error(Error), _, _, _, _, _, _, _, _, _, [], error(Error)) :- !.
 register_after_one(ok(_), Tools, Registry, Server, StateId, Options,
-                   LocalName, RemoteName,
+                   LocalName, RemoteName, Effect,
                    mcp_imported_tool{local_name:LocalName,
                                      remote_name:RemoteName,
-                                     capability:tool(LocalName)},
+                                     capability:tool(LocalName),
+                                     effect:Effect},
                    ImportedTools,
                    Outcome) :-
     register_imported_tools(Tools,
@@ -102,7 +113,8 @@ register_after_one(ok(_), Tools, Registry, Server, StateId, Options,
                             ImportedTools,
                             Outcome).
 
-imported_schema(Server, Tool, Options, Schema, LocalName, RemoteName) :-
+imported_schema(Server, Tool, Options,
+                Schema, LocalName, RemoteName, Effect) :-
     Remote0 = Tool.name,
     text_atom(Remote0, RemoteName),
     namespaced_tool_name(Server, RemoteName, LocalName),
@@ -110,15 +122,28 @@ imported_schema(Server, Tool, Options, Schema, LocalName, RemoteName) :-
     option_number(time_limit, Options, 30.0, TimeLimit),
     option_integer(max_output_bytes, Options, 65536, MaxOutputBytes),
     tool_description(Tool, Description),
+    imported_effect(RemoteName, Options, Effect),
     Schema = tool_schema{
                  name:LocalName,
                  description:Description,
                  capability:tool(LocalName),
+                 effect:Effect,
                  arguments:ArgumentSchema,
                  result:_{type:any},
                  limits:_{time_limit:TimeLimit,
                           max_output_bytes:MaxOutputBytes}
              }.
+
+imported_effect(RemoteName, Options, Effect) :-
+    (   option_value(effects, Options, [], Effects),
+        member(RemoteName-Found, Effects)
+    ->  Effect0 = Found
+    ;   option_value(effect, Options, write, Effect0)
+    ),
+    (   rlm_authority:rlm_effect_class(Effect0)
+    ->  Effect = Effect0
+    ;   throw(error(domain_error(rlm_effect_class, Effect0), _))
+    ).
 
 namespaced_tool_name(Server, RemoteName, LocalName) :-
     format(atom(LocalName), 'mcp.~w.~w', [Server, RemoteName]).
@@ -237,17 +262,13 @@ imported_command_value(Result, _) :-
 mcp_import_state_destroy(mcp_import_state(StateId)) :-
     retractall(imported_client_state(StateId, _, _)).
 
-require_server_name(Server) :-
-    atom(Server),
-    Server \== '',
-    !.
+require_server_name(Server) :- atom(Server), Server \== '', !.
 require_server_name(Server) :-
     throw(error(type_error(mcp_server_name, Server), _)).
 
 option_number(Name, Options, Default, Value) :-
     option_value(Name, Options, Default, Found),
-    number(Found),
-    Found > 0,
+    number(Found), Found > 0,
     !,
     Value = Found.
 option_number(Name, _, _, _) :-
@@ -255,8 +276,7 @@ option_number(Name, _, _, _) :-
 
 option_integer(Name, Options, Default, Value) :-
     option_value(Name, Options, Default, Found),
-    integer(Found),
-    Found > 0,
+    integer(Found), Found > 0,
     !,
     Value = Found.
 option_integer(Name, _, _, _) :-
@@ -265,6 +285,7 @@ option_integer(Name, _, _, _) :-
 option_value(Name, Options, Default, Value) :-
     (   is_list(Options),
         member(Option, Options),
+        nonvar(Option),
         Option =.. [Name, Found]
     ->  Value = Found
     ;   Value = Default

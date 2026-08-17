@@ -18,6 +18,9 @@
 :- consult(rlm_plan_test).
 :- consult(rlm_tool_test).
 :- consult(rlm_tool_loader_test).
+:- consult(rlm_authority_test).
+:- consult(rlm_authority_hardening_test).
+:- consult(rlm_authority_lifecycle_test).
 :- consult(run_tool_mcp_async_tests).
 :- consult(rlm_tool_mcp_scheduler_test).
 :- consult(rlm_completion_test).
@@ -26,7 +29,9 @@
 :- consult(rlm_outcome_test).
 :- consult(rlm_artifact_test).
 :- consult(rlm_agent_test).
+:- consult(rlm_agent_authority_test).
 :- consult(rlm_graph_test).
+:- consult(rlm_graph_authority_test).
 :- consult(rlm_agent_graph_async_test).
 :- consult(rlm_recursion_policy_test).
 :- consult(rlm_recursion_runtime_test).

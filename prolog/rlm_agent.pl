@@ -21,15 +21,16 @@
 
 /** <module> Supervised logical agent runtime
 
-Logical agents keep their mutable state inside SWI-Prolog engines.  Engines are
+Logical agents keep their mutable state inside SWI-Prolog engines. Engines are
 not permanently attached to operating-system threads; the supervisor drives an
-engine only while it is processing one mailbox message.  Blocking host work is
+engine only while it is processing one mailbox message. Blocking host work is
 moved onto one bounded thread pool shared by every logical agent in a runtime.
 
-Mailboxes are finite SWI message queues.  A full mailbox therefore produces an
+Mailboxes are finite SWI message queues. A full mailbox therefore produces an
 explicit backpressure outcome instead of allowing unbounded message growth.
-Capabilities are inherited by subset: a child may drop parent authority but can
-never add authority the parent did not have.
+Capabilities and authority are independent narrowing boundaries: a child may
+drop capabilities and may choose the same or a stricter authority tier, but can
+never add a capability or widen authority beyond its parent.
 
 Latency-bearing public operations are canonical async-first. The async API
 submits one execute predicate to `rlm_async`; the synchronous API starts that
@@ -44,6 +45,7 @@ logical-agent host work and mailbox/backpressure semantics.
 :- use_module(library(option)).
 :- use_module(library(thread_pool)).
 :- use_module(rlm_async, []).
+:- use_module(rlm_authority, []).
 :- use_module(rlm_tool,
               [ capabilities_normalize/2,
                 capabilities_narrow/3
@@ -65,6 +67,7 @@ default_agent_options(
                   send_timeout:0.0,
                   trace_limit:256,
                   root_capabilities:[],
+                  root_authority:approve_diff,
                   worker_handler:none}).
 
 /* -------------------------------------------------------------------------
@@ -89,16 +92,23 @@ agent_runtime_create_(Options, agent_runtime(Id)) :-
                  assertz(agent_runtime_record(Id, Pool, Config)),
                  assertz(agent_trace_sequence(Id, 0))
                )),
+    RuntimeContext = runtime(Id),
+    rlm_authority:rlm_set_authority(RuntimeContext,
+                                    Config.root_authority,
+                                    AuthorityOutcome),
+    require_authority_set(AuthorityOutcome),
     trace_add(Id, runtime_created,
               _{worker_count:Config.worker_count,
                 mailbox_size:Config.mailbox_size,
-                max_agents:Config.max_agents}).
+                max_agents:Config.max_agents,
+                authority:Config.root_authority}).
 
 agent_runtime_destroy(Runtime) :-
     (   runtime_record(Runtime, Id, Pool, _)
     ->  signal_runtime_workers(Id, runtime_destroyed),
         catch(thread_pool_destroy(Pool), _, true),
         destroy_runtime_agents(Id),
+        catch(rlm_authority:rlm_authority_clear_runtime(Id), _, true),
         with_mutex(rlm_agent_registry,
                    ( retractall(agent_worker(Id, _, _, _)),
                      retractall(agent_record(Id, _, _, _, _, _, _)),
@@ -115,9 +125,11 @@ agent_runtime_status(Runtime, Status) :-
     pool_property_default(Pool, size, Config.worker_count, PoolSize),
     pool_property_default(Pool, running, 0, Running),
     pool_property_default(Pool, backlog, 0, Backlog),
+    rlm_authority:rlm_authority(runtime(Id), Authority),
     Status = agent_runtime_status{runtime:Runtime,
                                   agent_count:AgentCount,
                                   max_agents:Config.max_agents,
+                                  authority:Authority,
                                   worker_pool:Pool,
                                   worker_pool_size:PoolSize,
                                   worker_running:Running,
@@ -144,6 +156,7 @@ normalize_runtime_options(Options, Config) :-
     option(send_timeout(SendTimeout), Options, Default.send_timeout),
     option(trace_limit(TraceLimit), Options, Default.trace_limit),
     option(root_capabilities(Root0), Options, Default.root_capabilities),
+    option(authority(RootAuthority), Options, Default.root_authority),
     option(worker_handler(WorkerHandler), Options, Default.worker_handler),
     require_positive_integer(MaxAgents, max_agents),
     require_positive_integer(MailboxSize, mailbox_size),
@@ -153,6 +166,7 @@ normalize_runtime_options(Options, Config) :-
     require_positive_integer(TraceLimit, trace_limit),
     capabilities_normalize(Root0, RootOutcome),
     require_capability_outcome(RootOutcome, RootCapabilities),
+    require_authority_mode(RootAuthority),
     require_worker_handler(WorkerHandler),
     Config = agent_options{max_agents:MaxAgents,
                            mailbox_size:MailboxSize,
@@ -161,6 +175,7 @@ normalize_runtime_options(Options, Config) :-
                            send_timeout:SendTimeout,
                            trace_limit:TraceLimit,
                            root_capabilities:RootCapabilities,
+                           root_authority:RootAuthority,
                            worker_handler:WorkerHandler}.
 
 require_worker_handler(none) :- !.
@@ -200,32 +215,46 @@ agent_spawn_execute(Runtime, Parent, Spec0, RequestedCapabilities, Outcome) :-
 agent_spawn_(Runtime, Parent, Spec0, RequestedCapabilities, Outcome) :-
     runtime_record(Runtime, RuntimeId, _, Config),
     normalize_agent_spec(Spec0, Spec),
-    parent_authority(RuntimeId, Parent, Config, ParentCapabilities, ParentId),
-    capabilities_narrow(ParentCapabilities, RequestedCapabilities, NarrowOutcome),
-    spawn_after_narrowing(NarrowOutcome,
-                          RuntimeId,
-                          ParentId,
-                          Spec,
-                          Config,
-                          Outcome).
+    parent_capabilities(RuntimeId,
+                        Parent,
+                        Config,
+                        ParentCapabilities,
+                        ParentId,
+                        ParentAuthorityContext),
+    capabilities_narrow(ParentCapabilities,
+                        RequestedCapabilities,
+                        NarrowOutcome),
+    spawn_after_capability_narrowing(NarrowOutcome,
+                                     RuntimeId,
+                                     ParentId,
+                                     ParentAuthorityContext,
+                                     Spec,
+                                     Config,
+                                     Outcome).
 
-spawn_after_narrowing(error(Error), _, _, _, _, error(AgentError)) :-
+spawn_after_capability_narrowing(error(Error), _, _, _, _, _, error(AgentError)) :-
     !,
     AgentError = agent_error{phase:spawn,
                              kind:capability_denied,
                              cause:Error,
-                             message:"child capabilities exceed parent authority"}.
-spawn_after_narrowing(ok(Capabilities), RuntimeId, ParentId, Spec, Config,
-                      Outcome) :-
+                             message:"child capabilities exceed parent capabilities"}.
+spawn_after_capability_narrowing(ok(Capabilities),
+                                 RuntimeId,
+                                 ParentId,
+                                 ParentAuthorityContext,
+                                 Spec,
+                                 Config,
+                                 Outcome) :-
     with_mutex(rlm_agent_registry,
                spawn_locked(RuntimeId,
                             ParentId,
+                            ParentAuthorityContext,
                             Spec,
                             Capabilities,
                             Config,
                             Outcome)).
 
-spawn_locked(RuntimeId, _, _, _, Config, error(Error)) :-
+spawn_locked(RuntimeId, _, _, _, _, Config, error(Error)) :-
     runtime_agent_count(RuntimeId, Count),
     Count >= Config.max_agents,
     !,
@@ -233,8 +262,46 @@ spawn_locked(RuntimeId, _, _, _, Config, error(Error)) :-
                         kind:agent_limit_reached,
                         limit:Config.max_agents,
                         message:"logical agent limit reached"}.
-spawn_locked(RuntimeId, ParentId, Spec, Capabilities, Config, ok(agent(Id))) :-
+spawn_locked(RuntimeId,
+             ParentId,
+             ParentAuthorityContext,
+             Spec,
+             Capabilities,
+             Config,
+             Outcome) :-
     gensym(agent_, Id),
+    ChildAuthorityContext = agent(RuntimeId, Id),
+    rlm_authority:rlm_authority_child(ParentAuthorityContext,
+                                      ChildAuthorityContext,
+                                      Spec.authority,
+                                      AuthorityOutcome),
+    spawn_after_authority(AuthorityOutcome,
+                          RuntimeId,
+                          Id,
+                          ParentId,
+                          Spec,
+                          Capabilities,
+                          Config,
+                          ChildAuthorityContext,
+                          Outcome).
+
+spawn_after_authority(error(Error),
+                      _, _, _, _, _, _, _,
+                      error(AgentError)) :-
+    !,
+    AgentError = agent_error{phase:spawn,
+                             kind:authority_widening_denied,
+                             cause:Error,
+                             message:"child authority exceeds parent authority ceiling"}.
+spawn_after_authority(ok(AuthorityInfo),
+                      RuntimeId,
+                      Id,
+                      ParentId,
+                      Spec,
+                      Capabilities,
+                      Config,
+                      ChildAuthorityContext,
+                      ok(agent(Id))) :-
     message_queue_create(Queue, [max_size(Config.mailbox_size)]),
     Initial = agent_state{id:Id,
                           runtime:RuntimeId,
@@ -247,6 +314,7 @@ spawn_locked(RuntimeId, ParentId, Spec, Capabilities, Config, ok(agent(Id))) :-
     catch(engine_create(_, agent_state_loop(Initial), Engine),
           Exception,
           ( message_queue_destroy(Queue),
+            rlm_authority:rlm_authority_clear(ChildAuthorityContext),
             throw(Exception)
           )),
     assertz(agent_record(RuntimeId,
@@ -261,17 +329,35 @@ spawn_locked(RuntimeId, ParentId, Spec, Capabilities, Config, ok(agent(Id))) :-
               _{agent:Id,
                 parent:ParentId,
                 capabilities:Capabilities,
+                authority:AuthorityInfo.mode,
                 spec:Spec}),
-    notify_parent_spawn(RuntimeId, ParentId, Id, Spec, Capabilities).
+    notify_parent_spawn(RuntimeId,
+                        ParentId,
+                        Id,
+                        Spec,
+                        Capabilities).
 
-parent_authority(_, none, Config, Config.root_capabilities, none) :- !.
-parent_authority(RuntimeId, agent(ParentId), _, Capabilities, ParentId) :-
+parent_capabilities(RuntimeId, none, Config,
+                    Config.root_capabilities,
+                    none,
+                    runtime(RuntimeId)) :-
+    !.
+parent_capabilities(RuntimeId,
+                    agent(ParentId),
+                    _,
+                    Capabilities,
+                    ParentId,
+                    agent(RuntimeId, ParentId)) :-
     !,
-    (   agent_record(RuntimeId, ParentId, _, _, _, Capabilities, _)
+    (   agent_record(RuntimeId,
+                     ParentId,
+                     _, _, _,
+                     Capabilities,
+                     _)
     ->  true
     ;   throw(agent_fault(unknown_parent(agent(ParentId))))
     ).
-parent_authority(_, Parent, _, _, _) :-
+parent_capabilities(_, Parent, _, _, _, _) :-
     throw(agent_fault(invalid_parent(Parent))).
 
 notify_parent_spawn(_, none, _, _, _) :- !.
@@ -286,17 +372,23 @@ normalize_agent_spec(agent_spec(Name), Spec) :-
     require_name_atom(Name, Normalized),
     Spec = agent_spec{name:Normalized,
                       mode:worker,
+                      authority:inherit,
                       metadata:agent_metadata{}}.
 normalize_agent_spec(Spec0, Spec) :-
     is_dict(Spec0),
     !,
     dict_value_default(name, Spec0, anonymous, Name0),
     dict_value_default(mode, Spec0, worker, Mode0),
+    dict_value_default(authority, Spec0, inherit, Authority0),
     dict_value_default(metadata, Spec0, agent_metadata{}, Metadata0),
     require_name_atom(Name0, Name),
     require_name_atom(Mode0, Mode),
+    require_child_authority(Authority0, Authority),
     normalize_agent_metadata(Metadata0, Metadata),
-    Spec = agent_spec{name:Name, mode:Mode, metadata:Metadata}.
+    Spec = agent_spec{name:Name,
+                      mode:Mode,
+                      authority:Authority,
+                      metadata:Metadata}.
 normalize_agent_spec(Spec, _) :-
     throw(agent_fault(invalid_agent_spec(Spec))).
 
@@ -786,6 +878,7 @@ status_after_engine(ok(Reply), RuntimeId, AgentId, ParentId, Queue,
             agent_worker(RuntimeId, AgentId, CallId, Thread),
             Workers),
     agent_children(agent_runtime(RuntimeId), agent(AgentId), Children),
+    rlm_authority:rlm_authority(agent(RuntimeId, AgentId), Authority),
     Status = agent_status{agent:agent(AgentId),
                           parent:ParentId,
                           status:State.status,
@@ -794,6 +887,7 @@ status_after_engine(ok(Reply), RuntimeId, AgentId, ParentId, Queue,
                           last_result:State.last_result,
                           processed:State.processed,
                           capabilities:Capabilities,
+                          authority:Authority,
                           spec:Spec,
                           mailbox_size:QueueSize,
                           workers:Workers,
@@ -832,6 +926,8 @@ agent_cancel_(Runtime, AgentId, Reason, Outcome) :-
     (   agent_record(RuntimeId, AgentId, _, Engine, _, _, _)
     ->  agent_children(Runtime, agent(AgentId), Children),
         cancel_children(Runtime, Children, Reason),
+        rlm_authority:rlm_pending_cancel_owner(agent(RuntimeId, AgentId),
+                                               Reason),
         signal_agent_workers(RuntimeId, AgentId, Reason),
         engine_reply(Engine, deliver(cancel(RuntimeId, Reason)), Reply),
         trace_add(RuntimeId, cancel, _{agent:AgentId, reason:Reason}),
@@ -1059,6 +1155,20 @@ require_capability_outcome(ok(Value), Value) :- !.
 require_capability_outcome(error(Error), _) :-
     throw(agent_fault(invalid_capabilities(Error))).
 
+require_authority_mode(Mode) :-
+    rlm_authority:rlm_authority_narrow(dangerous, Mode, ok(_)),
+    !.
+require_authority_mode(Mode) :-
+    throw(agent_fault(invalid_authority(Mode))).
+
+require_child_authority(inherit, inherit) :- !.
+require_child_authority(Mode, Mode) :-
+    require_authority_mode(Mode).
+
+require_authority_set(ok(_)) :- !.
+require_authority_set(error(Error)) :-
+    throw(agent_fault(authority_setup_failed(Error))).
+
 require_positive_integer(Value, _) :-
     integer(Value), Value > 0,
     !.
@@ -1117,26 +1227,40 @@ await_agent_future(Future, Outcome) :-
 agent_spawn_task_metadata(Runtime0, Parent0, Metadata) :-
     metadata_runtime_id(Runtime0, RuntimeId),
     metadata_agent_id(Parent0, ParentId),
+    spawn_authority_context(RuntimeId, ParentId, AuthorityContext),
     Metadata = async_metadata{
                    operation:agent_spawn,
                    runtime_id:RuntimeId,
                    parent_agent:ParentId,
+                   agent_id:ParentId,
+                   authority_context:AuthorityContext,
                    trace_id:none,
                    session_id:none
                }.
+
+spawn_authority_context(unknown, _, none) :- !.
+spawn_authority_context(RuntimeId, none, runtime(RuntimeId)) :- !.
+spawn_authority_context(RuntimeId, ParentId,
+                        agent(RuntimeId, ParentId)).
 
 agent_task_metadata(Operation, Runtime0, Agent0, Options, Metadata) :-
     metadata_runtime_id(Runtime0, RuntimeId),
     metadata_agent_id(Agent0, AgentId),
     metadata_option(trace_id, Options, none, TraceId),
     metadata_option(session_id, Options, none, SessionId),
+    task_authority_context(RuntimeId, AgentId, AuthorityContext),
     Metadata = async_metadata{
                    operation:Operation,
                    runtime_id:RuntimeId,
                    agent_id:AgentId,
+                   authority_context:AuthorityContext,
                    trace_id:TraceId,
                    session_id:SessionId
                }.
+
+task_authority_context(unknown, _, none) :- !.
+task_authority_context(RuntimeId, none, runtime(RuntimeId)) :- !.
+task_authority_context(RuntimeId, AgentId, agent(RuntimeId, AgentId)).
 
 metadata_runtime_id(agent_runtime(Id), Id) :-
     ground(Id),
