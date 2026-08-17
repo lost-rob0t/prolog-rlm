@@ -10,3 +10,4 @@ an internal implementation module.
 :- reexport(rlm_effect).
 :- reexport(rlm_effect_authority).
 :- reexport(rlm_effect_executor).
+:- reexport(rlm_effect_migration).

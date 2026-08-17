@@ -4,6 +4,12 @@
 and tool libraries. Provider-specific code translates a normalized runtime
 request to the remote protocol; it does not own a second generic effect ledger.
 
+For unresolved attempts migrated from the PR #78 store schema, trusted adapter
+identity may come from the immutable operator-reviewed binding described in
+[effect-migration.md](effect-migration.md). It is equivalent to code-owned
+identity for reconciliation matching, cannot be overridden by request or
+correlation metadata, and is never inferred during migration.
+
 Adapters are static code-owned multifile hooks:
 
 ```prolog

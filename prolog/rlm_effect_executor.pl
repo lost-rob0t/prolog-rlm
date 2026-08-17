@@ -311,6 +311,9 @@ attempt_adapter_identity(Attempt, Adapter) :-
     is_dict(Identity, executor_identity),
     get_dict(adapter, Identity, Adapter),
     atom(Adapter).
+attempt_adapter_identity(Attempt, Adapter) :-
+    rlm_effect_persist:effect_persist_legacy_adapter(Attempt.attempt_id,
+                                                     Adapter).
 
 attempt_adapter_identity_or_unknown(Attempt, Adapter) :-
     ( attempt_adapter_identity(Attempt, Found) -> Adapter = Found

@@ -18,6 +18,12 @@
             effect_persist_get_observation/2,
             effect_persist_append_event/2,
             effect_persist_events/2,
+            effect_persist_migration_source_open/4,
+            effect_persist_migration_source_close/1,
+            effect_persist_migration_path_lock/2,
+            effect_persist_write_migrated/5,
+            effect_persist_migration_info/1,
+            effect_persist_legacy_adapter/2,
             effect_persist_delete_call/1
           ]).
 
@@ -52,7 +58,11 @@ exits, including abrupt process death, so a fresh process can resume/reconcile.
        effect_store_metadata(key:atom, value:any),
        effect_call_scope_record(call_id:atom, store_id:atom,
                                 base_call_id:atom, epoch:integer),
-       effect_epoch_record(store_id:atom, base_call_id:atom, epoch:integer).
+       effect_epoch_record(store_id:atom, base_call_id:atom, epoch:integer),
+       effect_migration_record(migration_id:atom, source_schema:integer,
+                               source_digest:atom, destination_path:atom,
+                               created_at:float, status:atom),
+       effect_legacy_adapter_binding_record(attempt_id:atom, adapter:atom).
 
 :- dynamic effect_store_lock/3.
 :- dynamic effect_store_lease/2.
@@ -64,7 +74,7 @@ effect_persist_open_locked(File) :-
     (   db_attached(Current)
     ->  (   same_file_or_atom(Current, File)
         ->  ensure_effect_store_lock(File),
-            ensure_effect_store_metadata
+            ensure_effect_store_metadata(File)
         ;   require_no_active_effect_leases(switch, Current),
             effect_persist_detach_locked,
             effect_persist_attach_locked(File)
@@ -77,17 +87,32 @@ effect_persist_attach_locked(File) :-
     effect_store_lock_file(Canonical, LockFile),
     acquire_effect_store_lock(Canonical, LockFile, Stream),
     catch(( db_attach(File, [sync(close)]),
-            ensure_effect_store_metadata ),
+            ensure_effect_store_metadata(File) ),
           Exception,
           ( catch(db_detach, _, true),
             close_effect_store_lock_stream(Stream),
             throw(Exception) )),
     assertz(effect_store_lock(Canonical, LockFile, Stream)).
 
-ensure_effect_store_metadata :-
+ensure_effect_store_metadata(File) :-
     findall(StoreId, effect_store_metadata(namespace, StoreId), StoreIds),
     ensure_single_store_namespace(StoreIds),
-    ensure_schema_version.
+    ensure_schema_version,
+    ensure_migrated_path_binding(File).
+
+ensure_migrated_path_binding(File) :-
+    findall(Path,
+            effect_migration_record(_, 1, _, Path, _, complete),
+            Paths),
+    (   Paths == []
+    ->  true
+    ;   sort(Paths, [Expected]),
+        canonical_store_file(File, Actual),
+        ( same_file_or_atom(Expected, Actual)
+        -> true
+        ;  throw(error(permission_error(open, migrated_effect_store_copy,
+                                         Expected-Actual), _)) )
+    ).
 
 ensure_single_store_namespace([StoreId]) :-
     atom(StoreId),
@@ -463,6 +488,182 @@ effect_persist_events(CallId, Events) :-
             Pairs0),
     keysort(Pairs0, Pairs),
     pairs_values(Pairs, Events).
+
+/* Offline migration support ------------------------------------------- */
+
+effect_persist_migration_source_open(File, Handle, Schema, Snapshot) :-
+    with_mutex(rlm_effect_persist_db,
+               migration_source_open_locked(File, Handle, Schema, Snapshot)).
+
+migration_source_open_locked(File, Handle, Schema, Snapshot) :-
+    (   db_attached(Current)
+    ->  throw(error(permission_error(migrate, effect_store,
+                                     already_attached(Current)), _))
+    ;   true
+    ),
+    canonical_store_file(File, Canonical),
+    effect_store_lock_file(Canonical, LockFile),
+    acquire_effect_store_lock(Canonical, LockFile, Stream),
+    catch(( db_attach(File, [sync(close)]),
+            migration_schema(Schema),
+            migration_snapshot(Snapshot),
+            db_detach,
+            Handle = migration_source(Canonical, LockFile, Stream) ),
+          Exception,
+          ( catch(db_detach, _, true),
+            close_effect_store_lock_stream(Stream),
+            throw(Exception) )).
+
+effect_persist_migration_source_close(migration_source(_, _, Stream)) :-
+    close_effect_store_lock_stream(Stream).
+effect_persist_migration_source_close(migration_path(_, _, Stream)) :-
+    close_effect_store_lock_stream(Stream).
+
+effect_persist_migration_path_lock(File,
+                                   migration_path(Canonical, LockFile,
+                                                  Stream)) :-
+    canonical_store_file(File, Canonical),
+    effect_store_lock_file(Canonical, LockFile),
+    acquire_effect_store_lock(Canonical, LockFile, Stream).
+
+migration_schema(v1) :-
+    \+ effect_store_metadata(schema_version, _),
+    legacy_effect_records_exist,
+    !.
+migration_schema(empty) :-
+    \+ effect_store_metadata(schema_version, _),
+    \+ legacy_effect_records_exist,
+    !.
+migration_schema(v2) :-
+    findall(Version, effect_store_metadata(schema_version, Version), [2]),
+    !.
+migration_schema(incompatible(Versions)) :-
+    findall(Version, effect_store_metadata(schema_version, Version), Versions).
+
+migration_snapshot(Snapshot) :-
+    findall(effect_call{call_id:CallId,
+                        fingerprint:Fingerprint,
+                        kind:Kind,
+                        request:Request,
+                        logical_key:LogicalKey,
+                        created_at:CreatedAt},
+            effect_call_record(CallId, Fingerprint, Kind, Request,
+                               LogicalKey, CreatedAt),
+            Calls),
+    findall(effect_attempt{attempt_id:AttemptId,
+                           revision:Revision,
+                           call_id:CallId,
+                           fingerprint:Fingerprint,
+                           sequence:Sequence,
+                           parent_attempt:ParentAttempt,
+                           mode:Mode,
+                           status:Status,
+                           idempotency_key:IdempotencyKey,
+                           authority:Authority,
+                           metadata:Metadata,
+                           created_at:CreatedAt,
+                           updated_at:UpdatedAt},
+            effect_attempt_record(AttemptId, Revision, CallId, Fingerprint,
+                                  Sequence, ParentAttempt, Mode, Status,
+                                  IdempotencyKey, Authority, Metadata,
+                                  CreatedAt, UpdatedAt),
+            Attempts),
+    findall(AttemptId-Observation,
+            effect_observation_record(AttemptId, Observation),
+            Observations),
+    findall(CallId-Sequence-Event,
+            effect_event_record(CallId, Sequence, Event),
+            Events),
+    findall(Key-Value, effect_store_metadata(Key, Value), Metadata),
+    findall(call_scope(CallId, StoreId, BaseCallId, Epoch),
+            effect_call_scope_record(CallId, StoreId, BaseCallId, Epoch),
+            Scopes),
+    findall(epoch(StoreId, BaseCallId, Epoch),
+            effect_epoch_record(StoreId, BaseCallId, Epoch),
+            Epochs),
+    findall(migration(MigrationId, SourceSchema, SourceDigest,
+                      Destination, CreatedAt, Status),
+            effect_migration_record(MigrationId, SourceSchema, SourceDigest,
+                                    Destination, CreatedAt, Status),
+            Migrations),
+    findall(binding(AttemptId, Adapter),
+            effect_legacy_adapter_binding_record(AttemptId, Adapter),
+            Bindings),
+    Snapshot = effect_snapshot{calls:Calls,
+                               attempts:Attempts,
+                               observations:Observations,
+                               events:Events,
+                               metadata:Metadata,
+                               scopes:Scopes,
+                               epochs:Epochs,
+                               migrations:Migrations,
+                               bindings:Bindings}.
+
+effect_persist_write_migrated(File, Snapshot, Migration, Bindings, StoreId) :-
+    with_mutex(rlm_effect_persist_db,
+               write_migrated_locked(File, Snapshot, Migration,
+                                     Bindings, StoreId)).
+
+write_migrated_locked(File, Snapshot, Migration, Bindings, StoreId) :-
+    (   db_attached(Current)
+    ->  throw(error(permission_error(migrate, effect_store,
+                                     already_attached(Current)), _))
+    ;   true
+    ),
+    catch(( db_attach(File, [sync(close)]),
+            write_legacy_snapshot(Snapshot),
+            assert_effect_store_metadata(namespace, StoreId),
+            assert_effect_store_metadata(schema_version, 2),
+            assert_effect_store_metadata(migrated_from_schema, 1),
+            assert_effect_store_metadata(migration_id, Migration.id),
+            assert_effect_store_metadata(source_digest, Migration.source_digest),
+            assert_effect_migration_record(Migration.id, 1,
+                                           Migration.source_digest,
+                                           Migration.destination,
+                                           Migration.created_at, complete),
+            forall(member(binding(AttemptId, Adapter), Bindings),
+                   assert_effect_legacy_adapter_binding_record(AttemptId,
+                                                               Adapter)),
+            db_sync(gc(always)),
+            db_detach ),
+          Exception,
+          ( catch(db_detach, _, true),
+            throw(Exception) )).
+
+write_legacy_snapshot(Snapshot) :-
+    forall(member(Call, Snapshot.calls),
+           assert_effect_call_record(Call.call_id, Call.fingerprint,
+                                     Call.kind, Call.request,
+                                     Call.logical_key, Call.created_at)),
+    forall(member(Attempt, Snapshot.attempts),
+           assert_effect_attempt_record(Attempt.attempt_id, Attempt.revision,
+                                        Attempt.call_id, Attempt.fingerprint,
+                                        Attempt.sequence,
+                                        Attempt.parent_attempt, Attempt.mode,
+                                        Attempt.status,
+                                        Attempt.idempotency_key,
+                                        Attempt.authority, Attempt.metadata,
+                                        Attempt.created_at,
+                                        Attempt.updated_at)),
+    forall(member(AttemptId-Observation, Snapshot.observations),
+           assert_effect_observation_record(AttemptId, Observation)),
+    forall(member(CallId-Sequence-Event, Snapshot.events),
+           assert_effect_event_record(CallId, Sequence, Event)).
+
+effect_persist_migration_info(Info) :-
+    require_attached,
+    effect_migration_record(MigrationId, SourceSchema, SourceDigest,
+                            Destination, CreatedAt, complete),
+    Info = effect_migration{id:MigrationId,
+                            source_schema:SourceSchema,
+                            source_digest:SourceDigest,
+                            destination:Destination,
+                            created_at:CreatedAt,
+                            status:complete}.
+
+effect_persist_legacy_adapter(AttemptId, Adapter) :-
+    require_attached,
+    effect_legacy_adapter_binding_record(AttemptId, Adapter).
 
 effect_persist_delete_call(CallId) :-
     require_attached,
