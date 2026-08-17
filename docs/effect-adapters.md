@@ -14,6 +14,19 @@ Adapters are static code-owned multifile hooks:
 
 They are deliberately not dynamic model-writable facts.
 
+## Outcomes
+
+Submit and reconciliation distinguish three cases:
+
+- `observed(Observation)`: an authoritative terminal remote outcome is known;
+- `in_progress(Detail)`: the provider positively knows the original attempt is
+  still running, so the existing dispatching attempt remains authoritative;
+- `indeterminate(Reason)`: the provider cannot safely determine the remote
+  outcome.
+
+Known progress is not collapsed into uncertainty, and neither case is permission
+to create another submit.
+
 ## Submit
 
 Submit runs only after the attempt is durably `dispatching`.
@@ -52,6 +65,12 @@ rlm_effect_executor:effect_adapter_reconcile(my_provider, Attempt, Request,
                                              Outcome) :-
     provider_lookup(Attempt.idempotency_key, Request, Remote),
     remote_observation(Remote, Outcome).
+```
+
+If the provider confirms the original job is still running, return for example:
+
+```prolog
+in_progress(remote_job(JobId))
 ```
 
 If no reconciliation hook exists, an unresolved dispatched attempt remains
