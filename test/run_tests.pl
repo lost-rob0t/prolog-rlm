@@ -18,6 +18,7 @@
 :- consult(rlm_plan_test).
 :- consult(rlm_tool_test).
 :- consult(rlm_tool_loader_test).
+:- consult(rlm_tool_loader_security_test).
 :- consult(rlm_authority_test).
 :- consult(rlm_authority_hardening_test).
 :- consult(rlm_authority_lifecycle_test).
