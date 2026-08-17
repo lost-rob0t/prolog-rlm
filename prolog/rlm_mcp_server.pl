@@ -21,28 +21,29 @@
 
 /** <module> Declarative MCP server lifecycle
 
-Server declarations are passive data until explicit install/run calls. Loading
-this module or a tool category never installs or starts an MCP server.
+Server declarations are passive trusted host data until explicit install/run
+calls. Loading this module or an external tool category never installs, starts,
+connects to, or imports tools from an MCP server.
+
+Process-backed declarations are closed over trusted host execution profiles.
+They do not contain executable paths, arbitrary argv, shell commands, or raw
+environment values. Environment values are represented by `env_ref/1` and
+`config_ref/1` references and are resolved only inside an authority-permitted
+lifecycle continuation immediately before process creation.
 
 Latency-bearing lifecycle operations preserve the canonical async direction:
 the async surface submits one execute predicate; the synchronous surface starts
-that same operation and waits on its Future. Side effects that actually cross a
-host boundary are mediated by `rlm_authority` after declaration/recipe/transport
-validation. Human approval returns a pending operation immediately and never
-parks an `rlm_async` worker.
-
-`fixture/2` and `streamable_http/1` opens are non-mutating handle construction;
-`stdio/2` starts a process and is classified `service_start`. Only an owned
-stdio transport stop is `service_stop`. Installation recipes using `process/3`
-are `install`. The declarations remain data and authority never makes an invalid
-recipe or transport spec valid.
+that same operation and waits on its Future. Trusted code already executing in a
+canonical async worker calls execute predicates directly.
 */
 
 :- use_module(library(option)).
 :- use_module(library(process)).
+:- use_module(library(time)).
 :- use_module(rlm_async, []).
 :- use_module(rlm_authority, []).
 :- use_module(rlm_mcp, []).
+:- use_module(rlm_mcp_policy, []).
 :- use_module(rlm_mcp_transport, []).
 
 :- multifile mcp_server/2.
@@ -91,24 +92,35 @@ mcp_server_definitions(Definitions) :-
 normalize_server_spec(Name, Spec0, Spec) :-
     is_dict(Spec0),
     !,
-    require_spec_key(Spec0, transport, Transport),
-    normalize_transport_spec(Transport, NormalizedTransport),
+    require_spec_key(Spec0, transport, Transport0),
+    normalize_transport_spec(Transport0, Transport),
     dict_value_default(install, Spec0, none, Install0),
-    normalize_install_recipe(Install0, Install),
+    rlm_mcp_policy:mcp_install_recipe_normalize(Install0, Install),
+    dict_value_default(environment, Spec0, [], Environment0),
+    rlm_mcp_policy:mcp_environment_normalize(Environment0, Environment),
+    dict_value_default(working_directory, Spec0, inherit, WorkingDirectory0),
+    rlm_mcp_policy:mcp_working_directory_normalize(WorkingDirectory0,
+                                                    WorkingDirectory),
+    validate_execution_configuration_usage(Transport,
+                                             Install,
+                                             Environment,
+                                             WorkingDirectory),
     dict_value_default(version, Spec0, unspecified, Version),
     dict_value_default(capabilities, Spec0, [], Capabilities),
-    dict_value_default(options, Spec0, [], Options),
+    dict_value_default(options, Spec0, [], Options0),
     require_ground(Version, version),
     require_capability_list(Capabilities),
-    require_options(Options),
+    normalize_runtime_options(Options0, Options),
     Spec = mcp_server_spec{name:Name,
-                           transport:NormalizedTransport,
+                           transport:Transport,
                            install:Install,
+                           environment:Environment,
+                           working_directory:WorkingDirectory,
                            version:Version,
                            capabilities:Capabilities,
                            options:Options}.
-normalize_server_spec(_, Spec, _) :-
-    throw(mcp_lifecycle_fault(invalid_server_spec(Spec))).
+normalize_server_spec(_, _, _) :-
+    throw(mcp_lifecycle_fault(invalid_server_spec)).
 
 normalize_transport_spec(existing(Transport), existing(Transport)) :-
     !,
@@ -118,49 +130,26 @@ normalize_transport_spec(fixture(Kind, Handler), fixture(Kind, Handler)) :-
     memberchk(Kind, [stdio,streamable_http]),
     callable(Handler),
     ground(Handler).
-normalize_transport_spec(stdio(Executable, Args), stdio(Executable, Args)) :-
+normalize_transport_spec(stdio(Recipe0), stdio(Recipe)) :-
     !,
-    atom(Executable),
-    Executable \== '',
-    is_list(Args),
-    ground(Args),
-    maplist(valid_process_arg, Args).
+    rlm_mcp_policy:mcp_stdio_recipe_normalize(Recipe0, Recipe).
 normalize_transport_spec(streamable_http(Endpoint), streamable_http(Endpoint)) :-
     !,
     text_value(Endpoint),
     Endpoint \== ''.
-normalize_transport_spec(Transport, _) :-
-    throw(mcp_lifecycle_fault(invalid_transport_spec(Transport))).
+normalize_transport_spec(_, _) :-
+    throw(mcp_lifecycle_fault(invalid_transport_spec)).
 
-normalize_install_recipe(none, none) :- !.
-normalize_install_recipe(process(Executable, Args, Options),
-                         process(Executable, Args, Options)) :-
-    !,
-    atom(Executable),
-    Executable \== '',
-    is_list(Args),
-    ground(Args),
-    maplist(valid_process_arg, Args),
-    validate_install_options(Options).
-normalize_install_recipe(Recipe, _) :-
-    throw(mcp_lifecycle_fault(invalid_install_recipe(Recipe))).
-
-valid_process_arg(Arg) :- atomic(Arg), !.
-valid_process_arg(Arg) :-
-    throw(mcp_lifecycle_fault(invalid_process_argument(Arg))).
-
-validate_install_options(Options) :-
-    is_list(Options),
-    ground(Options),
-    forall(member(Option, Options), valid_install_option(Option)),
-    !.
-validate_install_options(Options) :-
-    throw(mcp_lifecycle_fault(invalid_install_options(Options))).
-
-valid_install_option(cwd(Directory)) :- atom(Directory), !.
-valid_install_option(env(Env)) :- is_list(Env), ground(Env), !.
-valid_install_option(Option) :-
-    throw(mcp_lifecycle_fault(disallowed_install_option(Option))).
+validate_execution_configuration_usage(Transport, Install,
+                                       Environment, WorkingDirectory) :-
+    (   Environment == [], WorkingDirectory == inherit
+    ->  true
+    ;   Install \== none
+    ->  true
+    ;   Transport = stdio(_)
+    ->  true
+    ;   throw(mcp_lifecycle_fault(configuration_without_process_boundary))
+    ).
 
 /* -------------------------------------------------------------------------
  * Explicit install
@@ -190,57 +179,111 @@ rlm_install_mcp_server_execute(Name, Options, Outcome) :-
           lifecycle_exception(install, Name, Exception, Outcome)).
 
 rlm_install_mcp_server_(Name, Options, Outcome) :-
+    validate_install_call_options(Options),
     mcp_server_definition(Name, DefinitionOutcome),
     install_after_definition(DefinitionOutcome, Name, Options, Outcome).
 
 install_after_definition(error(Error), _, _, error(Error)) :- !.
 install_after_definition(ok(Spec), Name, Options, Outcome) :-
-    install_recipe_effect(Spec.install, Name, Options, Outcome).
+    install_recipe_effect(Spec, Name, Options, Outcome).
 
-install_recipe_effect(none, Name, _,
+install_recipe_effect(Spec, Name, _,
                       ok(mcp_install_result{server:Name,
-                                            status:not_required})) :- !.
-install_recipe_effect(Recipe, Name, Options, Outcome) :-
-    Recipe = process(Executable, Args, InstallOptions),
+                                            status:not_required})) :-
+    Spec.install == none,
+    !.
+install_recipe_effect(Spec, Name, Options, Outcome) :-
+    Recipe = Spec.install,
+    Recipe = package(Profile, Package, Version),
+    rlm_mcp_policy:mcp_install_preflight(Recipe,
+                                         Spec.environment,
+                                         Spec.working_directory,
+                                         PolicyDetails),
     authority_context(Name, Options, Context),
-    bounded_install_details(Executable, Args, InstallOptions, Details),
     Operation = authority_operation{name:mcp_install,
                                     effect:install,
                                     capability:mcp(Name),
                                     args:mcp_install_args{server:Name,
-                                                          executable:Executable,
-                                                          argv:Args},
-                                    details:Details},
-    Continuation = rlm_mcp_server:install_process_effect(
-                       Name, Executable, Args, InstallOptions),
+                                                          profile:Profile,
+                                                          package:Package,
+                                                          version:Version},
+                                    details:mcp_install_details{
+                                                policy:PolicyDetails}},
+    Continuation = rlm_mcp_server:install_package_effect(
+                       Name,
+                       Recipe,
+                       Spec.environment,
+                       Spec.working_directory),
     lifecycle_authorize(Context, Operation, Continuation, install, Name,
                         Outcome).
 
-bounded_install_details(Executable, Args, InstallOptions,
-                        mcp_install_details{executable:Executable,
-                                            argv:Args,
-                                            cwd:Cwd,
-                                            env_reference:EnvReference}) :-
-    ( memberchk(cwd(Cwd0), InstallOptions) -> Cwd = Cwd0 ; Cwd = none ),
-    ( memberchk(env(_), InstallOptions) -> EnvReference = supplied ; EnvReference = none ).
+install_package_effect(Name, Recipe, Environment, WorkingDirectory, Outcome) :-
+    rlm_mcp_policy:mcp_prepare_install(Recipe,
+                                       Environment,
+                                       WorkingDirectory,
+                                       Prepared),
+    run_installer_process(Name, Prepared, Outcome).
 
-install_process_effect(Name, Executable, Args, InstallOptions, Outcome) :-
-    process_create(path(Executable),
-                   Args,
-                   [process(Pid)|InstallOptions]),
-    process_wait(Pid, Status),
-    (   Status == exit(0)
-    ->  Outcome = ok(mcp_install_result{server:Name,
-                                        status:installed,
-                                        process_status:Status})
-    ;   Outcome = error(mcp_lifecycle_error{
-                            phase:install,
-                            kind:installer_failed,
-                            server:Name,
-                            process_status:Status,
-                            message:"MCP installer exited unsuccessfully"
-                        })
-    ).
+run_installer_process(Name, Prepared, Outcome) :-
+    prepared_executable(Prepared.executable, Executable),
+    installer_process_options(Prepared, Pid, ProcessOptions),
+    process_create(Executable, Prepared.argv, ProcessOptions),
+    wait_installer_process(Pid, Prepared.timeout, Status),
+    installer_status_outcome(Status, Name, Prepared, Outcome).
+
+installer_process_options(Prepared, Pid, Options) :-
+    Base = [process(Pid), stdout(null), stderr(null)],
+    environment_process_option(Prepared.environment, EnvironmentOptions),
+    cwd_process_option(Prepared.cwd, CwdOptions),
+    append([Base, EnvironmentOptions, CwdOptions], Options).
+
+environment_process_option([], []).
+environment_process_option(Environment, [environment(Environment)]) :-
+    Environment \== [].
+
+cwd_process_option(inherit, []).
+cwd_process_option(Cwd, [cwd(Cwd)]) :- Cwd \== inherit.
+
+wait_installer_process(Pid, Timeout, Status) :-
+    catch(call_with_time_limit(Timeout, process_wait(Pid, WaitStatus)),
+          Exception,
+          installer_wait_exception(Pid, Exception, WaitStatus)),
+    Status = WaitStatus.
+
+installer_wait_exception(Pid, time_limit_exceeded, timeout) :-
+    !,
+    terminate_and_reap(Pid).
+installer_wait_exception(Pid, Exception, _) :-
+    terminate_and_reap(Pid),
+    throw(Exception).
+
+terminate_and_reap(Pid) :-
+    catch(process_kill(Pid, term), _, true),
+    catch(process_wait(Pid, _), _, true).
+
+installer_status_outcome(exit(0), Name, Prepared,
+                         ok(mcp_install_result{
+                                server:Name,
+                                status:installed,
+                                process_status:exit(0),
+                                captured_output_bytes:0,
+                                output_limit_bytes:Prepared.max_output_bytes})) :-
+    !.
+installer_status_outcome(timeout, Name, _,
+                         error(mcp_lifecycle_error{
+                                   phase:install,
+                                   kind:installer_timeout,
+                                   server:Name,
+                                   message:"MCP installer exceeded its trusted profile time limit"
+                               })) :- !.
+installer_status_outcome(Status, Name, _,
+                         error(mcp_lifecycle_error{
+                                   phase:install,
+                                   kind:installer_failed,
+                                   server:Name,
+                                   process_status:Status,
+                                   message:"MCP installer exited unsuccessfully"
+                               })).
 
 /* -------------------------------------------------------------------------
  * Explicit run / stop / restart
@@ -278,7 +321,7 @@ run_after_definition(ok(Spec), Name, Options, Outcome) :-
     merge_runtime_options(Spec, Options, RuntimeOptions0),
     normalize_runtime_options(RuntimeOptions0, RuntimeOptions),
     authority_context(Name, Options, Context),
-    transport_authority(Spec.transport, Effect, Details),
+    transport_preflight(Spec, Effect, Details),
     Operation = authority_operation{name:mcp_run,
                                     effect:Effect,
                                     capability:mcp(Name),
@@ -288,9 +331,82 @@ run_after_definition(ok(Spec), Name, Options, Outcome) :-
                        Name, Spec, RuntimeOptions, Context),
     lifecycle_authorize(Context, Operation, Continuation, run, Name, Outcome).
 
+transport_preflight(Spec, service_start, Details) :-
+    Spec.transport = stdio(Recipe),
+    !,
+    rlm_mcp_policy:mcp_stdio_preflight(Recipe,
+                                       Spec.environment,
+                                       Spec.working_directory,
+                                       PolicyDetails),
+    stdio_recipe_metadata(Recipe, RecipeMetadata),
+    Details = mcp_transport_details{kind:stdio,
+                                    recipe:RecipeMetadata,
+                                    policy:PolicyDetails}.
+transport_preflight(Spec, read,
+                    mcp_transport_details{kind:fixture,
+                                          transport_kind:Kind}) :-
+    Spec.transport = fixture(Kind, _),
+    !.
+transport_preflight(Spec, read,
+                    mcp_transport_details{kind:streamable_http,
+                                          endpoint:redacted}) :-
+    Spec.transport = streamable_http(_),
+    !.
+transport_preflight(Spec, read,
+                    mcp_transport_details{kind:existing}) :-
+    Spec.transport = existing(_),
+    !.
+
+stdio_recipe_metadata(profile(Profile),
+                      mcp_stdio_recipe{kind:profile,
+                                       profile:Profile}).
+stdio_recipe_metadata(package(Profile, Package, Version),
+                      mcp_stdio_recipe{kind:package,
+                                       profile:Profile,
+                                       package:Package,
+                                       version:Version}).
+
 run_transport_effect(Name, Spec, RuntimeOptions, Context, Outcome) :-
-    rlm_mcp_transport:mcp_transport_open(Spec.transport,
-                                         RuntimeOptions,
+    prepare_transport_open(Spec,
+                           RuntimeOptions,
+                           TransportSpec,
+                           TransportOptions),
+    run_prepared_transport_effect(Name,
+                                  Spec,
+                                  TransportSpec,
+                                  TransportOptions,
+                                  Context,
+                                  Outcome).
+
+prepare_transport_open(Spec, RuntimeOptions,
+                       stdio(Executable, Args), TransportOptions) :-
+    Spec.transport = stdio(Recipe),
+    !,
+    rlm_mcp_policy:mcp_prepare_stdio(Recipe,
+                                     Spec.environment,
+                                     Spec.working_directory,
+                                     Prepared),
+    prepared_executable(Prepared.executable, Executable),
+    Args = Prepared.argv,
+    transport_process_options(Prepared, ProcessOptions),
+    append(RuntimeOptions, ProcessOptions, TransportOptions).
+prepare_transport_open(Spec, RuntimeOptions, Spec.transport, RuntimeOptions).
+
+transport_process_options(Prepared, Options) :-
+    (   Prepared.environment == []
+    ->  EnvironmentOptions = []
+    ;   EnvironmentOptions = [mcp_process_environment(Prepared.environment)]
+    ),
+    (   Prepared.cwd == inherit
+    ->  CwdOptions = []
+    ;   CwdOptions = [mcp_process_cwd(Prepared.cwd)]
+    ),
+    append(EnvironmentOptions, CwdOptions, Options).
+
+run_prepared_transport_effect(Name, Spec, TransportSpec, TransportOptions,
+                              Context, Outcome) :-
+    rlm_mcp_transport:mcp_transport_open(TransportSpec,
+                                         TransportOptions,
                                          TransportOutcome),
     run_after_transport(TransportOutcome, Name, Spec, Context, Outcome).
 
@@ -377,7 +493,7 @@ rlm_restart_mcp_server_(Handle, Options, Outcome) :-
     merge_runtime_options(Spec, Options, RuntimeOptions0),
     normalize_runtime_options(RuntimeOptions0, RuntimeOptions),
     restart_context(Handle, Options, Context),
-    restart_authority(Transport, Spec.transport, Effect, Details),
+    restart_authority(Transport, Spec, Effect, Details),
     Operation = authority_operation{name:mcp_restart,
                                     effect:Effect,
                                     capability:mcp(Server),
@@ -389,14 +505,29 @@ rlm_restart_mcp_server_(Handle, Options, Outcome) :-
                         Outcome).
 
 restart_transport_effect(Handle, Server, Spec, RuntimeOptions, Context, Outcome) :-
+    prepare_transport_open(Spec,
+                           RuntimeOptions,
+                           TransportSpec,
+                           TransportOptions),
     Transport = Handle.transport,
     rlm_mcp_transport:mcp_transport_stop(Transport, StopOutcome),
-    restart_after_stop(StopOutcome, Server, Spec, RuntimeOptions, Context,
+    restart_after_stop(StopOutcome,
+                       Server,
+                       Spec,
+                       TransportSpec,
+                       TransportOptions,
+                       Context,
                        Outcome).
 
-restart_after_stop(error(Error), _, _, _, _, error(Error)) :- !.
-restart_after_stop(ok(_), Server, Spec, RuntimeOptions, Context, Outcome) :-
-    run_transport_effect(Server, Spec, RuntimeOptions, Context, Outcome).
+restart_after_stop(error(Error), _, _, _, _, _, error(Error)) :- !.
+restart_after_stop(ok(_), Server, Spec, TransportSpec, TransportOptions,
+                   Context, Outcome) :-
+    run_prepared_transport_effect(Server,
+                                  Spec,
+                                  TransportSpec,
+                                  TransportOptions,
+                                  Context,
+                                  Outcome).
 
 /* -------------------------------------------------------------------------
  * Connection against a running transport
@@ -481,7 +612,7 @@ call_lifecycle_continuation(Permit, Context, Continuation, Outcome) :-
     complete_lifecycle_once(Permit, Context, Outcome).
 
 complete_lifecycle_exception(Permit, Context, Exception) :-
-    term_string(Exception, Safe, [quoted(true), numbervars(true)]),
+    safe_exception_summary(Exception, Safe),
     complete_lifecycle_once(Permit, Context,
                             error(mcp_lifecycle_execution_exception(Safe))).
 
@@ -519,19 +650,6 @@ lifecycle_handle_context(Handle, Context) :-
       Context = mcp(Server)
     ).
 
-transport_authority(stdio(Executable, Args), service_start,
-                    mcp_transport_details{kind:stdio,
-                                          executable:Executable,
-                                          argv:Args}) :- !.
-transport_authority(fixture(Kind, _), read,
-                    mcp_transport_details{kind:fixture,
-                                          transport_kind:Kind}) :- !.
-transport_authority(streamable_http(Endpoint), read,
-                    mcp_transport_details{kind:streamable_http,
-                                          endpoint:Endpoint}) :- !.
-transport_authority(existing(_), read,
-                    mcp_transport_details{kind:existing}) :- !.
-
 stop_authority(Transport, service_stop,
                mcp_transport_details{kind:stdio}) :-
     is_dict(Transport, mcp_transport),
@@ -539,15 +657,15 @@ stop_authority(Transport, service_stop,
     !.
 stop_authority(_, read, mcp_transport_details{kind:non_owned_process}).
 
-restart_authority(Transport, TransportSpec, service_start, Details) :-
+restart_authority(Transport, Spec, service_start, Details) :-
     ( is_dict(Transport, mcp_transport),
       get_dict(backend, Transport, stdio(_,_,_,_))
-    ; TransportSpec = stdio(_, _)
+    ; Spec.transport = stdio(_)
     ),
     !,
-    transport_authority(TransportSpec, service_start, Details).
-restart_authority(_, TransportSpec, read, Details) :-
-    transport_authority(TransportSpec, _, Details).
+    transport_preflight(Spec, service_start, Details).
+restart_authority(_, Spec, read, Details) :-
+    transport_preflight(Spec, _, Details).
 
 /* -------------------------------------------------------------------------
  * Validation and options
@@ -559,15 +677,15 @@ require_running_handle(Handle, Server, Transport) :-
     get_dict(server, Handle, Server),
     get_dict(transport, Handle, Transport),
     !.
-require_running_handle(Handle, _, _) :-
-    throw(mcp_lifecycle_fault(invalid_runtime_handle(Handle))).
+require_running_handle(_, _, _) :-
+    throw(mcp_lifecycle_fault(invalid_runtime_handle)).
 
 require_server_name(Name) :-
     atom(Name),
     Name \== '',
     !.
-require_server_name(Name) :-
-    throw(mcp_lifecycle_fault(invalid_server_name(Name))).
+require_server_name(_) :-
+    throw(mcp_lifecycle_fault(invalid_server_name)).
 
 require_spec_key(Spec, Key, Value) :-
     (   get_dict(Key, Spec, Value)
@@ -576,22 +694,29 @@ require_spec_key(Spec, Key, Value) :-
     ).
 
 require_ground(Value, _) :- ground(Value), !.
-require_ground(Value, Field) :-
-    throw(mcp_lifecycle_fault(nonground_field(Field, Value))).
+require_ground(_, Field) :-
+    throw(mcp_lifecycle_fault(nonground_field(Field))).
 
 require_capability_list(Value) :-
     is_list(Value),
     ground(Value),
     !.
-require_capability_list(Value) :-
-    throw(mcp_lifecycle_fault(invalid_capabilities(Value))).
+require_capability_list(_) :-
+    throw(mcp_lifecycle_fault(invalid_capabilities)).
 
-require_options(Value) :-
-    is_list(Value),
-    ground(Value),
+validate_install_call_options(Options) :-
+    is_list(Options),
+    ground(Options),
+    forall(member(Option, Options), valid_install_call_option(Option)),
     !.
-require_options(Value) :-
-    throw(mcp_lifecycle_fault(invalid_options(Value))).
+validate_install_call_options(_) :-
+    throw(mcp_lifecycle_fault(invalid_install_call_options)).
+
+valid_install_call_option(authority_context(Context)) :- ground(Context), !.
+valid_install_call_option(session_id(Session)) :- ground(Session), !.
+valid_install_call_option(trace_id(Trace)) :- ground(Trace), !.
+valid_install_call_option(_) :-
+    throw(mcp_lifecycle_fault(disallowed_install_call_option)).
 
 merge_runtime_options(Spec, Options, RuntimeOptions) :-
     ( get_dict(options, Spec, SpecOptions), is_list(SpecOptions)
@@ -600,7 +725,7 @@ merge_runtime_options(Spec, Options, RuntimeOptions) :-
     ( is_list(Options)
     -> exclude(lifecycle_only_option, Options, RuntimeUserOptions),
        append(RuntimeUserOptions, SpecOptions, RuntimeOptions)
-    ; throw(mcp_lifecycle_fault(invalid_options(Options))) ).
+    ; throw(mcp_lifecycle_fault(invalid_options)) ).
 
 lifecycle_only_option(authority_context(_)).
 lifecycle_only_option(session_id(_)).
@@ -612,12 +737,15 @@ normalize_runtime_options(Options, Normalized) :-
     forall(member(Option, Options), valid_runtime_option(Option)),
     !,
     Normalized = Options.
-normalize_runtime_options(Options, _) :-
-    throw(mcp_lifecycle_fault(invalid_runtime_options(Options))).
+normalize_runtime_options(_, _) :-
+    throw(mcp_lifecycle_fault(invalid_runtime_options)).
 
 valid_runtime_option(timeout(Value)) :- number(Value), Value > 0, !.
-valid_runtime_option(Option) :-
-    throw(mcp_lifecycle_fault(disallowed_runtime_option(Option))).
+valid_runtime_option(_) :-
+    throw(mcp_lifecycle_fault(disallowed_runtime_option)).
+
+prepared_executable(path(Name), path(Name)).
+prepared_executable(file(Path), Path).
 
 text_value(Value) :- atom(Value), !.
 text_value(Value) :- string(Value), !.
@@ -666,6 +794,13 @@ lifecycle_exception(_, _, Exception, _) :-
     lifecycle_control_exception(Exception),
     !,
     throw(Exception).
+lifecycle_exception(Phase, Server, mcp_policy_fault(Detail), error(Error)) :-
+    !,
+    Error = mcp_lifecycle_error{phase:Phase,
+                                kind:execution_policy_denied,
+                                server:Server,
+                                detail:Detail,
+                                message:"MCP lifecycle execution policy rejected the operation"}.
 lifecycle_exception(Phase, Server, mcp_lifecycle_fault(Detail), error(Error)) :-
     !,
     Error = mcp_lifecycle_error{phase:Phase,
@@ -674,12 +809,21 @@ lifecycle_exception(Phase, Server, mcp_lifecycle_fault(Detail), error(Error)) :-
                                 detail:Detail,
                                 message:"MCP lifecycle operation is invalid"}.
 lifecycle_exception(Phase, Server, Exception, error(Error)) :-
-    term_string(Exception, Safe, [quoted(true), numbervars(true)]),
+    safe_exception_summary(Exception, Safe),
     Error = mcp_lifecycle_error{phase:Phase,
                                 kind:lifecycle_exception,
                                 server:Server,
                                 exception:Safe,
                                 message:"MCP lifecycle operation raised an exception"}.
+
+safe_exception_summary(mcp_policy_fault(Detail), mcp_policy_fault(Detail)) :- !.
+safe_exception_summary(mcp_lifecycle_fault(Detail),
+                       mcp_lifecycle_fault(Detail)) :- !.
+safe_exception_summary(Exception, exception(Name, Arity)) :-
+    nonvar(Exception),
+    functor(Exception, Name, Arity),
+    !.
+safe_exception_summary(_, exception(unknown, 0)).
 
 lifecycle_control_exception(rlm_async_cancelled(_)).
 lifecycle_control_exception(rlm_cancelled(_)).
