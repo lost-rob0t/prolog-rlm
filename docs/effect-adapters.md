@@ -14,6 +14,31 @@ Adapters are static code-owned multifile hooks:
 
 They are deliberately not dynamic model-writable facts.
 
+## Canonical request contract
+
+The request passed to adapters is the canonical normalized executable request
+produced by `rlm_effect_prepare/4`, not the caller's pre-normalization term.
+The same canonical representation is persisted with the logical call and is
+used again for later reconciliation.
+
+Therefore, for one admitted attempt:
+
+```text
+caller request
+  -> normalize once for executable identity
+  -> ticket.request
+  -> submit/cancel adapter
+
+persisted call.request
+  -> reconciliation adapter
+```
+
+`ticket.request` and `call.request` are required to be identical canonical
+representations. Submit, cancellation, and reconciliation must not acquire
+separate interpretation contracts from superficial caller representation such
+as dict construction order. Normalization preserves semantics-bearing values;
+semantics-bearing options participate in the executable fingerprint.
+
 ## Outcomes
 
 Submit and reconciliation distinguish three cases:
