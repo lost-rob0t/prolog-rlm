@@ -28,6 +28,23 @@ Durable boundaries require ground, acyclic supported values. Dict key ordering
 is normalized before hashing. Non-ground, cyclic, and unsupported runtime values
 are rejected.
 
+### Raw ticket integrity
+
+`effect_ticket` values are constructor-produced execution records, not trusted
+merely because a caller supplies a dict with the right fields. Admission and
+pre-claim cancellation validate the complete ticket shape and recompute the
+identity-bearing relationships before the ticket may create an attempt.
+
+Validation covers the normalized request and semantics, executable fingerprint,
+logical call ID and logical key, retry/resample mode, parent attempt, sequence,
+attempt ID, and provider idempotency key. The recomputed call must also match an
+existing durable call record created by `rlm_effect_prepare/4`.
+
+A fabricated ticket with stale or altered request/semantics, fingerprint,
+attempt ID, lineage, or idempotency key therefore cannot manufacture trusted
+execution identity. Host authority remains a separate boundary; a valid ticket
+is not itself an authority grant.
+
 ## Lifecycle
 
 ```text
@@ -123,8 +140,20 @@ is authoritative lineage for #45 trajectory work.
 
 The default backend uses SWI-Prolog persistency with synchronous journal writes.
 Competing admission inside one Prolog runtime is serialized by the effect-state
-mutex. The file backend does not claim distributed consensus/CAS for multiple
-simultaneous process or host writers.
+mutex.
+
+This persistent backend enforces **one cooperating writer using local OS
+advisory locking** on a dedicated sidecar for the canonical store path. A second
+cooperating process opening the same store fails closed. Normal close releases
+the lock, and process death releases the OS-owned lock so a fresh process may
+attach and reconcile existing dispatched work.
+
+This backend does **not** provide:
+
+- distributed consensus;
+- arbitrary multi-host compare-and-swap;
+- universal exactly-once external execution;
+- safety on filesystems whose locking semantics do not support this contract.
 
 Pruning is explicit and refuses active, dispatching, cancellation-uncertain, or
 indeterminate attempts.
@@ -132,9 +161,12 @@ indeterminate attempts.
 Downstream applications such as media-gen should use this generic boundary
 rather than implement another once-only ledger. Domain job IDs remain useful,
 but they do not solve the narrower crash before the job ID/observation is saved.
+Canonical provider/tool/MCP/process adoption is a separate integration slice
+tracked by #79.
 
 The precise guarantee is:
 
 > `prolog-rlm` prevents implicit duplicate execution and provides durable
 > attempt/observation identity with explicit reconciliation for uncertain
-> external outcomes.
+> external outcomes **when externally effectful execution is routed through
+> this boundary**.
