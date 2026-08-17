@@ -18,10 +18,12 @@ The #54 direction remains:
   effect_execute_execute/6 -> rlm_async Future -> sync await wrapper
 
 The harness crosses the external boundary only after #57 has durably recorded
-`dispatching`.  Any ordinary adapter exception after that point is therefore
-preserved as an indeterminate remote outcome rather than being interpreted as
-permission to submit again.  Async cancellation remains a control signal and is
-re-thrown after the attempt lifecycle is updated conservatively.
+`dispatching`. Any ordinary adapter exception after that point is preserved as
+an indeterminate remote outcome rather than interpreted as permission to submit
+again. A provider may also report `in_progress(Detail)` when it positively knows
+the original operation is still running; that is not collapsed into unknown
+state. Async cancellation remains a control signal and is re-thrown after the
+attempt lifecycle is updated conservatively.
 */
 
 :- use_module(rlm_async, []).
@@ -34,16 +36,17 @@ re-thrown after the attempt lifecycle is updated conservatively.
 
 %! effect_adapter_submit(+Adapter,+Attempt,+NormalizedRequest,-Outcome)
 %
-%  Outcome is `observed(Observation)` or `indeterminate(Reason)`.
+%  Outcome is observed(Observation), in_progress(Detail), or
+%  indeterminate(Reason).
 
 %! effect_adapter_reconcile(+Adapter,+Attempt,+NormalizedRequest,-Outcome)
 %
-%  Optional read-only remote reconciliation hook.  No matching clause means
-%  reconciliation is unsupported.
+%  Optional read-only reconciliation hook with the same outcome protocol. No
+%  matching clause means reconciliation is unsupported.
 
 %! effect_adapter_cancel(+Adapter,+Attempt,+NormalizedRequest,-Outcome)
 %
-%  Optional cancellation hook.  Confirmed cancellation returns an observed
+%  Optional cancellation hook. Confirmed cancellation returns an observed
 %  cancellation; uncertain cancellation returns indeterminate(Reason).
 
 effect_execute_async(Adapter, Kind, Request, EffectOptions, AuthorityRef,
@@ -153,6 +156,12 @@ apply_adapter_outcome(Source, Attempt, observed(Observation0), Outcome) :-
     !,
     rlm_effect:rlm_effect_observe(Attempt.attempt_id, Observation0, Recorded),
     adapter_record_result(Source, Attempt, Recorded, Outcome).
+apply_adapter_outcome(Source, Attempt, in_progress(Detail),
+                      effect_result{state:in_progress,
+                                    source:Source,
+                                    attempt:Attempt,
+                                    detail:Detail}) :-
+    !.
 apply_adapter_outcome(_, Attempt, indeterminate(Reason),
                       effect_result{state:indeterminate,
                                     source:adapter,
@@ -241,6 +250,12 @@ apply_reconcile_outcome(Attempt, observed(Observation0),
     rlm_effect:rlm_effect_reconcile(Attempt.attempt_id, Observation0,
                                     Reconciled),
     reconciled_observation(Reconciled, Observation).
+apply_reconcile_outcome(Attempt, in_progress(Detail),
+                        effect_result{state:in_progress,
+                                      source:reconciliation,
+                                      attempt:Attempt,
+                                      detail:Detail}) :-
+    !.
 apply_reconcile_outcome(Attempt, indeterminate(Reason),
                         effect_result{state:indeterminate,
                                       source:reconciliation,
