@@ -307,10 +307,19 @@ adapter_identity_matches(Adapter, Attempt) :-
     Expected == Adapter.
 
 attempt_adapter_identity(Attempt, Adapter) :-
+    migrated_legacy_attempt(Attempt),
+    !,
+    rlm_effect_persist:effect_persist_legacy_adapter(Attempt.attempt_id,
+                                                     Adapter).
+attempt_adapter_identity(Attempt, Adapter) :-
     get_dict(executor_identity, Attempt.metadata, Identity),
     is_dict(Identity, executor_identity),
     get_dict(adapter, Identity, Adapter),
     atom(Adapter).
+
+migrated_legacy_attempt(Attempt) :-
+    rlm_effect_persist:effect_persist_migrated_legacy_attempt(
+        Attempt.attempt_id).
 
 attempt_adapter_identity_or_unknown(Attempt, Adapter) :-
     ( attempt_adapter_identity(Attempt, Found) -> Adapter = Found

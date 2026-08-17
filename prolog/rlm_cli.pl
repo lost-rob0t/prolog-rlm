@@ -15,6 +15,7 @@ context, agent, graph, MCP, or recursion runtimes.
 :- use_module(rlm_chain).
 :- use_module(rlm_completion).
 :- use_module(rlm_demo).
+:- use_module(rlm_effect_migration).
 :- use_module(rlm_trace).
 
 rlm_cli_ready.
@@ -88,6 +89,9 @@ cli_dispatch(['trace-view'|Rest], Session) :-
     parse_cli_options(Rest, Options, Positionals),
     single_positional(Positionals, trace_path, Path),
     trace_view_session(Path, Options, Session).
+cli_dispatch(['effect-store',migrate|Rest], Session) :-
+    !,
+    effect_store_migration_session(Rest, Session).
 cli_dispatch([Command|_], _) :-
     throw(cli_fault(unknown_command(Command))).
 
@@ -95,6 +99,51 @@ shortcut_demo(Name, Rest, Session) :-
     parse_cli_options(Rest, Options, Positionals),
     require_no_positionals(Positionals, Name),
     demo_session(Name, Options, Session).
+
+/* Offline effect-store migration -------------------------------------- */
+
+effect_store_migration_session(Args, Session) :-
+    parse_migration_cli_options(Args, MigrationOptions),
+    effect_store_migrate(MigrationOptions, Report),
+    migration_cli_status(Report.status, Status),
+    format(string(Summary), 'effect-store migration: ~w~n', [Report.status]),
+    default_cli_options(Output0),
+    put_dict(json, Output0, true, Output),
+    Session = cli_session{command:effect_store_migrate,
+                          status:Status,
+                          summary:Summary,
+                          payload:Report,
+                          output:Output}.
+
+migration_cli_status(migrated, pass) :- !.
+migration_cli_status(already_migrated, pass) :- !.
+migration_cli_status(_, fail).
+
+parse_migration_cli_options(Args, Options) :-
+    Defaults = migration_options{source:none,output:none,manifest:none,
+                                 backup:none,in_place:false},
+    parse_migration_options(Args, Defaults, Options).
+
+parse_migration_options([], Options, Options).
+parse_migration_options(['--source',Value|Rest], O0, O) :-
+    !, atom_arg(Value, Path), put_dict(source, O0, Path, O1),
+    parse_migration_options(Rest, O1, O).
+parse_migration_options(['--output',Value|Rest], O0, O) :-
+    !, atom_arg(Value, Path), put_dict(output, O0, Path, O1),
+    parse_migration_options(Rest, O1, O).
+parse_migration_options(['--manifest',Value|Rest], O0, O) :-
+    !, atom_arg(Value, Path), put_dict(manifest, O0, Path, O1),
+    parse_migration_options(Rest, O1, O).
+parse_migration_options(['--backup',Value|Rest], O0, O) :-
+    !, atom_arg(Value, Path), put_dict(backup, O0, Path, O1),
+    parse_migration_options(Rest, O1, O).
+parse_migration_options(['--in-place'|Rest], O0, O) :-
+    !, put_dict(in_place, O0, true, O1),
+    parse_migration_options(Rest, O1, O).
+parse_migration_options(['--json'|Rest], O0, O) :-
+    !, parse_migration_options(Rest, O0, O).
+parse_migration_options([Option|_], _, _) :-
+    throw(cli_fault(unknown_migration_option(Option))).
 
 /* Deterministic demos -------------------------------------------------- */
 
@@ -506,6 +555,8 @@ cli_usage(Usage) :-
         "  prolog-rlm rlm QUERY [--context TEXT|--context-file PATH] [provider options] [output options]",
         "  prolog-rlm agent|graph|mcp [output options]",
         "  prolog-rlm trace-view PATH [--trace-format json|jsonl]",
+        "  prolog-rlm effect-store migrate --source LEDGER --output LEDGER.v2 [--manifest FILE] [--json]",
+        "  prolog-rlm effect-store migrate --source LEDGER --in-place --backup LEDGER.bak [--manifest FILE] [--json]",
         "",
         "Provider options:",
         "  --model MODEL                 OpenRouter model; defaults to OPENROUTER_TEST_MODEL or openrouter/free",

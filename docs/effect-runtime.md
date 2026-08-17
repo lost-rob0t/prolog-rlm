@@ -8,6 +8,10 @@ fingerprint, admitted attempts, and immutable authoritative observations. It
 prevents implicit duplicate execution; it does not claim generic exactly-once
 execution across external protocols.
 
+Non-empty stores created before schema v2 require the explicit offline process
+in [effect-migration.md](effect-migration.md). Ordinary open continues to fail
+closed; it never assigns a namespace automatically.
+
 ## Identity
 
 - `store_id`: a durable random namespace created once for a new ledger and

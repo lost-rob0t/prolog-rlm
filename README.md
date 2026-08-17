@@ -65,6 +65,10 @@ swipl -q -s bin/prolog-rlm.pl -- graph --json
 swipl -q -s bin/prolog-rlm.pl -- mcp --json
 ```
 
+Legacy durable-effect journals are never upgraded implicitly. See
+`docs/effect-migration.md` for the offline locked migration command, strict
+adapter-binding manifest, backup/rollback workflow, and clone semantics.
+
 With an OpenRouter credential, run a direct completion:
 
 ```sh
