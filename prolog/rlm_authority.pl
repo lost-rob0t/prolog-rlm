@@ -38,9 +38,16 @@ children may only inherit the same or a stricter mode. There is deliberately no
 Human approval is unbounded wall-clock latency. approve_diff therefore creates
 in-process pending state backed by a deferred Future that is *not* queued on the
 shared rlm_async worker pool. Approval later schedules only the trusted exact
-continuation. Denial resolves without running the target. Edit supersedes the
-old approval ID and creates a new fingerprint and ID, so a stale proposal can
-never authorize edited work.
+continuation. A short private execution gate arms the scheduled task only after
+its Future is attached to authority state. Cancellation and execution then race
+one mutex-protected execution claim: cancellation before the claim means the
+continuation can never run; cancellation after the claim is best-effort async
+interruption of work that has already crossed the authoritative boundary.
+
+Terminal pending records are retained only as bounded sanitized history. Their
+trusted continuation/edit-validator state is dropped immediately, execution
+Futures are released after terminal transfer, and only the bounded public
+resolution Future remains queryable until that history entry is pruned.
 */
 
 :- use_module(library(crypto)).
@@ -51,8 +58,12 @@ never authorize edited work.
 :- dynamic authority_once/4.
 :- dynamic authority_pending/3.
 :- dynamic authority_pending_control/5.
+:- dynamic authority_pending_gate/2.
+:- dynamic authority_terminal_resolution/3.
 :- dynamic authority_sequence/2.
 :- dynamic authority_event/3.
+
+terminal_history_limit(64).
 
 /* Modes ----------------------------------------------------------------- */
 
@@ -392,9 +403,11 @@ rlm_pending_approvals(Context, Approvals) :-
     pairs_values(Pairs, Approvals).
 
 rlm_pending_resolution_async(ApprovalId, Future) :-
-    ( authority_pending_control(ApprovalId, _, _, Future, _)
-    -> true
-    ;  throw(error(existence_error(rlm_pending_operation, ApprovalId), _))
+    (   authority_pending_control(ApprovalId, _, _, Future, _)
+    ->  true
+    ;   authority_terminal_resolution(ApprovalId, _, Future)
+    ->  true
+    ;   throw(error(existence_error(rlm_pending_operation, ApprovalId), _))
     ).
 
 rlm_pending_resolution(ApprovalId, Outcome) :-
@@ -407,7 +420,7 @@ rlm_authority_events(Context, Events) :-
     keysort(Pairs0, Pairs),
     pairs_values(Pairs, Events).
 
-/* Approval -------------------------------------------------------------- */
+/* Approval and execution claim ----------------------------------------- */
 
 rlm_approve(ApprovalId, Outcome) :-
     catch(approve_(ApprovalId, Outcome),
@@ -415,14 +428,20 @@ rlm_approve(ApprovalId, Outcome) :-
           authority_exception(approve, Exception, Outcome)).
 
 approve_(ApprovalId, Outcome) :-
-    with_mutex(rlm_authority,
-               approve_transition_locked(ApprovalId, Transition,
-                                         Context, Record,
-                                         Continuation, ResolutionFuture)),
-    apply_approve_transition(Transition, ApprovalId, Context, Record,
-                             Continuation, ResolutionFuture, Outcome).
+    message_queue_create(Gate, [max_size(1)]),
+    catch(( with_mutex(rlm_authority,
+                       approve_transition_locked(ApprovalId, Gate,
+                                                 Transition, Context, Record,
+                                                 Continuation,
+                                                 ResolutionFuture)),
+            apply_approve_transition(Transition, ApprovalId, Context, Record,
+                                     Continuation, ResolutionFuture, Gate,
+                                     Outcome) ),
+          Exception,
+          ( safe_destroy_gate(Gate),
+            throw(Exception) )).
 
-approve_transition_locked(ApprovalId, schedule, Context, Approved,
+approve_transition_locked(ApprovalId, Gate, schedule, Context, Approved,
                           Continuation, ResolutionFuture) :-
     retract(authority_pending(ApprovalId, Context, Record)),
     Record.state == pending,
@@ -431,90 +450,267 @@ approve_transition_locked(ApprovalId, schedule, Context, Approved,
                               ResolutionFuture, none),
     put_dict(state, Record, approved, Approved),
     assertz(authority_pending(ApprovalId, Context, Approved)),
+    assertz(authority_pending_gate(ApprovalId, Gate)),
     event_locked(Context, approval_granted,
                  _{approval_id:ApprovalId,
                    fingerprint:Record.fingerprint}).
-approve_transition_locked(ApprovalId, not_pending(State), Context, Record,
+approve_transition_locked(ApprovalId, _, not_pending(State), Context, Record,
                           none, none) :-
     authority_pending(ApprovalId, Context, Record),
     !,
     State = Record.state.
-approve_transition_locked(ApprovalId, _, _, _, _, _) :-
+approve_transition_locked(ApprovalId, _, _, _, _, _, _) :-
     throw(authority_fault(unknown_approval(ApprovalId))).
 
-apply_approve_transition(not_pending(State), ApprovalId, _, Record, _, _,
+apply_approve_transition(not_pending(State), ApprovalId, _, Record, _, _, Gate,
                          error(authority_error{
                                    kind:approval_not_pending,
                                    approval_id:ApprovalId,
                                    state:State,
                                    fingerprint:Record.fingerprint,
                                    message:"approval is no longer pending"
-                               })) :- !.
+                               })) :-
+    !,
+    safe_destroy_gate(Gate).
 apply_approve_transition(schedule, ApprovalId, Context, Record,
-                         Continuation, ResolutionFuture, Outcome) :-
+                         Continuation, ResolutionFuture, Gate, Outcome) :-
     approval_execution_metadata(Record, Metadata),
     catch(rlm_async:rlm_async_submit(
-              rlm_authority:pending_execution(Continuation),
+              rlm_authority:pending_execution(
+                                ApprovalId, Context, Gate, Continuation),
               Metadata, ExecutionFuture),
           Exception,
           approval_schedule_failed(ApprovalId, Context, ResolutionFuture,
-                                   Exception, Outcome)),
+                                   Gate, none, Exception, Outcome)),
+    (   var(Outcome)
+    ->  catch(rlm_async:rlm_future_on_complete(
+                  ExecutionFuture,
+                  rlm_authority:pending_execution_complete(
+                                    ApprovalId, Context, ResolutionFuture,
+                                    ExecutionFuture, Gate)),
+              CallbackException,
+              approval_schedule_failed(ApprovalId, Context,
+                                       ResolutionFuture, Gate,
+                                       ExecutionFuture, CallbackException,
+                                       Outcome))
+    ;   true
+    ),
     (   var(Outcome)
     ->  with_mutex(rlm_authority,
-                   mark_execution_locked(ApprovalId, Context,
-                                         ExecutionFuture, Executing)),
-        rlm_async:rlm_future_on_complete(
-            ExecutionFuture,
-            rlm_authority:pending_execution_complete(
-                              ApprovalId, Context, ResolutionFuture)),
-        Outcome = ok(approval_transition{id:ApprovalId,
-                                         state:executing,
-                                         fingerprint:Record.fingerprint,
-                                         approval:Executing})
+                   arm_execution_locked(ApprovalId, Context, ExecutionFuture,
+                                        Arm)),
+        apply_arm_execution(Arm, ApprovalId, Context, Record,
+                            ResolutionFuture, ExecutionFuture, Gate, Outcome)
     ;   true
     ).
 
-pending_execution(Continuation, Outcome) :- call(Continuation, Outcome).
-
-mark_execution_locked(ApprovalId, Context, Future, Executing) :-
+arm_execution_locked(ApprovalId, Context, Future, armed(Scheduled)) :-
     retract(authority_pending(ApprovalId, Context, Record)),
     Record.state == approved,
-    put_dict(_{state:executing, execution_future:Future}, Record, Executing),
-    assertz(authority_pending(ApprovalId, Context, Executing)),
+    authority_pending_gate(ApprovalId, _),
     retract(authority_pending_control(ApprovalId, Continuation, Validator,
                                       Resolution, none)),
+    !,
+    put_dict(state, Record, scheduled, Scheduled),
+    assertz(authority_pending(ApprovalId, Context, Scheduled)),
     assertz(authority_pending_control(ApprovalId, Continuation, Validator,
-                                      Resolution, Future)).
+                                      Resolution, Future)),
+    event_locked(Context, approval_scheduled,
+                 _{approval_id:ApprovalId,
+                   fingerprint:Record.fingerprint}).
+arm_execution_locked(ApprovalId, Context, _, abandoned(State, Record)) :-
+    authority_pending(ApprovalId, Context, Record),
+    !,
+    State = Record.state.
+arm_execution_locked(ApprovalId, _, _, missing(ApprovalId)).
 
-pending_execution_complete(ApprovalId, Context, ResolutionFuture, Result) :-
-    with_mutex(rlm_authority,
-               resolve_record_locked(ApprovalId, Context, Result)),
-    catch(rlm_async:rlm_future_resolve(ResolutionFuture, Result), _, true).
+apply_arm_execution(armed(Scheduled), ApprovalId, Context, Record, Resolution,
+                    Future, Gate, Outcome) :-
+    (   safe_signal_gate(Gate, start)
+    ->  Outcome = ok(approval_transition{id:ApprovalId,
+                                         state:scheduled,
+                                         fingerprint:Record.fingerprint,
+                                         approval:Scheduled})
+    ;   approval_schedule_failed(
+            ApprovalId, Context, Resolution, Gate, Future,
+            error(resource_error(approval_execution_gate),
+                  context(rlm_approve/2,
+                          'could not arm approved execution')),
+            Outcome)
+    ).
+apply_arm_execution(abandoned(State, Record), ApprovalId, _, _, _, Future,
+                    Gate,
+                    error(authority_error{
+                              kind:approval_not_pending,
+                              approval_id:ApprovalId,
+                              state:State,
+                              fingerprint:Record.fingerprint,
+                              message:"approval was cancelled before execution was armed"
+                          })) :-
+    safe_signal_gate(Gate, cancel),
+    catch(rlm_async:rlm_future_cancel(Future, _), _, true),
+    catch(rlm_async:rlm_future_destroy(Future), _, true),
+    safe_destroy_gate(Gate).
+apply_arm_execution(missing(ApprovalId), _, _, _, _, Future, Gate,
+                    error(authority_error{
+                              kind:approval_not_pending,
+                              approval_id:ApprovalId,
+                              message:"approval disappeared before execution was armed"
+                          })) :-
+    safe_signal_gate(Gate, cancel),
+    catch(rlm_async:rlm_future_cancel(Future, _), _, true),
+    catch(rlm_async:rlm_future_destroy(Future), _, true),
+    safe_destroy_gate(Gate).
 
-resolve_record_locked(ApprovalId, Context, Result) :-
-    (   retract(authority_pending(ApprovalId, Context, Record))
-    ->  sanitize_value(Result, PublicResult),
-        put_dict(_{state:resolved, resolution:PublicResult},
-                 Record, Resolved),
-        assertz(authority_pending(ApprovalId, Context, Resolved)),
-        event_locked(Context, approval_resolved,
-                     _{approval_id:ApprovalId,
-                       fingerprint:Record.fingerprint,
-                       outcome:PublicResult})
-    ;   true
+pending_execution(ApprovalId, Context, Gate, Continuation, Outcome) :-
+    setup_call_cleanup(
+        true,
+        pending_execution_wait(ApprovalId, Context, Gate, Continuation,
+                               Outcome),
+        safe_destroy_gate(Gate)).
+
+pending_execution_wait(ApprovalId, Context, Gate, Continuation, Outcome) :-
+    catch(thread_get_message(Gate, Signal), _, Signal = cancel),
+    (   Signal == start
+    ->  with_mutex(rlm_authority,
+                   execution_claim_locked(ApprovalId, Context, Claim)),
+        apply_execution_claim(Claim, ApprovalId, Continuation, Outcome)
+    ;   cancelled_before_claim_outcome(ApprovalId, Outcome)
     ).
 
-approval_schedule_failed(ApprovalId, Context, ResolutionFuture,
-                         Exception, Outcome) :-
+execution_claim_locked(ApprovalId, Context, execute(Executing)) :-
+    retract(authority_pending(ApprovalId, Context, Record)),
+    Record.state == scheduled,
+    !,
+    put_dict(state, Record, executing, Executing),
+    assertz(authority_pending(ApprovalId, Context, Executing)),
+    event_locked(Context, approval_execution_claimed,
+                 _{approval_id:ApprovalId,
+                   fingerprint:Record.fingerprint}).
+execution_claim_locked(ApprovalId, Context, denied(State)) :-
+    authority_pending(ApprovalId, Context, Record),
+    !,
+    State = Record.state.
+execution_claim_locked(_, _, denied(missing)).
+
+apply_execution_claim(execute(_), _, Continuation, Outcome) :-
+    call(Continuation, Outcome).
+apply_execution_claim(denied(_), ApprovalId, _, Outcome) :-
+    cancelled_before_claim_outcome(ApprovalId, Outcome).
+
+cancelled_before_claim_outcome(
+    ApprovalId,
+    error(authority_error{kind:cancelled_before_execution_claim,
+                          approval_id:ApprovalId,
+                          message:"approval owner cancelled before execution claim"})).
+
+pending_execution_complete(ApprovalId, Context, ResolutionFuture,
+                           ExecutionFuture, Gate, Result) :-
+    with_mutex(rlm_authority,
+               execution_complete_locked(ApprovalId, Context, Result,
+                                         Completion, PrunedFutures)),
+    apply_execution_completion(Completion, ResolutionFuture, Result),
+    safe_destroy_gate(Gate),
+    catch(rlm_async:rlm_future_destroy(ExecutionFuture), _, true),
+    destroy_futures(PrunedFutures).
+
+execution_complete_locked(ApprovalId, Context, Result,
+                          resolve, PrunedFutures) :-
+    retract(authority_pending(ApprovalId, Context, Record)),
+    memberchk(Record.state, [scheduled, executing, cancelling]),
+    !,
+    retract_control_locked(ApprovalId, ResolutionFuture, _Execution),
+    retractall(authority_pending_gate(ApprovalId, _)),
+    sanitize_value(Result, PublicResult),
+    completion_terminal_state(Record.state, Result, TerminalState),
+    get_time(ResolvedAt),
+    put_dict(_{state:TerminalState,
+               resolution:PublicResult,
+               resolved_at:ResolvedAt},
+             Record, Resolved),
+    assertz(authority_pending(ApprovalId, Context, Resolved)),
+    assertz(authority_terminal_resolution(ApprovalId, Context,
+                                          ResolutionFuture)),
+    terminal_event_type(TerminalState, EventType),
+    event_locked(Context, EventType,
+                 _{approval_id:ApprovalId,
+                   fingerprint:Record.fingerprint,
+                   outcome:PublicResult}),
+    prune_terminal_locked(Context, PrunedFutures).
+execution_complete_locked(ApprovalId, Context, _, ignore, []) :-
+    authority_pending(ApprovalId, Context, Record),
+    terminal_state(Record.state),
+    !.
+execution_complete_locked(_, _, _, ignore, []).
+
+completion_terminal_state(cancelling, _, cancelled) :- !.
+completion_terminal_state(_, Result, cancelled) :-
+    result_is_cancelled(Result),
+    !.
+completion_terminal_state(_, _, resolved).
+
+result_is_cancelled(error(Error)) :-
+    is_dict(Error),
+    get_dict(kind, Error, cancelled),
+    !.
+result_is_cancelled(error(Error)) :-
+    is_dict(Error),
+    get_dict(kind, Error, exception),
+    get_dict(exception, Error, Safe),
+    sub_string(Safe, _, _, _, "rlm_async_cancelled"),
+    !.
+
+terminal_event_type(cancelled, approval_cancelled) :- !.
+terminal_event_type(_, approval_resolved).
+
+apply_execution_completion(resolve, ResolutionFuture, Result) :-
+    catch(rlm_async:rlm_future_resolve(ResolutionFuture, Result), _, true).
+apply_execution_completion(ignore, _, _).
+
+approval_schedule_failed(ApprovalId, Context, ResolutionFuture, Gate,
+                         ExecutionFuture, Exception, Outcome) :-
     safe_exception(Exception, Safe),
     Error = authority_error{kind:resume_schedule_failed,
                             approval_id:ApprovalId,
                             exception:Safe,
                             message:"approved operation could not be scheduled"},
     with_mutex(rlm_authority,
-               resolve_record_locked(ApprovalId, Context, error(Error))),
-    catch(rlm_async:rlm_future_resolve(ResolutionFuture, error(Error)), _, true),
+               schedule_failure_locked(ApprovalId, Context, Error,
+                                       ResolutionFuture, Transition,
+                                       PrunedFutures)),
+    apply_schedule_failure(Transition, ResolutionFuture, Error),
+    maybe_cancel_destroy_future(ExecutionFuture),
+    safe_signal_gate(Gate, cancel),
+    safe_destroy_gate(Gate),
+    destroy_futures(PrunedFutures),
     Outcome = error(Error).
+
+schedule_failure_locked(ApprovalId, Context, Error, ResolutionFuture,
+                        resolve, PrunedFutures) :-
+    retract(authority_pending(ApprovalId, Context, Record)),
+    memberchk(Record.state, [approved, scheduled]),
+    !,
+    retractall(authority_pending_gate(ApprovalId, _)),
+    retract_control_locked(ApprovalId, StoredResolution, _),
+    StoredResolution = ResolutionFuture,
+    sanitize_value(error(Error), PublicResult),
+    get_time(ResolvedAt),
+    put_dict(_{state:resolved,
+               resolution:PublicResult,
+               resolved_at:ResolvedAt},
+             Record, Resolved),
+    assertz(authority_pending(ApprovalId, Context, Resolved)),
+    assertz(authority_terminal_resolution(ApprovalId, Context,
+                                          ResolutionFuture)),
+    event_locked(Context, approval_schedule_failed,
+                 _{approval_id:ApprovalId,
+                   fingerprint:Record.fingerprint}),
+    prune_terminal_locked(Context, PrunedFutures).
+schedule_failure_locked(_, _, _, _, ignore, []).
+
+apply_schedule_failure(resolve, ResolutionFuture, Error) :-
+    catch(rlm_async:rlm_future_resolve(ResolutionFuture, error(Error)), _, true).
+apply_schedule_failure(ignore, _, _).
 
 approval_execution_metadata(Record,
                             async_metadata{operation:authority_resume,
@@ -533,27 +729,37 @@ deny_(ApprovalId, Reason, Outcome) :-
     require_ground(Reason, denial_reason),
     with_mutex(rlm_authority,
                deny_transition_locked(ApprovalId, Reason, Transition,
-                                      Record, ResolutionFuture)),
+                                      Record, ResolutionFuture,
+                                      PrunedFutures)),
     apply_deny_transition(Transition, ApprovalId, Reason,
-                          Record, ResolutionFuture, Outcome).
+                          Record, ResolutionFuture, Outcome),
+    destroy_futures(PrunedFutures).
 
 deny_transition_locked(ApprovalId, Reason, deny, Denied,
-                       ResolutionFuture) :-
+                       ResolutionFuture, PrunedFutures) :-
     retract(authority_pending(ApprovalId, Context, Record)),
     Record.state == pending,
     !,
-    authority_pending_control(ApprovalId, _, _, ResolutionFuture, none),
-    put_dict(_{state:denied, denial_reason:Reason}, Record, Denied),
+    retract_control_locked(ApprovalId, ResolutionFuture, _),
+    retractall(authority_pending_gate(ApprovalId, _)),
+    get_time(ResolvedAt),
+    put_dict(_{state:denied,
+               denial_reason:Reason,
+               resolved_at:ResolvedAt},
+             Record, Denied),
     assertz(authority_pending(ApprovalId, Context, Denied)),
+    assertz(authority_terminal_resolution(ApprovalId, Context,
+                                          ResolutionFuture)),
     event_locked(Context, approval_denied,
                  _{approval_id:ApprovalId,
                    fingerprint:Record.fingerprint,
-                   reason:Reason}).
-deny_transition_locked(ApprovalId, _, not_pending(State), Record, none) :-
+                   reason:Reason}),
+    prune_terminal_locked(Context, PrunedFutures).
+deny_transition_locked(ApprovalId, _, not_pending(State), Record, none, []) :-
     authority_pending(ApprovalId, _, Record),
     !,
     State = Record.state.
-deny_transition_locked(ApprovalId, _, _, _, _) :-
+deny_transition_locked(ApprovalId, _, _, _, _, _) :-
     throw(authority_fault(unknown_approval(ApprovalId))).
 
 apply_deny_transition(not_pending(State), ApprovalId, _, Record, _,
@@ -601,7 +807,7 @@ edit_(ApprovalId, EditedOperation0, Outcome) :-
                                             NewFingerprint,
                                             NewContinuation, Validator,
                                             OldResolution, NewResolution,
-                                            NewRecord)),
+                                            NewRecord, PrunedFutures)),
           Exception,
           ( catch(rlm_async:rlm_future_destroy(NewResolution), _, true),
             throw(Exception)
@@ -614,6 +820,7 @@ edit_(ApprovalId, EditedOperation0, Outcome) :-
                                         old_fingerprint:Record.fingerprint,
                                         fingerprint:NewFingerprint})),
           _, true),
+    destroy_futures(PrunedFutures),
     Outcome = ok(authority_edit{old_id:ApprovalId,
                                 id:NewId,
                                 old_fingerprint:Record.fingerprint,
@@ -632,19 +839,25 @@ editable_snapshot(ApprovalId, Context, Record, Validator, Resolution) :-
 
 edit_transition_locked(ApprovalId, Context, ExpectedFingerprint,
                        Operation, NewFingerprint, NewContinuation, Validator,
-                       OldResolution, NewResolution, NewRecord) :-
+                       OldResolution, NewResolution, NewRecord,
+                       PrunedFutures) :-
     retract(authority_pending(ApprovalId, Context, Current)),
     Current.state == pending,
     Current.fingerprint == ExpectedFingerprint,
     !,
+    retract_control_locked(ApprovalId, StoredOldResolution, _),
+    StoredOldResolution = OldResolution,
+    retractall(authority_pending_gate(ApprovalId, _)),
     gensym(approval_, NewId),
     get_time(CreatedAt),
-    put_dict(_{state:superseded, superseded_by:NewId},
+    get_time(ResolvedAt),
+    put_dict(_{state:superseded,
+               superseded_by:NewId,
+               resolved_at:ResolvedAt},
              Current, Superseded),
     assertz(authority_pending(ApprovalId, Context, Superseded)),
-    retractall(authority_pending_control(ApprovalId, _, _, _, _)),
-    assertz(authority_pending_control(ApprovalId, none, none,
-                                      OldResolution, none)),
+    assertz(authority_terminal_resolution(ApprovalId, Context,
+                                          OldResolution)),
     sanitize_value(Operation, PublicOperation),
     pending_correlation(Operation, Correlation),
     NewRecord = pending_operation{id:NewId,
@@ -666,70 +879,152 @@ edit_transition_locked(ApprovalId, Context, ExpectedFingerprint,
                  _{approval_id:ApprovalId,
                    new_approval_id:NewId,
                    old_fingerprint:ExpectedFingerprint,
-                   fingerprint:NewFingerprint}).
-edit_transition_locked(ApprovalId, _, _, _, _, _, _, _, _, _) :-
+                   fingerprint:NewFingerprint}),
+    prune_terminal_locked(Context, PrunedFutures).
+edit_transition_locked(ApprovalId, _, _, _, _, _, _, _, _, _, _) :-
     throw(authority_fault(stale_edit(ApprovalId))).
 
 /* Ownership, cancellation and teardown -------------------------------- */
 
 rlm_pending_cancel_owner(Context, Reason) :-
     require_context(Context),
-    findall(Id-State,
-            ( authority_pending(Id, Context, Record),
-              State = Record.state,
-              memberchk(State, [pending, approved, executing])
-            ),
-            Owned),
+    with_mutex(rlm_authority,
+               findall(Id-State,
+                       ( authority_pending(Id, Context, Record),
+                         State = Record.state,
+                         active_pending_state(State) ),
+                       Owned)),
     maplist(cancel_owned(Reason), Owned).
+
+active_pending_state(pending).
+active_pending_state(approved).
+active_pending_state(scheduled).
+active_pending_state(executing).
+active_pending_state(cancelling).
 
 cancel_owned(Reason, ApprovalId-pending) :-
     !,
     rlm_deny(ApprovalId, cancelled(Reason), _).
-cancel_owned(_, ApprovalId-State) :-
-    memberchk(State, [approved, executing]),
+cancel_owned(Reason, ApprovalId-_) :-
+    cancel_nonpending_owned(ApprovalId, Reason).
+
+cancel_nonpending_owned(ApprovalId, Reason) :-
+    with_mutex(rlm_authority,
+               cancel_transition_locked(ApprovalId, Reason, Transition)),
+    apply_cancel_owned_transition(Transition, ApprovalId, Reason).
+
+cancel_transition_locked(ApprovalId, Reason,
+                         preclaim(Context, Record, ResolutionFuture,
+                                  ExecutionFuture, Gate, PrunedFutures)) :-
+    retract(authority_pending(ApprovalId, Context, Record0)),
+    memberchk(Record0.state, [approved, scheduled]),
     !,
-    (   authority_pending_control(ApprovalId, _, _, Resolution, Future),
-        Future \== none
-    ->  catch(rlm_async:rlm_future_cancel(Future, _), _, true),
-        catch(rlm_async:rlm_future_resolve(
-                  Resolution,
-                  error(authority_error{kind:cancelled,
-                                        approval_id:ApprovalId,
-                                        message:"owned pending operation was cancelled"})),
-              _, true)
-    ;   true
-    ).
-cancel_owned(_, _).
+    retract_control_locked(ApprovalId, ResolutionFuture, ExecutionFuture),
+    take_gate_locked(ApprovalId, Gate),
+    get_time(ResolvedAt),
+    put_dict(_{state:cancelled,
+               cancellation_reason:Reason,
+               resolved_at:ResolvedAt},
+             Record0, Record),
+    assertz(authority_pending(ApprovalId, Context, Record)),
+    assertz(authority_terminal_resolution(ApprovalId, Context,
+                                          ResolutionFuture)),
+    event_locked(Context, approval_cancelled,
+                 _{approval_id:ApprovalId,
+                   fingerprint:Record0.fingerprint,
+                   reason:Reason,
+                   before_execution_claim:true}),
+    prune_terminal_locked(Context, PrunedFutures).
+cancel_transition_locked(ApprovalId, Reason,
+                         inflight(Context, Record, ExecutionFuture)) :-
+    retract(authority_pending(ApprovalId, Context, Record0)),
+    Record0.state == executing,
+    !,
+    authority_pending_control(ApprovalId, _, _, _, ExecutionFuture),
+    put_dict(_{state:cancelling,
+               cancellation_reason:Reason},
+             Record0, Record),
+    assertz(authority_pending(ApprovalId, Context, Record)),
+    event_locked(Context, approval_cancellation_requested,
+                 _{approval_id:ApprovalId,
+                   fingerprint:Record0.fingerprint,
+                   reason:Reason,
+                   after_execution_claim:true}).
+cancel_transition_locked(ApprovalId, _, already(State)) :-
+    authority_pending(ApprovalId, _, Record),
+    !,
+    State = Record.state.
+cancel_transition_locked(ApprovalId, _, missing(ApprovalId)).
+
+apply_cancel_owned_transition(
+    preclaim(_, Record, ResolutionFuture, ExecutionFuture, Gate,
+             PrunedFutures),
+    ApprovalId, Reason) :-
+    safe_signal_gate(Gate, cancel),
+    maybe_cancel_future(ExecutionFuture),
+    catch(rlm_async:rlm_future_resolve(
+              ResolutionFuture,
+              error(authority_error{kind:cancelled,
+                                    approval_id:ApprovalId,
+                                    fingerprint:Record.fingerprint,
+                                    reason:Reason,
+                                    before_execution_claim:true,
+                                    message:"owned approval was cancelled before execution claim"})),
+          _, true),
+    safe_destroy_gate(Gate),
+    destroy_futures(PrunedFutures).
+apply_cancel_owned_transition(inflight(_, _, ExecutionFuture), _, _) :-
+    maybe_cancel_future(ExecutionFuture).
+apply_cancel_owned_transition(already(_), _, _).
+apply_cancel_owned_transition(missing(_), _, _).
 
 rlm_authority_clear(Context) :-
     require_context(Context),
-    findall(Id-control(Resolution, Execution),
-            ( authority_pending(Id, Context, _),
-              authority_pending_control(Id, _, _, Resolution, Execution)
-            ),
-            Controls),
     rlm_pending_cancel_owner(Context, authority_context_destroyed),
     with_mutex(rlm_authority,
-               clear_context_locked(Context)),
-    maplist(destroy_control, Controls).
+               clear_context_locked(Context, Resources)),
+    destroy_context_resources(Resources).
 
-clear_context_locked(Context) :-
+clear_context_locked(Context,
+                     resources(ResolutionFutures, ExecutionFutures, Gates)) :-
+    findall(Resolution-Execution,
+            ( authority_pending(Id, Context, _),
+              authority_pending_control(Id, _, _, Resolution, Execution) ),
+            Controls),
+    control_futures(Controls, ActiveResolutions, ExecutionFutures0),
+    findall(Resolution,
+            authority_terminal_resolution(_, Context, Resolution),
+            TerminalResolutions),
+    append(ActiveResolutions, TerminalResolutions, ResolutionFutures0),
+    sort(ResolutionFutures0, ResolutionFutures),
+    exclude(==(none), ExecutionFutures0, ExecutionFutures1),
+    sort(ExecutionFutures1, ExecutionFutures),
+    findall(Gate,
+            ( authority_pending(Id, Context, _),
+              authority_pending_gate(Id, Gate) ),
+            Gates0),
+    sort(Gates0, Gates),
     findall(Id, authority_pending(Id, Context, _), Ids),
     retractall(authority_mode(Context, _)),
     retractall(authority_once(Context, _, _, _)),
     forall(member(Id, Ids),
            ( retractall(authority_pending(Id, Context, _)),
-             retractall(authority_pending_control(Id, _, _, _, _)) )),
+             retractall(authority_pending_control(Id, _, _, _, _)),
+             retractall(authority_pending_gate(Id, _)),
+             retractall(authority_terminal_resolution(Id, Context, _)) )),
     retractall(authority_sequence(Context, _)),
     retractall(authority_event(Context, _, _)).
 
-destroy_control(_-control(Resolution, Execution)) :-
-    (   Execution \== none
-    ->  catch(rlm_async:rlm_future_cancel(Execution, _), _, true),
-        catch(rlm_async:rlm_future_destroy(Execution), _, true)
-    ;   true
-    ),
-    catch(rlm_async:rlm_future_destroy(Resolution), _, true).
+control_futures([], [], []).
+control_futures([Resolution-Execution|Controls],
+                [Resolution|Resolutions], [Execution|Executions]) :-
+    control_futures(Controls, Resolutions, Executions).
+
+destroy_context_resources(resources(ResolutionFutures, ExecutionFutures,
+                                    Gates)) :-
+    maplist(maybe_cancel_destroy_future, ExecutionFutures),
+    destroy_futures(ResolutionFutures),
+    maplist(safe_destroy_gate, Gates).
 
 rlm_authority_clear_runtime(Runtime) :-
     require_context(Runtime),
@@ -744,11 +1039,87 @@ runtime_context(Runtime, Context) :-
     authority_once(Context, _, _, _), context_owned_by(Runtime, Context).
 runtime_context(Runtime, Context) :-
     authority_pending(_, Context, _), context_owned_by(Runtime, Context).
+runtime_context(Runtime, Context) :-
+    authority_terminal_resolution(_, Context, _),
+    context_owned_by(Runtime, Context).
 
 context_owned_by(Runtime, agent(Runtime, _)).
 context_owned_by(Runtime, graph(Runtime, _, _)).
 context_owned_by(Runtime, session(Runtime)).
 context_owned_by(Runtime, runtime(Runtime)).
+
+/* Bounded terminal retention ------------------------------------------- */
+
+terminal_state(resolved).
+terminal_state(denied).
+terminal_state(superseded).
+terminal_state(cancelled).
+
+prune_terminal_locked(Context, Futures) :-
+    terminal_history_limit(Limit),
+    findall(CreatedAt-Id,
+            ( authority_pending(Id, Context, Record),
+              terminal_state(Record.state),
+              CreatedAt = Record.created_at ),
+            TerminalPairs0),
+    keysort(TerminalPairs0, TerminalPairs),
+    length(TerminalPairs, Count),
+    Excess is max(0, Count-Limit),
+    take_prefix(Excess, TerminalPairs, ToPrune),
+    maplist(prune_terminal_one_locked(Context), ToPrune, Futures0),
+    exclude(==(none), Futures0, Futures).
+
+prune_terminal_one_locked(Context, _-ApprovalId, Future) :-
+    retractall(authority_pending(ApprovalId, Context, _)),
+    retractall(authority_pending_control(ApprovalId, _, _, _, _)),
+    retractall(authority_pending_gate(ApprovalId, _)),
+    (   retract(authority_terminal_resolution(ApprovalId, Context, Found))
+    ->  Future = Found
+    ;   Future = none
+    ).
+
+take_prefix(0, _, []) :- !.
+take_prefix(_, [], []) :- !.
+take_prefix(Count, [Item|Items], [Item|Prefix]) :-
+    Count > 0,
+    Next is Count-1,
+    take_prefix(Next, Items, Prefix).
+
+retract_control_locked(ApprovalId, ResolutionFuture, ExecutionFuture) :-
+    (   retract(authority_pending_control(ApprovalId, _, _,
+                                          ResolutionFuture,
+                                          ExecutionFuture))
+    ->  true
+    ;   ResolutionFuture = none,
+        ExecutionFuture = none
+    ).
+
+take_gate_locked(ApprovalId, Gate) :-
+    ( retract(authority_pending_gate(ApprovalId, Found))
+    -> Gate = Found
+    ;  Gate = none ).
+
+maybe_cancel_future(none) :- !.
+maybe_cancel_future(Future) :-
+    catch(rlm_async:rlm_future_cancel(Future, _), _, true).
+
+maybe_cancel_destroy_future(none) :- !.
+maybe_cancel_destroy_future(Future) :-
+    catch(rlm_async:rlm_future_cancel(Future, _), _, true),
+    catch(rlm_async:rlm_future_destroy(Future), _, true).
+
+destroy_futures([]).
+destroy_futures([Future|Futures]) :-
+    catch(rlm_async:rlm_future_destroy(Future), _, true),
+    destroy_futures(Futures).
+
+safe_signal_gate(none, _) :- !, fail.
+safe_signal_gate(Gate, Signal) :-
+    catch(thread_send_message(Gate, Signal, [timeout(0)]), _, fail).
+
+safe_destroy_gate(none) :- !.
+safe_destroy_gate(Gate) :-
+    catch(message_queue_destroy(Gate), _, true).
 
 /* Public record sanitization ------------------------------------------- */
 
