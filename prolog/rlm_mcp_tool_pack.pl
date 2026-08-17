@@ -12,6 +12,11 @@ capabilities needed to invoke the registered discovery tools.
 Remote tool import remains an explicit host action through `rlm_mcp_tool` after
 a server has been explicitly started/connected. Lifecycle mutation remains in
 `rlm_mcp_server` and therefore keeps the shared authority boundary.
+
+Inspection deliberately omits transport/install argument values, HTTP endpoint
+text and raw runtime options. Existing declarations predate first-class secret
+references and may contain inline sensitive values. Until #52 removes that
+representation, loader-facing discovery exposes only execution-shape metadata.
 */
 
 :- use_module(rlm_mcp_server).
@@ -105,18 +110,19 @@ sanitize_server_definition(Spec,
                                            transport:Transport,
                                            install:Install,
                                            version:Spec.version,
-                                           capabilities:Spec.capabilities,
-                                           options:Spec.options}) :-
+                                           capabilities:Spec.capabilities}) :-
     sanitize_transport(Spec.transport, Transport),
     sanitize_install(Spec.install, Install).
 
 sanitize_transport(stdio(Executable, Args),
                    mcp_transport_info{kind:stdio,
                                       executable:Executable,
-                                      argv:Args}) :- !.
-sanitize_transport(streamable_http(Endpoint),
+                                      argv_count:ArgCount}) :-
+    !,
+    length(Args, ArgCount).
+sanitize_transport(streamable_http(_),
                    mcp_transport_info{kind:streamable_http,
-                                      endpoint:Endpoint}) :- !.
+                                      endpoint:redacted}) :- !.
 sanitize_transport(fixture(Kind, _),
                    mcp_transport_info{kind:fixture,
                                       transport_kind:Kind}) :- !.
@@ -128,16 +134,27 @@ sanitize_install(none, none) :- !.
 sanitize_install(process(Executable, Args, Options),
                  mcp_install_info{kind:process,
                                   executable:Executable,
-                                  argv:Args,
-                                  options:SafeOptions}) :-
+                                  argv_count:ArgCount,
+                                  cwd:Cwd,
+                                  environment:EnvReference}) :-
     !,
-    maplist(sanitize_install_option, Options, SafeOptions).
+    length(Args, ArgCount),
+    sanitized_cwd(Options, Cwd),
+    sanitized_environment(Options, EnvReference).
 sanitize_install(_, unsupported).
 
-sanitize_install_option(cwd(Directory), cwd(Directory)) :- !.
-sanitize_install_option(env(_), env_reference(supplied)) :- !.
-sanitize_install_option(env_refs(Names), env_refs(Names)) :- !.
-sanitize_install_option(_, omitted).
+sanitized_cwd(Options, present) :-
+    memberchk(cwd(_), Options),
+    !.
+sanitzed_cwd(_, none).
+
+sanitized_environment(Options, supplied) :-
+    memberchk(env(_), Options),
+    !.
+sanitzed_environment(Options, referenced) :-
+    memberchk(env_refs(_), Options),
+    !.
+sanitzed_environment(_, none).
 
 text_atom(Value, Value) :- atom(Value), !.
 text_atom(Value, Atom) :- string(Value), !, atom_string(Atom, Value).
