@@ -4,6 +4,7 @@
 :- use_module('../prolog/rlm_tool_loader', []).
 :- use_module('../prolog/rlm_mcp_server', []).
 :- use_module('../prolog/rlm_mcp_tool', []).
+:- use_module('../prolog/rlm_mcp_tool_pack', []).
 
 main(_) :-
     (   rlm:rlm_ready
