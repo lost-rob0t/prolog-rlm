@@ -3,6 +3,7 @@
 :- use_module('../prolog/rlm_effect').
 :- use_module('../prolog/rlm_effect_executor').
 :- use_module('../prolog/rlm_effect_migration').
+:- use_module('../prolog/rlm_cli').
 :- use_module(effect_legacy_fixture).
 :- use_module(library(crypto)).
 :- use_module(library(http/json)).
@@ -64,6 +65,20 @@ test(migration_is_idempotently_reported) :-
           effect_store_migrate(_{source:Destination,output:Source}, Second),
           assertion(Second.status == already_migrated),
           assertion(Second.migration_id == First.migration_id) ),
+        cleanup_paths([Source,Destination])).
+
+test(cli_routes_documented_migration_command_and_emits_report_payload) :-
+    setup_paths(Source, Destination),
+    setup_call_cleanup(
+        legacy_fixture_create(Source, _),
+        ( cli_run(['effect-store',migrate,'--source',Source,
+                   '--output',Destination,'--json'], ok(Session)),
+          assertion(Session.command == effect_store_migrate),
+          assertion(Session.status == pass),
+          assertion(Session.output.json == true),
+          assertion(Session.payload.status == migrated),
+          assertion(Session.payload.report_schema ==
+                    'prolog-rlm.effect-migration-report.v1') ),
         cleanup_paths([Source,Destination])).
 
 test(unresolved_without_binding_never_calls_adapter) :-

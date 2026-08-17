@@ -53,6 +53,22 @@ test(sigkill_at_validated_stage_is_recoverable) :-
           rlm_effect_store_close ),
         cleanup_restart_paths([Source,Destination])).
 
+test(competing_migration_fails_on_the_canonical_source_lock) :-
+    migration_restart_paths(lock, Source, Destination),
+    setup_call_cleanup(
+        legacy_fixture_create(Source, _),
+        ( start_hold_worker(Source, Destination, Pid, In, Out),
+          read_line_to_string(Out, Marker),
+          assertion(Marker == "migration_holder_ready"),
+          effect_store_migrate(_{source:Source,output:Destination}, Report),
+          assertion(Report.status == lock_conflict),
+          assertion(\+ exists_file(Destination)),
+          format(In, 'release~n', []), flush_output(In),
+          close(In), close(Out),
+          process_wait(Pid, exit(0)),
+          assertion(exists_file(Source)) ),
+        cleanup_restart_paths([Source,Destination])).
+
 finish_after_crash(Source, Destination, Report) :-
     ( exists_file(Destination)
     -> effect_store_migrate(_{source:Destination,output:Source}, Report)
@@ -65,6 +81,11 @@ run_crash_worker(Mode, Phase, Source, Destination, Status) :-
 
 start_pause_worker(Phase, Source, Destination, Pid, In, Out) :-
     worker_arguments(pause, Phase, Source, Destination, Arguments),
+    process_create(path(swipl), Arguments,
+                   [process(Pid),stdin(pipe(In)),stdout(pipe(Out))]).
+
+start_hold_worker(Source, Destination, Pid, In, Out) :-
+    worker_arguments(hold, unused, Source, Destination, Arguments),
     process_create(path(swipl), Arguments,
                    [process(Pid),stdin(pipe(In)),stdout(pipe(Out))]).
 
