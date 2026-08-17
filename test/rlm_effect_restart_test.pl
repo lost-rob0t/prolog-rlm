@@ -3,6 +3,16 @@
 :- use_module(library(process)).
 :- use_module(library(readutil)).
 
+test(completed_observation_replays_after_fresh_process_restart) :-
+    restart_fixture_paths(completed, Ledger, Remote),
+    setup_call_cleanup(
+        true,
+        ( run_phase_two('test/effect_restart_phase1_completed.pl',
+                        Ledger, Remote),
+          run_phase_two('test/effect_restart_phase2_completed.pl',
+                        Ledger, Remote) ),
+        cleanup_restart_files([Ledger, Remote])).
+
 test(reconcilable_remote_crash_between_effect_and_observation) :-
     restart_fixture_paths(reconcile, Ledger, Remote),
     setup_call_cleanup(
