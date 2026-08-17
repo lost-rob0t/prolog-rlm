@@ -2,6 +2,7 @@
           [ effect_execute/6,
             effect_execute_async/6,
             effect_execute_execute/6,
+            effect_prepare/5,
             effect_reconcile/3,
             effect_adapter_submit/4,
             effect_adapter_reconcile/4,
@@ -69,8 +70,60 @@ effect_execute(Adapter, Kind, Request, EffectOptions, AuthorityRef, Outcome) :-
 
 effect_execute_execute(Adapter, Kind, Request, EffectOptions, AuthorityRef,
                        Outcome) :-
-    rlm_effect:rlm_effect_prepare(Kind, Request, EffectOptions, Decision),
+    (   rlm_effect:rlm_effect_store_id(StoreId)
+    ->  catch(setup_call_cleanup(
+                  rlm_effect_persist:effect_persist_acquire_lease(StoreId,
+                                                                  Lease),
+                  effect_execute_leased(Adapter, Kind, Request, EffectOptions,
+                                        AuthorityRef, Outcome),
+                  rlm_effect_persist:effect_persist_release_lease(Lease)),
+              Exception,
+              executor_exception(Exception, Outcome))
+    ;   effect_prepare(Adapter, Kind, Request, EffectOptions, Decision),
+        execute_after_prepare(Decision, Adapter, AuthorityRef, Outcome)
+    ).
+
+effect_execute_leased(Adapter, Kind, Request, EffectOptions, AuthorityRef,
+                      Outcome) :-
+    effect_prepare(Adapter, Kind, Request, EffectOptions, Decision),
     execute_after_prepare(Decision, Adapter, AuthorityRef, Outcome).
+
+effect_prepare(Adapter, Kind, Request, EffectOptions0, Outcome) :-
+    catch(( trusted_executor_options(Adapter, EffectOptions0, EffectOptions),
+            rlm_effect:rlm_effect_prepare(Kind, Request, EffectOptions, Outcome)
+          ),
+          Exception,
+          executor_exception(Exception, Outcome)).
+
+trusted_executor_options(Adapter, Options0, Options) :-
+    require_adapter_identity(Adapter),
+    (   is_dict(Options0), dict_payload_ground(Options0)
+    ->  true
+    ;   throw(error(domain_error(effect_options, Options0), _))
+    ),
+    ( get_dict(semantics, Options0, Semantics0) -> true
+    ; Semantics0 = semantics{} ),
+    ( get_dict(metadata, Options0, Metadata0) -> true
+    ; Metadata0 = metadata{} ),
+    (   is_dict(Semantics0), is_dict(Metadata0)
+    ->  true
+    ;   throw(error(domain_error(effect_options, Options0), _))
+    ),
+    ExecutorIdentity = executor_identity{adapter:Adapter},
+    put_dict(executor_identity, Semantics0, ExecutorIdentity, Semantics),
+    put_dict(executor_identity, Metadata0, ExecutorIdentity, Metadata),
+    Options = Options0.put(_{semantics:Semantics, metadata:Metadata}).
+
+dict_payload_ground(Dict) :-
+    dict_pairs(Dict, _, Pairs),
+    ground(Pairs).
+
+require_adapter_identity(Adapter) :-
+    atom(Adapter),
+    Adapter \== '',
+    !.
+require_adapter_identity(Adapter) :-
+    throw(error(domain_error(effect_adapter_identity, Adapter), _)).
 
 execute_after_prepare(error(Error), _, _, error(Error)) :- !.
 execute_after_prepare(replay(Observation), _, _,
@@ -208,6 +261,18 @@ marked_attempt(_, Fallback, Fallback).
 /* Reconciliation -------------------------------------------------------- */
 
 effect_reconcile(Adapter, AttemptId, Outcome) :-
+    (   rlm_effect:rlm_effect_store_id(StoreId)
+    ->  catch(setup_call_cleanup(
+                  rlm_effect_persist:effect_persist_acquire_lease(StoreId,
+                                                                  Lease),
+                  effect_reconcile_leased(Adapter, AttemptId, Outcome),
+                  rlm_effect_persist:effect_persist_release_lease(Lease)),
+              Exception,
+              executor_exception(Exception, Outcome))
+    ;   Outcome = error(effect_error{kind:store_not_open})
+    ).
+
+effect_reconcile_leased(Adapter, AttemptId, Outcome) :-
     rlm_effect:rlm_effect_status(AttemptId, Status),
     reconcile_from_status(Status, Adapter, Outcome).
 
@@ -216,9 +281,40 @@ reconcile_from_status(Attempt, Adapter, Outcome) :-
     reconcile_attempt(Adapter, Attempt, Outcome).
 
 reconcile_attempt(Adapter, Attempt, Outcome) :-
+    (   adapter_identity_matches(Adapter, Attempt)
+    ->  reconcile_matching_adapter(Adapter, Attempt, Outcome)
+    ;   attempt_adapter_identity_or_unknown(Attempt, Expected),
+        Outcome = error(effect_error{kind:adapter_identity_mismatch,
+                                     expected:Expected,
+                                     actual:Adapter})
+    ).
+
+reconcile_matching_adapter(_, Attempt,
+                           effect_result{state:observed,
+                                         source:local_observation,
+                                         observation:Observation}) :-
+    rlm_effect:rlm_effect_observation(Attempt.attempt_id, Observation),
+    is_dict(Observation),
+    \+ is_dict(Observation, error),
+    !.
+reconcile_matching_adapter(Adapter, Attempt, Outcome) :-
     request_for_attempt(Attempt, Request),
     call_reconcile_adapter(Adapter, Attempt, Request, AdapterOutcome),
     apply_reconcile_outcome(Attempt, AdapterOutcome, Outcome).
+
+adapter_identity_matches(Adapter, Attempt) :-
+    attempt_adapter_identity(Attempt, Expected),
+    Expected == Adapter.
+
+attempt_adapter_identity(Attempt, Adapter) :-
+    get_dict(executor_identity, Attempt.metadata, Identity),
+    is_dict(Identity, executor_identity),
+    get_dict(adapter, Identity, Adapter),
+    atom(Adapter).
+
+attempt_adapter_identity_or_unknown(Attempt, Adapter) :-
+    ( attempt_adapter_identity(Attempt, Found) -> Adapter = Found
+    ; Adapter = unknown ).
 
 request_for_attempt(Attempt, Request) :-
     (   rlm_effect_persist:effect_persist_get_call(
@@ -243,13 +339,11 @@ reconcile_exception(Exception,
     safe_exception(Exception, Safe).
 
 apply_reconcile_outcome(Attempt, observed(Observation0),
-                        effect_result{state:observed,
-                                      source:reconciliation,
-                                      observation:Observation}) :-
+                        Outcome) :-
     !,
     rlm_effect:rlm_effect_reconcile(Attempt.attempt_id, Observation0,
                                     Reconciled),
-    reconciled_observation(Reconciled, Observation).
+    reconcile_record_result(Reconciled, Outcome).
 apply_reconcile_outcome(Attempt, in_progress(Detail),
                         effect_result{state:in_progress,
                                       source:reconciliation,
@@ -271,6 +365,17 @@ apply_reconcile_outcome(Attempt, Invalid,
 reconciled_observation(reconciled(Observation), Observation) :- !.
 reconciled_observation(observed(Observation), Observation) :- !.
 reconciled_observation(replay(Observation), Observation).
+
+reconcile_record_result(Reconciled,
+                        effect_result{state:observed,
+                                      source:reconciliation,
+                                      observation:Observation}) :-
+    reconciled_observation(Reconciled, Observation),
+    !.
+reconcile_record_result(error(Error), error(Error)) :- !.
+reconcile_record_result(Other,
+                        error(effect_error{kind:reconciliation_record_failed,
+                                           detail:Other})).
 
 mark_if_needed(Attempt, _, Attempt) :-
     Attempt.status == indeterminate,
@@ -338,3 +443,24 @@ safe_exception(Exception, Safe) :-
                       [quoted(true), numbervars(true), max_depth(6)]),
           _,
           Safe = "unavailable").
+
+executor_exception(error(permission_error(_, effect_store, Detail), _),
+                   error(effect_error{kind:store_lifecycle_conflict,
+                                      detail:Safe})) :-
+    !,
+    safe_exception(Detail, Safe).
+executor_exception(error(permission_error(acquire, effect_store_lease,
+                                           Detail), _),
+                   error(effect_error{kind:store_lifecycle_conflict,
+                                      detail:Safe})) :-
+    !,
+    safe_exception(Detail, Safe).
+executor_exception(error(domain_error(effect_adapter_identity, Adapter), _),
+                   error(effect_error{kind:invalid_adapter_identity,
+                                      adapter:Adapter})) :- !.
+executor_exception(error(domain_error(effect_options, _), _),
+                   error(effect_error{kind:invalid_options})) :- !.
+executor_exception(Exception,
+                   error(effect_error{kind:executor_internal_error,
+                                      detail:Safe})) :-
+    safe_exception(Exception, Safe).
