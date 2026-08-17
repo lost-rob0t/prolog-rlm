@@ -10,8 +10,11 @@ execution across external protocols.
 
 ## Identity
 
-- `call_id`: stable logical operation identity. An explicit `logical_key` may
-  keep one logical job identity across edited executable payloads.
+- `store_id`: a durable random namespace created once for a new ledger and
+  preserved when that ledger is reopened.
+- `call_id`: stable logical operation identity within one store epoch. An
+  explicit `logical_key` may keep one logical job identity across edited
+  executable payloads.
 - `fingerprint`: SHA-256 over normalized effect kind, request, and explicit
   semantics. Trace/session metadata is excluded.
 - `attempt_id`: one admitted execution attempt.
@@ -36,9 +39,10 @@ pre-claim cancellation validate the complete ticket shape and recompute the
 identity-bearing relationships before the ticket may create an attempt.
 
 Validation covers the normalized request and semantics, executable fingerprint,
-logical call ID and logical key, retry/resample mode, parent attempt, sequence,
-attempt ID, and provider idempotency key. The recomputed call must also match an
-existing durable call record created by `rlm_effect_prepare/4`.
+logical call ID and logical key, durable store namespace and execution epoch,
+retry/resample mode, parent attempt, sequence, attempt ID, and provider
+idempotency key. The recomputed call must also match an existing durable call
+record created by `rlm_effect_prepare/4`.
 
 A fabricated ticket with stale or altered request/semantics, fingerprint,
 attempt ID, lineage, or idempotency key therefore cannot manufacture trusted
@@ -69,6 +73,11 @@ observation is persisted before the final `observed` attempt revision, so a
 crash between those two local writes still leaves the authoritative observation
 available on restart.
 
+Attempt revisions and observations are authoritative state. Lifecycle events
+are an idempotently repairable projection with deterministic event IDs. Reads
+and reconciliation repair either crash window: observation durable before the
+final attempt revision, or final attempt revision durable before its event.
+
 ## Crash between remote effect and observation
 
 The mandatory case is:
@@ -94,6 +103,9 @@ host policy explicitly resolves it.
 - Resample is an explicit fresh execution with a mode distinct from retry.
 - A changed payload is a new executable fingerprint, not a retry of the old
   exact operation.
+- `abandoned` is terminal bookkeeping, not authorization to retry. A trusted
+  `retry_authorized` resolution is required before a retry or resample child is
+  admitted.
 
 Ordinary Prolog backtracking reuses the ledger observation. It does not resubmit.
 
@@ -108,6 +120,12 @@ Because the exact effect fingerprint and attempt ID are authority inputs,
 not authority identity. `dangerous` skips interactive approval only; it does not
 bypass identity, validation, capability checks, budgets, confinement,
 accounting, tracing, cancellation, or persistence.
+
+Executor identity is executable identity. Code using an adapter must prepare
+through `rlm_effect_executor:effect_prepare/5`; the trusted adapter identity is
+included in the fingerprint and persisted attempt metadata. Consequently an
+`allow_once` grant, call, attempt, or provider key for one adapter cannot be
+reused by another adapter.
 
 An edited proposal must rebuild the effect ticket and trusted continuation from
 the edited normalized request before execution.
@@ -142,6 +160,11 @@ The default backend uses SWI-Prolog persistency with synchronous journal writes.
 Competing admission inside one Prolog runtime is serialized by the effect-state
 mutex.
 
+The executor holds a store execution lease across preparation, dispatch, remote
+submission, and local observation. While a lease exists, closing the attached
+store or switching to another store fails closed. This prevents an in-flight
+adapter callback from completing against a different ledger.
+
 This persistent backend enforces **one cooperating writer using local OS
 advisory locking** on a dedicated sidecar for the canonical store path. A second
 cooperating process opening the same store fails closed. Normal close releases
@@ -156,7 +179,15 @@ This backend does **not** provide:
 - safety on filesystems whose locking semantics do not support this contract.
 
 Pruning is explicit and refuses active, dispatching, cancellation-uncertain, or
-indeterminate attempts.
+indeterminate attempts. Successful prune first durably advances that logical
+call's execution epoch and only then deletes its old records. Preparing the
+same logical operation after prune therefore creates new call, attempt, and
+provider idempotency identities; a pre-prune ticket is rejected as stale.
+
+New stores use schema version 2. A non-empty legacy store without durable
+namespace metadata fails closed with
+`legacy_effect_store_requires_migration`; it is never silently assigned a new
+namespace, because doing so could make an old provider operation look new.
 
 Downstream applications such as media-gen should use this generic boundary
 rather than implement another once-only ledger. Domain job IDs remain useful,

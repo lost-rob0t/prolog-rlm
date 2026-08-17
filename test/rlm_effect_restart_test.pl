@@ -38,6 +38,39 @@ test(effect_store_rejects_second_process_owner_and_recovers_after_sigkill) :-
         run_store_owner_fixture(Ledger),
         cleanup_restart_files([Ledger, LockFile])).
 
+test(observation_only_crash_repairs_status_and_event_exactly_once) :-
+    run_projection_crash_fixture(observation_only).
+
+test(observed_revision_crash_repairs_event_exactly_once) :-
+    run_projection_crash_fixture(attempt_observed).
+
+run_projection_crash_fixture(Case) :-
+    restart_fixture_paths(Case, Ledger, Remote),
+    atom_concat(Ledger, '.state', State),
+    atom_concat(Ledger, '.lock', Lock),
+    setup_call_cleanup(
+        true,
+        ( run_projection_phase_one(Case, Ledger, State, Remote),
+          run_swipl('test/effect_projection_crash_phase2.pl',
+                    [Ledger, State, Remote], Status),
+          assertion(Status == exit(0)) ),
+        cleanup_restart_files([Ledger, Lock, State, Remote])).
+
+run_projection_phase_one(Case, Ledger, State, Remote) :-
+    absolute_file_name('test/effect_projection_crash_phase1.pl', Script,
+                       [access(read)]),
+    append(['-q', '-s', Script, '--'],
+           [Case, Ledger, State, Remote], ProcessArguments),
+    setup_call_cleanup(
+        process_create(path(swipl), ProcessArguments,
+                       [process(Pid),stdin(pipe(In)),stdout(pipe(Out))]),
+        ( read_line_to_string(Out, Marker),
+          assertion(Marker == "projection_boundary_durable"),
+          process_kill(Pid, kill),
+          process_wait(Pid, Killed),
+          assertion(Killed = killed(_)) ),
+        cleanup_owner_process(Pid, In, Out)).
+
 restart_fixture_paths(Tag, Ledger, Remote) :-
     tmp_file(rlm_effect_restart, Base),
     atomic_list_concat([Base, '-', Tag, '-ledger.db'], Ledger),

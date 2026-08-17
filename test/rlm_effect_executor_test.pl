@@ -161,7 +161,7 @@ test(adapter_receives_ticket_idempotency_key) :-
     with_executor(
         ( request(idempotency, Request),
           authority_ref(Authority),
-          rlm_effect_prepare(tool, Request, _{}, execute(Ticket)),
+          effect_prepare(test_counter, tool, Request, _{}, execute(Ticket)),
           effect_execute(test_counter, tool, Request, _{}, Authority, Result),
           assertion(Result.state == observed),
           executor_seen_key(Key),

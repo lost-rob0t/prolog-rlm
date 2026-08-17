@@ -28,6 +28,7 @@
 :- consult(rlm_effect_executor_test).
 :- consult(rlm_effect_restart_test).
 :- consult(rlm_effect_hardening_test).
+:- consult(rlm_effect_adversarial_test).
 :- consult(run_tool_mcp_async_tests).
 :- consult(rlm_tool_mcp_scheduler_test).
 :- consult(rlm_completion_test).
