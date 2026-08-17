@@ -70,33 +70,33 @@ effect_execute(Adapter, Kind, Request, EffectOptions, AuthorityRef, Outcome) :-
 effect_execute_execute(Adapter, Kind, Request, EffectOptions, AuthorityRef,
                        Outcome) :-
     rlm_effect:rlm_effect_prepare(Kind, Request, EffectOptions, Decision),
-    execute_after_prepare(Decision, Adapter, Request, AuthorityRef, Outcome).
+    execute_after_prepare(Decision, Adapter, AuthorityRef, Outcome).
 
-execute_after_prepare(error(Error), _, _, _, error(Error)) :- !.
-execute_after_prepare(replay(Observation), _, _, _,
+execute_after_prepare(error(Error), _, _, error(Error)) :- !.
+execute_after_prepare(replay(Observation), _, _,
                       effect_result{state:observed,
                                     source:replay,
                                     observation:Observation}) :- !.
-execute_after_prepare(in_progress(Attempt), _, _, _,
+execute_after_prepare(in_progress(Attempt), _, _,
                       effect_result{state:in_progress,
                                     source:ledger,
                                     attempt:Attempt}) :- !.
-execute_after_prepare(terminal(Attempt), _, _, _,
+execute_after_prepare(terminal(Attempt), _, _,
                       effect_result{state:terminal,
                                     source:ledger,
                                     attempt:Attempt}) :- !.
-execute_after_prepare(reconciliation_required(Attempt), Adapter, _, _, Outcome) :-
+execute_after_prepare(reconciliation_required(Attempt), Adapter, _, Outcome) :-
     !,
     reconcile_attempt(Adapter, Attempt, Outcome).
-execute_after_prepare(execute(Ticket), Adapter, Request, AuthorityRef, Outcome) :-
-    catch(execute_ticket(Adapter, Ticket, Request, AuthorityRef, Outcome),
+execute_after_prepare(execute(Ticket), Adapter, AuthorityRef, Outcome) :-
+    catch(execute_ticket(Adapter, Ticket, AuthorityRef, Outcome),
           rlm_async_cancelled(FutureId),
-          ( cancel_interrupted_ticket(Adapter, Ticket, Request, FutureId),
+          ( cancel_interrupted_ticket(Adapter, Ticket, Ticket.request, FutureId),
             throw(rlm_async_cancelled(FutureId)) )).
 
-execute_ticket(Adapter, Ticket, Request, AuthorityRef, Outcome) :-
+execute_ticket(Adapter, Ticket, AuthorityRef, Outcome) :-
     rlm_effect:rlm_effect_admit(Ticket, AuthorityRef, Admission),
-    execute_after_admission(Admission, Adapter, Request, Outcome).
+    execute_after_admission(Admission, Adapter, Ticket.request, Outcome).
 
 execute_after_admission(error(Error), _, _, error(Error)) :- !.
 execute_after_admission(replay(Observation), _, _,
