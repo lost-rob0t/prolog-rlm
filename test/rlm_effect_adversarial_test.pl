@@ -251,6 +251,99 @@ test(prune_racing_preparation_is_linearizable_without_old_epoch_orphan) :-
             ),
             destroy_race_queues(Start, Results))).
 
+test(prune_racing_dispatch_refuses_to_delete_active_attempt) :-
+    with_store(
+        ( with_transition_race_fixture(dispatch, AttemptId, CallId,
+                                       Transition, Prune),
+          assertion(Transition = dispatch(_)),
+          assertion(error_kind(Prune, active_or_indeterminate_attempt)),
+          rlm_effect_status(AttemptId, Stored),
+          get_dict(status, Stored, dispatching),
+          assertion(CallId \== '') )).
+
+test(prune_racing_observation_is_linearizable) :-
+    with_store(
+        ( with_transition_race_fixture(observe, AttemptId, _,
+                                       Transition, Prune),
+          assertion(Transition = observed(_)),
+          assert_terminal_transition_prune(Prune, AttemptId, observed) )).
+
+test(prune_racing_pre_dispatch_cancellation_is_linearizable) :-
+    with_store(
+        ( with_transition_race_fixture(cancel, AttemptId, _,
+                                       Transition, Prune),
+          assertion(Transition = cancelled(_)),
+          assert_terminal_transition_prune(
+              Prune, AttemptId, cancelled_pre_dispatch) )).
+
+test(prune_racing_indeterminate_resolution_is_linearizable) :-
+    with_store(
+        ( with_transition_race_fixture(resolve, AttemptId, _,
+                                       Transition, Prune),
+          assertion(Transition = resolved(_)),
+          assert_terminal_transition_prune(Prune, AttemptId, abandoned) )).
+
+with_transition_race_fixture(Action, AttemptId, CallId, Transition, Prune) :-
+    prepare_transition_fixture(Action, AttemptId, CallId),
+    setup_call_cleanup(
+        create_race_queues(Start, Results),
+        ( thread_create(race_transition(Action, AttemptId, Start, Results),
+                        TransitionThread, []),
+          thread_create(race_prune(CallId, Start, Results), PruneThread, []),
+          thread_send_message(Start, go),
+          thread_send_message(Start, go),
+          thread_get_message(Results, transition(Transition)),
+          thread_get_message(Results, prune(Prune)),
+          thread_join(TransitionThread, true),
+          thread_join(PruneThread, true)
+        ),
+        destroy_race_queues(Start, Results)).
+
+prepare_transition_fixture(Action, AttemptId, CallId) :-
+    rlm_effect_prepare(tool, request{operation:Action}, _{}, execute(Ticket)),
+    authority(Authority),
+    rlm_effect_admit(Ticket, Authority, execute(Attempt)),
+    get_dict(attempt_id, Attempt, AttemptId),
+    get_dict(call_id, Attempt, CallId),
+    prepare_transition_state(Action, AttemptId).
+
+prepare_transition_state(observe, AttemptId) :-
+    rlm_effect_dispatch(AttemptId, dispatch(_)).
+prepare_transition_state(resolve, AttemptId) :-
+    rlm_effect_dispatch(AttemptId, dispatch(_)),
+    rlm_effect_mark_indeterminate(AttemptId, unknown_remote,
+                                  indeterminate(_)).
+prepare_transition_state(dispatch, _).
+prepare_transition_state(cancel, _).
+
+race_transition(dispatch, AttemptId, Start, Results) :-
+    thread_get_message(Start, go),
+    rlm_effect_dispatch(AttemptId, Outcome),
+    thread_send_message(Results, transition(Outcome)).
+race_transition(observe, AttemptId, Start, Results) :-
+    thread_get_message(Start, go),
+    Observation = observation{status:succeeded,value:race,
+                              usage:usage{units:1},provenance:race},
+    rlm_effect_observe(AttemptId, Observation, Outcome),
+    thread_send_message(Results, transition(Outcome)).
+race_transition(cancel, AttemptId, Start, Results) :-
+    thread_get_message(Start, go),
+    rlm_effect_cancel(AttemptId, race_cancel, Outcome),
+    thread_send_message(Results, transition(Outcome)).
+race_transition(resolve, AttemptId, Start, Results) :-
+    thread_get_message(Start, go),
+    rlm_effect_resolve_indeterminate(AttemptId, abandoned, Outcome),
+    thread_send_message(Results, transition(Outcome)).
+
+assert_terminal_transition_prune(pruned, AttemptId, _) :-
+    !,
+    rlm_effect_status(AttemptId, Missing),
+    error_kind(Missing, unknown_attempt).
+assert_terminal_transition_prune(error(Error), AttemptId, Status) :-
+    get_dict(kind, Error, active_or_indeterminate_attempt),
+    rlm_effect_status(AttemptId, Stored),
+    get_dict(status, Stored, Status).
+
 create_race_queues(Start, Results) :-
     message_queue_create(Start),
     message_queue_create(Results).
@@ -326,6 +419,43 @@ test(independent_stores_have_distinct_namespace_bound_identity) :-
           get_dict(attempt_id, AReopened, AAttemptId),
           get_dict(idempotency_key, A, AIdempotencyKey),
           get_dict(idempotency_key, AReopened, AIdempotencyKey),
+          rlm_effect_store_close
+        ),
+        cleanup_two_stores(StoreA, StoreB)).
+
+test(store_namespace_survives_relative_absolute_path_alias_reopen) :-
+    tmp_file(rlm_effect_alias, Store),
+    file_directory_name(Store, Directory),
+    file_base_name(Store, BaseName),
+    setup_call_cleanup(
+        working_directory(OldDirectory, Directory),
+        ( rlm_effect_store_open(Store),
+          rlm_effect_store_id(Namespace),
+          rlm_effect_store_close,
+          rlm_effect_store_open(BaseName),
+          rlm_effect_store_id(Namespace),
+          rlm_effect_store_close
+        ),
+        ( working_directory(_, OldDirectory),
+          cleanup_one_store(Store) )).
+
+test(independent_store_cannot_cross_reconcile_observation) :-
+    tmp_file(rlm_effect_cross_a, StoreA),
+    tmp_file(rlm_effect_cross_b, StoreB),
+    setup_call_cleanup(
+        true,
+        ( rlm_effect_store_open(StoreA),
+          authority(Authority),
+          effect_prepare(adversarial_a, tool, request{operation:cross_store},
+                         _{}, execute(TicketA)),
+          effect_execute(adversarial_a, tool, request{operation:cross_store},
+                         _{}, Authority, _),
+          get_dict(attempt_id, TicketA, AttemptA),
+          rlm_effect_store_close,
+          rlm_effect_store_open(StoreB),
+          effect_reconcile(adversarial_a, AttemptA, Cross),
+          assertion(error_kind(Cross, unknown_attempt)),
+          count(reconcile_adversarial_a, 0),
           rlm_effect_store_close
         ),
         cleanup_two_stores(StoreA, StoreB)).
