@@ -15,8 +15,8 @@
 
 Server declarations select trusted host profiles. They never carry executable
 paths, installer argv, runtime argv, or raw environment values. Profile lookup,
-package syntax validation, configuration-reference validation and working
-Directory confinement happen before host authority is consulted. Secret values
+package syntax validation, configuration-reference validation, and working
+directory confinement happen before host authority is consulted. Secret values
 are resolved only by the explicit lifecycle continuation after authority permits
 execution and are never returned by this module as metadata.
 */
@@ -143,9 +143,10 @@ mcp_working_directory_normalize(inherit, inherit) :- !.
 mcp_working_directory_normalize(directory(Path0), directory(Path)) :-
     !,
     text_atom(Path0, Path),
-    is_absolute_file_name(Path),
-    Path \== '/',
-    !.
+    (   is_absolute_file_name(Path), Path \== '/'
+    ->  true
+    ;   throw(mcp_policy_fault(invalid_working_directory(directory(configured))))
+    ).
 mcp_working_directory_normalize(Value, _) :-
     throw(mcp_policy_fault(invalid_working_directory(Value))).
 
@@ -204,19 +205,16 @@ config_reference_available(config_ref(Key)) :-
 config_values(Key, Values) :-
     findall(Value, mcp_config_value(Key, Value), Values).
 
-config_values_available(Key, [], _) :-
+config_values_available(Key, []) :-
     config_reference_metadata(config_ref(Key), Metadata),
     throw(mcp_policy_fault(missing_configuration(Metadata))).
-config_values_available(Key, [_|[_|_]], _) :-
+config_values_available(Key, [_|[_|_]]) :-
     throw(mcp_policy_fault(duplicate_configuration(Key))).
-config_values_available(Key, [Value], _) :-
+config_values_available(Key, [Value]) :-
     (   ground(Value), text_value(Value), Value \== ''
     ->  true
     ;   throw(mcp_policy_fault(invalid_configuration_value(Key)))
     ).
-
-config_values_available(Key, Values) :-
-    config_values_available(Key, Values, available).
 
 config_reference_metadata(env_ref(Name),
                           mcp_config_reference{kind:environment, name:Name}).
@@ -456,25 +454,23 @@ conservative_package(Package) :-
 npm_package_shape(Package) :-
     atom_chars(Package, ['@'|Rest]),
     !,
-    Rest \== [],
-    \+ memberchk('@', Rest),
-    append(Scope, ['/ '|_], Rest),
+    append(Scope, ['/'|Name], Rest),
     Scope \== [],
-    npm_chars(Rest).
+    Name \== [],
+    \+ memberchk('/', Name),
+    maplist(npm_segment_char, Scope),
+    maplist(npm_segment_char, Name).
 npm_package_shape(Package) :-
     atom_chars(Package, [First|Rest]),
     First \== '-',
     First \== '@',
     \+ memberchk('/', Rest),
-    npm_chars([First|Rest]).
+    maplist(npm_segment_char, [First|Rest]).
 
-npm_chars(Chars) :-
-    maplist(npm_package_char, Chars).
-
-npm_package_char(Char) :-
+npm_segment_char(Char) :-
     char_type(Char, alnum),
     !.
-npm_package_char(Char) :- memberchk(Char, ['-','_','.','/']).
+npm_segment_char(Char) :- memberchk(Char, ['-','_','.']).
 
 conservative_package_char(Char) :-
     char_type(Char, alnum),
@@ -547,7 +543,7 @@ safe_identifier_atom(Atom) :-
 identifier_char(Char) :-
     char_type(Char, alnum),
     !.
-identifier_char(Char) :- memberchk(Char, ['_','-','.',' ':']).
+identifier_char(Char) :- memberchk(Char, ['_','-','.',':']).
 
 text_atom(Value, Value) :- atom(Value), !.
 text_atom(Value, Atom) :- string(Value), !, atom_string(Atom, Value).
