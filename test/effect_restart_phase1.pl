@@ -22,8 +22,9 @@ crash_window_phase_one(Ledger, Remote) :-
                      execute(Attempt)),
     rlm_effect_dispatch(Attempt.attempt_id, dispatch(Dispatch)),
     remote_submit(Remote, Dispatch.idempotency_key, _RemoteResult),
-    % Deliberately do not call rlm_effect_observe/3 and do not close the store.
-    % The external state exists while the local attempt has only the durable
-    % pre-dispatch/dispatch facts.  Exit with a sentinel code so CI proves this
-    % was the intended crash injection rather than a test failure.
-    halt(86).
+    % Tell the parent only after the externally observable side effect exists.
+    % The parent kills this process; no normal observation or store close runs.
+    format('remote_committed~n', []),
+    flush_output,
+    message_queue_create(Block),
+    thread_get_message(Block, never_released).
