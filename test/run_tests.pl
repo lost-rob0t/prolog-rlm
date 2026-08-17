@@ -14,6 +14,7 @@
 :- consult(rlm_mcp_runtime_test).
 :- consult(rlm_mcp_dual_test).
 :- consult(rlm_mcp_boundary_test).
+:- consult(rlm_mcp_declaration_security_test).
 :- consult(rlm_context_test).
 :- consult(rlm_plan_test).
 :- consult(rlm_tool_test).
