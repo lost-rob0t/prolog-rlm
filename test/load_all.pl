@@ -5,6 +5,7 @@
 :- use_module('../prolog/rlm_effect_authority', []).
 :- use_module('../prolog/rlm_effect_executor', []).
 :- use_module('../prolog/rlm_effect_persist', []).
+:- use_module('../prolog/rlm_effects', []).
 :- use_module('../prolog/rlm_tool_loader', []).
 :- use_module('../prolog/rlm_mcp_policy', []).
 :- use_module('../prolog/rlm_mcp_server', []).
