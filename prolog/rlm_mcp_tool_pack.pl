@@ -13,12 +13,13 @@ Remote tool import remains an explicit host action through `rlm_mcp_tool` after
 a server has been explicitly started/connected. Lifecycle mutation remains in
 `rlm_mcp_server` and therefore keeps the shared authority boundary.
 
-Inspection deliberately omits transport/install argument values, HTTP endpoint
-text and raw runtime options. Existing declarations predate first-class secret
-references and may contain inline sensitive values. Until #52 removes that
-representation, loader-facing discovery exposes only execution-shape metadata.
+Inspection exposes only declarative package/profile identity and safe
+configuration-reference metadata. Trusted profile executable/argv data,
+resolved configuration values, HTTP endpoint text, concrete working-directory
+paths, and runtime options are never model-facing.
 */
 
+:- use_module(rlm_mcp_policy).
 :- use_module(rlm_mcp_server).
 :- use_module(rlm_tool).
 :- use_module(rlm_tool_loader).
@@ -109,17 +110,29 @@ sanitize_server_definition(Spec,
                            mcp_server_info{name:Spec.name,
                                            transport:Transport,
                                            install:Install,
+                                           configuration:Configuration,
+                                           working_directory:WorkingDirectory,
                                            version:Spec.version,
                                            capabilities:Spec.capabilities}) :-
     sanitize_transport(Spec.transport, Transport),
-    sanitize_install(Spec.install, Install).
+    sanitize_install(Spec.install, Install),
+    rlm_mcp_policy:mcp_environment_metadata(Spec.environment, Configuration),
+    rlm_mcp_policy:mcp_working_directory_metadata(
+                       Spec.working_directory,
+                       WorkingDirectory).
 
-sanitize_transport(stdio(Executable, Args),
+sanitize_transport(stdio(profile(Profile)),
                    mcp_transport_info{kind:stdio,
-                                      executable:Executable,
-                                      argv_count:ArgCount}) :-
-    !,
-    length(Args, ArgCount).
+                                      recipe:profile,
+                                      profile:Profile}) :-
+    !.
+sanitize_transport(stdio(package(Profile, Package, Version)),
+                   mcp_transport_info{kind:stdio,
+                                      recipe:package,
+                                      profile:Profile,
+                                      package:Package,
+                                      version:Version}) :-
+    !.
 sanitize_transport(streamable_http(_),
                    mcp_transport_info{kind:streamable_http,
                                       endpoint:redacted}) :- !.
@@ -131,30 +144,13 @@ sanitize_transport(existing(_),
 sanitize_transport(_, mcp_transport_info{kind:unknown}).
 
 sanitize_install(none, none) :- !.
-sanitize_install(process(Executable, Args, Options),
-                 mcp_install_info{kind:process,
-                                  executable:Executable,
-                                  argv_count:ArgCount,
-                                  cwd:Cwd,
-                                  environment:EnvReference}) :-
-    !,
-    length(Args, ArgCount),
-    sanitized_cwd(Options, Cwd),
-    sanitized_environment(Options, EnvReference).
+sanitize_install(package(Profile, Package, Version),
+                 mcp_install_info{kind:package,
+                                  profile:Profile,
+                                  package:Package,
+                                  version:Version}) :-
+    !.
 sanitize_install(_, unsupported).
-
-sanitized_cwd(Options, present) :-
-    memberchk(cwd(_), Options),
-    !.
-sanitized_cwd(_, none).
-
-sanitized_environment(Options, supplied) :-
-    memberchk(env(_), Options),
-    !.
-sanitized_environment(Options, referenced) :-
-    memberchk(env_refs(_), Options),
-    !.
-sanitized_environment(_, none).
 
 text_atom(Value, Value) :- atom(Value), !.
 text_atom(Value, Atom) :- string(Value), !, atom_string(Atom, Value).
