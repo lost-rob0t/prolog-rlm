@@ -19,7 +19,7 @@ Trusted host/application code owns authority selection. Model-controlled data ma
 The legal child relation is therefore:
 
 ```text
-dangerous    -> dangerous | allow_session | allow_once | approve_diff
+dangerous     -> dangerous | allow_session | allow_once | approve_diff
 allow_session -> allow_session | allow_once | approve_diff
 allow_once    -> allow_once | approve_diff
 approve_diff  -> approve_diff
@@ -40,7 +40,8 @@ operation/tool exists
   -> authority evaluation
   -> execute immediately OR create pending operation
   -> approve / deny / edit when pending
-  -> authoritative execution
+  -> authoritative execution claim
+  -> side effect
 ```
 
 Authority cannot make an invalid operation valid. In particular, `dangerous` bypasses interactive approval only. It does not bypass capabilities, schemas, argument validation, path confinement, process policy, network policy, budgets, lifecycle ownership, tracing, cancellation, or other hard restrictions.
@@ -66,6 +67,7 @@ validated side effect
   -> original scheduler worker returns
   -> host may wait seconds, hours, or never
   -> approve | deny | edit
+  -> bounded execution scheduling when approved
   -> resolution Future completes
 ```
 
@@ -75,7 +77,21 @@ validated side effect
 
 ### Approve
 
-Approval transitions the exact pending proposal into execution and schedules only its already-validated trusted continuation. Duplicate approval attempts fail deterministically rather than executing twice.
+Approval does not directly call the continuation. Core creates a short-lived private execution gate, submits the already-validated trusted continuation to `rlm_async`, attaches the returned execution Future to authority control state, and only then arms the gate.
+
+The resulting pre-execution states are:
+
+```text
+pending
+  -> approved
+  -> scheduled
+  -> execution claim
+  -> executing
+```
+
+The gate is only an internal scheduling handshake. It is not a human wait and it is never a second approval system. A worker can briefly wait for the scheduling handshake, but human latency always remains represented by the deferred pending-resolution Future and consumes no shared worker.
+
+Duplicate approval attempts fail deterministically rather than executing twice.
 
 ### Deny
 
@@ -83,7 +99,55 @@ Denial performs no target mutation. It records a structured denial and resolves 
 
 ### Edit
 
-Edit re-runs the trusted edit validator and preflight, supersedes the original approval, and creates a new approval ID/fingerprint. Stale approval of the original proposal fails.
+Edit re-runs the trusted edit validator and preflight, supersedes the original approval, and creates a new approval ID/fingerprint. Stale approval of the original proposal fails. The superseded record immediately drops its trusted continuation and edit-validator references.
+
+## Cancellation / execution linearization
+
+Approval and owner cancellation have one explicit linearization point: the authority execution claim under the `rlm_authority` mutex.
+
+```text
+approved operation
+  -> execution Future attached
+  -> gate armed
+  -> exactly one wins:
+       cancellation before claim -> terminal cancelled, no continuation call
+       execution claim first     -> executing; later cancellation is best-effort
+```
+
+Before the claim, cancellation removes executable control state, cancels the attached Future when one exists, resolves the public pending-resolution Future, and prevents the continuation from crossing the side-effect boundary. A queued scheduler task may still be dequeued later, but its cancelled Future cannot claim execution and therefore cannot mutate the target.
+
+After the claim, the operation has already crossed the authoritative execution boundary. Owner cancellation transitions the record through `cancelling` and interrupts the execution Future through normal `rlm_async` cancellation. That interruption is deterministic at the Future/protocol level, but host side effects that completed after the claim and before interruption are not rolled back. Authority is a permission boundary, not a transaction manager.
+
+Runtime and agent teardown use the same owner-cancellation path. There is no separate teardown-only confirmation or cancellation mechanism.
+
+## Bounded terminal retention
+
+Active executable control state and terminal inspection history are separate concerns.
+
+Active states may retain the trusted continuation, edit validator, pending-resolution Future, execution Future, and private execution gate only while those resources can still participate in execution.
+
+Terminal states are:
+
+```text
+resolved
+denied
+superseded
+cancelled
+```
+
+When a record becomes terminal, core immediately drops its trusted continuation, validator, execution-Future reference, and gate. The sanitized public record and its already-resolved deferred resolution Future may remain queryable for bounded inspection.
+
+The current retention limit is **64 terminal records per authority context**. Active operations do not count against this limit and are never pruned merely to make room for history.
+
+When terminal history exceeds the limit, the oldest terminal record is removed and its retained resolution Future is destroyed. After pruning:
+
+- `rlm_pending_approval/3` no longer finds that approval ID;
+- `rlm_pending_resolution_async/2` raises `existence_error(rlm_pending_operation, Id)`;
+- stale approve/deny/edit attempts cannot revive the operation.
+
+`rlm_pending_approvals/2` therefore returns all active operations plus at most the bounded retained terminal history for that context. It is not an unbounded audit log. `rlm_authority_events/2` remains the policy/event stream; downstream durable audit storage, if desired, belongs outside executable pending control state.
+
+Context/runtime teardown destroys all remaining active and retained resolution Futures and removes the context authority registries deterministically.
 
 ## `allow_once`
 
@@ -137,9 +201,11 @@ The option-bearing and convenience lifecycle surfaces both preserve canonical as
 
 ## Cancellation and cleanup
 
-Cancelling an owner denies or cancels its active pending operations as appropriate. A cancelled pending operation cannot later be approved into a target mutation. Runtime/session teardown removes authority state and pending state owned by that lifecycle.
+Cancelling an owner denies a still-pending proposal or cancels an approved/scheduled/executing operation according to the execution-claim semantics above. A cancellation that wins before execution claim makes later target mutation impossible through that pending continuation.
 
 Deferred Futures themselves consume no scheduler worker. Ordinary execution Futures remain bounded by `rlm_async`; agent host-worker pools remain separate only for bounded mailbox/host work.
+
+Terminal pending history is bounded and does not retain executable callables. Context teardown destroys the remaining bounded resolution Futures and cancels/destroys active execution Futures.
 
 ## Sync/async equivalence
 
