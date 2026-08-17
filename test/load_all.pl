@@ -2,6 +2,7 @@
 
 :- use_module('../prolog/rlm').
 :- use_module('../prolog/rlm_effect', []).
+:- use_module('../prolog/rlm_effect_authority', []).
 :- use_module('../prolog/rlm_effect_persist', []).
 :- use_module('../prolog/rlm_tool_loader', []).
 :- use_module('../prolog/rlm_mcp_policy', []).
