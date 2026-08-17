@@ -498,8 +498,12 @@ test(mcp_definition_is_queryable_and_inert,
 test(mcp_definition_does_not_auto_install_or_run,
      [setup(reset_mcp_fixture)]) :-
     mcp_server_definitions(Definitions),
-    member(Spec, Definitions),
-    Spec.name == async_fixture,
+    findall(Candidate,
+            ( member(Candidate, Definitions),
+              Candidate.name == async_fixture
+            ),
+            [Spec]),
+    assertion(Spec.name == async_fixture),
     mcp_remote_calls(RemoteCalls),
     assertion(RemoteCalls =:= 0).
 
