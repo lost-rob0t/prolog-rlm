@@ -146,15 +146,15 @@ sanitize_install(_, unsupported).
 sanitized_cwd(Options, present) :-
     memberchk(cwd(_), Options),
     !.
-sanitzed_cwd(_, none).
+sanitized_cwd(_, none).
 
 sanitized_environment(Options, supplied) :-
     memberchk(env(_), Options),
     !.
-sanitzed_environment(Options, referenced) :-
+sanitized_environment(Options, referenced) :-
     memberchk(env_refs(_), Options),
     !.
-sanitzed_environment(_, none).
+sanitized_environment(_, none).
 
 text_atom(Value, Value) :- atom(Value), !.
 text_atom(Value, Atom) :- string(Value), !, atom_string(Atom, Value).
