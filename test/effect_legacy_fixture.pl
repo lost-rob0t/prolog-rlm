@@ -26,12 +26,16 @@ legacy_fixture_create(File, Details) :-
 write_fixture(Details) :-
     Call1 = legacy_call_observed,
     Call2 = legacy_call_uncertain,
+    Call3 = legacy_call_admitted,
     Fingerprint1 = 'sha256:legacy-observed',
     Fingerprint2 = 'sha256:legacy-uncertain',
+    Fingerprint3 = 'sha256:legacy-admitted',
     assert_effect_call_record(Call1, Fingerprint1, model,
                               request{prompt:observed}, auto, 1.0),
     assert_effect_call_record(Call2, Fingerprint2, tool,
                               request{target:uncertain}, auto, 2.0),
+    assert_effect_call_record(Call3, Fingerprint3, tool,
+                              request{target:admitted}, auto, 3.0),
     write_attempt_revisions(legacy_attempt_observed, Call1, Fingerprint1,
                             'legacy-provider-key-observed',
                             [admitted,dispatching,observed]),
@@ -40,6 +44,8 @@ write_fixture(Details) :-
                             [admitted,dispatching],
                             metadata{executor_identity:
                                      executor_identity{adapter:spoofed_adapter}}),
+    write_attempt_revisions(legacy_attempt_admitted, Call3, Fingerprint3,
+                            'legacy-provider-key-admitted', [admitted]),
     Observation = observation{status:succeeded,
                               value:legacy_value,
                               usage:usage{units:7},
@@ -54,6 +60,7 @@ write_fixture(Details) :-
     Details = legacy_fixture{observed_call:Call1,
                              observed_attempt:legacy_attempt_observed,
                              uncertain_attempt:legacy_attempt_uncertain,
+                             admitted_attempt:legacy_attempt_admitted,
                              observed_provider_key:'legacy-provider-key-observed',
                              uncertain_provider_key:'legacy-provider-key-uncertain',
                              observation:Observation}.

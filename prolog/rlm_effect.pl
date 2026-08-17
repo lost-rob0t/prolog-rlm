@@ -537,6 +537,12 @@ dispatch_locked(AttemptId, replay(Observation)) :-
     rlm_effect_persist:effect_persist_get_observation(AttemptId, Observation),
     !,
     repair_observation_projection(AttemptId, Observation, _).
+dispatch_locked(AttemptId,
+                error(effect_error{kind:legacy_attempt_not_dispatchable})) :-
+    rlm_effect_persist:effect_persist_migrated_legacy_attempt(AttemptId),
+    rlm_effect_persist:effect_persist_get_attempt(AttemptId, Attempt),
+    Attempt.status == admitted,
+    !.
 dispatch_locked(AttemptId, dispatch(Updated)) :-
     rlm_effect_persist:effect_persist_get_attempt(AttemptId, Attempt),
     Attempt.status == admitted,

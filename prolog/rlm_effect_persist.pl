@@ -24,6 +24,7 @@
             effect_persist_write_migrated/5,
             effect_persist_migration_info/1,
             effect_persist_legacy_adapter/2,
+            effect_persist_migrated_legacy_attempt/1,
             effect_persist_delete_call/1
           ]).
 
@@ -664,6 +665,12 @@ effect_persist_migration_info(Info) :-
 effect_persist_legacy_adapter(AttemptId, Adapter) :-
     require_attached,
     effect_legacy_adapter_binding_record(AttemptId, Adapter).
+
+effect_persist_migrated_legacy_attempt(AttemptId) :-
+    require_attached,
+    effect_migration_record(_, 1, _, _, _, complete),
+    effect_attempt_record(AttemptId, _, CallId, _, _, _, _, _, _, _, _, _, _),
+    \+ effect_call_scope_record(CallId, _, _, _).
 
 effect_persist_delete_call(CallId) :-
     require_attached,

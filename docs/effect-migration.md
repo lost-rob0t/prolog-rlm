@@ -65,6 +65,10 @@ after migration uses the v2 namespace/epoch constructor and receives new call,
 attempt, and provider identities. An `abandoned` attempt stays terminal;
 migration never creates retry authority.
 
+Legacy attempt IDs are also fenced at the dispatch predicate. Even a preserved
+legacy `admitted` record cannot be turned into a new external submission after
+migration; the operator must prepare and authorize a normal v2 operation.
+
 The canonical destination path is checked on ordinary runtime open. Copying a
 migrated journal to another path therefore fails with
 `migrated_effect_store_copy` instead of silently creating a second writable

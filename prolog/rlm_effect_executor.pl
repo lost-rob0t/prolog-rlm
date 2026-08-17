@@ -318,9 +318,8 @@ attempt_adapter_identity(Attempt, Adapter) :-
     atom(Adapter).
 
 migrated_legacy_attempt(Attempt) :-
-    rlm_effect_persist:effect_persist_migration_info(_),
-    \+ rlm_effect_persist:effect_persist_get_call_scope(
-           Attempt.call_id, _, _, _).
+    rlm_effect_persist:effect_persist_migrated_legacy_attempt(
+        Attempt.attempt_id).
 
 attempt_adapter_identity_or_unknown(Attempt, Adapter) :-
     ( attempt_adapter_identity(Attempt, Found) -> Adapter = Found

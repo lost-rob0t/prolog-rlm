@@ -33,8 +33,8 @@ test(real_pr78_schema_preserves_observation_and_provider_keys) :-
         true,
         ( migrate_fixture(Source, Destination, Details, Report),
           assertion(Report.status == migrated),
-          assertion(Report.migrated_attempt_count == 2),
-          assertion(Report.preserved_provider_key_count == 2),
+          assertion(Report.migrated_attempt_count == 3),
+          assertion(Report.preserved_provider_key_count == 3),
           rlm_effect_store_open(Destination),
           rlm_effect_observation(Details.observed_attempt, Observation),
           assertion(Observation == Details.observation),
@@ -110,6 +110,19 @@ test(post_migration_execution_uses_distinct_v2_identity) :-
           assertion(Ticket.attempt_id \== Details.observed_attempt),
           assertion(Ticket.idempotency_key \==
                     Details.observed_provider_key),
+          rlm_effect_store_close ),
+        cleanup_paths([Source,Destination])).
+
+test(migrated_legacy_attempt_cannot_cross_a_fresh_dispatch_boundary) :-
+    setup_paths(Source, Destination),
+    setup_call_cleanup(
+        true,
+        ( migrate_fixture(Source, Destination, Details, Report),
+          assertion(Report.status == migrated),
+          rlm_effect_store_open(Destination),
+          rlm_effect_dispatch(Details.admitted_attempt, Dispatch),
+          assertion(Dispatch = error(effect_error{
+              kind:legacy_attempt_not_dispatchable})),
           rlm_effect_store_close ),
         cleanup_paths([Source,Destination])).
 
