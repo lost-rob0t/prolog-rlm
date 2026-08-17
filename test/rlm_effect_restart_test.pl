@@ -1,6 +1,7 @@
 :- begin_tests(rlm_effect_restart).
 
 :- use_module(library(process)).
+:- use_module(library(readutil)).
 
 test(reconcilable_remote_crash_between_effect_and_observation) :-
     restart_fixture_paths(reconcile, Ledger, Remote),
@@ -26,9 +27,17 @@ restart_fixture_paths(Tag, Ledger, Remote) :-
     atomic_list_concat([Base, '-', Tag, '-remote.term'], Remote).
 
 run_crash_phase(Ledger, Remote) :-
-    run_swipl('test/effect_restart_phase1.pl',
-              [Ledger, Remote], Status),
-    assertion(Status == exit(86)).
+    absolute_file_name('test/effect_restart_phase1.pl', Script, [access(read)]),
+    append(['-q', '-s', Script, '--'], [Ledger, Remote], ProcessArguments),
+    setup_call_cleanup(
+        process_create(path(swipl), ProcessArguments,
+                       [process(Pid), stdout(pipe(Out))]),
+        ( read_line_to_string(Out, Marker),
+          assertion(Marker == "remote_committed"),
+          process_kill(Pid, kill),
+          process_wait(Pid, Status),
+          assertion(Status = killed(_)) ),
+        close(Out)).
 
 run_phase_two(Script, Ledger, Remote) :-
     run_swipl(Script, [Ledger, Remote], Status),
