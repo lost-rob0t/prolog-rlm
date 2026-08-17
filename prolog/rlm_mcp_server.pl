@@ -203,10 +203,13 @@ install_recipe_effect(Spec, Name, Options, Outcome) :-
     Operation = authority_operation{name:mcp_install,
                                     effect:install,
                                     capability:mcp(Name),
-                                    args:mcp_install_args{server:Name,
-                                                          profile:Profile,
-                                                          package:Package,
-                                                          version:Version},
+                                    args:mcp_install_args{
+                                             server:Name,
+                                             profile:Profile,
+                                             package:Package,
+                                             version:Version,
+                                             working_directory:
+                                                 Spec.working_directory},
                                     details:mcp_install_details{
                                                 policy:PolicyDetails}},
     Continuation = rlm_mcp_server:install_package_effect(
@@ -325,7 +328,10 @@ run_after_definition(ok(Spec), Name, Options, Outcome) :-
     Operation = authority_operation{name:mcp_run,
                                     effect:Effect,
                                     capability:mcp(Name),
-                                    args:mcp_run_args{server:Name},
+                                    args:mcp_run_args{
+                                             server:Name,
+                                             working_directory:
+                                                 Spec.working_directory},
                                     details:Details},
     Continuation = rlm_mcp_server:run_transport_effect(
                        Name, Spec, RuntimeOptions, Context),
@@ -497,7 +503,10 @@ rlm_restart_mcp_server_(Handle, Options, Outcome) :-
     Operation = authority_operation{name:mcp_restart,
                                     effect:Effect,
                                     capability:mcp(Server),
-                                    args:mcp_restart_args{server:Server},
+                                    args:mcp_restart_args{
+                                             server:Server,
+                                             working_directory:
+                                                 Spec.working_directory},
                                     details:Details},
     Continuation = rlm_mcp_server:restart_transport_effect(
                        Handle, Server, Spec, RuntimeOptions, Context),
