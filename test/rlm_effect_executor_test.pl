@@ -44,10 +44,13 @@ rlm_effect_executor:effect_adapter_submit(Adapter, Attempt, Request,
                               usage:usage{units:1},
                               provenance:Adapter}.
 
-rlm_effect_executor:effect_adapter_reconcile(test_blocking, Attempt, _,
-                                             indeterminate(still_running)) :-
+rlm_effect_executor:effect_adapter_reconcile(test_blocking, Attempt, _, Outcome) :-
     plunit_rlm_effect_executor:executor_gate(Entered, _),
-    thread_send_message(Entered, reconciled(Attempt.attempt_id)).
+    thread_send_message(Entered, reconciled(Attempt.attempt_id)),
+    (   Attempt.status == dispatching
+    ->  Outcome = in_progress(still_running)
+    ;   Outcome = indeterminate(still_running_after_uncertain_cancel)
+    ).
 
 rlm_effect_executor:effect_adapter_cancel(test_blocking, _, _,
                                           indeterminate(cancel_unknown)).
@@ -206,7 +209,10 @@ test(second_wrapper_while_remote_running_does_not_submit_again) :-
                                    SecondFuture),
               rlm_future_await(SecondFuture, SecondResult),
               thread_get_message(Entered, reconciled(AttemptId)),
-              assertion(SecondResult.state == indeterminate),
+              assertion(SecondResult.state == in_progress),
+              assertion(SecondResult.detail == still_running),
+              rlm_effect_status(AttemptId, RunningAttempt),
+              assertion(RunningAttempt.status == dispatching),
               submit_count(1),
               thread_send_message(Release, release),
               rlm_future_await(FirstFuture, FirstResult),
