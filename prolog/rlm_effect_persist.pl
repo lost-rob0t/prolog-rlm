@@ -20,6 +20,12 @@ Attempt lifecycle writes are append-only revisions.  Updating an attempt never
 retracts its previous durable state first, so a process death during a state
 transition cannot erase the last authoritative lifecycle fact.  Explicit
 retention/deletion is a separate operation.
+
+The persistency journal is intentionally single-writer.  A process holds an OS
+advisory lock on a dedicated sidecar file for the entire attached-store
+lifetime.  A second process fails closed instead of racing local admission
+against the same journal.  The OS releases the lock when the owning process
+exits, including abrupt process death, so a fresh process can resume/reconcile.
 */
 
 :- use_module(library(lists)).
@@ -36,25 +42,79 @@ retention/deletion is a separate operation.
        effect_observation_record(attempt_id:atom, observation:any),
        effect_event_record(call_id:atom, sequence:integer, event:any).
 
+:- dynamic effect_store_lock/3.
+
 effect_persist_open(File) :-
     with_mutex(rlm_effect_persist_db, effect_persist_open_locked(File)).
 
 effect_persist_open_locked(File) :-
     (   db_attached(Current)
     ->  (   same_file_or_atom(Current, File)
-        ->  true
-        ;   db_detach,
-            db_attach(File, [sync(close)])
+        ->  ensure_effect_store_lock(File)
+        ;   effect_persist_detach_locked,
+            effect_persist_attach_locked(File)
         )
-    ;   db_attach(File, [sync(close)])
+    ;   effect_persist_attach_locked(File)
     ).
 
+effect_persist_attach_locked(File) :-
+    canonical_store_file(File, Canonical),
+    effect_store_lock_file(Canonical, LockFile),
+    acquire_effect_store_lock(Canonical, LockFile, Stream),
+    catch(db_attach(File, [sync(close)]),
+          Exception,
+          ( close_effect_store_lock_stream(Stream),
+            throw(Exception) )),
+    assertz(effect_store_lock(Canonical, LockFile, Stream)).
+
+ensure_effect_store_lock(File) :-
+    canonical_store_file(File, Canonical),
+    (   effect_store_lock(Locked, _, _),
+        same_file_or_atom(Locked, Canonical)
+    ->  true
+    ;   effect_store_lock_file(Canonical, LockFile),
+        acquire_effect_store_lock(Canonical, LockFile, Stream),
+        assertz(effect_store_lock(Canonical, LockFile, Stream))
+    ).
+
+acquire_effect_store_lock(Canonical, LockFile, Stream) :-
+    catch(open(LockFile, append, Stream,
+               [ encoding(utf8),
+                 lock(exclusive),
+                 wait(false)
+               ]),
+          error(permission_error(lock, source_sink, _), Context),
+          throw(error(permission_error(lock, effect_store, Canonical),
+                      Context))).
+
+effect_store_lock_file(Canonical, LockFile) :-
+    atom_concat(Canonical, '.lock', LockFile).
+
+canonical_store_file(File, Canonical) :-
+    catch(absolute_file_name(File, Canonical), _, fail),
+    !.
+canonical_store_file(File, File).
+
 effect_persist_close :-
-    with_mutex(rlm_effect_persist_db,
-               (   db_attached(_)
-               ->  db_detach
-               ;   true
-               )).
+    with_mutex(rlm_effect_persist_db, effect_persist_detach_locked).
+
+effect_persist_detach_locked :-
+    call_cleanup(
+        (   db_attached(_)
+        ->  db_detach
+        ;   true
+        ),
+        release_effect_store_lock).
+
+release_effect_store_lock :-
+    (   retract(effect_store_lock(_, _, Stream))
+    ->  close_effect_store_lock_stream(Stream),
+        release_effect_store_lock
+    ;   true
+    ).
+
+close_effect_store_lock_stream(Stream) :-
+    catch(close(Stream), _, true).
 
 effect_persist_attached(File) :-
     db_attached(File).
