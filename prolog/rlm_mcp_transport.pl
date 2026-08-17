@@ -49,11 +49,11 @@ open_transport(fixture(Kind, Handler), _,
     !,
     memberchk(Kind, [stdio,streamable_http]),
     callable(Handler).
-open_transport(stdio(Executable, Args), Options,
+open_transport(stdio(Executable0, Args), Options,
                mcp_transport{kind:stdio,
                              backend:stdio(Pid, In, Out, Err)}) :-
     !,
-    atom(Executable),
+    normalize_stdio_executable(Executable0, Executable),
     is_list(Args),
     stdio_process_options(Options, ProcessOptions),
     append([ stdin(pipe(In, [encoding(utf8)])),
@@ -63,7 +63,7 @@ open_transport(stdio(Executable, Args), Options,
            ],
            ProcessOptions,
            CreateOptions),
-    process_create(path(Executable), Args, CreateOptions).
+    process_create(Executable, Args, CreateOptions).
 open_transport(streamable_http(Endpoint0), Options,
                mcp_transport{kind:streamable_http,
                              backend:http(Endpoint, Timeout)}) :-
@@ -74,6 +74,21 @@ open_transport(streamable_http(Endpoint0), Options,
     Timeout > 0.
 open_transport(Spec, _, _) :-
     throw(mcp_transport_fault(invalid_transport_spec(Spec))).
+
+normalize_stdio_executable(path(Name), path(Name)) :-
+    atom(Name),
+    Name \== '',
+    !.
+normalize_stdio_executable(Executable, ProcessExecutable) :-
+    atom(Executable),
+    Executable \== '',
+    !,
+    (   is_absolute_file_name(Executable)
+    ->  ProcessExecutable = Executable
+    ;   ProcessExecutable = path(Executable)
+    ).
+normalize_stdio_executable(_, _) :-
+    throw(mcp_transport_fault(invalid_stdio_executable)).
 
 stdio_process_options(Options, ProcessOptions) :-
     internal_option_values(mcp_process_environment, Options, Environments),
