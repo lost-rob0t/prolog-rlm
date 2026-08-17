@@ -232,7 +232,7 @@ prepare_initial([], CallId, Fingerprint, Kind, Request, LogicalKey,
                 Options, execute(Ticket)) :-
     !,
     make_ticket(CallId, Fingerprint, Kind, Request, LogicalKey,
-                1, none, initial, Options.metadata, Ticket).
+                1, none, initial, Options.semantics, Options.metadata, Ticket).
 prepare_initial(Attempts, _, _, _, _, _, _, Outcome) :-
     last(Attempts, Latest),
     decision_for_existing(Latest, Outcome).
@@ -241,7 +241,8 @@ prepare_explicit(Mode, Parent, Kind, Request, LogicalKey, Options, Outcome) :-
     allowed_explicit_parent_status(Parent.status, Parent),
     Sequence is Parent.sequence+1,
     make_ticket(Parent.call_id, Parent.fingerprint, Kind, Request, LogicalKey,
-                Sequence, Parent.attempt_id, Mode, Options.metadata, Ticket),
+                Sequence, Parent.attempt_id, Mode, Options.semantics,
+                Options.metadata, Ticket),
     (   rlm_effect_persist:effect_persist_get_attempt(Ticket.attempt_id, Existing)
     ->  decision_for_existing(Existing, Outcome)
     ;   Outcome = execute(Ticket)
@@ -280,7 +281,7 @@ allowed_explicit_parent_status(_, _) :-
     throw(effect_fault(invalid_parent_status)).
 
 make_ticket(CallId, Fingerprint, Kind, Request, LogicalKey, Sequence,
-            ParentAttempt, Mode, Metadata, Ticket) :-
+            ParentAttempt, Mode, Semantics, Metadata, Ticket) :-
     stable_hash(effect_attempt_identity{call_id:CallId,
                                         fingerprint:Fingerprint,
                                         sequence:Sequence,
@@ -299,6 +300,7 @@ make_ticket(CallId, Fingerprint, Kind, Request, LogicalKey, Sequence,
                            parent_attempt:ParentAttempt,
                            mode:Mode,
                            idempotency_key:IdempotencyKey,
+                           semantics:Semantics,
                            metadata:Metadata,
                            created_at:Now}.
 
@@ -362,22 +364,87 @@ admission_existing(Attempt, error(effect_error{kind:invalid_attempt_state,
     Status = Attempt.status.
 
 validate_ticket(Ticket) :-
-    (   is_dict(Ticket, effect_ticket), ground(Ticket),
-        get_dict(call_id, Ticket, _),
-        get_dict(fingerprint, Ticket, _),
-        get_dict(kind, Ticket, _),
-        get_dict(request, Ticket, _),
-        get_dict(logical_key, Ticket, _),
-        get_dict(attempt_id, Ticket, _),
-        get_dict(sequence, Ticket, _),
-        get_dict(parent_attempt, Ticket, _),
-        get_dict(mode, Ticket, _),
-        get_dict(idempotency_key, Ticket, _),
-        get_dict(metadata, Ticket, _),
-        get_dict(created_at, Ticket, _)
+    (   catch(ticket_shape_valid(Ticket), _, fail)
     ->  true
     ;   throw(effect_fault(invalid_ticket))
+    ),
+    (   catch(ticket_identity_valid(Ticket), _, fail)
+    ->  true
+    ;   throw(effect_fault(invalid_ticket_identity))
     ).
+
+ticket_shape_valid(Ticket) :-
+    is_dict(Ticket, effect_ticket),
+    ground(Ticket),
+    dict_keys(Ticket, Keys0),
+    sort(Keys0, Keys),
+    sort([call_id,fingerprint,kind,request,logical_key,attempt_id,sequence,
+          parent_attempt,mode,idempotency_key,semantics,metadata,created_at],
+         ExpectedKeys),
+    Keys == ExpectedKeys,
+    atom(Ticket.call_id),
+    Ticket.call_id \== '',
+    atom(Ticket.fingerprint),
+    Ticket.fingerprint \== '',
+    require_kind(Ticket.kind),
+    integer(Ticket.sequence),
+    Ticket.sequence >= 1,
+    require_mode(Ticket.mode),
+    normalize_parent(Ticket.parent_attempt, Ticket.parent_attempt),
+    atom(Ticket.attempt_id),
+    Ticket.attempt_id \== '',
+    atom(Ticket.idempotency_key),
+    Ticket.idempotency_key \== '',
+    number(Ticket.created_at),
+    is_dict(Ticket.semantics),
+    is_dict(Ticket.metadata).
+
+ticket_identity_valid(Ticket) :-
+    rlm_effect_normalize(Ticket.request, Request),
+    Request == Ticket.request,
+    normalize_named_dict(semantics, Ticket.semantics, Semantics),
+    Semantics == Ticket.semantics,
+    normalize_named_dict(metadata, Ticket.metadata, Metadata),
+    Metadata == Ticket.metadata,
+    normalize_logical_key(Ticket.logical_key, LogicalKey),
+    LogicalKey == Ticket.logical_key,
+    executable_fingerprint(Ticket.kind, Request, Semantics,
+                           ExpectedFingerprint),
+    Ticket.fingerprint == ExpectedFingerprint,
+    logical_call_id(Ticket.kind, Request, Semantics, LogicalKey,
+                    ExpectedCallId, ExpectedLogicalKey),
+    Ticket.call_id == ExpectedCallId,
+    Ticket.logical_key == ExpectedLogicalKey,
+    rlm_effect_persist:effect_persist_get_call(
+        Ticket.call_id, Ticket.fingerprint, Call),
+    Call.kind == Ticket.kind,
+    Call.request == Ticket.request,
+    Call.logical_key == Ticket.logical_key,
+    validate_ticket_lineage(Ticket),
+    stable_hash(effect_attempt_identity{call_id:Ticket.call_id,
+                                        fingerprint:Ticket.fingerprint,
+                                        sequence:Ticket.sequence,
+                                        parent_attempt:Ticket.parent_attempt,
+                                        mode:Ticket.mode},
+                'effect-attempt:', ExpectedAttemptId),
+    Ticket.attempt_id == ExpectedAttemptId,
+    rlm_effect_idempotency_key(ExpectedAttemptId, ExpectedIdempotencyKey),
+    Ticket.idempotency_key == ExpectedIdempotencyKey.
+
+validate_ticket_lineage(Ticket) :-
+    Ticket.mode == initial,
+    !,
+    Ticket.sequence =:= 1,
+    Ticket.parent_attempt == none.
+validate_ticket_lineage(Ticket) :-
+    memberchk(Ticket.mode, [retry,resample]),
+    Ticket.parent_attempt \== none,
+    rlm_effect_persist:effect_persist_get_attempt(Ticket.parent_attempt, Parent),
+    Parent.call_id == Ticket.call_id,
+    Parent.fingerprint == Ticket.fingerprint,
+    allowed_explicit_parent_status(Parent.status, Parent),
+    ExpectedSequence is Parent.sequence+1,
+    Ticket.sequence =:= ExpectedSequence.
 
 ticket_attempt(Ticket, Authority, Status, Revision, Attempt) :-
     get_time(Now),
