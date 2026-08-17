@@ -15,6 +15,10 @@ and consume response metadata.
 An existing(Transport) spec creates a borrowed transport view. Borrowed clients
 can connect and close without taking ownership of a server process/endpoint;
 the lifecycle owner remains responsible for mcp_transport_stop/2.
+
+The declarative server lifecycle may append the internal options
+`mcp_process_environment/1` and `mcp_process_cwd/1` after hard policy and config
+reference resolution. Public lifecycle runtime options never accept those terms.
 */
 
 :- use_module(library(http/http_open)).
@@ -45,19 +49,21 @@ open_transport(fixture(Kind, Handler), _,
     !,
     memberchk(Kind, [stdio,streamable_http]),
     callable(Handler).
-open_transport(stdio(Executable, Args), _,
+open_transport(stdio(Executable0, Args), Options,
                mcp_transport{kind:stdio,
                              backend:stdio(Pid, In, Out, Err)}) :-
     !,
-    atom(Executable),
+    normalize_stdio_executable(Executable0, Executable),
     is_list(Args),
-    process_create(path(Executable),
-                   Args,
-                   [ stdin(pipe(In, [encoding(utf8)])),
-                     stdout(pipe(Out, [encoding(utf8)])),
-                     stderr(pipe(Err, [encoding(utf8)])),
-                     process(Pid)
-                   ]).
+    stdio_process_options(Options, ProcessOptions),
+    append([ stdin(pipe(In, [encoding(utf8)])),
+             stdout(pipe(Out, [encoding(utf8)])),
+             stderr(pipe(Err, [encoding(utf8)])),
+             process(Pid)
+           ],
+           ProcessOptions,
+           CreateOptions),
+    process_create(Executable, Args, CreateOptions).
 open_transport(streamable_http(Endpoint0), Options,
                mcp_transport{kind:streamable_http,
                              backend:http(Endpoint, Timeout)}) :-
@@ -68,6 +74,67 @@ open_transport(streamable_http(Endpoint0), Options,
     Timeout > 0.
 open_transport(Spec, _, _) :-
     throw(mcp_transport_fault(invalid_transport_spec(Spec))).
+
+normalize_stdio_executable(path(Name), path(Name)) :-
+    atom(Name),
+    Name \== '',
+    !.
+normalize_stdio_executable(Executable, ProcessExecutable) :-
+    atom(Executable),
+    Executable \== '',
+    !,
+    (   is_absolute_file_name(Executable)
+    ->  ProcessExecutable = Executable
+    ;   ProcessExecutable = path(Executable)
+    ).
+normalize_stdio_executable(_, _) :-
+    throw(mcp_transport_fault(invalid_stdio_executable)).
+
+stdio_process_options(Options, ProcessOptions) :-
+    internal_option_values(mcp_process_environment, Options, Environments),
+    internal_option_values(mcp_process_cwd, Options, Cwds),
+    single_internal_value(environment, Environments, Environment),
+    single_internal_value(cwd, Cwds, Cwd),
+    environment_option(Environment, EnvironmentOptions),
+    cwd_option(Cwd, CwdOptions),
+    append(EnvironmentOptions, CwdOptions, ProcessOptions).
+
+internal_option_values(Name, Options, Values) :-
+    findall(Value,
+            ( member(Option, Options),
+              nonvar(Option),
+              Option =.. [Name, Value]
+            ),
+            Values).
+
+single_internal_value(_, [], none) :- !.
+single_internal_value(_, [Value], value(Value)) :- !.
+single_internal_value(Name, _, _) :-
+    throw(mcp_transport_fault(duplicate_internal_process_option(Name))).
+
+environment_option(none, []).
+environment_option(value(Environment), [environment(Environment)]) :-
+    is_list(Environment),
+    ground(Environment),
+    maplist(valid_environment_entry, Environment),
+    !.
+environment_option(value(_), _) :-
+    throw(mcp_transport_fault(invalid_internal_process_environment)).
+
+valid_environment_entry(Name=Value) :-
+    atom(Name),
+    (atom(Value); string(Value)),
+    !.
+valid_environment_entry(_) :-
+    throw(mcp_transport_fault(invalid_internal_process_environment_entry)).
+
+cwd_option(none, []).
+cwd_option(value(Cwd), [cwd(Cwd)]) :-
+    atom(Cwd),
+    is_absolute_file_name(Cwd),
+    !.
+cwd_option(value(_), _) :-
+    throw(mcp_transport_fault(invalid_internal_process_cwd)).
 
 mcp_transport_kind(Transport, Kind) :-
     is_dict(Transport, mcp_transport),
@@ -288,12 +355,25 @@ transport_exception(_, mcp_transport_fault(Detail), error(Error)) :-
     Error = mcp_transport_error{kind:transport_error,
                                 detail:Detail,
                                 message:"MCP transport operation failed"}.
+transport_exception(open, Exception, error(Error)) :-
+    !,
+    exception_summary(Exception, Summary),
+    Error = mcp_transport_error{kind:transport_exception,
+                                operation:open,
+                                exception:Summary,
+                                message:"MCP transport open raised an exception"}.
 transport_exception(Operation, Exception, error(Error)) :-
     term_string(Exception, Safe, [quoted(true), numbervars(true)]),
     Error = mcp_transport_error{kind:transport_exception,
                                 operation:Operation,
                                 exception:Safe,
                                 message:"MCP transport raised an exception"}.
+
+exception_summary(Exception, exception(Name, Arity)) :-
+    nonvar(Exception),
+    functor(Exception, Name, Arity),
+    !.
+exception_summary(_, exception(unknown, 0)).
 
 transport_control_exception(rlm_async_cancelled(_)).
 transport_control_exception(rlm_cancelled(_)).
