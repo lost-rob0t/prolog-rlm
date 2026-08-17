@@ -31,10 +31,53 @@ test(non_reconcilable_remote_stays_indeterminate_after_restart) :-
                         Ledger, Remote) ),
         cleanup_restart_files([Ledger, Remote])).
 
+test(effect_store_rejects_second_process_owner_and_recovers_after_sigkill) :-
+    restart_store_path(owner, Ledger, LockFile),
+    setup_call_cleanup(
+        true,
+        run_store_owner_fixture(Ledger),
+        cleanup_restart_files([Ledger, LockFile])).
+
 restart_fixture_paths(Tag, Ledger, Remote) :-
     tmp_file(rlm_effect_restart, Base),
     atomic_list_concat([Base, '-', Tag, '-ledger.db'], Ledger),
     atomic_list_concat([Base, '-', Tag, '-remote.term'], Remote).
+
+restart_store_path(Tag, Ledger, LockFile) :-
+    tmp_file(rlm_effect_restart, Base),
+    atomic_list_concat([Base, '-', Tag, '-ledger.db'], Ledger),
+    atom_concat(Ledger, '.lock', LockFile).
+
+run_store_owner_fixture(Ledger) :-
+    absolute_file_name('test/effect_store_owner_phase1.pl', Script,
+                       [access(read)]),
+    append(['-q', '-s', Script, '--'], [Ledger], ProcessArguments),
+    setup_call_cleanup(
+        process_create(path(swipl), ProcessArguments,
+                       [ process(Pid),
+                         stdin(pipe(In)),
+                         stdout(pipe(Out))
+                       ]),
+        ( read_line_to_string(Out, Marker),
+          assertion(Marker == "owner_ready"),
+          run_swipl('test/effect_store_contender.pl',
+                    [Ledger, blocked],
+                    BlockedStatus),
+          assertion(BlockedStatus == exit(0)),
+          process_kill(Pid, kill),
+          process_wait(Pid, KilledStatus),
+          assertion(KilledStatus = killed(_)),
+          run_swipl('test/effect_store_contender.pl',
+                    [Ledger, open],
+                    ReopenStatus),
+          assertion(ReopenStatus == exit(0)) ),
+        cleanup_owner_process(Pid, In, Out)).
+
+cleanup_owner_process(Pid, In, Out) :-
+    catch(close(In), _, true),
+    catch(close(Out), _, true),
+    catch(process_kill(Pid, kill), _, true),
+    catch(process_wait(Pid, _), _, true).
 
 run_crash_phase(Ledger, Remote) :-
     absolute_file_name('test/effect_restart_phase1.pl', Script, [access(read)]),
