@@ -4,7 +4,7 @@ This backlog is intentionally broader than the first runnable RLM. Work should l
 
 ## Status convention
 
-Status reconciled against canonical `main` commit `abfc30ebb9f335d5841c1f7910bd474da905ebcf` on 2026-08-18.
+Status reconciled against canonical `main` commit `abfc30ebb9f335d5841c1f7910bd474da905ebcf` on 2026-08-18, with the post-merge issue-state audit completed after PR #89.
 
 - `[x]` means the implementation/documentation/test surface represented by that checkbox is present on `main` and sufficiently verified.
 - `[ ]` means meaningful work remains, the surface is only partially covered, or a known open defect prevents treating the aggregate contract as complete.
@@ -28,11 +28,10 @@ The generic #57 effect substrate is already merged through #78, #83, and #85. Th
 ### Documentation and hygiene work
 
 - #67 — registry destruction still does not automatically clear loader idempotency bookkeeping.
-- #73 — `docs/external-tool-libraries.md` still describes completed #52 MCP policy work as pending; this reconciliation corrects that documentation and the issue should close only after the correction lands on `main`.
 
 ### Completed historical foundations
 
-The external loader boundary (#48), declarative MCP policy/config boundary (#52), host authority and pending-operation boundary (#53/#63/#64), and generic durable effect substrate/hardening/migration (#78/#83/#85) are merged. The PrologAgent product roadmap itself landed in #87.
+The external loader boundary (#48), declarative MCP policy/config boundary (#52), host authority and pending-operation boundary (#53/#63/#64), generic durable effect substrate/hardening/migration (#78/#83/#85), and external-tool documentation refresh (#73) are complete. The PrologAgent product roadmap itself landed in #87.
 
 GitHub Actions remains the authoritative executable gate. Do not encode a transient “latest CI run” result here as durable project state; preserve open CI-contract defects such as #46 until their acceptance criteria actually land.
 
