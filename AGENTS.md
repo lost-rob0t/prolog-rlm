@@ -83,6 +83,8 @@ Legacy PR-#78 journals require the explicit offline migration flow documented in
 
 When a PR changes PrologAgent readiness, dependencies, milestone status, tool availability, approval behavior, project policy, or TUI-facing runtime contracts, update the roadmap in the same PR. Do not mark a phase complete from worker prose alone: reconcile it with merged code, tests, docs, and required CI evidence.
 
+When changing TODO/roadmap status or completing a slice, reconcile the related GitHub parent/child issue bodies and state in the same slice. Remove stale completion/blocker prose. GitHub state, TODO state, roadmap state, and merged implementation evidence must not knowingly diverge.
+
 If issue text, the roadmap, and current code disagree, current merged code/tests are the execution truth. Update stale documentation rather than coding to an obsolete checklist.
 
 ## Verification commands
