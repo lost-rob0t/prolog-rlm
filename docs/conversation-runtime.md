@@ -12,11 +12,14 @@ complete durable transcript
         +--> existing warm artifacts
         |      ranked + representation-selected
         |
+        +--> synthetic cold-history boundary
+        |      tells the model how to fetch omitted history
+        |
         `--> lazy cold RLM context
              peek / slice / search on demand
 ```
 
-Old turns leaving active attention are never deleted. Creating new warm state is explicit; consuming existing warm state is integrated into the normal managed runtime when a warm store is configured.
+Old turns leaving active attention are never deleted or rewritten. The cold-history boundary exists only in the provider-visible projection. Creating new warm state is explicit; consuming existing warm state is integrated into the normal managed runtime when a warm store is configured.
 
 ## Public API
 
@@ -50,13 +53,14 @@ History selectors include `all`, `recent(Count)`, `range(Start, End)`, `before(S
 The public `rlm:conversation_turn/4`:
 
 1. resolves configured existing warm artifacts into candidate context units;
-2. delegates to the durable conversation layer, which persists the current user turn;
-3. compiles the bounded hot + warm active context under the configured token ceiling;
-4. registers an ephemeral opaque context handle over the complete durable transcript;
-5. calls `rlm_completion/4`;
-6. lets RLM use bounded `peek`, `slice`, or `search` operations when colder history is needed;
-7. deletes only the ephemeral handle;
-8. persists the assistant result.
+2. derives a synthetic cold-history boundary when history exists outside the guaranteed hot tail;
+3. delegates to the durable conversation layer, which persists the current user turn;
+4. compiles hot + warm + boundary context under the configured token ceiling;
+5. registers an ephemeral opaque context handle over the complete durable transcript;
+6. calls `rlm_completion/4`;
+7. lets RLM use bounded `peek`, `slice`, or `search` operations when colder history is needed;
+8. deletes only the ephemeral handle;
+9. persists the assistant result.
 
 `rlm_completion/4` remains stateless and can still be used independently.
 
@@ -87,13 +91,39 @@ A model advertising one million tokens therefore does not grant permission to co
 
 Fixed model-visible sections, selected context units, output reserve, and safety margin all enter one token ledger. Host-only metadata is measured separately and is not charged against the provider window.
 
+The synthetic cold-history boundary is a mandatory context unit, so its provider-visible text is charged in the same ledger rather than appearing as invisible prompt overhead.
+
 The stage ledger records observed, charged, and cumulative tokens for each compilation step so callers can see where the window went.
 
 ## Context packing
 
 `rlm_context_budget` uses CLP(FD) to select the highest-utility set of representations that satisfies the hard token ceiling. Mandatory units cannot be silently omitted. Optional units may be omitted or represented in alternate forms.
 
-The same solver therefore accounts for hot conversation turns, warm representations, tool schemas, MCP schemas, project context, skills, and other compiler units instead of creating separate token-budget systems.
+The same solver therefore accounts for hot conversation turns, warm representations, the cold-history boundary, tool schemas, MCP schemas, project context, skills, and other compiler units instead of creating separate token-budget systems.
+
+## Cold-history boundary
+
+The runtime never edits an old durable message to tell the model that history was evicted. Doing that would corrupt transcript semantics and falsely attribute runtime instructions to a user or assistant.
+
+Instead, when the projected conversation extends beyond `min_recent_turns`, `rlm_conversation_runtime` adds a synthetic mandatory context unit named `managed_cold_history_boundary`. It reports the prefix that lies outside the guaranteed hot tail and tells the planner how to recover original turns through the opaque conversation context.
+
+The rendered instruction includes bounded operations such as:
+
+```prolog
+context(input(context), search("query"), Result).
+context(input(context), slice(Start, Length), Result).
+context(input(context), peek(item(Index)), Result).
+```
+
+The boundary deliberately says older sequences *may* be absent from active attention. The solver can still retain extra old material or warm representations when budget and utility justify it. The cold transcript remains authoritative regardless.
+
+Boundary status is exposed on managed pack/turn context as `cold_history_boundary`. For debugging or specialized callers it may be disabled explicitly with:
+
+```prolog
+cold_history_boundary(false)
+```
+
+The default is enabled.
 
 ## Warm context is wired in; automatic compaction is not
 
