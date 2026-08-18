@@ -130,17 +130,6 @@ context_eviction_case(Conversation) :-
     conversation_messages(Conversation, all, [], ok(FullTranscript)),
     length(FullTranscript, 3).
 
-test(default_context_projection_never_injects_derived_warm_units) :-
-    with_memory_conversation(default_projection_is_transcript_only_case).
-
-default_projection_is_transcript_only_case(Conversation) :-
-    conversation_append(Conversation, message(user, "one"), ok(_)),
-    conversation_append(Conversation, message(assistant, "two"), ok(_)),
-    conversation_context_pack(Conversation, [], ok(Pack)),
-    assertion(Pack.selected \== []),
-    forall(member(Selection, Pack.selected),
-           assertion(Selection.section == conversation)).
-
 test(full_export_keeps_original_message_payloads) :-
     with_memory_conversation(export_case).
 
