@@ -1,0 +1,352 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-010-symbolic-prompt-compiler
+:END:
+#+title: RLM-RESEARCH-010 Symbolic Prompt and Capability Compiler
+#+status: RESEARCHED
+#+filetags: :rlm:prompt:compiler:skills:tools:mcp:routing:capabilities:
+
+* Research Question
+
+How should prolog-rlm select and assemble only the instructions, skills, tools, MCP capabilities, resources, and provider-facing schemas relevant to a model turn, while preserving deterministic authority boundaries and making every inclusion explainable?
+
+The desired behavior is broader than prompt templating. User input, model output, runtime state, registered skills, local tools, MCP servers, and host policy should contribute evidence to a symbolic compilation step. The result should be a bounded, auditable model-visible execution environment rather than a monolithic prompt containing every available capability.
+
+* Primary Sources
+
+- Anthropic Agent Skills overview: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview
+- Anthropic Skill authoring best practices: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices
+- Anthropic Tool Search: https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
+- Anthropic tool context management: https://platform.claude.com/docs/en/agents-and-tools/tool-use/manage-tool-context
+- Microsoft Semantic Kernel Contextual Function Selection: https://learn.microsoft.com/en-us/semantic-kernel/frameworks/agent/agent-contextual-function-selection
+- MCP tools specification: https://modelcontextprotocol.io/specification/2025-11-25/server/tools
+- MCP prompts specification: https://modelcontextprotocol.io/specification/2025-11-25/server/prompts
+- MCP resources specification: https://modelcontextprotocol.io/specification/2025-11-25/server/resources
+- MCP 2026-07-28 release notes: https://blog.modelcontextprotocol.io/posts/2026-07-28/
+- ScaleMCP: https://arxiv.org/abs/2505.06416
+- RAG-MCP: https://arxiv.org/abs/2505.03275
+- Semantic Tool Discovery for LLMs: https://arxiv.org/abs/2603.20313
+
+Retrieved or rechecked 2026-08-18.
+
+* Findings
+
+** Progressive disclosure is now a recurring agent architecture pattern
+
+Anthropic Agent Skills load lightweight metadata first and load full Skill instructions only when the Skill becomes relevant. Skill descriptions are explicitly treated as discovery metadata and are expected to state both what the Skill does and when it should be selected.
+
+Anthropic Tool Search applies the same principle to tools. Deferred tool definitions stay out of the initial model context; regex or BM25 search selects a small relevant subset on demand. Anthropic documents both context-bloat and tool-selection degradation as reasons not to expose a large flat tool catalog to the model.
+
+Microsoft Semantic Kernel independently implements Contextual Function Selection: only functions retrieved as relevant to the current conversation are advertised to the model.
+
+The shared conclusion is that large static capability lists are not merely inefficient. They make model selection harder. prolog-rlm should therefore treat model-visible context as a compiled projection of a larger runtime catalog.
+
+** MCP already supplies discoverable metadata, but not the host-side compiler
+
+MCP servers expose tool names, descriptions, input schemas, prompts, resources, and capability metadata through standardized discovery operations. The 2026-07-28 revision makes =tools/list=, =prompts/list=, =resources/list=, and =resources/read= cacheable using =ttlMs= and =cacheScope=, making a local synchronized catalog practical.
+
+MCP deliberately leaves the host responsible for how resources enter model context. Tool annotations are also explicitly untrusted unless the server itself is trusted. Therefore MCP metadata is suitable compiler input, but it must not become authority by itself.
+
+** Retrieval alone is insufficient for prolog-rlm
+
+ScaleMCP, RAG-MCP, Semantic Tool Discovery, Anthropic Tool Search, and Semantic Kernel all provide evidence that lexical or semantic retrieval can reduce prompt size and improve tool selection.
+
+However, retrieval answers only which items look relevant. It does not naturally encode dependency closure, negative evidence, host authority, capability narrowing, conflicts, mandatory policy instructions, or an explanation proof.
+
+Those are the parts where a Prolog compiler adds value.
+
+* Current prolog-rlm Seam
+
+The current completion path already separates trusted execution from model-visible schemas.
+
+=rlm_completion= obtains capability options, builds runtime tools, discovers registered tool schemas, and passes those schemas into =planner_prompt/7=. The current planner prompt therefore receives the discovered registry as one flat model-visible collection.
+
+=rlm_tool= separately owns registration, schema normalization, capability authorization, authority decisions, and trusted invocation. Child capability narrowing is already fail-closed.
+
+=rlm_mcp= already normalizes tools, prompts, and resources behind a protocol-version-neutral facade.
+
+The compiler should therefore sit above these execution boundaries:
+
+#+begin_example
+request/runtime event
+        |
+        v
+signal extraction
+        |
+        v
+catalog candidate selection
+        |
+        v
+dependency closure
+        |
+        v
+capability + authority filtering
+        |
+        v
+budget/conflict resolution
+        |
+        v
+compiled context IR
+        |
+        +--> provider prompt fragments
+        +--> selected tool schemas
+        +--> selected MCP capabilities/resources
+        +--> trace/explanation
+        |
+        v
+existing trusted execution runtime
+#+end_example
+
+The compiler selects what the model may see or request. It does not execute tools and does not grant authority.
+
+* Core Invariant: Activation Is Not Authorization
+
+User text and model output may produce activation candidates. They must never widen authority.
+
+The required distinction is:
+
+#+begin_example
+candidate(Unit) != available(Unit) != authorized(Unit)
+#+end_example
+
+A model output such as =needs([capability(repository_history)])= may request semantic capability resolution, but the compiler must intersect that request with host-configured capabilities, child capability narrowing, authority policy, and actual registered providers before exposing an executable tool.
+
+Prompt injection or malicious Skill content therefore cannot grant capabilities merely by mentioning a tool, MCP server, or operation.
+
+* Common Compilation Unit Model
+
+Skills, tools, MCP servers, MCP tools, prompts, resources, static instructions, model hints, and future agent templates should share one metadata algebra instead of growing separate routing systems.
+
+A minimal logical model is:
+
+#+begin_src prolog
+unit(skill(github_review)).
+unit(tool(github_diff)).
+unit(mcp(github)).
+unit(instruction(tdd)).
+unit(resource(project_rules)).
+
+trigger(Unit, Signal, Weight).
+requires(Unit, Dependency).
+suggests(Unit, Dependency).
+conflicts(Unit, Other).
+supersedes(Unit, Other).
+requires_capability(Unit, Capability).
+cost(Unit, prompt_tokens(Estimate)).
+priority(Unit, Priority).
+#+end_src
+
+The catalog remains descriptive. Executable handler terms stay in trusted registries and never enter model-authored data.
+
+* Signals and Evidence
+
+Keywords and verbs are useful, but they are evidence rather than imperative routing commands.
+
+Signal classes should include at least:
+
+- explicit API or user selection;
+- structured intent terms;
+- phrase matches;
+- verb/object relationships;
+- keywords and aliases;
+- negation and exclusion evidence;
+- runtime-state facts;
+- tool or verification failures;
+- model-authored semantic =needs(...)= requests;
+- optional retrieval scores from BM25 or embeddings.
+
+Explicit user selection should dominate heuristic selection. Negative statements such as "do not use GitHub" must suppress ordinary lexical matches.
+
+A reasonable ordering is explicit selection, deterministic structured rules, lexical retrieval, optional semantic retrieval, optional model hints. Final selection always remains a deterministic Prolog policy decision.
+
+* Dependency Closure
+
+Selection must be transitive.
+
+A Skill may require tools and policy instructions. A tool may require an MCP server. That MCP server may require a network capability. The compiler should compute the closure before rendering the context.
+
+Example:
+
+#+begin_src prolog
+requires(skill(github_review), tool(github_diff)).
+requires(tool(github_diff), mcp(github)).
+requires(mcp(github), capability(network(github))).
+#+end_src
+
+The model expresses semantic strategy while Prolog resolves concrete runtime dependencies. This is preferable to teaching every model the exact names and topology of every MCP implementation.
+
+* Intermediate Representation
+
+Compilation should not directly concatenate strings. It should produce an inspectable immutable IR and render that IR for a provider afterward.
+
+Proposed shape:
+
+#+begin_src prolog
+compiled_context{
+    input:Input,
+    signals:Signals,
+    selected:Selected,
+    dependencies:Dependencies,
+    rejected:Rejected,
+    reasons:Reasons,
+    capabilities:Capabilities,
+    instructions:Instructions,
+    skills:Skills,
+    tools:Tools,
+    mcp_servers:MCPServers,
+    resources:Resources,
+    estimated_prompt_tokens:TokenEstimate,
+    fingerprint:Fingerprint
+}.
+#+end_src
+
+Provider rendering must remain separate because one backend may accept native tool schemas, another may support deferred tool references, and a simple completion backend may require textual serialization.
+
+* Incremental Compilation
+
+Compilation should occur at model-context boundaries rather than only once at the beginning of a run.
+
+Recompile when relevant state changes, including:
+
+- new user input;
+- model output declaring a semantic need;
+- a tool or verification result introducing new evidence;
+- capability or authority changes;
+- MCP catalog refresh or expiry;
+- delegation to a child agent;
+- budget changes;
+- mode or workflow-stage changes.
+
+If the relevant input fingerprint is unchanged, the prior compiled IR should be reusable. This supports prompt caching and avoids repeated catalog work.
+
+* MCP Catalog Policy
+
+Do not connect every MCP server and dump every tool into every prompt.
+
+Maintain lightweight server and tool metadata in a synchronized catalog. Use MCP list caching rules when available. Resolve likely servers first, then tools, then render only the selected schemas/resources.
+
+MCP names must be namespaced by server identity in the host catalog because MCP tool names are unique only within one server. Server-supplied descriptions and annotations may influence retrieval, but trusted host policy determines availability and authority.
+
+* Budgeted Selection
+
+The first implementation can use deterministic thresholds and hard ceilings. The architecture should not prevent later optimization under a prompt-token budget.
+
+Conceptually:
+
+#+begin_example
+maximize relevance/utility
+subject to:
+  mandatory dependency closure
+  capability policy
+  conflict rules
+  prompt-token ceiling
+  required policy instructions
+#+end_example
+
+Do not begin with a complicated optimizer. A deterministic score + mandatory dependency closure + pruning policy is sufficient for the first slice and easier to prove correct.
+
+* Explainability and Trace
+
+Every selected and rejected unit should be explainable.
+
+The compiler should preserve evidence such as:
+
+#+begin_src prolog
+selected(skill(github_review),
+         because([signal(phrase("pull request"), 30),
+                  signal(verb(review), 20)])).
+
+selected(tool(github_diff),
+         because([required_by(skill(github_review))])).
+
+rejected(tool(delete_branch),
+         because([capability_denied(tool(delete_branch))])).
+#+end_src
+
+The production trace does not need to serialize raw Prolog proof trees exactly in this form, but it must preserve sufficient structured reasons to answer why a unit was included or excluded.
+
+* Rejected or Avoided Alternatives
+
+** Flat always-loaded catalog
+
+Rejected for the scalable path. It wastes context and creates a larger model action space. It may remain an explicit compatibility/debug mode for experiments.
+
+** Keyword-only routing
+
+Rejected. Keywords fail on negation, paraphrase, ambiguity, and multi-intent requests. Lexical terms should contribute weighted evidence only.
+
+** Embedding-only routing
+
+Rejected as the authority mechanism. Embeddings are useful candidate generators but cannot safely express authorization, mandatory dependencies, or deterministic negative policy.
+
+** LLM-only routing
+
+Rejected as the canonical selector. A model may produce semantic hints or =needs(...)= requests, but model output cannot be allowed to widen host capabilities or become the only source of selection truth.
+
+** Separate routers for Skills, tools, MCP, resources, and instructions
+
+Rejected. Separate routers duplicate semantics and make cross-kind dependency closure difficult. Use one compilation-unit algebra with kind-specific rendering/adapters.
+
+** Compiler-owned tool execution
+
+Rejected. The compiler determines model visibility and admissible references. Existing trusted tool/MCP execution and authority layers remain authoritative.
+
+* Proposed Public Boundary
+
+The exact predicate names are implementation details, but the public conceptual boundary should support:
+
+#+begin_src prolog
+prompt_catalog_create(-Catalog).
+prompt_catalog_register(+Catalog, +Unit, -Outcome).
+prompt_compile(+Catalog, +Input, +Options, -Outcome).
+prompt_recompile(+Compiled0, +Event, +Options, -Outcome).
+prompt_explain(+Compiled, +Unit, -Outcome).
+prompt_render(+Compiled, +Provider, -Outcome).
+#+end_src
+
+A later search primitive may expose bounded catalog search to a model, but the first implementation should prove deterministic host-side compilation before adding model-driven dynamic discovery.
+
+* Implementation Slice
+
+The first implementation should stay bounded:
+
+1. add a process-local compilation-unit catalog;
+2. support skills, instructions, and existing registered local tool schemas as units;
+3. support explicit, phrase, keyword, verb/object, and negation signals;
+4. compute weighted candidate scores and dependency closure;
+5. intersect selected executable units with existing capability policy;
+6. produce immutable compiled-context IR with structured reasons;
+7. render selected tool schemas into the existing planner prompt path instead of all registry schemas;
+8. preserve an explicit compatibility option that exposes all tools for baseline experiments;
+9. add MCP metadata as catalog units through the existing normalized MCP facade, without reimplementing MCP transport;
+10. defer embeddings, learned routers, and optimization solvers until deterministic behavior is proven.
+
+* Acceptance Experiments
+
+- [ ] exact Skill-trigger phrases select the expected Skill and dependencies;
+- [ ] paraphrased requests can be handled by configured aliases/phrases without requiring an LLM router;
+- [ ] "do not use X" suppresses ordinary positive lexical evidence for X;
+- [ ] a model-authored =needs(...)= term can activate a candidate but cannot widen capabilities;
+- [ ] transitive Skill -> tool -> MCP dependency closure is deterministic;
+- [ ] unavailable or unauthorized dependencies fail closed or remove the dependent unit with a structured reason according to policy;
+- [ ] a child compilation cannot expose capabilities outside the parent capability set;
+- [ ] planner prompts contain only selected tool schemas by default;
+- [ ] all-tools compatibility mode reproduces the previous model-visible schema behavior;
+- [ ] compiled IR has a stable fingerprint for identical catalog/input/policy state;
+- [ ] every selected/rejected unit has structured explanation evidence;
+- [ ] MCP cache metadata can refresh catalog entries without changing the compiler API;
+- [ ] deterministic tests compare compiler selection against flat-all-tools baseline at 10, 100, 1,000, and synthetic 5,000-tool catalog sizes;
+- [ ] benchmarks record required-unit recall, irrelevant-unit precision, prompt tokens, compile latency, model/tool-selection errors, and end-to-end task success.
+
+* Open Questions
+
+- Whether the public name should remain "prompt compiler" while the internal API uses a broader context/request compiler name.
+- Whether provider-specific deferred-tool mechanisms should be targeted directly or treated only as renderer optimizations over the same IR.
+- Whether Skills should store their trigger metadata directly in Prolog, derive it from a SKILL.md-like manifest, or support both.
+- What score normalization should be used when deterministic evidence and optional retrieval scores are mixed.
+- Whether failure of a required dependency should reject the parent unit or compile it in a degraded non-executable form; this should be explicit per unit, not guessed.
+
+* Conclusion
+
+A first-class symbolic prompt compiler fits prolog-rlm's existing architecture and thesis. The model should choose semantic strategy; Prolog should decide which runtime knowledge and capabilities are exposed, prove why they were selected, enforce dependency and authority constraints, and render a bounded provider-specific context.
+
+The novel value is not keyword routing by itself. It is the combination of progressive disclosure, retrieval-assisted candidate generation, Prolog dependency closure, capability-safe filtering, bounded context assembly, incremental recompilation, and explainable selection over one shared unit algebra.
