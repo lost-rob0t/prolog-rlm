@@ -271,11 +271,16 @@ conversation_context_pack_(Conversation, Options, Pack) :-
     option(visible_sections(SectionSpecs), Options, []),
     require_list(SectionSpecs, visible_sections),
     compile_sections(SectionSpecs, TokenOptions, Sections),
+    option(context_units(ExtraUnits), Options, []),
+    require_list(ExtraUnits, context_units),
+    covered_source_refs(ExtraUnits, CoveredRefs),
     conversation_messages_(Conversation, all, [], Messages),
     messages_context_units(Messages,
                            Policy.min_recent_turns,
+                           CoveredRefs,
                            TokenOptions,
-                           Units),
+                           MessageUnits),
+    append(MessageUnits, ExtraUnits, Units),
     context_pack(Units, Sections, Policy, PackOutcome),
     require_budget_outcome(PackOutcome, BudgetPack),
     Pack = conversation_context_pack{conversation_id:Conversation.id,
@@ -312,21 +317,64 @@ compile_section(Section, _, Section) :-
 compile_section(Spec, _, _) :-
     throw(conversation_fault(invalid_visible_section(Spec))).
 
-messages_context_units(Messages, MinRecent, TokenOptions, Units) :-
+covered_source_refs(Units, Refs) :-
+    findall(Ref,
+            ( member(Unit, Units),
+              is_dict(Unit),
+              get_dict(variants, Unit, Variants),
+              member(Variant, Variants),
+              is_dict(Variant),
+              get_dict(value, Variant, Value),
+              is_dict(Value),
+              get_dict(source_refs, Value, SourceRefs),
+              member(Ref, SourceRefs) ),
+            Refs0),
+    sort(Refs0, Refs).
+
+messages_context_units(Messages,
+                       MinRecent,
+                       CoveredRefs,
+                       TokenOptions,
+                       Units) :-
     length(Messages, Count),
     MandatoryStart is max(1, Count-MinRecent+1),
     messages_context_units(Messages,
                            1,
                            MandatoryStart,
+                           CoveredRefs,
                            TokenOptions,
                            Units).
 
-messages_context_units([], _, _, _, []).
+messages_context_units([], _, _, _, _, []).
 messages_context_units([Message|Messages],
                        Position,
                        MandatoryStart,
+                       CoveredRefs,
                        TokenOptions,
-                       [Unit|Units]) :-
+                       Units) :-
+    (   Position < MandatoryStart,
+        memberchk(Message.ref, CoveredRefs)
+    ->  Units = Rest
+    ;   message_context_unit(Message,
+                             Position,
+                             MandatoryStart,
+                             TokenOptions,
+                             Unit),
+        Units = [Unit|Rest]
+    ),
+    Next is Position+1,
+    messages_context_units(Messages,
+                           Next,
+                           MandatoryStart,
+                           CoveredRefs,
+                           TokenOptions,
+                           Rest).
+
+message_context_unit(Message,
+                     Position,
+                     MandatoryStart,
+                     TokenOptions,
+                     Unit) :-
     render_message(Message, Rendered),
     token_count_text(Rendered, TokenOptions, TokenOutcome),
     require_budget_outcome(TokenOutcome, TokenCount),
@@ -344,13 +392,7 @@ messages_context_units([Message|Messages],
     Unit = context_unit{id:UnitId,
                         section:conversation,
                         mandatory:Mandatory,
-                        variants:[Variant]},
-    Next is Position+1,
-    messages_context_units(Messages,
-                           Next,
-                           MandatoryStart,
-                           TokenOptions,
-                           Units).
+                        variants:[Variant]}.
 
 /* -------------------------------------------------------------------------
  * Managed RLM turn
@@ -490,12 +532,22 @@ normalize_search_text(false, Text, Normalized) :-
     string_lower(Text, Normalized).
 
 render_selected_context(Selections, Text) :-
-    findall(Rendered,
-            ( member(Selection, Selections),
-              Selection.section == conversation,
-              render_message(Selection.value, Rendered) ),
-            RenderedMessages),
-    atomics_to_string(RenderedMessages, "\n", Text).
+    maplist(render_context_selection, Selections, Rendered),
+    atomics_to_string(Rendered, "\n", Text).
+
+render_context_selection(Selection, Text) :-
+    (   Selection.section == conversation
+    ->  render_message(Selection.value, Text)
+    ;   render_context_value(Selection.value, Text)
+    ).
+
+render_context_value(Value, Text) :-
+    is_dict(Value),
+    get_dict(text, Value, Text0),
+    !,
+    render_content(Text0, Text).
+render_context_value(Value, Text) :-
+    render_content(Value, Text).
 
 render_message(Message, Text) :-
     render_content(Message.content, Content),
