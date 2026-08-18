@@ -15,6 +15,7 @@
 :- use_module('../prolog/rlm_evidence', []).
 :- use_module('../prolog/rlm_assertion', []).
 :- use_module('../prolog/rlm_spec', []).
+:- use_module('../prolog/rlm_spec_lang', []).
 :- use_module('../prolog/rlm_verify', []).
 :- use_module('../prolog/rlm_spec_workflow', []).
 
@@ -23,6 +24,7 @@ main(_) :-
         rlm_evidence:rlm_evidence_ready,
         rlm_assertion:rlm_assertion_ready,
         rlm_spec:rlm_spec_ready,
+        rlm_spec_lang:rlm_spec_lang_ready,
         rlm_verify:rlm_verify_ready,
         rlm_spec_workflow:rlm_spec_workflow_ready
     ->  halt(0)
