@@ -1,33 +1,23 @@
 # Lazy cold conversation context
 
-Managed conversations keep a complete durable transcript without copying that lifetime history into every RLM call.
+Managed conversations keep a complete durable transcript without copying lifetime history into every RLM call.
 
-The cold layer uses the generic trusted adapter boundary in `rlm_context`:
+The default path is:
 
 ```text
-conversation transcript store
+complete durable transcript
         |
-        | ground conversation_ref only
-        v
-context adapter registry
+        +--> bounded active hot context
         |
-        v
-opaque context_handle
-        |
-        +-- metadata
-        +-- peek
-        +-- slice
-        +-- search
-        |
-        v
-bounded context_result + trace
+        `--> opaque cold-history handle
+             peek / slice / search on demand
 ```
 
-The active provider prompt still contains the token-budgeted hot/warm working set. The opaque handle represents historical state that can be searched or sliced only when the planner decides it is needed.
+Warm/derived context is an optional explicit feature. It is not automatically generated or loaded by managed turns.
 
 ## Generic trusted adapter boundary
 
-`rlm_context` now provides host/library APIs:
+`rlm_context` provides trusted host/library APIs:
 
 ```prolog
 context_adapter_register(+Name,
@@ -45,34 +35,28 @@ context_register_adapter(+Name,
                          -Outcome).
 ```
 
-These are trusted runtime APIs, not model-callable tools. Ordinary `context_register/3` still accepts only `text(Text)` and `terms(List)` and cannot install callbacks from source data.
+These are runtime APIs, not model-callable tools. Ordinary `context_register/3` still accepts only `text(Text)` and `terms(List)` and cannot install callbacks from model-authored data.
 
-Adapter capabilities explicitly declare allowed context operations. An adapter cannot execute an undeclared operation even if its callback happens to support one.
-
-A live adapter-backed handle prevents the adapter definition from being unregistered underneath it.
+Adapter capabilities explicitly declare allowed operations. Live adapter-backed handles prevent their adapter definition from being removed underneath them.
 
 ## Enforcement stays in `rlm_context`
 
-Adapters resolve source semantics, but they do not own the final output boundary.
-
-For every adapter operation, `rlm_context` still owns:
+Adapters resolve source semantics, but `rlm_context` still owns:
 
 - opaque handle/version validation;
-- adapter capability checks;
+- capability checks;
 - wall-time limits;
 - `max_results`;
 - `max_bytes`;
 - structured errors;
 - output truncation;
-- trace sequence/timestamps;
-- bytes returned;
-- tombstones after handle deletion.
+- tracing and tombstones.
 
-The core re-bounds adapter callback output before producing a `context_result`. A trusted adapter therefore cannot accidentally bypass result-count or provider-visible byte limits merely by returning a larger value.
+Adapter output is re-bounded by the core before becoming a `context_result`.
 
 ## Conversation cold handles
 
-The top-level conversation API exposes:
+The conversation API exposes:
 
 ```prolog
 conversation_cold_context(+Conversation,
@@ -80,20 +64,7 @@ conversation_cold_context(+Conversation,
                           -Outcome).
 ```
 
-The returned metadata contains safe source information such as:
-
-```prolog
-conversation_source{
-    kind:conversation,
-    bytes:unknown,
-    items:MessageCount,
-    conversation_id:ConversationId,
-    source_revision:LatestSequence,
-    store_backend:memory_or_persist
-}
-```
-
-It does not expose the full transcript.
+Safe metadata identifies the durable source without exposing the transcript payload.
 
 The conversation adapter supports:
 
@@ -105,18 +76,16 @@ context_slice(Handle, Start, Length, Options, Outcome).
 context_search(Handle, Pattern, Options, Outcome).
 ```
 
-Indexes for `item/1` and `slice/2` are zero-based, matching the existing context runtime. Returned views keep exact durable message refs, sequence, role, and content.
+Indexes for `item/1` and `slice/2` are zero-based. Returned views keep exact durable message refs, sequence, role, and content.
 
-Partition/map/reduce are intentionally not declared for the conversation adapter in this slice. Unsupported operations fail through the normal capability boundary instead of silently inventing semantics.
+Partition/map/reduce are intentionally not part of this adapter contract yet.
 
 ## Managed turn behavior
-
-`conversation_turn/4` now:
 
 ```text
 persist current user turn
         |
-compile hot/warm context under max_context_tokens
+compile bounded active hot context
         |
 register ephemeral conversation cold handle
         |
@@ -129,9 +98,9 @@ delete only ephemeral context handle
 persist assistant result
 ```
 
-The durable conversation is never deleted when the ephemeral context handle is cleaned up.
+The durable conversation is never deleted when the ephemeral handle is cleaned up.
 
-When the caller does not provide an explicit `capabilities(...)` option, managed turns grant only the minimal context capabilities needed for cold retrieval in addition to the existing model/RLM defaults:
+If the caller does not provide explicit capabilities, managed turns add only the minimal cold-retrieval capabilities beside their normal model/RLM capabilities:
 
 ```prolog
 context(peek)
@@ -139,26 +108,25 @@ context(slice)
 context(search)
 ```
 
-If the caller supplies an explicit capability set, the conversation layer does not widen it.
+Explicit caller capabilities are never widened.
+
+## Warm context remains opt-in
+
+`rlm_conversation_warm` is still available as a library feature. Callers may explicitly derive versioned summaries/facts and pass their context units into the shared token-budget solver.
+
+The default managed-turn path does **not**:
+
+- derive warm records;
+- discover/load warm records;
+- summarize because the token budget is tight;
+- replace cold retrieval with compaction.
+
+This keeps the baseline predictable: old turns leave active attention but remain directly addressable through RLM.
 
 ## Why this is the unbounded-chat boundary
 
-Before this slice, managed turns compiled a bounded active prompt but also passed the entire lifetime transcript as `terms(FullTranscript)` into `rlm_completion/4`. That delayed prompt overflow but still made every turn copy the whole conversation into the context runtime.
+A model call receives a bounded active prompt plus small opaque cold-history metadata. Historical payload is only projected when a bounded context operation requests it.
 
-Now the lifetime transcript remains in the conversation store. A model call receives:
+Conversation length is therefore independent from the provider context window. The provider window limits active attention, not total durable history.
 
-```text
-bounded active hot/warm prompt
-+
-small opaque cold-history metadata/handle
-```
-
-Historical payload is projected only when a context operation requests it.
-
-This makes conversation length independent from the provider context window. The provider window limits active attention, not the total durable history that the RLM can address.
-
-## Current scaling note
-
-The adapter boundary is lazy with respect to `rlm_context` storage and provider requests. The current local conversation backends may still scan/materialize their own message lists while satisfying a search. That is a storage/indexing optimization issue, not a context-window issue.
-
-A later indexed backend can implement the same adapter callbacks with database search or project-KB retrieval without changing the RLM/context contract.
+The current local conversation backends may still scan their own records while satisfying a search. That is a storage/indexing optimization, not a context-window limitation. A later indexed backend can implement the same adapter callbacks without changing the RLM contract.
