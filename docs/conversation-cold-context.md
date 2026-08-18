@@ -2,18 +2,21 @@
 
 Managed conversations keep a complete durable transcript without copying lifetime history into every RLM call.
 
-The default path is:
+The canonical managed pipeline is:
 
 ```text
-complete durable transcript
+complete transcript
         |
-        +--> bounded active hot context
-        |
-        `--> opaque cold-history handle
-             peek / slice / search on demand
+        +--> bounded hot transcript context
+        +--> existing warm artifacts when configured
+        `--> opaque lazy cold-history handle
+                     |
+                     +-- peek
+                     +-- slice
+                     `-- search
 ```
 
-Warm/derived context is an optional explicit feature. It is not automatically generated or loaded by managed turns.
+Warm artifacts participate in the normal public managed context pack when `warm_store/1` is configured. Creating or compacting new warm artifacts is a separate explicit operation and is not triggered automatically by token pressure.
 
 ## Generic trusted adapter boundary
 
@@ -35,24 +38,24 @@ context_register_adapter(+Name,
                          -Outcome).
 ```
 
-These are runtime APIs, not model-callable tools. Ordinary `context_register/3` still accepts only `text(Text)` and `terms(List)` and cannot install callbacks from model-authored data.
+Ordinary `context_register/3` still accepts only `text(Text)` and `terms(List)`. Model-authored source data cannot install executable adapter callbacks.
 
-Adapter capabilities explicitly declare allowed operations. Live adapter-backed handles prevent their adapter definition from being removed underneath them.
+Adapter capabilities explicitly declare allowed context operations, and a live adapter-backed handle prevents the adapter definition from being removed underneath it.
 
 ## Enforcement stays in `rlm_context`
 
-Adapters resolve source semantics, but `rlm_context` still owns:
+Adapters resolve source semantics; the context core owns the boundary:
 
 - opaque handle/version validation;
-- capability checks;
+- declared adapter capabilities;
 - wall-time limits;
 - `max_results`;
 - `max_bytes`;
 - structured errors;
-- output truncation;
-- tracing and tombstones.
-
-Adapter output is re-bounded by the core before becoming a `context_result`.
+- output rebounding/truncation;
+- trace sequence and timestamps;
+- returned-byte accounting;
+- tombstones after handle deletion.
 
 ## Conversation cold handles
 
@@ -64,7 +67,7 @@ conversation_cold_context(+Conversation,
                           -Outcome).
 ```
 
-Safe metadata identifies the durable source without exposing the transcript payload.
+The handle metadata contains safe source information such as the conversation id, message count, store backend and source revision. It does not contain the transcript payload.
 
 The conversation adapter supports:
 
@@ -76,31 +79,33 @@ context_slice(Handle, Start, Length, Options, Outcome).
 context_search(Handle, Pattern, Options, Outcome).
 ```
 
-Indexes for `item/1` and `slice/2` are zero-based. Returned views keep exact durable message refs, sequence, role, and content.
-
-Partition/map/reduce are intentionally not part of this adapter contract yet.
+Partition/map/reduce are intentionally absent in this slice.
 
 ## Managed turn behavior
 
+The public managed runtime performs:
+
 ```text
+reuse configured existing warm artifacts
+        |
 persist current user turn
         |
-compile bounded active hot context
+compile bounded hot + warm context
         |
 register ephemeral conversation cold handle
         |
-rlm_completion(Query, ColdContextRef, ...)
+rlm_completion(...)
         |
-planner may peek/search/slice old history when needed
+RLM may peek/search/slice older history
         |
-delete only ephemeral context handle
+delete only ephemeral handle
         |
 persist assistant result
 ```
 
-The durable conversation is never deleted when the ephemeral handle is cleaned up.
+The durable transcript and warm artifact store are not deleted when the ephemeral cold handle is cleaned up.
 
-If the caller does not provide explicit capabilities, managed turns add only the minimal cold-retrieval capabilities beside their normal model/RLM capabilities:
+When no explicit capability set is supplied, managed turns grant only the minimal cold context capabilities needed in addition to the existing model/RLM defaults:
 
 ```prolog
 context(peek)
@@ -110,23 +115,14 @@ context(search)
 
 Explicit caller capabilities are never widened.
 
-## Warm context remains opt-in
-
-`rlm_conversation_warm` is still available as a library feature. Callers may explicitly derive versioned summaries/facts and pass their context units into the shared token-budget solver.
-
-The default managed-turn path does **not**:
-
-- derive warm records;
-- discover/load warm records;
-- summarize because the token budget is tight;
-- replace cold retrieval with compaction.
-
-This keeps the baseline predictable: old turns leave active attention but remain directly addressable through RLM.
-
 ## Why this is the unbounded-chat boundary
 
-A model call receives a bounded active prompt plus small opaque cold-history metadata. Historical payload is only projected when a bounded context operation requests it.
+The provider receives a bounded hot/warm working set plus small opaque cold-history metadata. Historical payload remains in the conversation store and is projected only through bounded context operations.
 
-Conversation length is therefore independent from the provider context window. The provider window limits active attention, not total durable history.
+Conversation length is therefore independent from the provider context window. The window limits active attention, not the amount of durable history RLM can address.
 
-The current local conversation backends may still scan their own records while satisfying a search. That is a storage/indexing optimization, not a context-window limitation. A later indexed backend can implement the same adapter callbacks without changing the RLM contract.
+## Current scaling note
+
+The adapter is lazy with respect to `rlm_context` storage and provider requests. Current local conversation backends may still scan/materialize their own records while satisfying search. Indexed storage can replace that implementation later without changing the RLM contract.
+
+Warm production is likewise independent: published warm state is reused automatically when configured, but no automatic compaction loop is required for unbounded chat.
