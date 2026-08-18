@@ -70,12 +70,14 @@ options_policy(Options, Default, Policy) :-
            Options,
            Default.min_recent_turns),
     option(overflow(Overflow), Options, Default.overflow),
-    Policy = Default.put(_{max_context_tokens:Max,
-                           provider_context_tokens:ProviderMax,
-                           reserve_output_tokens:Reserve,
-                           safety_margin_tokens:Safety,
-                           min_recent_turns:MinRecent,
-                           overflow:Overflow}).
+    put_dict(_{max_context_tokens:Max,
+               provider_context_tokens:ProviderMax,
+               reserve_output_tokens:Reserve,
+               safety_margin_tokens:Safety,
+               min_recent_turns:MinRecent,
+               overflow:Overflow},
+             Default,
+             Policy).
 
 validate_policy(Policy) :-
     require_positive_integer(Policy.max_context_tokens,
@@ -124,6 +126,7 @@ context_section(Name0, Visibility0, Text0, Options, Outcome) :-
     catch(( normalize_name(Name0, Name),
             normalize_visibility(Visibility0, Visibility),
             require_text(Text0, Text),
+            require_options(Options),
             token_count_text_(Text, Options, Count),
             Section = context_section{name:Name,
                                       visibility:Visibility,
@@ -157,8 +160,9 @@ context_pack_(Units0, Sections0, Policy, Pack) :-
     ;   throw(context_budget_fault(fixed_context_exceeds_limit(Base,
                                                                Effective)))
     ),
+    Available is Effective-Base,
     solve_units(Units,
-                Effective-Base,
+                Available,
                 Selected,
                 SelectedTokens,
                 Utility),
@@ -189,16 +193,18 @@ solve_units(Units, Available, Selected, SelectedTokens, Utility) :-
                            VariantSets),
     sum(TokenVars, #=, SelectedTokensFD),
     sum(UtilityVars, #=, UtilityFD),
-    SelectedTokensFD #=< Available,
-    labeling([max(UtilityFD), ffc, bisect], Indexes),
-    SelectedTokens #= SelectedTokensFD,
-    Utility #= UtilityFD,
-    maplist(selected_variant,
-            Units,
-            VariantSets,
-            Indexes,
-            Selected0),
-    exclude(omitted_selection, Selected0, Selected).
+    (   SelectedTokensFD #=< Available,
+        labeling([max(UtilityFD), ffc, bisect], Indexes)
+    ->  SelectedTokens #= SelectedTokensFD,
+        Utility #= UtilityFD,
+        maplist(selected_variant,
+                Units,
+                VariantSets,
+                Indexes,
+                Selected0),
+        exclude(omitted_selection, Selected0, Selected)
+    ;   throw(context_budget_fault(no_feasible_context_pack(Available)))
+    ).
 
 build_unit_constraints([], [], [], [], []).
 build_unit_constraints([Unit|Units],
@@ -262,7 +268,10 @@ normalize_unit(Unit0, Unit) :-
     ->  normalize_name(Id0, Id),
         normalize_name(Section0, Section),
         require_list(Variants0, variants),
-        Variants0 \== [],
+        (   Variants0 == []
+        ->  throw(context_budget_fault(empty_variants(Id)))
+        ;   true
+        ),
         maplist(normalize_variant, Variants0, Variants),
         dict_default(Unit0, mandatory, false, Mandatory),
         require_boolean(Mandatory, mandatory),
@@ -298,9 +307,11 @@ normalize_section(Section0, Section) :-
     ->  normalize_name(Name0, Name),
         normalize_visibility(Visibility0, Visibility),
         require_nonnegative_integer(Tokens, section_tokens),
-        Section = Section0.put(_{name:Name,
-                                 visibility:Visibility,
-                                 tokens:Tokens})
+        put_dict(_{name:Name,
+                   visibility:Visibility,
+                   tokens:Tokens},
+                 Section0,
+                 Section)
     ;   throw(context_budget_fault(invalid_section(Section0)))
     ).
 
