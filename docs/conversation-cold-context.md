@@ -9,6 +9,8 @@ complete transcript
         |
         +--> bounded hot transcript context
         +--> existing warm artifacts when configured
+        +--> synthetic cold-history boundary
+        |      tells the model how to recover omitted turns
         `--> opaque lazy cold-history handle
                      |
                      +-- peek
@@ -17,6 +19,8 @@ complete transcript
 ```
 
 Warm artifacts participate in the normal public managed context pack when `warm_store/1` is configured. Creating or compacting new warm artifacts is a separate explicit operation and is not triggered automatically by token pressure.
+
+The cold-history boundary is synthetic provider-visible projection state. Durable user, assistant, system, and tool messages are never rewritten to carry runtime instructions.
 
 ## Generic trusted adapter boundary
 
@@ -38,7 +42,7 @@ context_register_adapter(+Name,
                          -Outcome).
 ```
 
-Ordinary `context_register/3` still accepts only `text(Text)` and `terms(List)`. Model-authored source data cannot install executable adapter callbacks.
+Ordinary `context_register/3` still accepts only ordinary bounded context sources. Model-authored source data cannot install executable adapter callbacks.
 
 Adapter capabilities explicitly declare allowed context operations, and a live adapter-backed handle prevents the adapter definition from being removed underneath it.
 
@@ -67,7 +71,7 @@ conversation_cold_context(+Conversation,
                           -Outcome).
 ```
 
-The handle metadata contains safe source information such as the conversation id, message count, store backend and source revision. It does not contain the transcript payload.
+The handle metadata contains safe source information such as conversation id, message count, store backend and source revision. It does not contain the transcript payload.
 
 The conversation adapter supports:
 
@@ -81,6 +85,24 @@ context_search(Handle, Pattern, Options, Outcome).
 
 Partition/map/reduce are intentionally absent in this slice.
 
+## Synthetic cold-history boundary
+
+When a conversation extends beyond the configured `min_recent_turns` guarantee, `rlm_conversation_runtime` adds a mandatory context unit named `managed_cold_history_boundary`.
+
+It tells the planner that the older prefix may be absent from active attention, that the transcript was not deleted, and that original history should be retrieved before guessing when an earlier decision, fact, file, symbol, task, person, requirement, or discussion is referenced.
+
+The rendered boundary exposes the actual RLM retrieval forms:
+
+```prolog
+context(input(context), search("query"), Result).
+context(input(context), slice(Start, Length), Result).
+context(input(context), peek(item(Index)), Result).
+```
+
+The unit is token-accounted and mandatory. Its status records the cold prefix and guaranteed hot-tail start. The wording intentionally says old turns *may* be absent: warm context or available budget can still keep additional historical material in active context.
+
+The boundary can be disabled explicitly with `cold_history_boundary(false)` for specialized callers. It is enabled by default.
+
 ## Managed turn behavior
 
 The public managed runtime performs:
@@ -88,9 +110,11 @@ The public managed runtime performs:
 ```text
 reuse configured existing warm artifacts
         |
+derive synthetic cold-history boundary
+        |
 persist current user turn
         |
-compile bounded hot + warm context
+compile bounded hot + warm + boundary context
         |
 register ephemeral conversation cold handle
         |
@@ -105,7 +129,7 @@ persist assistant result
 
 The durable transcript and warm artifact store are not deleted when the ephemeral cold handle is cleaned up.
 
-When no explicit capability set is supplied, managed turns grant only the minimal cold context capabilities needed in addition to the existing model/RLM defaults:
+When no explicit capability set is supplied, managed turns grant only the minimal cold context capabilities needed in addition to existing model/RLM defaults:
 
 ```prolog
 context(peek)
@@ -117,7 +141,7 @@ Explicit caller capabilities are never widened.
 
 ## Why this is the unbounded-chat boundary
 
-The provider receives a bounded hot/warm working set plus small opaque cold-history metadata. Historical payload remains in the conversation store and is projected only through bounded context operations.
+The provider receives a bounded hot/warm working set, a small retrieval boundary, and opaque cold-history metadata. Historical payload remains in the conversation store and is projected only through bounded context operations.
 
 Conversation length is therefore independent from the provider context window. The window limits active attention, not the amount of durable history RLM can address.
 
