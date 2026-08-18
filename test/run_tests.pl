@@ -20,6 +20,7 @@
 :- consult(rlm_context_budget_test).
 :- consult(rlm_conversation_test).
 :- consult(rlm_conversation_warm_test).
+:- consult(rlm_conversation_runtime_test).
 :- consult(rlm_conversation_cold_test).
 :- consult(rlm_plan_test).
 :- consult(rlm_tool_test).
