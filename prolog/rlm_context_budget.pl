@@ -168,6 +168,11 @@ context_pack_(Units0, Sections0, Policy, Pack) :-
                 Utility),
     Total is Base+SelectedTokens,
     Remaining is Effective-Total,
+    ledger_stages(Sections, Selected, Policy, Stages, StageTotal),
+    (   StageTotal =:= Total
+    ->  true
+    ;   throw(context_budget_fault(ledger_total_mismatch(StageTotal, Total)))
+    ),
     Ledger = token_ledger{limit:Effective,
                           operator_limit:Policy.max_context_tokens,
                           provider_limit:Policy.provider_context_tokens,
@@ -178,7 +183,8 @@ context_pack_(Units0, Sections0, Policy, Pack) :-
                           safety_margin_tokens:Policy.safety_margin_tokens,
                           total_tokens:Total,
                           remaining_tokens:Remaining,
-                          sections:Sections},
+                          sections:Sections,
+                          stages:Stages},
     Pack = context_pack{policy:Policy,
                         selected:Selected,
                         utility:Utility,
@@ -260,6 +266,85 @@ selected_variant(Unit, Variants, Index, Selection) :-
 
 omitted_selection(Selection) :- Selection.kind == omitted.
 
+/* -------------------------------------------------------------------------
+ * Stage-aware ledger
+ * ---------------------------------------------------------------------- */
+
+ledger_stages(Sections, Selected, Policy, Stages, Total) :-
+    section_stages(Sections, 0, SectionStages, AfterSections),
+    selection_stages(Selected,
+                     AfterSections,
+                     SelectionStages,
+                     AfterSelections),
+    reserve_stage(output_reserve,
+                  Policy.reserve_output_tokens,
+                  AfterSelections,
+                  OutputStage,
+                  AfterOutput),
+    reserve_stage(safety_margin,
+                  Policy.safety_margin_tokens,
+                  AfterOutput,
+                  SafetyStage,
+                  Total),
+    append(SectionStages, SelectionStages, Prefix),
+    append(Prefix, [OutputStage, SafetyStage], Stages).
+
+section_stages([], Total, [], Total).
+section_stages([Section|Sections],
+               Before,
+               [Stage|Stages],
+               Total) :-
+    section_stage(Section, Before, Stage, After),
+    section_stages(Sections, After, Stages, Total).
+
+section_stage(Section, Before, Stage, After) :-
+    (   Section.visibility == model
+    ->  Charged = Section.tokens,
+        After is Before+Charged,
+        ChargedToWindow = true
+    ;   Charged = 0,
+        After = Before,
+        ChargedToWindow = false
+    ),
+    Stage = token_stage{name:Section.name,
+                        kind:fixed_section,
+                        visibility:Section.visibility,
+                        observed_tokens:Section.tokens,
+                        charged_tokens:Charged,
+                        charged_to_window:ChargedToWindow,
+                        cumulative_tokens:After}.
+
+selection_stages([], Total, [], Total).
+selection_stages([Selection|Selections],
+                 Before,
+                 [Stage|Stages],
+                 Total) :-
+    After is Before+Selection.tokens,
+    Stage = token_stage{name:Selection.id,
+                        kind:context_unit,
+                        section:Selection.section,
+                        representation:Selection.kind,
+                        visibility:model,
+                        observed_tokens:Selection.tokens,
+                        charged_tokens:Selection.tokens,
+                        charged_to_window:true,
+                        cumulative_tokens:After},
+    selection_stages(Selections, After, Stages, Total).
+
+reserve_stage(Name, Tokens, Before, Stage, After) :-
+    After is Before+Tokens,
+    Stage = token_stage{name:Name,
+                        kind:reserve,
+                        visibility:budget,
+                        observed_tokens:Tokens,
+                        charged_tokens:Tokens,
+                        charged_to_window:true,
+                        cumulative_tokens:After}.
+
+/* -------------------------------------------------------------------------
+ * Validation and normalization
+ * ---------------------------------------------------------------------- */
+
 normalize_unit(Unit0, Unit) :-
     (   is_dict(Unit0),
         get_dict(id, Unit0, Id0),
@@ -340,7 +425,7 @@ normalize_name(Value, _) :-
     throw(context_budget_fault(expected_name(Value))).
 
 require_text(Value, Text) :- string(Value), !, Text = Value.
-require_text(Value, Text) :- atom(Value), !, atom_string(Value, Text).
+require_text(Value, Text) :- atom(Value), !, atom_string(Atom, Value).
 require_text(Value, _) :- throw(context_budget_fault(expected_text(Value))).
 
 require_options(Value) :- is_list(Value), !.
