@@ -18,6 +18,11 @@ project_registry([
                                              freshness:any
                                            },
                           latency:pure,
+                          argument_schema:_{ type:dict,
+                                             required:_{ module:atom,
+                                                         symbol:predicate_indicator
+                                                       }
+                                           },
                           description:"require one exported project symbol"
                         })
 ]).
@@ -36,6 +41,11 @@ dataset_registry([
                                              freshness:any
                                            },
                           latency:pure,
+                          argument_schema:_{ type:dict,
+                                             required:_{ dataset:atom,
+                                                         minimum:non_negative_integer
+                                                       }
+                                           },
                           description:"require a minimum record count"
                         })
 ]).
@@ -142,6 +152,17 @@ test(unknown_structural_symbol_is_rejected) :-
              ]),
     spec_source_normalize(Source, error(Error)),
     Error.detail == unknown_structural_symbol(plan/1).
+
+test(unknown_requirement_option_is_rejected) :-
+    Source = spec([
+                 subject(dataset(people)),
+                 require(minimum_people,
+                         assertion(record_count,
+                                   _{dataset:people,minimum:3}),
+                         [retry(3)])
+             ]),
+    spec_source_normalize(Source, error(Error)),
+    Error.detail == unknown_requirement_option(retry/1).
 
 test(duplicate_singleton_is_rejected) :-
     Source = spec([
@@ -266,6 +287,8 @@ test(catalog_combines_structure_and_assertions) :-
     Symbol.name == require,
     member(Assertion, Catalog.assertions),
     Assertion.kind == record_count,
+    Assertion.argument_schema.type == dict,
+    Assertion.argument_schema.required.minimum == non_negative_integer,
     \+ get_dict(validator, Assertion, _),
     \+ get_dict(evaluator, Assertion, _),
     \+ get_dict(observer, Assertion, _).
@@ -304,6 +327,6 @@ test(rejects_non_ground_source) :-
                                    _{dataset:people,minimum:3}))
              ]),
     spec_source_normalize(Source, error(Error)),
-    Error.detail = non_ground(source, _).
+    Error.detail == non_ground(source).
 
 :- end_tests(rlm_spec_lang).
