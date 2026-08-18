@@ -4,29 +4,43 @@ This backlog is intentionally broader than the first runnable RLM. Work should l
 
 ## Status convention
 
-Status reconciled against `main` commit `52ca8060456a0e91b69783867d6733026b94d07e` on 2026-08-15.
+Status reconciled against canonical `main` commit `abfc30ebb9f335d5841c1f7910bd474da905ebcf` on 2026-08-18.
 
-- `[x]` means the implementation/documentation/test surface is present on `main` and the corresponding implementation slice is complete.
-- `[ ]` means the capability is still unimplemented, only partially covered, or a known open defect currently prevents treating it as complete.
-- Full manual validation is still pending. If validation finds a regression, untick the affected item and reopen/create the matching issue.
+- `[x]` means the implementation/documentation/test surface represented by that checkbox is present on `main` and sufficiently verified.
+- `[ ]` means meaningful work remains, the surface is only partially covered, or a known open defect prevents treating the aggregate contract as complete.
+- GitHub issue state, merged source/tests, this TODO, and the PrologAgent roadmap must be reconciled together. Merged canonical source and tests outrank historical status prose.
 
-Known open defects before manual validation:
+### Currently open correctness defects
+
+These remain blockers for the v0.1/manual-validation umbrella in #3:
 
 - #42 — recursive-plan fingerprints can falsely report a cycle for anonymous-tag SWI dicts.
-- #44 — provider usage can be lost when completion plan execution fails after model calls.
+- #44 — completion still loses executed provider usage when a later plan operation fails; the issue was reopened during this reconciliation because `completion_after_execution/8` on `main` still returns the execution error before aggregating plan usage.
 - #45 — nested completion trajectories can omit model events or report the wrong true depth.
-- #46 — the live OpenRouter streaming CI gate is not router-safe when `openrouter/free` selects a model that ignores the sentinel instruction.
+- #46 — the live OpenRouter streaming gate is not router-safe when `openrouter/free` selects a healthy model that ignores the sentinel instruction.
 
-Current CI state at this commit:
+### Open feature and architecture work
 
-- deterministic unit/load, PlUnit, benchmark/conformance, deep-recursion experiment, CLI/trace smoke, graph restart, and artifact restart gates pass;
-- the latest `REAL OpenRouter integration` run is red because of #46, while the provider returned HTTP 200 and a complete incremental stream.
+The main active architecture tracks are the companion/standard tool pack (#49/#50), the downstream expert-system example (#51), remaining cross-library async/TUI integration (#54), proof/evidence acceptance (#56), canonical adoption of the durable effect boundary (#57/#79), the verified workflow pipeline (#68-#71), and durable scoped project policy/configuration (#74-#77).
+
+The generic #57 effect substrate is already merged through #78, #83, and #85. That does **not** complete #57: canonical provider/tool/MCP/process adoption remains in #79, and open PR #86 is only the first tool-path slice until it is actually merged.
+
+### Documentation and hygiene work
+
+- #67 — registry destruction still does not automatically clear loader idempotency bookkeeping.
+- #73 — `docs/external-tool-libraries.md` still describes completed #52 MCP policy work as pending; this reconciliation corrects that documentation and the issue should close only after the correction lands on `main`.
+
+### Completed historical foundations
+
+The external loader boundary (#48), declarative MCP policy/config boundary (#52), host authority and pending-operation boundary (#53/#63/#64), and generic durable effect substrate/hardening/migration (#78/#83/#85) are merged. The PrologAgent product roadmap itself landed in #87.
+
+GitHub Actions remains the authoritative executable gate. Do not encode a transient “latest CI run” result here as durable project state; preserve open CI-contract defects such as #46 until their acceptance criteria actually land.
 
 ## P0 — First real agentic RLM slice
 
 - [x] Establish SWI-Prolog as the initial implementation target and document the portability boundary.
 - [x] Add project/module skeleton and PlUnit test harness.
-- [ ] Define `rlm_completion/4`, result terms, structured error/outcome terms, usage accounting, and trace events. *(Implemented, but #44 and #45 keep the aggregate contract open.)*
+- [ ] Define `rlm_completion/4`, result terms, structured error/outcome terms, usage accounting, and trace events. *(Implemented broadly, but #44 and #45 keep the aggregate contract open.)*
 - [x] Define provider-neutral model behavior in the production `prolog/rlm_chain*.pl` modules.
 - [x] Implement one **real OpenAI-compatible provider** directly with SWI HTTP/JSON libraries; support configurable base URL so OpenAI-compatible local/router endpoints can work.
 - [x] Keep fake/model test doubles under tests only for deterministic CI.
@@ -42,7 +56,7 @@ Current CI state at this commit:
 - [x] Enforce iteration, recursion, inference-step, concurrent-call, wall-time, token, cost, tool-call, and output-byte budgets.
 - [x] Add cancellation and deterministic cleanup.
 - [ ] Persist or export a structured trajectory for every completion. *(Export exists; #45 keeps nested trajectory fidelity open.)*
-- [ ] Add integration test gated on explicit provider credentials and deterministic tests using a fake provider. *(Both exist; #46 keeps the live gate open until it is router-safe.)*
+- [ ] Add integration test gated on explicit provider credentials and deterministic tests using a fake provider. *(Both exist; #46 keeps the live streaming gate contract open until it is router-safe.)*
 
 ## P0 — Capability and execution boundary
 
@@ -56,6 +70,16 @@ Current CI state at this commit:
 - [ ] Add cycle/runaway recursion detection. *(Implemented, but #42 keeps the fingerprint/cycle contract open.)*
 - [x] Add bounded output capture and structured exceptions.
 - [ ] Add an optional stronger isolation boundary for workloads that truly require generated Prolog source.
+
+## P1 — Runtime authority, async, and external effects
+
+- [x] Add one bounded reusable Future/task substrate shared by latency-bearing runtime APIs.
+- [x] Make completion/provider/chain, tool/MCP, agent, and graph core operations follow the canonical execute -> Future -> sync-await direction where migrated.
+- [x] Add the four host-controlled authority tiers and non-blocking pending approval lifecycle from #53.
+- [x] Add first-class MCP configuration references plus closed host-controlled installer/stdio execution policy from #52/#72.
+- [x] Add the generic durable effect identity/observation substrate, hardening, and explicit legacy migration from #78/#83/#85.
+- [ ] Finish async process/test/network tool support and downstream approval/TUI responsiveness. *(Tracked by #54 with concrete tool work in #49/#50.)*
+- [ ] Route every in-scope canonical effectful tool/provider/MCP/process path through the durable effect boundary. *(Tracked by #79; PR #86 is open and therefore is not counted as merged adoption.)*
 
 ## P1 — `rlm_agent`
 
