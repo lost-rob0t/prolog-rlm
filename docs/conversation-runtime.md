@@ -1,18 +1,19 @@
 # Managed conversation runtime
 
-`rlm_conversation` adds durable multi-turn conversation state above the existing stateless `rlm_completion/4` primitive.
+`rlm_conversation` adds durable multi-turn state above the stateless `rlm_completion/4` primitive.
 
-The core invariant is simple:
+The default contract is deliberately simple:
 
 ```text
-complete transcript
-    -> durable, append-only conversation state
-
-active model context
-    -> bounded projection chosen for this turn
+complete durable transcript
+        |
+        +--> bounded rolling hot context
+        |
+        `--> lazy cold RLM context
+             peek / slice / search on demand
 ```
 
-Removing an old message from active context never deletes it from the conversation. Historical turns remain addressable by exact sequence, ranges, search, or export.
+Old turns leaving active attention are not deleted and are not automatically summarized.
 
 ## Public API
 
@@ -33,73 +34,33 @@ conversation_export(+Conversation, +Format, -Outcome).
 
 conversation_context_pack(+Conversation, +Options, -Outcome).
 conversation_token_ledger(+Conversation, +Options, -Outcome).
+conversation_cold_context(+Conversation, +Options, -Outcome).
 conversation_turn(+Conversation, +UserMessage, +Options, -Outcome).
 ```
 
-Stores currently support:
+Stores currently support `memory` and `persist(File)`.
 
-```prolog
-memory
-persist(File)
-```
-
-The persistent adapter uses the same local SWI persistency style as the artifact runtime. It is an adapter, not a permanent storage-format commitment.
-
-`conversation_list/3` enumerates reopenable conversation references from a store. It supports `order(desc|asc)` and `limit(all|N)`; newest-first is the default.
-
-```prolog
-conversation_list(Store,
-                  [order(desc), limit(20)],
-                  ok(Conversations)).
-```
-
-## History selectors
-
-```prolog
-all
-recent(Count)
-range(Start, End)
-before(Sequence)
-after(Sequence)
-around(Sequence, Radius)
-role(Role)
-```
-
-Search is bounded by `max_results/1` and defaults to case-insensitive matching. Invalid selectors and inverted ranges return structured conversation errors rather than plain Prolog failure.
+History selectors include `all`, `recent(Count)`, `range(Start, End)`, `before(Sequence)`, `after(Sequence)`, `around(Sequence, Radius)`, and `role(Role)`.
 
 ## Managed turns
 
-`conversation_turn/4` persists the user turn, compiles a bounded rolling context, and delegates reasoning to `rlm_completion/4`. The complete transcript is also supplied as opaque RLM term context for this initial slice.
+`conversation_turn/4`:
 
-```prolog
-conversation_turn(
-    Conversation,
-    message(user, "continue the parser work"),
-    [ context_options([
-          policy(context_policy{
-              max_context_tokens:300000,
-              provider_context_tokens:1000000,
-              reserve_output_tokens:32000,
-              safety_margin_tokens:8000,
-              min_recent_turns:12,
-              overflow:deny
-          })
-      ]),
-      completion_options([
-          provider(openrouter)
-      ])
-    ],
-    Outcome
-).
-```
+1. persists the current user turn;
+2. compiles the bounded active context under the configured token ceiling;
+3. registers an ephemeral opaque context handle over the complete durable transcript;
+4. calls `rlm_completion/4`;
+5. lets RLM use bounded `peek`, `slice`, or `search` operations when older history is needed;
+6. deletes only the ephemeral handle;
+7. persists the assistant result.
 
-`rlm_completion/4` itself remains stateless. Conversation history is never implicitly attached to unrelated completion calls.
+`rlm_completion/4` remains stateless and can still be used independently.
 
-If completion fails, the user message remains durably recorded and no assistant message is fabricated.
+If completion fails, the user message remains durable and no assistant message is fabricated.
 
 ## Token budget contract
 
-`rlm_context_budget` separates the provider's physical window from the operator's working cap.
+The provider's physical context window and the operator's working cap are separate:
 
 ```prolog
 context_policy{
@@ -109,111 +70,56 @@ context_policy{
     safety_margin_tokens:8000,
     min_recent_turns:12,
     overflow:deny
-}
+}.
 ```
 
-The effective limit is:
+The effective ceiling is:
 
 ```text
 min(max_context_tokens, provider_context_tokens)
 ```
 
-A 1M-token model therefore does not grant permission to consume 1M tokens when the operator selected a 300k working cap.
+A model advertising one million tokens therefore does not grant permission to consume one million tokens when the operator selected a 300k working cap.
 
-Fixed provider-visible sections, reserved output, safety margin, and selected context units all contribute to one ledger. Host-only metadata is measured separately and is not charged against the model window.
+Fixed model-visible sections, selected context units, output reserve, and safety margin all enter one token ledger. Host-only metadata is measured separately and is not charged against the provider window.
 
-```prolog
-visible_sections([
-    section(system, model, SystemPrompt),
-    section(local_tools, model, RenderedToolSchemas),
-    section(mcp_tools, model, RenderedMcpSchemas),
-    section(mcp_connection_config, host, HostOnlyMetadata)
-])
-```
+The stage ledger records observed, charged, and cumulative tokens for each compilation step so callers can see where the window went.
 
-The ledger reports both the operator and provider ceilings, fixed visible tokens, host-only metadata tokens, selected context tokens, reserves, total, and remaining tokens.
+## Context packing
 
-### Stage-aware accounting
+`rlm_context_budget` uses CLP(FD) to select the highest-utility set of representations that satisfies the hard token ceiling. Mandatory units cannot be silently omitted. Optional units may be omitted or represented in alternate forms.
 
-`token_ledger.stages` explains where the context budget went. Each fixed section, selected context representation, output reserve, and safety reserve records its observed token count, charged token count, and cumulative provider-window usage.
+The same solver can therefore account for conversation turns, tool schemas, MCP schemas, project context, skills, or explicit derived context without creating separate token-budget systems.
 
-```prolog
-token_stage{
-    name:mcp_tools,
-    kind:fixed_section,
-    visibility:model,
-    observed_tokens:18220,
-    charged_tokens:18220,
-    charged_to_window:true,
-    cumulative_tokens:29840
-}
-```
+## Warm context is optional
 
-Host-only sections still appear in the stage trace but have `charged_tokens:0` and do not advance `cumulative_tokens`. This lets callers account for MCP configuration/catalog size without pretending secrets or host-only transport configuration were sent to the model.
+`rlm_conversation_warm` remains a supported feature for callers that explicitly want derived summaries, facts, decisions, or other compressed representations.
 
-The final stage cumulative count must exactly match `token_ledger.total_tokens`; a mismatch fails closed.
+It is **not wired into the default conversation path**:
 
-## Token counting
+- `conversation_turn/4` does not automatically derive warm artifacts;
+- `conversation_turn/4` does not automatically load warm artifacts;
+- token pressure does not trigger hidden summarization/model calls;
+- leaving the hot window means cold retrieval, not compulsory compaction.
 
-The runtime does not pretend a character estimate is exact.
+A caller may explicitly derive warm records and pass their resulting context units into `conversation_context_pack/3`. Those units then compete under the same hard token budget as everything else.
 
-Without a registered counter:
+Automatic compaction should only be reconsidered if telemetry shows repeated retrieval of the same old ranges creates enough token or latency cost to justify the added complexity.
 
-```prolog
-token_count{
-    tokens: Tokens,
-    method: estimated,
-    basis: characters,
-    safety_percent: 15
-}
-```
+## Cold history and unbounded conversations
 
-A trusted caller can supply a model/provider tokenizer callback through `token_counter/1`; successful counts are marked `method:exact`.
+The complete transcript is represented to RLM by a small opaque handle plus safe metadata, not copied into every provider request.
 
-Provider renderers should eventually count the final rendered request rather than intermediate Prolog terms. Tool schemas, MCP metadata, skills, conversation context, project context, and rendering overhead should all enter the same ledger.
+Historical content is projected only when a bounded context operation asks for it. This makes conversation length independent from the provider context window: the window limits active attention, not total durable history.
 
-## Constraint packing
+Current local stores may still scan their own records while servicing a cold search. That is a persistence/indexing optimization and can later be replaced by an indexed backend without changing the RLM contract.
 
-Context selection is not FIFO truncation. `context_pack/4` accepts units with one or more representations:
+## Remaining work
 
-```prolog
-context_unit{
-    id: architecture_history,
-    section: warm,
-    mandatory: false,
-    variants: [
-        context_variant{kind:verbatim,
-                        tokens:18000,
-                        utility:100,
-                        value:Full},
-        context_variant{kind:detailed_summary,
-                        tokens:6000,
-                        utility:92,
-                        value:Detailed},
-        context_variant{kind:compact_summary,
-                        tokens:2000,
-                        utility:76,
-                        value:Compact}
-    ]
-}
-```
+The main remaining conversation-runtime work is:
 
-Optional units automatically gain an `omitted` representation. Mandatory units cannot be silently omitted.
-
-CLP(FD) constrains the total token cost and uses labeling/backtracking to maximize utility under the hard cap. This makes conversation history, warm summaries, retrieved cold turns, skills, and tool/MCP schemas compatible with the same future optimizer rather than separate ad-hoc truncation systems.
-
-The current conversation projection generates `verbatim`/`omitted` variants from transcript messages. Rich warm variants are the next slice.
-
-## Next slices
-
-Issue #101 tracks the remaining work:
-
-1. provider/model tokenizer registry and final rendered-request counting;
-2. automatic prompt-compiler integration for local tools, MCP tools/prompts/resources, skills, and project instructions;
-3. warm-context extraction with verbatim, detailed-summary, compact-summary, facts-only, and omitted variants;
-4. RLM retrieval over cold transcript history without materializing the entire transcript into each managed call;
-5. relevance, unresolved-task, entity, dependency, recency, provenance, and explicit-reference utility scoring;
-6. candidate narrowing before exact CLP(FD) packing for very large histories/catalogs;
-7. async managed-turn/streaming surfaces for AgentProlog and other frontends.
-
-This keeps the complete conversation available indefinitely while bounding the amount of attention consumed by any individual model call.
+1. provider/model tokenizer registry and counting of the final rendered provider request;
+2. automatic prompt-compiler accounting for local tools, MCP tools/prompts/resources, skills, and project instructions;
+3. bounded hot-candidate selection for very large histories;
+4. indexed cold-history retrieval;
+5. async managed-turn and streaming surfaces for AgentProlog/frontends.
