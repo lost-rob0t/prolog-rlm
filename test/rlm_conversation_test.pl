@@ -36,6 +36,31 @@ full_transcript_case(Conversation) :-
     conversation_message(Conversation, 2, ok(Exact)),
     assertion(Exact.content == "second").
 
+test(store_lists_reopenable_conversations) :-
+    setup_call_cleanup(
+        conversation_store_open(memory, ok(Store)),
+        conversation_list_case(Store),
+        conversation_store_close(Store, _)).
+
+conversation_list_case(Store) :-
+    conversation_create(Store,
+                        [id(alpha), metadata(_{project:"one"})],
+                        ok(_)),
+    conversation_create(Store,
+                        [id(beta), metadata(_{project:"two"})],
+                        ok(_)),
+    conversation_list(Store, [order(asc)], ok(Ascending)),
+    findall(Id,
+            ( member(Conversation, Ascending), Id = Conversation.id ),
+            AscendingIds),
+    msort(AscendingIds, SortedIds),
+    assertion(SortedIds == [alpha,beta]),
+    conversation_list(Store, [order(desc), limit(1)], ok([Latest])),
+    assertion(memberchk(Latest.id, [alpha,beta])),
+    conversation_open(Store, Latest.id, ok(Reopened)),
+    assertion(Reopened.id == Latest.id),
+    assertion(Reopened.metadata == Latest.metadata).
+
 test(history_selectors_and_search_address_old_turns) :-
     with_memory_conversation(history_search_case).
 
@@ -64,6 +89,18 @@ history_search_case(Conversation) :-
                         [],
                         ok([Match])),
     assertion(Match.sequence =:= 1).
+
+test(inverted_history_range_fails_structurally) :-
+    with_memory_conversation(inverted_range_case).
+
+inverted_range_case(Conversation) :-
+    conversation_append(Conversation, message(user, "one"), ok(_)),
+    conversation_messages(Conversation,
+                          range(3,1),
+                          [],
+                          error(Error)),
+    assertion(Error.phase == messages),
+    assertion(Error.kind == conversation_error).
 
 test(context_eviction_never_deletes_original_transcript) :-
     with_memory_conversation(context_eviction_case).
@@ -133,6 +170,8 @@ persistent_reopen_case(File) :-
     conversation_message(Conversation2, 1, ok(Restored)),
     assertion(Restored.ref == Original.ref),
     assertion(Restored.content == "survives restart"),
+    conversation_list(Store2, [], ok([Listed])),
+    assertion(Listed.id == durable_conversation),
     conversation_store_close(Store2, ok(closed)).
 
 long_text(Char, Text) :-
