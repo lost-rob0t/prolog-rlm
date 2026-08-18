@@ -34,7 +34,7 @@ spec_language_catalog(Registry, Outcome) :-
 spec_source_normalize(Source, Outcome) :-
     catch(( source_term(Source, Term),
             require_acyclic(Term, source),
-            require_ground(Term, source),
+            require_closed_data(Term, source),
             normalize_source(Term, Spec0),
             spec_normalize(Spec0, SpecOutcome),
             require_spec_outcome(SpecOutcome, Spec),
@@ -97,7 +97,7 @@ structural_catalog([
                 arities:[1],
                 role:provenance,
                 arguments:[dict],
-                description:"attach source provenance to the Spec"},
+                description:"attach source provenance to a Spec or requirement"},
     spec_symbol{name:assertion,
                 arities:[2,3],
                 role:assertion,
@@ -226,8 +226,8 @@ normalize_requirement_options(Options, Policy, Provenance) :-
           Options,
           requirement_options{evidence_policy:none,provenance:none},
           State),
-    option_value(evidence_policy, State, default, Policy),
-    option_value(provenance, State, _{}, Provenance).
+    state_value(evidence_policy, State, default, Policy),
+    state_value(provenance, State, _{}, Provenance).
 
 apply_requirement_option(evidence_policy(Policy), State0, State) :-
     !,
@@ -273,7 +273,7 @@ finalize_state(State, Spec) :-
 
 safe_source_data(Value) :-
     require_acyclic(Value, data),
-    require_ground(Value, data),
+    require_closed_data(Value, data),
     safe_source_data_(Value).
 
 safe_source_data_(Value) :-
@@ -303,13 +303,14 @@ safe_source_data_(Value) :-
 safe_source_data_(Value) :-
     throw(spec_lang_fault(unsupported_data(Value))).
 
-forbidden_source_functor((:-)).
-forbidden_source_functor((?-)).
-forbidden_source_functor((:)).
+forbidden_source_functor(':-').
+forbidden_source_functor('?-').
+forbidden_source_functor(':').
 forbidden_source_functor(call).
 forbidden_source_functor(once).
 forbidden_source_functor(ignore).
 forbidden_source_functor(catch).
+forbidden_source_functor(throw).
 forbidden_source_functor(consult).
 forbidden_source_functor(asserta).
 forbidden_source_functor(assertz).
@@ -327,11 +328,41 @@ forbidden_source_functor(initialization).
 forbidden_source_functor(halt).
 forbidden_source_functor(working_directory).
 forbidden_source_functor(set_prolog_flag).
-forbidden_source_functor((,)).
-forbidden_source_functor((;)).
-forbidden_source_functor((->)).
-forbidden_source_functor((*->)).
-forbidden_source_functor((\+)).
+forbidden_source_functor(',').
+forbidden_source_functor(';').
+forbidden_source_functor('->').
+forbidden_source_functor('*->').
+forbidden_source_functor('\\+').
+
+/* Closed-data checks --------------------------------------------------- */
+
+require_closed_data(Value, Name) :-
+    (   closed_data(Value)
+    ->  true
+    ;   throw(spec_lang_fault(non_ground(Name)))
+    ).
+
+closed_data(Value) :-
+    nonvar(Value),
+    closed_data_(Value).
+
+closed_data_(Value) :-
+    atomic(Value),
+    !.
+closed_data_(Value) :-
+    is_dict(Value),
+    !,
+    dict_pairs(Value, _, Pairs),
+    forall(member(_-Item, Pairs), closed_data(Item)).
+closed_data_(Values) :-
+    is_list(Values),
+    !,
+    maplist(closed_data, Values).
+closed_data_(Value) :-
+    compound(Value),
+    !,
+    Value =.. [_|Args],
+    maplist(closed_data, Args).
 
 /* Helpers -------------------------------------------------------------- */
 
@@ -353,9 +384,6 @@ require_state_value(Key, State, Value) :-
     ;   Value = Current
     ).
 
-option_value(Key, State, Default, Value) :-
-    state_value(Key, State, Default, Value).
-
 require_name(Value, _) :- atom(Value), Value \== '', !.
 require_name(Value, Name) :- throw(spec_lang_fault(invalid_name(Name, Value))).
 
@@ -371,9 +399,6 @@ require_dict(Value, Name) :- throw(spec_lang_fault(invalid_dict(Name, Value))).
 
 require_acyclic(Value, _) :- acyclic_term(Value), !.
 require_acyclic(_, Name) :- throw(spec_lang_fault(cyclic(Name))).
-
-require_ground(Value, _) :- ground(Value), !.
-require_ground(Value, Name) :- throw(spec_lang_fault(non_ground(Name, Value))).
 
 requirement_ids(Requirements, Ids) :-
     findall(Id,
