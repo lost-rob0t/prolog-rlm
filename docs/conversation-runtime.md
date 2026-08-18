@@ -22,6 +22,7 @@ conversation_store_close(+Store, -Outcome).
 
 conversation_create(+Store, +Options, -Outcome).
 conversation_open(+Store, +ConversationId, -Outcome).
+conversation_list(+Store, +Options, -Outcome).
 
 conversation_append(+Conversation, +Message, -Outcome).
 conversation_message(+Conversation, +Sequence, -Outcome).
@@ -44,6 +45,14 @@ persist(File)
 
 The persistent adapter uses the same local SWI persistency style as the artifact runtime. It is an adapter, not a permanent storage-format commitment.
 
+`conversation_list/3` enumerates reopenable conversation references from a store. It supports `order(desc|asc)` and `limit(all|N)`; newest-first is the default.
+
+```prolog
+conversation_list(Store,
+                  [order(desc), limit(20)],
+                  ok(Conversations)).
+```
+
 ## History selectors
 
 ```prolog
@@ -56,7 +65,7 @@ around(Sequence, Radius)
 role(Role)
 ```
 
-Search is bounded by `max_results/1` and defaults to case-insensitive matching.
+Search is bounded by `max_results/1` and defaults to case-insensitive matching. Invalid selectors and inverted ranges return structured conversation errors rather than plain Prolog failure.
 
 ## Managed turns
 
@@ -123,6 +132,26 @@ visible_sections([
 ```
 
 The ledger reports both the operator and provider ceilings, fixed visible tokens, host-only metadata tokens, selected context tokens, reserves, total, and remaining tokens.
+
+### Stage-aware accounting
+
+`token_ledger.stages` explains where the context budget went. Each fixed section, selected context representation, output reserve, and safety reserve records its observed token count, charged token count, and cumulative provider-window usage.
+
+```prolog
+token_stage{
+    name:mcp_tools,
+    kind:fixed_section,
+    visibility:model,
+    observed_tokens:18220,
+    charged_tokens:18220,
+    charged_to_window:true,
+    cumulative_tokens:29840
+}
+```
+
+Host-only sections still appear in the stage trace but have `charged_tokens:0` and do not advance `cumulative_tokens`. This lets callers account for MCP configuration/catalog size without pretending secrets or host-only transport configuration were sent to the model.
+
+The final stage cumulative count must exactly match `token_ledger.total_tokens`; a mismatch fails closed.
 
 ## Token counting
 
