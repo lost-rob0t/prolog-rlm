@@ -86,7 +86,7 @@ canonical_ui_event(agent_event(question_answered, QuestionId, Answer0),
 canonical_ui_event(agent_event(subagent_started, SubagentId, Meta0),
                    "subagent_started", Payload, none) :- !,
     safe_dict(Meta0, Meta),
-    Payload = Meta.put(subagent_id, SubagentId).
+    put_dict(subagent_id, Meta, SubagentId, Payload).
 canonical_ui_event(agent_event(subagent_finished, SubagentId, Outcome0),
                    "subagent_finished", Payload, none) :- !,
     safe_value(Outcome0, Outcome),
