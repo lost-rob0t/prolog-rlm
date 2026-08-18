@@ -77,6 +77,14 @@ Never silently migrate a non-empty legacy effect journal.
 
 Legacy PR-#78 journals require the explicit offline migration flow documented in `docs/effect-migration.md`. Migration must remain non-effectful: it must not submit, cancel, or reconcile provider work, and it must never guess unresolved adapter identity. In-place replacement requires the documented verified backup behavior.
 
+## PrologAgent roadmap discipline
+
+`docs/prolog-agent-roadmap.md` is the canonical product roadmap for the downstream OpenCode-style coding agent. `prolog-rlm` remains the reusable runtime; coding-agent UX and concrete project workflows belong under the downstream `agentProlog/` layer or companion tool packages.
+
+When a PR changes PrologAgent readiness, dependencies, milestone status, tool availability, approval behavior, project policy, or TUI-facing runtime contracts, update the roadmap in the same PR. Do not mark a phase complete from worker prose alone: reconcile it with merged code, tests, docs, and required CI evidence.
+
+If issue text, the roadmap, and current code disagree, current merged code/tests are the execution truth. Update stale documentation rather than coding to an obsolete checklist.
+
 ## Verification commands
 
 Baseline deterministic commands from a clean checkout:
@@ -104,7 +112,7 @@ Do not edit CI to hide a product failure, remove a required gate, or convert a f
 - Keep commits reviewable and semantically coherent.
 - Do not rewrite `main` or force-push shared history.
 - Never commit credentials, provider secrets, generated private data, or local environment artifacts.
-- Update docs when public behavior, guarantees, migration requirements, or operator workflow changes.
+- Update docs when public behavior, guarantees, migration requirements, operator workflow, or PrologAgent roadmap status changes.
 - PR descriptions must state the runtime invariant implemented, important non-goals, tests/evidence, and remaining follow-up scope.
 - Do not close a parent issue merely because a substrate landed if canonical adoption remains unfinished.
 - If the task explicitly says to merge on green, merge only the exact reviewed head after all required deterministic and live gates are green and review blockers are resolved. Otherwise stop at the requested branch/PR boundary.
