@@ -1,6 +1,6 @@
 # Managed conversation runtime
 
-`rlm_conversation` owns durable multi-turn state above the stateless `rlm_completion/4` primitive. The public `rlm` facade routes managed packing and turns through `rlm_conversation_runtime`, which combines hot transcript context, already-published warm context, and lazy cold-history retrieval.
+`rlm_conversation` owns durable multi-turn state above the stateless `rlm_completion/4` primitive. The public `rlm` facade routes managed packing and turns through `rlm_conversation_runtime`, which combines hot transcript context, already-published warm context, a synthetic cold-history boundary, and lazy cold-history retrieval.
 
 The canonical contract is:
 
@@ -13,7 +13,7 @@ complete durable transcript
         |      ranked + representation-selected
         |
         +--> synthetic cold-history boundary
-        |      tells the model how to fetch omitted history
+        |      tells the model how to recover omitted history
         |
         `--> lazy cold RLM context
              peek / slice / search on demand
