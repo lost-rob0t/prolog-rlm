@@ -11,9 +11,10 @@
 /** <module> Trusted assertion registry boundary
 
 Assertions are declarative model-facing data. Trusted host code supplies the
-argument validator, pure evaluator and optional observation collector for each assertion kind.
-There is intentionally no public mutation/registration predicate: model or
-project data can select admitted kinds but cannot install executable authority.
+argument validator, pure evaluator and optional observation collector for each
+assertion kind. There is intentionally no public mutation/registration
+predicate: model or project data can select admitted kinds but cannot install
+executable authority.
 */
 
 :- use_module(rlm_evidence).
@@ -139,6 +140,7 @@ normalize_provider(assertion_provider(Kind0,
                    evidence_policy:Metadata.evidence_policy,
                    verify_time_limit:Metadata.verify_time_limit,
                    latency:Metadata.latency,
+                   argument_schema:Metadata.argument_schema,
                    description:Metadata.description
                }.
 normalize_provider(Input, _) :-
@@ -148,7 +150,8 @@ normalize_metadata(Input, Metadata) :-
     is_dict(Input),
     !,
     allowed_keys(Input,
-                 [verifier,collector,evidence_policy,verify_time_limit,latency,description],
+                 [verifier,collector,evidence_policy,verify_time_limit,latency,
+                  argument_schema,description],
                  assertion_metadata),
     require_dict_key(Input, verifier, Verifier0),
     normalize_identity(verifier, Verifier0, Verifier),
@@ -161,6 +164,8 @@ normalize_metadata(Input, Metadata) :-
     require_positive_number(VerifyTimeLimit, verify_time_limit),
     dict_default(Input, latency, pure, Latency),
     require_member(Latency, [pure,blocking], latency),
+    dict_default(Input, argument_schema, unspecified, ArgumentSchema0),
+    canonical_data(ArgumentSchema0, ArgumentSchema),
     dict_default(Input, description, "", Description),
     require_text(Description, description),
     Metadata = assertion_metadata{verifier:Verifier,
@@ -168,6 +173,7 @@ normalize_metadata(Input, Metadata) :-
                                   evidence_policy:Policy,
                                   verify_time_limit:VerifyTimeLimit,
                                   latency:Latency,
+                                  argument_schema:ArgumentSchema,
                                   description:Description}.
 normalize_metadata(Input, _) :-
     throw(assertion_fault(invalid_registry_metadata(Input))).
@@ -209,6 +215,7 @@ catalog_entry(Provider,
                   evidence_policy:Provider.evidence_policy,
                   verify_time_limit:Provider.verify_time_limit,
                   latency:Provider.latency,
+                  argument_schema:Provider.argument_schema,
                   description:Provider.description
               }).
 
@@ -225,7 +232,7 @@ call_validator(Validator, _) :-
 
 /* Closed safe data ----------------------------------------------------- */
 
-canonical_data(Value0, Value) :-
+canonical_data(Value0, _) :-
     var(Value0),
     !,
     throw(assertion_fault(non_ground_assertion_arguments)).
@@ -310,7 +317,7 @@ require_text(Value, _) :- string(Value), !.
 require_text(Value, _) :- atom(Value), !.
 require_text(Value, Name) :- throw(assertion_fault(invalid_text(Name, Value))).
 
-require_unique(Values, Kind) :-
+require_unique(Values, _) :-
     sort(Values, Unique),
     length(Values, Count),
     length(Unique, Count),
