@@ -31,7 +31,8 @@ warm_pack_case(Conversation, ArtifactStore) :-
         [ policy(Policy),
           token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)]),
           warm_store(ArtifactStore),
-          warm_options([policy(_{max_candidates:8})])
+          warm_options([policy(_{max_candidates:8})]),
+          cold_history_boundary(false)
         ],
         ok(Pack)),
     assertion(Pack.warm.configured == true),
@@ -65,7 +66,8 @@ warm_turn_case(Conversation, ArtifactStore) :-
               policy(Policy),
               token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)]),
               warm_store(ArtifactStore),
-              warm_options([policy(_{max_candidates:8})])
+              warm_options([policy(_{max_candidates:8})]),
+              cold_history_boundary(false)
           ]),
           completion_options([
               planner_handler(plunit_rlm_conversation_runtime:warm_loaded_planner),
@@ -93,13 +95,97 @@ no_warm_store_case(Conversation, ArtifactStore) :-
     rlm:conversation_context_pack(
         Conversation,
         [ policy(Policy),
-          token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)])
+          token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)]),
+          cold_history_boundary(false)
         ],
         ok(Pack)),
     assertion(Pack.warm.configured == false),
     assertion(Pack.warm.loaded_units =:= 0),
     assertion(\+ (member(Selection, Pack.selected),
                    Selection.section == warm)).
+
+test(context_pack_adds_token_accounted_cold_history_boundary) :-
+    with_runtime(cold_boundary_pack_case).
+
+cold_boundary_pack_case(Conversation, _ArtifactStore) :-
+    rlm:conversation_append(Conversation, message(user, "old one"), ok(_)),
+    rlm:conversation_append(Conversation, message(assistant, "old two"), ok(_)),
+    rlm:conversation_append(Conversation, message(user, "current"), ok(_)),
+    boundary_policy(Policy),
+    rlm:conversation_context_pack(
+        Conversation,
+        [ policy(Policy),
+          token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)])
+        ],
+        ok(Pack)),
+    Boundary = Pack.cold_history_boundary,
+    assertion(Boundary.configured == true),
+    assertion(Boundary.active == true),
+    assertion(Boundary.cold_range == range(1,2)),
+    assertion(Boundary.guaranteed_hot_start =:= 3),
+    member(Selection, Pack.selected),
+    Selection.id == managed_cold_history_boundary,
+    assertion(Selection.section == cold_history_boundary),
+    assertion(Selection.kind == instruction),
+    assertion(sub_string(Selection.value.text,
+                         _, _, _,
+                         "context(input(context), search")),
+    member(Stage, Pack.ledger.stages),
+    Stage.name == managed_cold_history_boundary,
+    assertion(Stage.kind == context_unit),
+    assertion(Stage.charged_tokens > 0),
+    assertion(Pack.ledger.total_tokens =< Policy.max_context_tokens).
+
+test(managed_turn_exposes_boundary_without_mutating_old_messages) :-
+    with_runtime(cold_boundary_turn_case).
+
+cold_boundary_turn_case(Conversation, _ArtifactStore) :-
+    rlm:conversation_append(Conversation,
+                            message(user, "immutable old user turn"),
+                            ok(First)),
+    rlm:conversation_append(Conversation,
+                            message(assistant, "immutable old assistant turn"),
+                            ok(Second)),
+    boundary_policy(Policy),
+    rlm:conversation_turn(
+        Conversation,
+        message(user, "refer to something old if needed"),
+        [ context_options([
+              policy(Policy),
+              token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)])
+          ]),
+          completion_options([
+              planner_handler(plunit_rlm_conversation_runtime:cold_boundary_planner),
+              planner_attempts(1)
+          ])
+        ],
+        ok(Turn)),
+    assertion(Turn.assistant.content == "BOUNDARY_OK"),
+    assertion(Turn.context.cold_history_boundary.active == true),
+    rlm:conversation_message(Conversation, 1, ok(RestoredFirst)),
+    rlm:conversation_message(Conversation, 2, ok(RestoredSecond)),
+    assertion(RestoredFirst.ref == First.ref),
+    assertion(RestoredFirst.content == "immutable old user turn"),
+    assertion(RestoredSecond.ref == Second.ref),
+    assertion(RestoredSecond.content == "immutable old assistant turn").
+
+test(boundary_can_be_disabled_explicitly) :-
+    with_runtime(boundary_disabled_case).
+
+boundary_disabled_case(Conversation, _ArtifactStore) :-
+    rlm:conversation_append(Conversation, message(user, "one"), ok(_)),
+    rlm:conversation_append(Conversation, message(assistant, "two"), ok(_)),
+    boundary_policy(Policy),
+    rlm:conversation_context_pack(
+        Conversation,
+        [ policy(Policy),
+          cold_history_boundary(false)
+        ],
+        ok(Pack)),
+    assertion(Pack.cold_history_boundary.configured == false),
+    assertion(Pack.cold_history_boundary.active == false),
+    assertion(\+ (member(Selection, Pack.selected),
+                   Selection.id == managed_cold_history_boundary)).
 
 publish_old_warm_context(Conversation, ArtifactStore) :-
     long_text(a, 150, OldA),
@@ -129,6 +215,26 @@ warm_loaded_planner(Request, ok(Output)) :-
                          cost:0.0}
              }.
 
+cold_boundary_planner(Request, ok(Output)) :-
+    Request.messages = [Message],
+    assertion(sub_string(Message.content,
+                         _, _, _,
+                         "Cold history boundary:")),
+    assertion(sub_string(Message.content,
+                         _, _, _,
+                         "Sequences 1..2 may be absent")),
+    assertion(sub_string(Message.content,
+                         _, _, _,
+                         "context(input(context), search")),
+    Plan = plan([final(literal("BOUNDARY_OK"))]),
+    Output = planner_output{
+                 plan:Plan,
+                 usage:_{prompt_tokens:1,
+                         completion_tokens:1,
+                         total_tokens:2,
+                         cost:0.0}
+             }.
+
 warm_generator(_Source, _Options,
                _{summary:"compact useful summary",
                  decisions:["decision alpha alpha alpha alpha",
@@ -150,6 +256,13 @@ tight_policy(context_policy{max_context_tokens:180,
                             safety_margin_tokens:5,
                             min_recent_turns:1,
                             overflow:deny}).
+
+boundary_policy(context_policy{max_context_tokens:2000,
+                               provider_context_tokens:1000000,
+                               reserve_output_tokens:10,
+                               safety_margin_tokens:5,
+                               min_recent_turns:1,
+                               overflow:deny}).
 
 char_counter(Text, Tokens) :-
     string_length(Text, Tokens).
