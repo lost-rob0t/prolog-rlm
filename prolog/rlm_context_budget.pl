@@ -425,7 +425,7 @@ normalize_name(Value, _) :-
     throw(context_budget_fault(expected_name(Value))).
 
 require_text(Value, Text) :- string(Value), !, Text = Value.
-require_text(Value, Text) :- atom(Value), !, atom_string(Atom, Value).
+require_text(Value, Text) :- atom(Value), !, atom_string(Value, Text).
 require_text(Value, _) :- throw(context_budget_fault(expected_text(Value))).
 
 require_options(Value) :- is_list(Value), !.
