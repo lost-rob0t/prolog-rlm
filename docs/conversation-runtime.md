@@ -81,19 +81,13 @@ context_policy{
 }.
 ```
 
-The effective ceiling is:
-
-```text
-min(max_context_tokens, provider_context_tokens)
-```
+The effective ceiling is `min(max_context_tokens, provider_context_tokens)`.
 
 A model advertising one million tokens therefore does not grant permission to consume one million tokens when the operator selected a 300k working cap.
 
 Fixed model-visible sections, selected context units, output reserve, and safety margin all enter one token ledger. Host-only metadata is measured separately and is not charged against the provider window.
 
 The synthetic cold-history boundary is a mandatory context unit, so its provider-visible text is charged in the same ledger rather than appearing as invisible prompt overhead.
-
-The stage ledger records observed, charged, and cumulative tokens for each compilation step so callers can see where the window went.
 
 ## Context packing
 
@@ -117,27 +111,13 @@ context(input(context), peek(item(Index)), Result).
 
 The boundary deliberately says older sequences *may* be absent from active attention. The solver can still retain extra old material or warm representations when budget and utility justify it. The cold transcript remains authoritative regardless.
 
-Boundary status is exposed on managed pack/turn context as `cold_history_boundary`. For debugging or specialized callers it may be disabled explicitly with:
-
-```prolog
-cold_history_boundary(false)
-```
-
-The default is enabled.
+Boundary status is exposed on managed pack/turn context as `cold_history_boundary`. For debugging or specialized callers it may be disabled explicitly with `cold_history_boundary(false)`; the default is enabled.
 
 ## Warm context is wired in; automatic compaction is not
 
-Warm context has two separate concerns:
+Warm consumption and warm production are separate concerns. Already-published warm state is integrated into managed turns; creating/publishing new warm state remains explicit.
 
-```text
-consume already-published warm state
-    -> integrated into managed turns
-
-create/publish new warm state
-    -> explicit API, not automatic
-```
-
-Publish warm state explicitly with `conversation_warm_publish/5`. Then configure its artifact store on normal managed context options:
+Publish warm state explicitly with `conversation_warm_publish/5`, then configure its artifact store:
 
 ```prolog
 context_options([
@@ -148,18 +128,9 @@ context_options([
 ]).
 ```
 
-With `warm_store/1` configured, the public managed runtime automatically:
+With `warm_store/1` configured, the managed runtime automatically loads, ranks, narrows and converts warm artifacts into multi-representation context units. The shared CLP(FD) solver can choose `verbatim`, `detailed_summary`, `compact_summary`, `facts_only`, or omission under the hard token cap.
 
-- loads the current warm artifacts for the conversation;
-- ranks them using `warm_signals/1` and the warm policy;
-- narrows them to a bounded candidate set;
-- converts them to multi-representation context units;
-- lets the shared CLP(FD) solver choose `verbatim`, `detailed_summary`, `compact_summary`, `facts_only`, or omission under the hard token cap;
-- removes optional hot source turns covered by the selected warm candidates so the same history is not paid for twice.
-
-Callers do not need to manually feed warm `context_units/1` into the public `rlm` facade. Explicit context units remain supported and override an automatically loaded warm unit with the same id.
-
-A managed turn does **not** choose ranges to compact, invoke a summarization model, publish new warm artifacts, or trigger compaction merely because token pressure rises. That remains an explicit feature and can be revisited later if telemetry justifies automation.
+A managed turn does **not** choose ranges to compact, invoke a summarization model, publish new warm artifacts, or trigger compaction merely because token pressure rises.
 
 ## Cold history and unbounded conversations
 
