@@ -4,9 +4,9 @@ This backlog is intentionally broader than the first runnable RLM. Work should l
 
 ## Status convention
 
-Status reconciled against canonical `main` commit `abfc30ebb9f335d5841c1f7910bd474da905ebcf` on 2026-08-18, with the post-merge issue-state audit completed after PR #89.
+Status reconciled against canonical `main` commit `591c936d0476df5ac56de31fd327e7d0d678fb4e` on 2026-08-18. This change adds the first-class Spec/Verify substrate while leaving the broader #56 and #68-#71 integration tracks open.
 
-- `[x]` means the implementation/documentation/test surface represented by that checkbox is present on `main` and sufficiently verified.
+- `[x]` means the implementation/documentation/test surface represented by that checkbox is present in this branch and sufficiently verified for this slice.
 - `[ ]` means meaningful work remains, the surface is only partially covered, or a known open defect prevents treating the aggregate contract as complete.
 - GitHub issue state, merged source/tests, this TODO, and the PrologAgent roadmap must be reconciled together. Merged canonical source and tests outrank historical status prose.
 
@@ -21,7 +21,9 @@ These remain blockers for the v0.1/manual-validation umbrella in #3:
 
 ### Open feature and architecture work
 
-The main active architecture tracks are the companion/standard tool pack (#49/#50), the downstream expert-system example (#51), remaining cross-library async/TUI integration (#54), proof/evidence acceptance (#56), canonical adoption of the durable effect boundary (#57/#79), the verified workflow pipeline (#68-#71), and durable scoped project policy/configuration (#74-#77).
+The main active architecture tracks are the companion/standard tool pack (#49/#50), the downstream expert-system example (#51), remaining cross-library async/TUI integration (#54), result acceptance on the shared evidence/verifier substrate (#56), canonical adoption of the durable effect boundary (#57/#79), the broader TaskIR/context/verified-workflow pipeline (#68-#71), and durable scoped project policy/configuration (#74-#77).
+
+The first-class Spec/Verify slice establishes immutable domain-neutral Specs, structured observations, trusted assertion providers, standalone pure verification, optional observation collection, project-KB snapshot compatibility, and a Spec-bound graph composition. It does **not** complete #56 or #68-#71: result envelopes, TaskIR ownership/reference semantics, canonical project parsing/indexing, context acquisition, continuation orchestration, and downstream PrologAgent integration still remain.
 
 The generic #57 effect substrate is already merged through #78, #83, and #85. That does **not** complete #57: canonical provider/tool/MCP/process adoption remains in #79, and open PR #86 is only the first tool-path slice until it is actually merged.
 
@@ -31,7 +33,7 @@ The generic #57 effect substrate is already merged through #78, #83, and #85. Th
 
 ### Completed historical foundations
 
-The external loader boundary (#48), declarative MCP policy/config boundary (#52), host authority and pending-operation boundary (#53/#63/#64), generic durable effect substrate/hardening/migration (#78/#83/#85), and external-tool documentation refresh (#73) are complete. The PrologAgent product roadmap itself landed in #87.
+The external loader boundary (#48), declarative MCP policy/config boundary (#52), host authority and pending-operation boundary (#53/#63/#64), generic durable effect substrate/hardening/migration (#78/#83/#85), external-tool documentation refresh (#73), and PrologAgent product roadmap (#87) are complete foundations. This branch adds the domain-neutral Spec/Verify foundation described in `docs/spec-verify.md`.
 
 GitHub Actions remains the authoritative executable gate. Do not encode a transient “latest CI run” result here as durable project state; preserve open CI-contract defects such as #46 until their acceptance criteria actually land.
 
@@ -79,6 +81,28 @@ GitHub Actions remains the authoritative executable gate. Do not encode a transi
 - [x] Add the generic durable effect identity/observation substrate, hardening, and explicit legacy migration from #78/#83/#85.
 - [ ] Finish async process/test/network tool support and downstream approval/TUI responsiveness. *(Tracked by #54 with concrete tool work in #49/#50.)*
 - [ ] Route every in-scope canonical effectful tool/provider/MCP/process path through the durable effect boundary. *(Tracked by #79; PR #86 is open and therefore is not counted as merged adoption.)*
+
+## P1 — First-class Spec and Verify
+
+- [x] Add a domain-neutral `rlm_spec` abstraction that normalizes, validates, freezes, inspects, fingerprints, and optionally publishes exact historical Specs.
+- [x] Make Frozen Spec identity stable across dict tags and reject semantic tampering by recomputing the canonical content fingerprint.
+- [x] Require explicit newer logical Spec versions when changed semantic content is published in the same Spec series.
+- [x] Add a trusted assertion registry with sanitized discovery; model/project data may select registered kinds but cannot install executable predicates.
+- [x] Add a shared evidence/provenance policy substrate with explicit trust/source/freshness/coherence/state-reference semantics.
+- [x] Add standalone `spec_verify/4` over supplied observations without evidence collection or hidden external effects.
+- [x] Separate observation collection from verification and use the shared async runtime only for latency-bearing collectors.
+- [x] Preserve structured verification states including missing, pending, skipped, cancelled, error, timeout, indeterminate, and stale.
+- [x] Narrow host-required evidence/verifier contracts so model Spec content cannot weaken them.
+- [x] Add a semantic project-KB observation boundary with snapshot/revision provenance and coherent-state checks without implementing a source parser or final KB ontology.
+- [x] Demonstrate the same Spec/Verify core with both project-oriented and non-software dataset assertions.
+- [x] Bind supplied/existing plans to exact Frozen Spec references and reuse `rlm_plan`/`rlm_outcome` rather than adding a second plan interpreter.
+- [x] Compose the optional Plan -> Execute -> Observe -> Verify -> repair loop over `rlm_graph`, with graph identity bound to the Frozen Spec fingerprint.
+- [x] Demonstrate failure -> replan -> execute -> Verify success while preserving the original Spec identity.
+- [x] Document that project parsers/indexers should build canonical project knowledge once for both planner and verifier consumers.
+- [ ] Integrate #56 result acceptance with the shared evidence/verifier primitives instead of a second verification stack.
+- [ ] Normalize operator requirements into Frozen Spec references carried by TaskIR (#69), rather than duplicating acceptance ownership in TaskIR.
+- [ ] Build the actual project parser/indexer and canonical project-KB adapter consumed by #70/context and semantic assertion providers.
+- [ ] Finish #71 verified continuation/resume integration around TaskIR, context acquisition, artifacts, and exact Frozen Spec references.
 
 ## P1 — `rlm_agent`
 

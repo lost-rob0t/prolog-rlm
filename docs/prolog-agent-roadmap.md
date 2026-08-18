@@ -19,14 +19,20 @@ Already available in core:
 - MCP client/server integration;
 - host-controlled authority and pending approvals;
 - durable artifacts;
-- the generic #57 durable effect identity/observation substrate, including the #83 hardening and #85 explicit migration path.
+- the generic #57 durable effect identity/observation substrate, including the #83 hardening and #85 explicit migration path;
+- first-class domain-neutral Specs with immutable content identity;
+- a trusted assertion/evidence boundary with standalone pure verification;
+- optional Spec-bound Plan execution and a bounded Verify/repair composition over `rlm_graph`;
+- a project-KB observation boundary that lets future planners and verifiers consume the same semantic project state without teaching either layer to parse source code.
 
 Still missing for a useful coding agent:
 
 - canonical #57 effect-boundary adoption across the effectful paths tracked by #79;
 - a standard project tool pack with search, write/edit, git, and test/process tools;
 - durable project-scoped settings and remembered bounded approvals;
-- a coding loop that turns a task into inspect -> edit -> verify -> repair;
+- the actual project parser/indexer and canonical project-KB implementation consumed by the new semantic observation boundary;
+- TaskIR/context/result-acceptance integration around the Frozen Spec substrate from #56 and #68-#71;
+- a headless coding loop that wires project inspection, edits, re-indexing, verification, and repair to those shared runtime concepts;
 - nonblocking approval/diff handling suitable for an interactive terminal;
 - project instructions/context discovery for coding work;
 - the actual `agentProlog/` terminal application.
@@ -42,15 +48,15 @@ agentProlog/
   TUI + coding workflow + project UX
         |
         v
-external tool pack
-  filesystem + git + process/test tools
+external tool pack + project parser/indexer
+  filesystem + git + process/test tools + canonical project KB
         |
         v
 prolog-rlm core
-  completion + agent + graph + authority + async + effects + MCP
+  Spec + Verify + plan + graph + authority + async + effects + MCP
 ```
 
-Core must not gain ambient repository write access just because `PrologAgent` needs it. Coding tools remain separately loadable and capability-gated. The TUI never becomes a second execution engine.
+Core must not gain ambient repository write access just because `PrologAgent` needs it. Coding tools remain separately loadable and capability-gated. The TUI never becomes a second execution engine. The project parser/indexer also remains a semantic observation producer, not a hidden executor.
 
 ## Phase 0: finish the write-safety substrate
 
@@ -108,7 +114,7 @@ git_diff()
 
 Every step remains a normal traced tool operation. File mutation does not bypass authority simply because it came from a coding workflow.
 
-## Phase 2: project state and instructions
+## Phase 2: project state, project knowledge, and instructions
 
 Land the scoped-state work in #74 through #77 far enough for a coding frontend to remember project-local operator choices without inventing product-specific persistence in the TUI.
 
@@ -124,6 +130,10 @@ It must not persist `allow_session`, silently promote permissions to `dangerous`
 
 Project instructions should enter the coding context with provenance. Repository instructions, current source/tests, operator requirements, and model inference are not the same kind of evidence.
 
+In parallel, implement the project parser/indexer behind the semantic project-state boundary established by `rlm_spec`/`rlm_verify`. Source, build metadata, package metadata, and configuration should be parsed once into canonical project knowledge. Planner and verifier consumers query that knowledge through trusted semantic providers. Do not add a planner-only parser and a verifier-only parser.
+
+The project KB remains distinct from artifacts, graph checkpoints, authority, effect journals, and runtime observations. After a write, invalidate/re-index affected project state and verify the unchanged Frozen Spec against the new snapshot plus runtime evidence.
+
 ## Phase 3: headless coding agent
 
 Build the coding workflow before the full-screen UI. This gives us something testable instead of debugging terminal escape codes and autonomous edits at the same time, a classic human hobby.
@@ -131,18 +141,21 @@ Build the coding workflow before the full-screen UI. This gives us something tes
 The minimum workflow is:
 
 ```text
-operator task
--> inspect project/instructions
--> gather relevant files
--> propose plan
+operator requirements
+-> normalize/validate/freeze Spec S1
+-> inspect project snapshot K1 + instructions
+-> produce or accept Plan P1 bound to S1
 -> execute bounded edits/tools
--> run required verification
--> inspect diff/result
--> repair on failure
--> finish with evidence
+-> refresh/re-index project state to K2
+-> collect runtime/project observations
+-> Verify S1
+-> repair/replan on failure without weakening S1
+-> finish with structured evidence
 ```
 
-Reuse `rlm_agent`, `rlm_graph`, `rlm_async`, `rlm_authority`, traces, and artifacts. Do not create a special coding-agent scheduler.
+Reuse `rlm_spec`, `rlm_verify`, `rlm_spec_workflow`, `rlm_agent`, `rlm_graph`, `rlm_async`, `rlm_authority`, traces, effects, and artifacts. Do not create a special coding-agent scheduler or a second acceptance language.
+
+TaskIR work from #69 should carry/reference the exact Frozen Spec rather than becoming a second canonical owner of acceptance criteria. Result acceptance work from #56 should share the same evidence/verifier substrate instead of growing an incompatible verifier stack. Resume/restart work from #71 must remain bound to the original Spec identity.
 
 The workflow should expose events that a future TUI can consume:
 
@@ -167,7 +180,7 @@ swipl -q -s agentProlog/bin/agent-prolog.pl -- \
   "Add a timeout to the MCP request path and run the relevant tests"
 ```
 
-The command should finish only when the configured acceptance checks pass or the run ends with a structured blocked/failed outcome.
+The command should finish only when the exact Frozen Spec's configured acceptance checks pass or the run ends with a structured blocked/failed outcome.
 
 ## Phase 4: OpenCode-style TUI
 
@@ -212,7 +225,10 @@ Before calling the first release useful, cover these behaviors end to end:
 - project-root traversal and symlink escapes are rejected;
 - an approval applies to the exact normalized operation it reviewed;
 - restart does not duplicate an admitted write;
+- restart remains bound to the exact Frozen Spec it started with;
 - test failure enters repair rather than being reported as success;
+- repair may change Plan but cannot weaken Frozen Spec acceptance requirements;
+- static project observations and runtime evidence from incompatible revisions cannot silently pass as one coherent state;
 - project A permissions never leak into project B;
 - the TUI remains responsive while provider, tool, and test operations are active;
 - final output shows changed files, verification results, usage, and trace reference.
@@ -221,7 +237,7 @@ Before calling the first release useful, cover these behaviors end to end:
 
 `PrologAgent v0.1` is reached when a user can open a repository, give a coding task, watch the model inspect and edit files, approve mutations, run tests, review the final diff, and receive a structured completion result without granting ambient shell/filesystem authority.
 
-The first release does not need IDE parity, a plugin marketplace, background daemons, arbitrary shell access, or every OpenCode feature. It needs a trustworthy edit/test loop with a terminal interface.
+The first release does not need IDE parity, a plugin marketplace, background daemons, arbitrary shell access, or every OpenCode feature. It needs a trustworthy inspect/edit/re-index/verify loop with a terminal interface.
 
 ## Dependency map
 
@@ -230,8 +246,11 @@ Current core issues that materially affect the roadmap:
 - #79: canonical external-effect adoption; blocks normal repository mutation. The #57 generic substrate is merged, but adoption is not.
 - #49 / #50: companion project/coding tool pack.
 - #54: async contract; core migrations are largely complete, while external process/test/network and downstream approval/TUI integration remain.
-- #56: evidence/verifier acceptance, useful for stronger completion gates.
-- #68-#71: task/context/verified workflow pipeline; useful for richer autonomous coding runs.
+- #56: result acceptance should build on the shared evidence/provenance/verifier substrate now used by Spec Verify; the broader result-envelope/delegation work remains open.
+- #68: verified workflow epic remains open; first-class Spec/Verify and graph composition are substrate, not the whole product workflow.
+- #69: TaskIR should reference the exact Frozen Spec and carry task/execution metadata rather than own a competing acceptance contract.
+- #70: project context should incorporate canonical project-KB snapshot references and provenance; the parser/indexer itself still needs to be built.
+- #71: workflow execution/resume must remain bound to the exact Frozen Spec; the Spec-bound graph foundation now demonstrates that invariant, while full TaskIR/continuation integration remains open.
 - #74-#77: durable project state, instructions, and bounded persistent authorization.
 
 Do not wait for every P1 research idea before starting `agentProlog/`. Build against stable public contracts, keep optional integrations optional, and let the first usable coding loop drive the remaining abstractions.
