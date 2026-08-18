@@ -1,19 +1,22 @@
 # Managed conversation runtime
 
-`rlm_conversation` adds durable multi-turn state above the stateless `rlm_completion/4` primitive.
+`rlm_conversation` owns durable multi-turn state above the stateless `rlm_completion/4` primitive. The public `rlm` facade routes managed packing and turns through `rlm_conversation_runtime`, which combines hot transcript context, already-published warm context, and lazy cold-history retrieval.
 
-The default contract is deliberately simple:
+The canonical contract is:
 
 ```text
 complete durable transcript
         |
         +--> bounded rolling hot context
         |
+        +--> existing warm artifacts
+        |      ranked + representation-selected
+        |
         `--> lazy cold RLM context
              peek / slice / search on demand
 ```
 
-Old turns leaving active attention are not deleted and are not automatically summarized.
+Old turns leaving active attention are never deleted. Creating new warm state is explicit; consuming existing warm state is integrated into the normal managed runtime when a warm store is configured.
 
 ## Public API
 
@@ -44,15 +47,16 @@ History selectors include `all`, `recent(Count)`, `range(Start, End)`, `before(S
 
 ## Managed turns
 
-`conversation_turn/4`:
+The public `rlm:conversation_turn/4`:
 
-1. persists the current user turn;
-2. compiles the bounded active context under the configured token ceiling;
-3. registers an ephemeral opaque context handle over the complete durable transcript;
-4. calls `rlm_completion/4`;
-5. lets RLM use bounded `peek`, `slice`, or `search` operations when older history is needed;
-6. deletes only the ephemeral handle;
-7. persists the assistant result.
+1. resolves configured existing warm artifacts into candidate context units;
+2. delegates to the durable conversation layer, which persists the current user turn;
+3. compiles the bounded hot + warm active context under the configured token ceiling;
+4. registers an ephemeral opaque context handle over the complete durable transcript;
+5. calls `rlm_completion/4`;
+6. lets RLM use bounded `peek`, `slice`, or `search` operations when colder history is needed;
+7. deletes only the ephemeral handle;
+8. persists the assistant result.
 
 `rlm_completion/4` remains stateless and can still be used independently.
 
@@ -89,22 +93,43 @@ The stage ledger records observed, charged, and cumulative tokens for each compi
 
 `rlm_context_budget` uses CLP(FD) to select the highest-utility set of representations that satisfies the hard token ceiling. Mandatory units cannot be silently omitted. Optional units may be omitted or represented in alternate forms.
 
-The same solver can therefore account for conversation turns, tool schemas, MCP schemas, project context, skills, or explicit derived context without creating separate token-budget systems.
+The same solver therefore accounts for hot conversation turns, warm representations, tool schemas, MCP schemas, project context, skills, and other compiler units instead of creating separate token-budget systems.
 
-## Warm context is optional
+## Warm context is wired in; automatic compaction is not
 
-`rlm_conversation_warm` remains a supported feature for callers that explicitly want derived summaries, facts, decisions, or other compressed representations.
+Warm context has two separate concerns:
 
-It is **not wired into the default conversation path**:
+```text
+consume already-published warm state
+    -> integrated into managed turns
 
-- `conversation_turn/4` does not automatically derive warm artifacts;
-- `conversation_turn/4` does not automatically load warm artifacts;
-- token pressure does not trigger hidden summarization/model calls;
-- leaving the hot window means cold retrieval, not compulsory compaction.
+create/publish new warm state
+    -> explicit API, not automatic
+```
 
-A caller may explicitly derive warm records and pass their resulting context units into `conversation_context_pack/3`. Those units then compete under the same hard token budget as everything else.
+Publish warm state explicitly with `conversation_warm_publish/5`. Then configure its artifact store on normal managed context options:
 
-Automatic compaction should only be reconsidered if telemetry shows repeated retrieval of the same old ranges creates enough token or latency cost to justify the added complexity.
+```prolog
+context_options([
+    policy(Policy),
+    warm_store(ArtifactStore),
+    warm_signals(Signals),
+    warm_options([policy(_{max_candidates:32})])
+]).
+```
+
+With `warm_store/1` configured, the public managed runtime automatically:
+
+- loads the current warm artifacts for the conversation;
+- ranks them using `warm_signals/1` and the warm policy;
+- narrows them to a bounded candidate set;
+- converts them to multi-representation context units;
+- lets the shared CLP(FD) solver choose `verbatim`, `detailed_summary`, `compact_summary`, `facts_only`, or omission under the hard token cap;
+- removes optional hot source turns covered by the selected warm candidates so the same history is not paid for twice.
+
+Callers do not need to manually feed warm `context_units/1` into the public `rlm` facade. Explicit context units remain supported and override an automatically loaded warm unit with the same id.
+
+A managed turn does **not** choose ranges to compact, invoke a summarization model, publish new warm artifacts, or trigger compaction merely because token pressure rises. That remains an explicit feature and can be revisited later if telemetry justifies automation.
 
 ## Cold history and unbounded conversations
 
@@ -122,4 +147,5 @@ The main remaining conversation-runtime work is:
 2. automatic prompt-compiler accounting for local tools, MCP tools/prompts/resources, skills, and project instructions;
 3. bounded hot-candidate selection for very large histories;
 4. indexed cold-history retrieval;
-5. async managed-turn and streaming surfaces for AgentProlog/frontends.
+5. async managed-turn and streaming surfaces for AgentProlog/frontends;
+6. bounded model-visible adapter metadata.
