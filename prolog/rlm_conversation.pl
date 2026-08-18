@@ -4,6 +4,7 @@
             conversation_store_close/2,
             conversation_create/3,
             conversation_open/3,
+            conversation_list/3,
             conversation_append/3,
             conversation_message/3,
             conversation_messages/4,
@@ -121,6 +122,34 @@ conversation_open_(Store, Id0, Conversation) :-
                                         metadata:Metadata}
     ;   throw(conversation_fault(not_found(Id)))
     ).
+
+conversation_list(Store, Options, Outcome) :-
+    conversation_outcome(list,
+                         conversation_list_(Store, Options),
+                         Outcome).
+
+conversation_list_(Store, Options, Conversations) :-
+    require_store(Store),
+    require_options(Options),
+    backend_headers(Store, Headers),
+    maplist(header_conversation(Store), Headers, Ascending),
+    option(order(Order), Options, desc),
+    order_conversations(Order, Ascending, Ordered),
+    option(limit(Limit), Options, all),
+    apply_limit(Limit, Ordered, Conversations).
+
+header_conversation(Store, Header, Conversation) :-
+    Conversation = conversation_ref{store:Store,
+                                    id:Header.id,
+                                    created_at:Header.created_at,
+                                    metadata:Header.metadata}.
+
+order_conversations(asc, Conversations, Conversations) :- !.
+order_conversations(desc, Conversations, Ordered) :-
+    !,
+    reverse(Conversations, Ordered).
+order_conversations(Order, _, _) :-
+    throw(conversation_fault(invalid_conversation_order(Order))).
 
 conversation_append(Conversation, Message0, Outcome) :-
     conversation_outcome(append,
@@ -398,7 +427,10 @@ select_messages(range(Start, End), Messages, Selected) :-
     !,
     require_positive_integer(Start, range_start),
     require_positive_integer(End, range_end),
-    Start =< End,
+    (   Start =< End
+    ->  true
+    ;   throw(conversation_fault(invalid_range(Start, End)))
+    ),
     include(sequence_between(Start, End), Messages, Selected).
 select_messages(before(Sequence), Messages, Selected) :-
     !,
@@ -548,6 +580,25 @@ backend_header(conversation_store(persist, _),
                Metadata) :-
     !,
     conversation_persist_header(Id, CreatedAt, Metadata).
+
+backend_headers(conversation_store(memory, StoreId), Headers) :-
+    !,
+    with_mutex(rlm_conversation_memory,
+               findall(CreatedAt-Id-Metadata,
+                       conversation_memory_header(StoreId,
+                                                  Id,
+                                                  CreatedAt,
+                                                  Metadata),
+                       Rows0)),
+    keysort(Rows0, Rows),
+    findall(conversation_header{id:Id,
+                                created_at:CreatedAt,
+                                metadata:Metadata},
+            member(CreatedAt-Id-Metadata, Rows),
+            Headers).
+backend_headers(conversation_store(persist, _), Headers) :-
+    !,
+    conversation_persist_headers(Headers).
 
 backend_append(conversation_store(memory, StoreId), Id, Base, Message) :-
     !,
