@@ -54,6 +54,7 @@
 :- consult(rlm_async_test).
 :- consult(rlm_async_canonical_test).
 :- consult(rlm_spec_verify_test).
+:- consult(rlm_spec_lang_test).
 :- consult(rlm_spec_workflow_test).
 
 main(_) :-
