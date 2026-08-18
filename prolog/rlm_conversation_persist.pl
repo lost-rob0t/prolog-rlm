@@ -6,7 +6,8 @@
             conversation_persist_append/3,
             conversation_persist_get/3,
             conversation_persist_list/2,
-            conversation_persist_header/3
+            conversation_persist_header/3,
+            conversation_persist_headers/1
           ]).
 
 /** <module> SWI persistency backend for durable conversation transcripts */
@@ -71,6 +72,19 @@ conversation_persist_header(Id, CreatedAt, Metadata) :-
     require_attached,
     with_mutex(rlm_conversation_persist,
                conversation_header_record(Id, CreatedAt, Metadata)).
+
+conversation_persist_headers(Headers) :-
+    require_attached,
+    with_mutex(rlm_conversation_persist,
+               findall(CreatedAt-Id-Metadata,
+                       conversation_header_record(Id, CreatedAt, Metadata),
+                       Rows0)),
+    keysort(Rows0, Rows),
+    findall(conversation_header{id:Id,
+                                created_at:CreatedAt,
+                                metadata:Metadata},
+            member(CreatedAt-Id-Metadata, Rows),
+            Headers).
 
 conversation_persist_append(Id, BaseMessage, Message) :-
     require_attached,
