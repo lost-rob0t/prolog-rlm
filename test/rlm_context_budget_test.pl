@@ -42,7 +42,19 @@ test(backtracking_selects_highest_utility_pack_under_hard_cap) :-
     assertion(Ids == [b,c]),
     assertion(Pack.utility =:= 75),
     assertion(Pack.ledger.total_tokens =:= 95),
-    assertion(Pack.ledger.remaining_tokens =:= 5).
+    assertion(Pack.ledger.remaining_tokens =:= 5),
+    Pack.ledger.stages = [System, B, C, Output, Safety],
+    assertion(System.name == system),
+    assertion(System.charged_tokens =:= 20),
+    assertion(System.cumulative_tokens =:= 20),
+    assertion(B.name == b),
+    assertion(B.cumulative_tokens =:= 60),
+    assertion(C.name == c),
+    assertion(C.cumulative_tokens =:= 80),
+    assertion(Output.name == output_reserve),
+    assertion(Output.cumulative_tokens =:= 90),
+    assertion(Safety.name == safety_margin),
+    assertion(Safety.cumulative_tokens =:= 95).
 
 test(provider_physical_window_is_a_hard_upper_bound) :-
     Policy = context_policy{max_context_tokens:300000,
@@ -85,7 +97,16 @@ test(host_only_metadata_is_measured_but_not_charged_to_model_window) :-
     context_pack([], Sections, Policy, ok(Pack)),
     assertion(Pack.ledger.visible_fixed_tokens =:= 80),
     assertion(Pack.ledger.host_only_metadata_tokens =:= 5000),
-    assertion(Pack.ledger.total_tokens =:= 95).
+    assertion(Pack.ledger.total_tokens =:= 95),
+    Pack.ledger.stages = [ToolSchema, HostConfig, Output, Safety],
+    assertion(ToolSchema.charged_to_window == true),
+    assertion(ToolSchema.cumulative_tokens =:= 80),
+    assertion(HostConfig.charged_to_window == false),
+    assertion(HostConfig.observed_tokens =:= 5000),
+    assertion(HostConfig.charged_tokens =:= 0),
+    assertion(HostConfig.cumulative_tokens =:= 80),
+    assertion(Output.cumulative_tokens =:= 90),
+    assertion(Safety.cumulative_tokens =:= 95).
 
 test(mandatory_unit_cannot_be_silently_dropped) :-
     Units = [context_unit{id:current_turn,
