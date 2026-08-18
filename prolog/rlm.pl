@@ -28,6 +28,7 @@
             conversation_export/3,
             conversation_context_pack/3,
             conversation_token_ledger/3,
+            conversation_cold_context/3,
             conversation_turn/4,
             default_warm_policy/1,
             warm_context_schema/1,
@@ -236,6 +237,7 @@ latency is represented by a deferred pending-operation Future; no shared
                 conversation_export/3,
                 conversation_context_pack/3,
                 conversation_token_ledger/3,
+                conversation_cold_context/3,
                 conversation_turn/4
               ]).
 :- use_module(rlm_conversation_warm,
