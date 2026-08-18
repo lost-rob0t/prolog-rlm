@@ -53,6 +53,8 @@
 :- consult(rlm_cli_test).
 :- consult(rlm_async_test).
 :- consult(rlm_async_canonical_test).
+:- consult(rlm_spec_verify_test).
+:- consult(rlm_spec_workflow_test).
 
 main(_) :-
     (   run_tool_mcp_async_cases,
