@@ -2,7 +2,7 @@
 
 `prolog-rlm` exposes blocking and non-blocking surfaces for operations that can take meaningful time.
 
-For completion and provider/chain execution, asynchronous work is the canonical implementation path. Synchronous predicates are convenience wrappers that start the same task, await its Future, and destroy the Future with cleanup protection.
+For migrated latency-bearing operations, asynchronous work is the canonical implementation path. Synchronous predicates are convenience wrappers that start the same task, await its Future, and destroy the Future with cleanup protection.
 
 The architectural invariant is:
 
@@ -32,15 +32,15 @@ llm_query("hello", Options, Outcome).
 
 ## Execution ABI
 
-Completion and provider/chain modules separate three concerns:
+Migrated runtime modules separate three concerns:
 
-- operation semantics live in internal `*_execute` predicates;
+- operation semantics live in trusted internal `*_execute` predicates;
 - asynchronous predicates submit those execution predicates to `rlm_async`;
 - synchronous predicates call the async surface and await/destroy its Future.
 
 Canonical operations that are already executing on an async worker call the internal execution ABI directly. They do not call a public synchronous wrapper and create a nested Future wait. This matters because the worker pool is intentionally bounded.
 
-Examples include planner/model calls from completion, model steps in typed plans, and chain retry/stream transports.
+Examples include planner/model calls from completion, model steps in typed plans, chain retry/stream transports, tool handlers, MCP lifecycle/transport work, supervised-agent operations, and graph run/resume composition.
 
 ## Scheduler
 
@@ -114,7 +114,7 @@ Synchronous wrappers use `setup_call_cleanup/3` around await/destroy so interrup
 
 Destroy Futures when the caller no longer needs their result so per-Future metadata and composition state are reclaimed.
 
-## Canonical library surfaces in this slice
+## Canonical library surfaces
 
 ### Completion
 
@@ -149,17 +149,26 @@ chain_stream_async(Chain, Request, Handler, Options, Future).
 
 Streaming uses the provider streaming transport incrementally inside the asynchronous task. It does not wait for a complete synchronous stream and replay it afterward.
 
-## Remaining #54 migrations
+### Tools and MCP
 
-The generic Future runtime is shared by tools, MCP, agents and graphs, but those libraries still contain compatibility async facades that schedule synchronous public operations. They are intentionally not described as canonical yet.
+PR #60 migrated latency-bearing tool invocation and MCP command/lifecycle operations to the same execute -> Future -> sync-await direction. Plan/runtime code already executing inside an async worker uses the trusted execute ABI directly rather than nesting a Future wait.
 
-The next #54 slice must migrate latency-bearing operations in:
+MCP declarations and loader discovery remain inert. PR #72 completed #52's configuration-reference and closed installer/stdio execution-policy work; that lifecycle policy is no longer a pending #54 dependency.
 
-- `rlm_tool`;
-- `rlm_mcp`, including the declarative lifecycle work tracked by #52;
-- `rlm_agent`;
-- `rlm_graph`.
+### Agents and graphs
 
-Pure or immediate predicates should not be forced through Futures.
+PR #61 migrated latency-bearing agent spawn/send/pump/cancel and graph run/resume operations to the canonical async-first direction while preserving bounded worker/mailbox behavior, graph checkpoint/resume, cancellation, and internal direct-execute composition.
 
-The same hard rule applies to those migrations: canonical task/async execution first, synchronous await wrappers second. Loading tools is not authorization, and async execution never bypasses capabilities, schemas, confinement, budgets, network restrictions, validation, tracing, or host-controlled authority policy.
+PR #62 then integrated #53 pending authority with deferred/manual Futures so unbounded human approval latency does not hold a scheduler worker.
+
+## Remaining #54 work
+
+The core completion/provider/chain, tool/MCP, agent, graph, and pending-authority migrations are present on `main`. #54 remains open for work that is not yet available end to end:
+
+- concrete process/test/network tool surfaces and their async equivalents under #49/#50;
+- sync/async equivalence coverage for those future blocking-capable surfaces;
+- downstream `agentProlog/` approval/diff presentation and proof that the eventual TUI remains interactive while operations are active.
+
+Pure or immediate predicates should not be forced through Futures merely for API symmetry.
+
+Loading tools is not authorization, and async execution never bypasses capabilities, schemas, confinement, budgets, network restrictions, validation, tracing, durable effect rules, or host-controlled authority policy.

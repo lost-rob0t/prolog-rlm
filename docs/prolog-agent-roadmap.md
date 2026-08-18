@@ -18,10 +18,12 @@ Already available in core:
 - durable graphs, checkpoints, interrupts, and traces;
 - MCP client/server integration;
 - host-controlled authority and pending approvals;
-- durable artifacts and external-effect accounting infrastructure.
+- durable artifacts;
+- the generic #57 durable effect identity/observation substrate, including the #83 hardening and #85 explicit migration path.
 
 Still missing for a useful coding agent:
 
+- canonical #57 effect-boundary adoption across the effectful paths tracked by #79;
 - a standard project tool pack with search, write/edit, git, and test/process tools;
 - durable project-scoped settings and remembered bounded approvals;
 - a coding loop that turns a task into inspect -> edit -> verify -> repair;
@@ -52,11 +54,12 @@ Core must not gain ambient repository write access just because `PrologAgent` ne
 
 ## Phase 0: finish the write-safety substrate
 
-Before repository mutation is a normal feature, finish the canonical effect boundary work tracked by #79. PR #86 is the first tool-path slice.
+The generic durable effect substrate is already on `main` through #78, #83, and #85. Before repository mutation is a normal feature, finish the **canonical adoption** work tracked by #79. Open PR #86 is the first tool-path slice, but it is not merged evidence and does not make the phase complete.
 
 Required outcome:
 
 - effectful tool execution crosses authority and durable effect admission before mutation;
+- provider, MCP request, and lifecycle/process effects use the same boundary where applicable;
 - retries, repeated waits, backtracking, and restart do not accidentally replay a write;
 - uncertainty after dispatch is represented honestly instead of silently executing again.
 
@@ -224,9 +227,9 @@ The first release does not need IDE parity, a plugin marketplace, background dae
 
 Current core issues that materially affect the roadmap:
 
-- #79: canonical external-effect adoption; blocks normal repository mutation.
+- #79: canonical external-effect adoption; blocks normal repository mutation. The #57 generic substrate is merged, but adoption is not.
 - #49 / #50: companion project/coding tool pack.
-- #54: async contract; remaining approval/TUI integration.
+- #54: async contract; core migrations are largely complete, while external process/test/network and downstream approval/TUI integration remain.
 - #56: evidence/verifier acceptance, useful for stronger completion gates.
 - #68-#71: task/context/verified workflow pipeline; useful for richer autonomous coding runs.
 - #74-#77: durable project state, instructions, and bounded persistent authorization.

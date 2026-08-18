@@ -232,7 +232,7 @@ The high-level RLM execution loop: root model planning, closed-plan validation, 
 
 ### `rlm_graph`
 
-Explicit graph state, fixed/conditional edges, reducers, bounded loops, subgraphs, checkpoints, replay, interrupts, event streaming, parallel branches, and cancellation propagation.
+Explicit graph state, fixed/conditional edges, reducers, bounded loops, subgraphs, checkpoints, replay, interrupts, event streaming, and cancellation propagation.
 
 ### `rlm_agent`
 
@@ -309,4 +309,4 @@ Current records span `RLM-RESEARCH-000` through `RLM-RESEARCH-009` and cover RLM
 
 ## Status
 
-The P1 executable core, adaptive recursion, benchmark/conformance, CLI/demo/trace surface, and controlled depth >1 experiment harness are implemented. Production recursion still defaults to depth 1; deeper recursion remains explicitly experimental until the encoded live-evidence promotion rule is satisfied. Follow epic #3 for the dependency graph and acceptance gates.
+The P1 executable core, adaptive recursion, benchmark/conformance, CLI/demo/trace surface, and controlled depth >1 experiment harness are implemented. The generic durable effect identity/observation substrate is also merged and hardened, but canonical effectful provider/tool/MCP/process adoption remains incomplete under #79. The v0.1/manual-validation umbrella in #3 still has open correctness work in #42, #44, #45, and #46. Production recursion defaults to depth 1; deeper recursion remains explicitly experimental until the encoded live-evidence promotion rule is satisfied.

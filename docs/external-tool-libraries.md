@@ -111,7 +111,7 @@ Hosts that explicitly manage loader state independently of a registry may call:
 rlm_tool_loader_forget_registry(Registry).
 ```
 
-Normal fixture/test cleanup uses this when a registry is destroyed.
+Normal fixture/test cleanup uses this when a registry is destroyed. Automatic cleanup from ordinary registry destruction remains tracked separately in #67.
 
 ## Conflict semantics
 
@@ -157,7 +157,9 @@ never installs, starts, stops, restarts or connects an MCP server, never imports
 
 MCP lifecycle remains explicit through `rlm_mcp_server`. Remote tool import remains explicit through `rlm_mcp_tool` after the host has explicitly established a connection. Those latency-bearing operations continue to use the canonical execute -> async Future -> synchronous await direction and shared host authority established by the runtime.
 
-The loader-facing MCP discovery adapter sanitizes declaration data before exposing it as tool output. Trusted fixture handlers/existing transport handles are not disclosed. Current lifecycle declaration work still tracks first-class external secret/config references and the final host-controlled installer/package-manager allow-list separately in issue #52.
+The loader-facing MCP discovery adapter sanitizes declaration data before exposing it as tool output. Trusted fixture handlers/existing transport handles are not disclosed.
+
+The #52 lifecycle policy boundary is complete on `main`: server declarations use first-class `env_ref/1` / `config_ref/1` references and closed host-controlled installer/stdio execution profiles, with package/version/configuration/cwd policy checked before process execution. Secret values are resolved only inside the exact trusted authority-permitted continuation. See `docs/mcp-lifecycle.md` for the canonical lifecycle contract. These hard execution rules remain separate from loader availability, capability permission, and authority mediation.
 
 ## Third-party example
 
