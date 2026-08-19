@@ -214,16 +214,29 @@ dot_entry('.git').
 secure_descendant(Root, Candidate0, Candidate) :-
     lexical_under_root(Root, Candidate0),
     reject_symlink_descendant(Root, Candidate0),
+    canonical_descendant_path(Candidate0, Candidate),
+    path_within(Root, Candidate),
+    !.
+secure_descendant(_, Candidate, _) :-
+    throw(skill_fault(path_escape(Candidate))).
+
+canonical_descendant_path(Candidate0, Candidate) :-
+    exists_directory(Candidate0),
+    !,
+    absolute_file_name(Candidate0,
+                       Candidate,
+                       [ file_type(directory),
+                         access(read),
+                         file_errors(fail),
+                         solutions(first)
+                       ]).
+canonical_descendant_path(Candidate0, Candidate) :-
     absolute_file_name(Candidate0,
                        Candidate,
                        [ access(read),
                          file_errors(fail),
                          solutions(first)
-                       ]),
-    path_within(Root, Candidate),
-    !.
-secure_descendant(_, Candidate, _) :-
-    throw(skill_fault(path_escape(Candidate))).
+                       ]).
 
 lexical_under_root(Root, Path) :-
     Path == Root,
