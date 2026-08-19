@@ -9,6 +9,11 @@ The vendored Markdown is kept byte-for-byte upstream. Runtime-specific skill
 calls inside those documents are inert in prolog-rlm, so relationships that are
 semantically part of wrapper skills are represented here as trusted compiler
 rules instead of rewriting third-party content or exposing a model-side router.
+
+Only same-boundary dependencies belong in this overlay. Staged instructions
+such as `implement` -> TDD -> code review are not flattened into simultaneous
+`requires/2` closure; they belong to later runtime-state recompilation so prompt
+budgets and stage semantics remain correct.
 */
 
 rlm_skill_mattpocock_ready :-
@@ -19,8 +24,6 @@ mattpocock_skill_rules([
     requires('grill-me', grilling),
     requires('grill-with-docs', grilling),
     requires('grill-with-docs', 'domain-modeling'),
-    requires(implement, tdd),
-    requires(implement, 'code-review'),
     alias(tdd, "test first"),
     alias(tdd, "red green refactor"),
     alias('diagnosing-bugs', "root cause"),
