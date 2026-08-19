@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+harness_root="$repo_root/agentProlog/deepseek-harness"
+upstream="$harness_root/upstream"
+profile="$harness_root/profile"
+host="$harness_root/host"
+profile_name="agentProlog"
+expected_harness_sha="141eb6fef83422698aef7a981029e843e8161534"
+
+state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
+dsh_home="${AGENTPROLOG_DSH_HOME:-$state_home/prolog-rlm/deepseek-harness}"
+profile_mount="$dsh_home/profiles/$profile_name"
+build_stamp="$dsh_home/upstream-build-sha"
+
+fail() {
+  printf 'agentProlog: %s\n' "$*" >&2
+  exit 1
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+need_command git
+need_command node
+need_command corepack
+need_command swipl
+
+node -e '
+  const [major, minor] = process.versions.node.split(".").map(Number)
+  if (major < 22 || (major === 22 && minor < 19)) process.exit(1)
+' || fail "Node >= 22.19.0 is required (found $(node --version))"
+
+if ! git -C "$upstream" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git -C "$repo_root" submodule update --init --recursive agentProlog/deepseek-harness/upstream
+fi
+
+actual_harness_sha="$(git -C "$upstream" rev-parse HEAD)"
+if [[ "$actual_harness_sha" != "$expected_harness_sha" ]]; then
+  fail "DeepSeek Harness checkout is $actual_harness_sha; expected pinned $expected_harness_sha. Run: git submodule update --init --recursive agentProlog/deepseek-harness/upstream"
+fi
+
+mkdir -p "$dsh_home"
+
+built_sha=""
+if [[ -f "$build_stamp" ]]; then
+  built_sha="$(cat "$build_stamp")"
+fi
+
+if [[ "$built_sha" != "$actual_harness_sha" \
+      || ! -f "$upstream/apps/cli/lib/bin.js" \
+      || ! -f "$upstream/packages/core/agent/lib/index.js" \
+      || ! -f "$upstream/packages/core/session/lib/index.js" \
+      || ! -f "$upstream/packages/bundle/headless/lib/index.js" ]]; then
+  printf 'agentProlog: building pinned DeepSeek Harness %s\n' "$actual_harness_sha" >&2
+  (
+    cd "$upstream"
+    corepack pnpm install --frozen-lockfile
+    corepack pnpm run build
+  )
+  printf '%s\n' "$actual_harness_sha" > "$build_stamp"
+fi
+
+# The profile is source-controlled in this repository. DSH requires profiles
+# below $DSH_HOME/profiles/<name>, so mount it there rather than copying it and
+# creating a second mutable source of truth.
+mkdir -p "$dsh_home/profiles"
+rm -rf "$profile_mount"
+ln -s "$profile" "$profile_mount"
+
+# Resolve the Prolog adapter against the exact packages built from the pinned
+# DeepSeek Harness submodule. These are runtime links only; npm is not allowed to
+# float prerelease peers behind our back.
+mkdir -p "$profile/node_modules/@deepseek-ai" "$profile/node_modules/@prolog-rlm"
+for spec in \
+  "dsh-agent:$upstream/packages/core/agent" \
+  "dsh-scope:$upstream/packages/core/scope" \
+  "dsh-session:$upstream/packages/core/session"
+do
+  name="${spec%%:*}"
+  source="${spec#*:}"
+  target="$profile/node_modules/@deepseek-ai/$name"
+  rm -rf "$target"
+  ln -s "$source" "$target"
+done
+
+factory_target="$profile/node_modules/@prolog-rlm/dsh-agent-factory"
+rm -rf "$factory_target"
+ln -s "$host" "$factory_target"
+
+export DSH_HOME="$dsh_home"
+exec node "$upstream/apps/cli/lib/bin.js" --profile "$profile_name" "$@"
