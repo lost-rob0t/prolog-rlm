@@ -24,6 +24,7 @@
 :- consult(rlm_conversation_cold_test).
 :- consult(rlm_plan_test).
 :- consult(rlm_tool_test).
+:- consult(rlm_tool_effect_test).
 :- consult(rlm_tool_loader_test).
 :- consult(rlm_tool_loader_security_test).
 :- consult(rlm_prompt_compiler_test).
