@@ -17,16 +17,18 @@
 
 /** <module> Symbolic provider-context compiler
 
-This module narrows a large trusted runtime catalog into a bounded, explainable
-provider-visible projection.  It never executes tools and never stores trusted
-handlers.  Registration, availability, contextual activation and execution
-authority remain separate concepts.
+The trusted runtime may know about far more capabilities than a model should see
+on one turn.  This module compiles declarative catalog metadata and current
+evidence into a bounded, inspectable provider-visible projection.
 
-The compiler owns evidence, candidate narrowing, dependency closure,
-conflict/supersession handling, discovery scope and representation construction.
-`rlm_context_budget` remains the only token packer.  In managed conversations
-these compiler context units are packed together with hot/warm/cold conversation
-units; this module does not create a second optimizer.
+Registration, availability, contextual activation and execution authorization
+are deliberately separate.  This module never executes a tool, stores a trusted
+handler, grants a capability, starts an MCP server, or mutates runtime lifecycle
+state merely because a unit becomes relevant.
+
+Final token packing belongs to `rlm_context_budget`.  Compiler output is emitted
+as ordinary context units so managed conversation, warm/cold context and prompt
+compiler material can share one hard provider-visible budget.
 */
 
 :- use_module(library(crypto)).
@@ -210,18 +212,26 @@ search_score(Query, Spec, Score) :-
     text_tokens(Query, QueryTokens),
     searchable_text(Spec, SearchText),
     text_tokens(SearchText, SearchTokens),
-    intersection(QueryTokens, SearchTokens, Common),
+    intersection(QueryTokens, SearchTokens, Common0),
+    exclude(stop_token, Common0, Common),
     length(Common, CommonCount),
     unit_short_text(Spec.unit, UnitText),
     string_lower(UnitText, UnitLower),
     string_lower(Query, QueryLower),
-    (   sub_string(UnitLower, _, _, _, QueryLower)
-    ->  NameBonus = 80
-    ;   sub_string(QueryLower, _, _, _, UnitLower)
-    ->  NameBonus = 60
-    ;   NameBonus = 0
-    ),
-    Score is NameBonus+(CommonCount*10)+Spec.priority.
+    name_match_bonus(UnitLower, QueryLower, NameBonus),
+    Evidence is NameBonus+(CommonCount*10),
+    (   Evidence > 0
+    ->  Score is Evidence+Spec.priority
+    ;   Score = 0
+    ).
+
+name_match_bonus(Unit, Query, 80) :-
+    sub_string(Unit, _, _, _, Query),
+    !.
+name_match_bonus(Unit, Query, 60) :-
+    sub_string(Query, _, _, _, Unit),
+    !.
+name_match_bonus(_, _, 0).
 
 compare_search_result(Order, A, B) :-
     compare_ranked(Order, A.score, A.spec.unit, B.score, B.spec.unit).
@@ -321,13 +331,23 @@ compile_projection(Catalog, Id, Input, Options, Projection) :-
                        InitialRejected),
     resolve_candidates(Candidates,
                        Specs,
-                       Input,
                        Capabilities,
                        Scope,
                        Resolved0,
-                       ResolveRejected),
-    dedupe_resolved(Resolved0, Resolved),
-    apply_supersession(Resolved,
+                       ResolveRejected,
+                       DependencyEdges0),
+    dedupe_resolved(Resolved0, RequiredResolved),
+    add_suggestions(RequiredResolved,
+                    Specs,
+                    Capabilities,
+                    Scope,
+                    SuggestedResolved,
+                    SuggestionEdges),
+    append(RequiredResolved, SuggestedResolved, WithSuggestions0),
+    dedupe_resolved(WithSuggestions0, WithSuggestions),
+    append(DependencyEdges0, SuggestionEdges, DependencyEdges1),
+    sort(DependencyEdges1, DependencyEdges),
+    apply_supersession(WithSuggestions,
                        Specs,
                        SupersededFiltered,
                        SupersededRejected),
@@ -346,6 +366,7 @@ compile_projection(Catalog, Id, Input, Options, Projection) :-
                         ContextUnits),
     selected_tool_schemas(SelectedEntries, ToolSchemas),
     selected_unit_terms(SelectedEntries, SelectedUnits),
+    grouped_selected_units(SelectedEntries, Groups),
     candidate_public(Candidates, CandidatePublic),
     selected_public(SelectedEntries, SelectedPublic),
     compilation_reasons(SelectedEntries, Rejected, Reasons),
@@ -366,11 +387,19 @@ compile_projection(Catalog, Id, Input, Options, Projection) :-
                      candidates:CandidatePublic,
                      selected:SelectedPublic,
                      selected_units:SelectedUnits,
+                     dependencies:DependencyEdges,
                      rejected:Rejected,
                      reasons:Reasons,
                      capabilities:Capabilities,
                      discovery_scope:Scope,
                      mode:Mode,
+                     instructions:Groups.instructions,
+                     skills:Groups.skills,
+                     tools:Groups.tools,
+                     mcp_servers:Groups.mcp_servers,
+                     mcp_tools:Groups.mcp_tools,
+                     mcp_prompts:Groups.mcp_prompts,
+                     resources:Groups.resources,
                      context_units:ContextUnits,
                      tool_schemas:ToolSchemas,
                      token_ledger:none,
@@ -389,9 +418,7 @@ maybe_pack_projection(Projection, Options, Compiled) :-
                                         Policy,
                                         PackOutcome),
         require_budget_outcome(PackOutcome, ContextPack),
-        active_units_from_pack(Projection,
-                               ContextPack,
-                               ActiveUnits),
+        active_units_from_pack(ContextPack, ActiveUnits),
         put_dict(_{token_ledger:ContextPack.ledger,
                    context_pack:ContextPack,
                    active_units:ActiveUnits},
@@ -577,7 +604,7 @@ root_candidate_status(Spec,
         Status = keep
     ).
 
-unit_evidence(Spec, Input, all_tools, Score, Reasons) :-
+unit_evidence(Spec, _, all_tools, Score, Reasons) :-
     !,
     Score is 1000+Spec.priority,
     Reasons = [compatibility_mode(all_tools)].
@@ -585,10 +612,13 @@ unit_evidence(Spec, Input, compiled, Score, Reasons) :-
     explicit_score(Spec, Input, ExplicitScore, ExplicitReasons),
     trigger_score(Spec.triggers, Input, TriggerScore, TriggerReasons),
     lexical_score(Spec, Input.text, LexicalScore, LexicalReasons),
-    NeedScore is 0,
+    BaseScore is ExplicitScore+TriggerScore+LexicalScore,
     append([ExplicitReasons, TriggerReasons, LexicalReasons], Reasons0),
     sort(Reasons0, Reasons),
-    Score is ExplicitScore+TriggerScore+LexicalScore+NeedScore+Spec.priority.
+    (   BaseScore > 0
+    ->  Score is BaseScore+Spec.priority
+    ;   Score = 0
+    ).
 
 explicit_score(Spec, Input, 100000, [explicit_selection]) :-
     memberchk(Spec.unit, Input.selected),
@@ -712,30 +742,31 @@ searchable_text(Spec, Text) :-
                       Text).
 
 /* -------------------------------------------------------------------------
- * Dependency closure and deterministic conflict handling
+ * Dependency closure, suggestions and deterministic conflict handling
  * ---------------------------------------------------------------------- */
 
-resolve_candidates([], _, _, _, _, [], []).
+resolve_candidates([], _, _, _, [], [], []).
 resolve_candidates([Candidate|Candidates],
                    Specs,
-                   Input,
                    Capabilities,
                    Scope,
                    Resolved,
-                   Rejected) :-
+                   Rejected,
+                   Edges) :-
     resolve_candidate(Candidate,
                       Specs,
-                      Input,
                       Capabilities,
                       Scope,
-                      CandidateResult),
+                      CandidateResult,
+                      CandidateEdges),
     resolve_candidates(Candidates,
                        Specs,
-                       Input,
                        Capabilities,
                        Scope,
                        RestResolved,
-                       RestRejected),
+                       RestRejected,
+                       RestEdges),
+    append(CandidateEdges, RestEdges, Edges),
     (   CandidateResult = ok(Entries)
     ->  append(Entries, RestResolved, Resolved),
         Rejected = RestRejected
@@ -745,15 +776,22 @@ resolve_candidates([Candidate|Candidates],
                                   reasons:[Reason]}|RestRejected]
     ).
 
-resolve_candidate(Candidate, Specs, _, Capabilities, _, Outcome) :-
+resolve_candidate(Candidate,
+                  Specs,
+                  Capabilities,
+                  Scope,
+                  Outcome,
+                  Edges) :-
     resolve_unit(Candidate.unit,
                  Candidate.unit,
                  Candidate.score,
                  Candidate.reasons,
                  Specs,
                  Capabilities,
+                 Scope,
                  [],
-                 Outcome).
+                 Outcome,
+                 Edges).
 
 resolve_unit(Unit,
              Root,
@@ -761,65 +799,106 @@ resolve_unit(Unit,
              Reasons,
              Specs,
              Capabilities,
+             Scope,
              Visited,
-             Outcome) :-
+             Outcome,
+             Edges) :-
     (   memberchk(Unit, Visited)
-    ->  Outcome = ok([])
+    ->  Outcome = ok([]),
+        Edges = []
     ;   lookup_spec(Unit, Specs, Spec)
-    ->  (   Spec.available \== true
-        ->  Outcome = error(dependency_unavailable(Unit))
-        ;   \+ capability_eligible(Spec, Capabilities)
-        ->  Outcome = error(dependency_capability_denied(Unit,
-                                                         Spec.requires_capability))
+    ->  unit_dependency_eligibility(Spec,
+                                    Capabilities,
+                                    Scope,
+                                    Eligibility),
+        (   Eligibility = error(Reason)
+        ->  Outcome = error(Reason),
+            Edges = []
         ;   resolve_requirements(Spec.requires,
+                                 Unit,
                                  Root,
                                  Score,
                                  Specs,
                                  Capabilities,
+                                 Scope,
                                  [Unit|Visited],
-                                 RequirementsOutcome),
+                                 RequirementsOutcome,
+                                 RequirementEdges),
             dependency_resolution_result(RequirementsOutcome,
                                          Spec,
                                          Root,
                                          Score,
                                          Reasons,
-                                         Outcome)
+                                         Outcome),
+            Edges = RequirementEdges
         )
-    ;   Outcome = error(missing_dependency(Unit))
+    ;   Outcome = error(missing_dependency(Unit)),
+        Edges = []
     ).
 
-resolve_requirements([], _, _, _, _, _, ok([])).
+unit_dependency_eligibility(Spec, _, _, error(dependency_unavailable(Spec.unit))) :-
+    Spec.available \== true,
+    !.
+unit_dependency_eligibility(Spec,
+                            Capabilities,
+                            _,
+                            error(dependency_capability_denied(Spec.unit,
+                                                               Spec.requires_capability))) :-
+    \+ capability_eligible(Spec, Capabilities),
+    !.
+unit_dependency_eligibility(Spec,
+                            _,
+                            Scope,
+                            error(dependency_scope_denied(Spec.unit))) :-
+    Spec.provider_visible == true,
+    \+ scope_allows(Scope, Spec),
+    !.
+unit_dependency_eligibility(_, _, _, ok).
+
+resolve_requirements([], _, _, _, _, _, _, _, ok([]), []).
 resolve_requirements([Required|Requireds],
+                     Parent,
                      Root,
                      Score,
                      Specs,
                      Capabilities,
+                     Scope,
                      Visited,
-                     Outcome) :-
+                     Outcome,
+                     Edges) :-
     resolve_unit(Required,
                  Root,
                  Score,
-                 [dependency_of(Root)],
+                 [dependency_of(Parent)],
                  Specs,
                  Capabilities,
+                 Scope,
                  Visited,
-                 RequiredOutcome),
+                 RequiredOutcome,
+                 RequiredEdges),
     (   RequiredOutcome = error(Reason)
-    ->  Outcome = error(Reason)
+    ->  Outcome = error(Reason),
+        Edges = [dependency(Parent, Required)|RequiredEdges]
     ;   RequiredOutcome = ok(RequiredEntries),
         resolve_requirements(Requireds,
+                             Parent,
                              Root,
                              Score,
                              Specs,
                              Capabilities,
+                             Scope,
                              Visited,
-                             RestOutcome),
+                             RestOutcome,
+                             RestEdges),
         (   RestOutcome = error(RestReason)
         ->  Outcome = error(RestReason)
         ;   RestOutcome = ok(RestEntries),
             append(RequiredEntries, RestEntries, Entries),
             Outcome = ok(Entries)
-        )
+        ),
+        append([dependency(Parent, Required)|RequiredEdges],
+               RestEdges,
+               Edges)
     ).
 
 dependency_resolution_result(error(Reason), _, _, _, _, error(Reason)) :- !.
@@ -835,6 +914,59 @@ dependency_resolution_result(ok(DependencyEntries),
                           priority:Spec.priority,
                           reasons:Reasons,
                           spec:Spec}.
+
+add_suggestions(Entries,
+                Specs,
+                Capabilities,
+                Scope,
+                Suggested,
+                Edges) :-
+    findall(Suggestion-Parent-Score,
+            ( member(Entry, Entries),
+              member(Suggestion, Entry.spec.suggests),
+              Parent = Entry.unit,
+              Score is max(1, Entry.score//4) ),
+            Requests0),
+    sort(Requests0, Requests),
+    resolve_suggestions(Requests,
+                        Specs,
+                        Capabilities,
+                        Scope,
+                        Suggested0,
+                        Edges0),
+    dedupe_resolved(Suggested0, Suggested),
+    sort(Edges0, Edges).
+
+resolve_suggestions([], _, _, _, [], []).
+resolve_suggestions([Suggestion-Parent-Score|Requests],
+                    Specs,
+                    Capabilities,
+                    Scope,
+                    Suggested,
+                    Edges) :-
+    resolve_unit(Suggestion,
+                 Suggestion,
+                 Score,
+                 [suggested_by(Parent)],
+                 Specs,
+                 Capabilities,
+                 Scope,
+                 [],
+                 SuggestionOutcome,
+                 SuggestionEdges),
+    resolve_suggestions(Requests,
+                        Specs,
+                        Capabilities,
+                        Scope,
+                        RestSuggested,
+                        RestEdges),
+    append([suggestion(Parent, Suggestion)|SuggestionEdges],
+           RestEdges,
+           Edges),
+    (   SuggestionOutcome = ok(SuggestionEntries)
+    ->  append(SuggestionEntries, RestSuggested, Suggested)
+    ;   Suggested = RestSuggested
+    ).
 
 lookup_spec(Unit, Specs, Spec) :-
     member(Spec, Specs),
@@ -954,9 +1086,10 @@ prompt_representations(Spec, Representations) :-
     Spec.representations \== [],
     !,
     Representations = Spec.representations.
-prompt_representations(Spec, [prompt_representation{kind:full,
-                                                    text:Text,
-                                                    utility:Utility}]) :-
+prompt_representations(Spec,
+                       [prompt_representation{kind:full,
+                                              text:Text,
+                                              utility:Utility}]) :-
     default_representation_text(Spec, Text),
     Utility is 1000000+Spec.priority.
 
@@ -1000,21 +1133,13 @@ unit_context_id(Unit, Id) :-
     sub_atom(Hash, 0, 16, _, Short),
     atom_concat(prompt_unit_, Short, Id).
 
-active_units_from_pack(Projection, ContextPack, Active) :-
+active_units_from_pack(ContextPack, Active) :-
     findall(Unit,
             ( member(Selection, ContextPack.selected),
               is_dict(Selection.value),
               get_dict(unit, Selection.value, Unit) ),
-            Visible0),
-    findall(Unit,
-            ( member(Selected, Projection.selected),
-              member(Unit, Projection.selected_units),
-              selected_unit_provider_hidden(Unit, Projection, Selected) ),
-            Hidden0),
-    append(Visible0, Hidden0, Active0),
+            Active0),
     sort(Active0, Active).
-
-selected_unit_provider_hidden(_, _, _) :- fail.
 
 selected_tool_schemas(Entries, Schemas) :-
     findall(Schema,
@@ -1048,8 +1173,9 @@ prompt_explain(Compiled, Unit, Outcome) :-
 explain_unit(Compiled, Unit, Explanation) :-
     (   member(Selected, Compiled.selected),
         Selected.unit == Unit
-    ->  Explanation = prompt_explanation{unit:Unit,
-                                         state:active_candidate,
+    ->  selected_state(Compiled, Unit, State),
+        Explanation = prompt_explanation{unit:Unit,
+                                         state:State,
                                          reasons:Selected.reasons,
                                          capability_authority:runtime_recheck_required}
     ;   member(Rejected, Compiled.rejected),
@@ -1063,6 +1189,14 @@ explain_unit(Compiled, Unit, Explanation) :-
                                          reasons:[no_matching_evidence],
                                          capability_authority:not_granted}
     ).
+
+selected_state(Compiled, Unit, active) :-
+    memberchk(Unit, Compiled.active_units),
+    !.
+selected_state(Compiled, _, selected_pending_pack) :-
+    Compiled.context_pack == none,
+    !.
+selected_state(_, _, selected_not_visible).
 
 prompt_render(Compiled, Provider, Outcome) :-
     catch(( require_compiled_context(Compiled),
@@ -1115,6 +1249,30 @@ selected_unit_terms(Entries, Units) :-
     findall(Unit, (member(Entry, Entries), Unit = Entry.unit), Units0),
     sort(Units0, Units).
 
+grouped_selected_units(Entries,
+                       groups{instructions:Instructions,
+                              skills:Skills,
+                              tools:Tools,
+                              mcp_servers:MCPServers,
+                              mcp_tools:MCPTools,
+                              mcp_prompts:MCPPrompts,
+                              resources:Resources}) :-
+    units_of_kind(Entries, instruction, Instructions),
+    units_of_kind(Entries, skill, Skills),
+    units_of_kind(Entries, tool, Tools),
+    units_of_kind(Entries, mcp_server, MCPServers),
+    units_of_kind(Entries, mcp_tool, MCPTools),
+    units_of_kind(Entries, mcp_prompt, MCPPrompts),
+    units_of_kind(Entries, resource, Resources).
+
+units_of_kind(Entries, Kind, Units) :-
+    findall(Unit,
+            ( member(Entry, Entries),
+              Entry.spec.kind == Kind,
+              Unit = Entry.unit ),
+            Units0),
+    sort(Units0, Units).
+
 compilation_reasons(Selected, Rejected, Reasons) :-
     findall(selected(Unit, because(Why)),
             ( member(Entry, Selected),
@@ -1123,8 +1281,8 @@ compilation_reasons(Selected, Rejected, Reasons) :-
             SelectedReasons),
     findall(rejected(Unit, because(Why)),
             ( member(Entry, Rejected),
-              Unit = Entry.unit,
-              Why = Entry.reasons ),
+              Unit = Rejected.unit,
+              Why = Rejected.reasons ),
             RejectedReasons),
     append(SelectedReasons, RejectedReasons, Reasons).
 
@@ -1141,9 +1299,10 @@ compare_rejection(Order, A, B) :-
 normalize_unit_spec(Spec0, Spec) :-
     (   is_dict(Spec0), get_dict(unit, Spec0, Unit0)
     ->  normalize_unit_identity(Unit0, Unit),
-        unit_kind(Unit, DefaultKind),
-        dict_default(Spec0, kind, DefaultKind, Kind0),
+        unit_kind(Unit, ExpectedKind),
+        dict_default(Spec0, kind, ExpectedKind, Kind0),
         normalize_name(Kind0, Kind),
+        require_matching_kind(ExpectedKind, Kind, Unit),
         unit_default_name(Unit, DefaultName),
         dict_default(Spec0, name, DefaultName, Name0),
         normalize_name(Name0, Name),
@@ -1200,6 +1359,12 @@ normalize_unit_spec(Spec0, Spec) :-
                            provenance:Provenance}
     ;   throw(prompt_compiler_fault(invalid_unit_spec(Spec0)))
     ).
+
+require_matching_kind(Kind, Kind, _) :- !.
+require_matching_kind(Expected, Actual, Unit) :-
+    throw(prompt_compiler_fault(unit_kind_mismatch(Unit,
+                                                  Expected,
+                                                  Actual))).
 
 normalize_unit_identity(Unit, Unit) :-
     ground(Unit),
@@ -1405,11 +1570,13 @@ material_fingerprint(CatalogFingerprint,
                      Options,
                      Fingerprint) :-
     option(policy(Policy), Options, []),
+    option(candidate_limit(CandidateLimit), Options, 64),
     Material = prompt_material{catalog:CatalogFingerprint,
                                input:Input,
                                capabilities:Capabilities,
                                discovery_scope:Scope,
                                mode:Mode,
+                               candidate_limit:CandidateLimit,
                                policy:Policy,
                                context_units:ContextUnits},
     fingerprint_term(Material, Fingerprint).
@@ -1452,7 +1619,9 @@ normalize_scope(Scope0, scope(Items)) :-
 normalize_scope(Scope, _) :-
     throw(prompt_compiler_fault(invalid_discovery_scope(Scope))).
 
-normalize_scope_item(kind(Kind0), kind(Kind)) :- !, normalize_name(Kind0, Kind).
+normalize_scope_item(kind(Kind0), kind(Kind)) :-
+    !,
+    normalize_name(Kind0, Kind).
 normalize_scope_item(category(Category0), category(Category)) :-
     !,
     normalize_name(Category0, Category).
