@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "main": "./factory.mjs",
-  "exports": "./factory.mjs",
+  "exports": {
+    ".": "./factory.mjs",
+    "./headless": "./headless.mjs"
+  },
   "engines": {
     "node": ">=22.19.0"
   },
