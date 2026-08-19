@@ -7,6 +7,7 @@ upstream="$harness_root/upstream"
 profile="$harness_root/profile"
 host="$harness_root/host"
 profile_name="agentProlog"
+submodule_path="agentProlog/deepseek-harness/upstream"
 expected_harness_sha="141eb6fef83422698aef7a981029e843e8161534"
 
 state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
@@ -25,7 +26,6 @@ need_command() {
 
 need_command git
 need_command node
-need_command corepack
 need_command swipl
 
 node -e '
@@ -33,13 +33,23 @@ node -e '
   if (major < 22 || (major === 22 && minor < 19)) process.exit(1)
 ' || fail "Node >= 22.19.0 is required (found $(node --version))"
 
-if ! git -C "$upstream" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  git -C "$repo_root" submodule update --init --recursive agentProlog/deepseek-harness/upstream
+if command -v pnpm >/dev/null 2>&1; then
+  pnpm_cmd=(pnpm)
+elif command -v corepack >/dev/null 2>&1; then
+  pnpm_cmd=(corepack pnpm)
+else
+  fail "pnpm is required; install pnpm or provide Node with corepack"
 fi
+
+# This is deliberately unconditional. `git -C <empty-submodule-dir> rev-parse`
+# can walk up into the parent repository and falsely report success, which made
+# first-run boot fail in a particularly stupid way. Git's submodule update is
+# idempotent and leaves an already-correct checkout alone.
+git -C "$repo_root" submodule update --init --recursive "$submodule_path"
 
 actual_harness_sha="$(git -C "$upstream" rev-parse HEAD)"
 if [[ "$actual_harness_sha" != "$expected_harness_sha" ]]; then
-  fail "DeepSeek Harness checkout is $actual_harness_sha; expected pinned $expected_harness_sha. Run: git submodule update --init --recursive agentProlog/deepseek-harness/upstream"
+  fail "DeepSeek Harness checkout is $actual_harness_sha; expected pinned $expected_harness_sha. Run: git submodule update --init --recursive $submodule_path"
 fi
 
 mkdir -p "$dsh_home"
@@ -57,8 +67,8 @@ if [[ "$built_sha" != "$actual_harness_sha" \
   printf 'agentProlog: building pinned DeepSeek Harness %s\n' "$actual_harness_sha" >&2
   (
     cd "$upstream"
-    corepack pnpm install --frozen-lockfile
-    corepack pnpm run build
+    "${pnpm_cmd[@]}" install --frozen-lockfile
+    "${pnpm_cmd[@]}" run build
   )
   printf '%s\n' "$actual_harness_sha" > "$build_stamp"
 fi
