@@ -131,8 +131,8 @@ Recursive resource discovery deliberately supports nested inert templates such a
 
 The repository carries two forms of the same pinned upstream revision `9c9f36ccd3995266cd675468af71639c8dde1ec5`:
 
-- `third_party/mattpocock-skills/skills` is a vendored stable fallback used by ordinary checkouts and CI that do not initialize submodules;
-- `third_party/mattpocock-skills/upstream` is a git submodule pin to the complete upstream repository.
+- `third_party/mattpocock-skills/upstream` is a git submodule pin to the complete upstream repository;
+- `third_party/mattpocock-skills/skills` is a vendored stable fallback used by source archives and CI checkouts that do not initialize submodules.
 
 Initialize the complete collection with:
 
@@ -140,4 +140,6 @@ Initialize the complete collection with:
 git submodule update --init third_party/mattpocock-skills/upstream
 ```
 
-A host can load its full stable catalog explicitly from `third_party/mattpocock-skills/upstream/skills`; the scanner excludes `deprecated/` and `in-progress/` unless explicitly configured otherwise. Runtime compatibility belongs in Prolog overlay rules, not edits to upstream Markdown. The upstream collection remains third-party material under its MIT license. See `third_party/mattpocock-skills/UPSTREAM.md` and `LICENSE` for provenance and attribution.
+When the submodule is initialized, `skill_catalog(default)` automatically prefers the complete pinned `upstream/skills` tree. When it is absent, the same completion path falls back to the vendored stable corpus. No runtime network fetch occurs in either case. The scanner excludes `deprecated/` and `in-progress/` unless explicitly configured otherwise.
+
+A host may also load either tree explicitly with `skill_catalog_load/3`. Runtime compatibility belongs in Prolog overlay rules, not edits to upstream Markdown. The upstream collection remains third-party material under its MIT license. See `third_party/mattpocock-skills/UPSTREAM.md` and `LICENSE` for provenance and attribution.
