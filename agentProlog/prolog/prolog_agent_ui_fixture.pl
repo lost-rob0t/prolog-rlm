@@ -193,10 +193,15 @@ handle_decoded(ok(Frame), NextSeq0, Frames, NextSeq) :-
 
 write_frames(_, []).
 write_frames(Out, [Frame|Rest]) :-
-    ui_v1_encode_frame(Frame, ok(Line)),
+    ui_v1_encode_frame(Frame, Encoded),
+    fixture_encoded_line(Encoded, Line),
     format(Out, '~s~n', [Line]),
     flush_output(Out),
     write_frames(Out, Rest).
+
+fixture_encoded_line(ok(Line), Line) :- !.
+fixture_encoded_line(error(Error), _) :-
+    throw(error(ui_fixture_encode_failed(Error), _)).
 
 last_event_next_seq([], 1).
 last_event_next_seq(Events, Next) :-
