@@ -560,7 +560,7 @@ normalize_payload(Payload, _{value:Payload}).
 
 put_optional_correlation(none, Base, Base) :- !.
 put_optional_correlation(CausedBy, Base, Frame) :-
-    put_dict(caused_by, Base, Frame).
+    put_dict(caused_by, Base, CausedBy, Frame).
 
 put_optional_request(none, Base, Base) :- !.
 put_optional_request(RequestId, Base, Frame) :-
