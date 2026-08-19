@@ -1358,7 +1358,7 @@ secure_resource_path(Skill, Relative0, Candidate) :-
     reject_symlink_descendant(Skill.directory, Candidate0),
     absolute_file_name(Candidate0,
                        Candidate1,
-                       [ file_type(file),
+                       [ file_type(regular),
                          access(read),
                          file_errors(fail),
                          solutions(first)
