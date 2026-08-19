@@ -13,8 +13,10 @@ never exposes the skill catalog to the model and never grants capabilities.
 
 :- use_module(library(apply)).
 :- use_module(rlm_skill).
+:- use_module(rlm_skill_mattpocock).
 
 rlm_skill_completion_ready :-
+    rlm_skill_mattpocock:rlm_skill_mattpocock_ready,
     skill_completion_options("",
                              [skill_mode(off)],
                              ok(skill_completion{options:_, compiled:_})).
@@ -28,28 +30,41 @@ skill_completion_options_(Query, Options0,
                           ok(skill_completion{options:Options,
                                               compiled:Compiled})) :-
     require_options(Options0),
-    completion_skill_catalog(Options0, Catalog),
-    skill_compile(Catalog, Query, Options0, CompileOutcome),
+    completion_skill_catalog(Options0, Catalog, DistributionRules),
+    merge_compile_rules(Options0, DistributionRules, CompileOptions),
+    skill_compile(Catalog, Query, CompileOptions, CompileOutcome),
     require_skill_compile(CompileOutcome, Compiled),
     skill_prompt_fragment(Compiled, SkillPrompt),
     merge_planner_instruction(Options0, SkillPrompt, Options).
 
-completion_skill_catalog(Options, Catalog) :-
+completion_skill_catalog(Options, Catalog, DistributionRules) :-
     option_value(skill_catalog, Options, default, Spec),
-    completion_skill_catalog_spec(Spec, Catalog).
+    completion_skill_catalog_spec(Spec, Catalog, DistributionRules).
 
-completion_skill_catalog_spec(default, Catalog) :-
+completion_skill_catalog_spec(default, Catalog, Rules) :-
     !,
     skill_default_catalog(Outcome),
-    require_catalog_outcome(Outcome, Catalog).
-completion_skill_catalog_spec(none, Catalog) :-
+    require_catalog_outcome(Outcome, Catalog),
+    rlm_skill_mattpocock:mattpocock_skill_rules(Rules).
+completion_skill_catalog_spec(none, Catalog, []) :-
     !,
     skill_catalog_empty(Catalog).
-completion_skill_catalog_spec(Catalog, Catalog) :-
+completion_skill_catalog_spec(Catalog, Catalog, []) :-
     skill_catalog_skills(Catalog, _),
     !.
-completion_skill_catalog_spec(Spec, _) :-
+completion_skill_catalog_spec(Spec, _, _) :-
     throw(skill_completion_fault(invalid_skill_catalog_option(Spec))).
+
+merge_compile_rules(Options, [], Options) :- !.
+merge_compile_rules(Options0, DistributionRules, Options) :-
+    option_value(skill_rules, Options0, [], UserRules),
+    (   is_list(UserRules)
+    ->  true
+    ;   throw(skill_completion_fault(invalid_skill_rules(UserRules)))
+    ),
+    append(DistributionRules, UserRules, Rules),
+    exclude(named_option(skill_rules), Options0, Rest),
+    Options = [skill_rules(Rules)|Rest].
 
 require_catalog_outcome(ok(Catalog), Catalog) :- !.
 require_catalog_outcome(error(Error), _) :-
