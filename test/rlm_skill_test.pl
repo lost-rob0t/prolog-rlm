@@ -1,7 +1,7 @@
 :- begin_tests(rlm_skill).
 
 :- use_module('../prolog/rlm_skill').
-:- use_module('../prolog/rlm_completion').
+:- use_module('../prolog/rlm', [rlm_completion/4]).
 :- use_module('support/skill_test_support').
 
 fixture_root(Root) :-
