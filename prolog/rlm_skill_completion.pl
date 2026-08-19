@@ -119,7 +119,7 @@ completion_skill_catalog(Options, Catalog, DistributionRules) :-
 
 completion_skill_catalog_spec(default, Catalog, Rules) :-
     !,
-    skill_default_catalog(Outcome),
+    default_completion_skill_catalog(Outcome),
     require_catalog_outcome(Outcome, Catalog),
     rlm_skill_mattpocock:mattpocock_skill_rules(Rules).
 completion_skill_catalog_spec(none, Catalog, []) :-
@@ -130,6 +130,25 @@ completion_skill_catalog_spec(Catalog, Catalog, []) :-
     !.
 completion_skill_catalog_spec(Spec, _, _) :-
     throw(skill_completion_fault(invalid_skill_catalog_option(Spec))).
+
+/* Prefer the complete pinned upstream collection when its submodule is
+   initialized. Source archives and ordinary CI clones fall back to the
+   vendored stable corpus, so skill compilation never performs a network fetch. */
+default_completion_skill_catalog(Outcome) :-
+    complete_mattpocock_skill_root(Root),
+    exists_directory(Root),
+    !,
+    skill_catalog_load([skill_root(mattpocock, Root)], [], Outcome).
+default_completion_skill_catalog(Outcome) :-
+    skill_default_catalog(Outcome).
+
+complete_mattpocock_skill_root(Root) :-
+    source_file(rlm_skill_completion:rlm_skill_completion_ready, Source),
+    file_directory_name(Source, PrologDir),
+    file_directory_name(PrologDir, RepoRoot),
+    directory_file_path(RepoRoot,
+                        'third_party/mattpocock-skills/upstream/skills',
+                        Root).
 
 merge_compile_rules(Options, [], Options) :- !.
 merge_compile_rules(Options0, DistributionRules, Options) :-
