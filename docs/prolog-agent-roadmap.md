@@ -25,7 +25,8 @@ Already available in core and the downstream application boundary:
 - optional Spec-bound Plan execution and a bounded Verify/repair composition over `rlm_graph`;
 - a project-KB observation boundary that lets future planners and verifiers consume the same semantic project state without teaching either layer to parse source code;
 - the #94 direct generic SWI-Prolog <-> Tree-sitter C FFI, with owned native handles, generic grammar loading, and multi-grammar parsing mechanics;
-- `prolog_agent_ui_v1`, a renderer-independent application boundary with bounded snapshots, ordered semantic events, explicit correlated commands, capability negotiation, deterministic replay, reconnect semantics, NDJSON framing, a child-process fixture server, and polyglot golden fixtures.
+- `prolog_agent_ui_v1`, a renderer-independent application boundary with bounded snapshots, ordered semantic events, explicit correlated commands, capability negotiation, deterministic replay, reconnect semantics, NDJSON framing, a child-process fixture server, and polyglot golden fixtures;
+- the first fixture-backed OpenTUI + SolidJS reference client, isolated behind the same protocol and NDJSON transport boundary rather than importing runtime semantics.
 
 Still missing for a useful coding agent:
 
@@ -37,7 +38,7 @@ Still missing for a useful coding agent:
 - a headless coding loop that wires project inspection, edits, re-indexing, verification, and repair to those shared runtime concepts;
 - nonblocking approval/diff handling wired from the real coding workflow into the UI facade;
 - project instructions/context discovery for coding work;
-- the actual OpenTUI reference terminal client and native editor clients.
+- wiring the OpenTUI reference client to real AgentProlog sessions plus the native editor clients.
 
 A reasonable description is: **the runtime foundation is roughly three quarters built, but the end-user coding agent is closer to halfway than finished.** The remaining work is smaller than building another agent framework, but larger than writing a terminal renderer.
 
@@ -167,7 +168,7 @@ TaskIR work from #69 should carry/reference the exact Frozen Spec rather than be
 
 ### Frontend protocol foundation
 
-Issue #109 establishes the application-facing `prolog_agent_ui_v1` boundary before a renderer is built.
+Issue #109 established the application-facing `prolog_agent_ui_v1` boundary before a renderer was built and is merged on `main` through PR #110.
 
 The protocol owns:
 
@@ -209,7 +210,7 @@ The command should finish only when the exact Frozen Spec's configured acceptanc
 
 ## Phase 4: OpenCode-style reference TUI and native editor clients
 
-Only after the protocol/replay boundary is stable should the first rich client be built.
+The renderer work now starts from the stable protocol/replay boundary rather than inventing frontend semantics independently.
 
 The current renderer direction is:
 
@@ -218,6 +219,8 @@ The current renderer direction is:
 - **Nim:** a protocol client regardless of whether the final renderer is pure Illwill or an OpenTUI C ABI;
 - **Emacs:** native buffers/diffs/compilation UI over async process/socket transport, with Sweep optional for bounded direct calls;
 - **Lem:** native editor integration over the same Common Lisp client.
+
+Issue #112 is the first JS renderer slice. It adds a self-contained Bun/OpenTUI/Solid package under `agentProlog/ui/opentui/`, pinned frontend dependencies, a typed v1 decoder/reducer, an abstract NDJSON transport, a child-`swipl` fixture transport, correlated request handling, keyboard command dispatch, and a path-filtered deterministic UI CI job. Its tests replay the canonical golden fixture and exercise a real fixture command without giving TypeScript any tool or authority implementation.
 
 The first standalone TUI only needs five useful surfaces:
 
@@ -250,6 +253,8 @@ Done. 2 files changed. Trace: run_42
 The UI should display structured outcomes, not translate every error into cheerful prose and hope nobody notices.
 
 If the reference JS client needs domain logic that is absent from `prolog_agent_ui_v1`, treat that as a protocol/facade defect. Do not smuggle runtime semantics into TypeScript merely because it is convenient.
+
+The remaining JS work after the fixture-backed slice is integration, not a second renderer architecture: replace the fixture transport endpoint with the real AgentProlog session transport, feed the same protocol from the headless coding workflow, then deepen navigation/diff/composer UX only where protocol data supports it.
 
 ## Phase 5: coding-agent quality bar
 
@@ -291,6 +296,7 @@ Current core and product issues that materially affect the roadmap:
 - #71: workflow execution/resume must remain bound to the exact Frozen Spec; the Spec-bound graph foundation now demonstrates that invariant, while full TaskIR/continuation integration remains open.
 - #74-#77: durable project state, instructions, and bounded persistent authorization.
 - #93/#95-#99: #94 is the direct Tree-sitter FFI substrate; the remaining child issues are required before the canonical project parser/indexer and project KB are complete.
-- #109: renderer-independent `prolog_agent_ui_v1` protocol/replay foundation; once merged and verified, the next renderer slice is the small OpenTUI + SolidJS reference client against its deterministic fixture.
+- #109 / PR #110: merged renderer-independent `prolog_agent_ui_v1` protocol/replay foundation.
+- #112: fixture-backed OpenTUI + SolidJS reference client; once this slice is green, the next UI work is wiring real AgentProlog sessions into the same client rather than adding frontend domain logic.
 
 Do not wait for every P1 research idea before starting `agentProlog/`. Build against stable public contracts, keep optional integrations optional, and let the first usable coding loop drive the remaining abstractions.

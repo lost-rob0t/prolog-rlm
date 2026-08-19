@@ -25,7 +25,7 @@ The coding workflow should then:
 6. repair failures when allowed;
 7. return changed files, verification results, usage, and a trace reference.
 
-The later full-screen terminal client must expose the same workflow through `prolog_agent_ui_v1` rather than implementing a second execution path.
+The full-screen terminal client exposes that workflow through `prolog_agent_ui_v1` rather than implementing a second execution path.
 
 ```text
 > add a timeout to the MCP request path
@@ -78,6 +78,28 @@ swipl -q -s agentProlog/bin/prolog-agent-ui-fixture.pl
 
 The golden polyglot session is `agentProlog/fixtures/prolog_agent_ui_v1_session.ndjson`.
 
+## OpenTUI reference client
+
+The first standalone renderer lives in `agentProlog/ui/opentui/`. It is a Bun + OpenTUI + SolidJS client that deliberately targets the deterministic fixture before the real coding workflow is wired in.
+
+```sh
+cd agentProlog/ui/opentui
+bun install
+bun run dev
+```
+
+The client:
+
+- spawns the child `swipl` fixture behind an NDJSON transport interface;
+- negotiates `prolog_agent_ui_v1` and applies only canonical snapshots/events;
+- keeps request correlation separate from event sequence numbers;
+- renders streaming conversation, tools, approvals/questions, subagents, verification, usage, traces, indeterminate effects, and optional unknown events;
+- renders unknown tools generically rather than requiring a TypeScript tool catalog;
+- sends approval/question/cancel commands using values advertised by protocol state rather than implementing authority policy locally;
+- fails visibly on sequence gaps, malformed records, required unknown extensions, unexpected server frames, and transport exit.
+
+It is a reference client, not an alternate runtime. The real coding loop, project tools, project-KB refresh, and verification remain authoritative downstream work.
+
 ## Security boundary
 
 Loading coding tools does not grant their capabilities. Repository writes, process execution, network access, and MCP effects remain explicit bounded operations.
@@ -90,8 +112,10 @@ The UI protocol does not weaken this boundary. A client command is a request to 
 
 ## Status
 
-The core agent/runtime substrate exists. `agentProlog/` is not yet a runnable coding agent or rich TUI.
+The core agent/runtime substrate exists. `agentProlog/` is not yet a runnable coding agent, but it now has both the renderer-independent frontend protocol and the first fixture-backed standalone TUI client.
 
-The `prolog_agent_ui_v1` foundation now defines the renderer-independent snapshot/event/command boundary, deterministic replay semantics, request correlation, reconnect behavior, NDJSON encoding, a child-process fixture server, golden fixtures, and 10,000-delta stress coverage. The next UI slice is a small OpenTUI + SolidJS reference client against that fixture, after the protocol branch is verified and merged.
+`prolog_agent_ui_v1` defines the snapshot/event/command boundary, deterministic replay semantics, request correlation, reconnect behavior, NDJSON encoding, a child-process fixture server, golden fixtures, and 10,000-delta stress coverage. Issue #112 adds the small OpenTUI + SolidJS reference client against that contract with its own deterministic typecheck/protocol/transport/render CI lane.
 
-The headless coding workflow and concrete project tool pack still remain product dependencies. Update the roadmap in the same PR whenever implementation materially changes readiness or dependencies.
+The next product dependency is not more renderer-side domain logic. It is wiring the real headless coding workflow, concrete project tool pack, approvals, project state, and verification into the existing UI facade so this same client can consume live sessions unchanged. Native Emacs/Lem/CL/Nim clients remain later protocol consumers.
+
+Update the roadmap in the same PR whenever implementation materially changes readiness or dependencies.
