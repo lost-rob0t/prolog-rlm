@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { ProtocolClient } from "../src/client.ts"
+import { ProtocolError } from "../src/protocol.ts"
 import { SwiplFixtureTransport } from "../src/transport.ts"
 
 async function waitForSeq(client: ProtocolClient, seq: number, getError: () => Error | undefined): Promise<void> {
@@ -38,6 +39,11 @@ try {
   await waitForSeq(client, 25, () => clientError)
   assert.equal(client.view?.approvals[0]?.decision, "allow_once")
   assert.equal(client.view?.at_seq, 25)
+} catch (error) {
+  if (error instanceof ProtocolError) {
+    console.error(`protocol_failure_details=${JSON.stringify(error.details)}`)
+  }
+  throw error
 } finally {
   await client.close()
 }
