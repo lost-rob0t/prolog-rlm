@@ -1,5 +1,9 @@
 :- module(rlm_context,
           [ context_register/3,
+            context_adapter_register/5,
+            context_adapter_unregister/2,
+            context_adapter_info/2,
+            context_register_adapter/4,
             context_metadata/2,
             context_peek/4,
             context_slice/5,
@@ -18,6 +22,12 @@ Text and term payloads remain outside model prompts behind versioned opaque
 handles. Every public projection is count/byte/time bounded and traceable.
 The memory backend never dereferences files, URLs, streams, sockets, or
 caller-supplied Prolog goals.
+
+Trusted host code may register named external adapters. Adapter registration is
+not a model capability: executable callbacks remain in this process' trusted
+registry and adapter-backed context records store only a ground source ref.
+`rlm_context` still owns wall-time, result-count, output-byte and trace
+boundaries for every adapter operation.
 */
 
 :- use_module(library(uuid)).
@@ -27,12 +37,132 @@ caller-supplied Prolog goals.
 :- dynamic context_record/6.
 :- dynamic context_tombstone/2.
 :- dynamic context_event/3.
+:- dynamic context_adapter_definition/4.
 
 context_backend(memory,
                 capabilities{source_kinds:[text, terms],
+                             operations:[peek, slice, search, partition, map, reduce],
                              persistent:false,
                              filesystem:false,
                              network:false}).
+context_backend(adapter(Name), Capabilities) :-
+    context_adapter_definition(Name, Capabilities, _, _).
+
+/* -------------------------------------------------------------------------
+ * Trusted adapter registry
+ * ---------------------------------------------------------------------- */
+
+context_adapter_register(Name0,
+                         Capabilities,
+                         MetadataHandler,
+                         OperationHandler,
+                         Outcome) :-
+    catch(( normalize_adapter_name(Name0, Name),
+            validate_adapter_definition(Capabilities,
+                                        MetadataHandler,
+                                        OperationHandler),
+            with_mutex(rlm_context_adapter_registry,
+                       register_adapter_locked(Name,
+                                               Capabilities,
+                                               MetadataHandler,
+                                               OperationHandler,
+                                               Result)),
+            Outcome = ok(Result)
+          ),
+          Exception,
+          structured_context_exception(adapter_register,
+                                       Exception,
+                                       Outcome)).
+
+register_adapter_locked(Name, Capabilities, MetadataHandler, OperationHandler,
+                        existing(Name)) :-
+    context_adapter_definition(Name,
+                               ExistingCapabilities,
+                               ExistingMetadataHandler,
+                               ExistingOperationHandler),
+    ExistingCapabilities =@= Capabilities,
+    ExistingMetadataHandler == MetadataHandler,
+    ExistingOperationHandler == OperationHandler,
+    !.
+register_adapter_locked(Name, _, _, _, _) :-
+    context_adapter_definition(Name, _, _, _),
+    !,
+    throw(context_fault(adapter_conflict(Name))).
+register_adapter_locked(Name, Capabilities, MetadataHandler, OperationHandler,
+                        registered(Name)) :-
+    assertz(context_adapter_definition(Name,
+                                       Capabilities,
+                                       MetadataHandler,
+                                       OperationHandler)).
+
+context_adapter_unregister(Name0, Outcome) :-
+    catch(( normalize_adapter_name(Name0, Name),
+            with_mutex(rlm_context_adapter_registry,
+                       unregister_adapter_locked(Name, Result)),
+            Outcome = ok(Result)
+          ),
+          Exception,
+          structured_context_exception(adapter_unregister,
+                                       Exception,
+                                       Outcome)).
+
+unregister_adapter_locked(Name, _) :-
+    context_record(_, _, adapter(Name), _, _, _),
+    !,
+    throw(context_fault(adapter_in_use(Name))).
+unregister_adapter_locked(Name, unregistered(Name)) :-
+    retractall(context_adapter_definition(Name, _, _, _)).
+
+context_adapter_info(Name0, Outcome) :-
+    catch(( normalize_adapter_name(Name0, Name),
+            (   context_adapter_definition(Name, Capabilities, _, _)
+            ->  Outcome = ok(context_adapter{name:Name,
+                                             capabilities:Capabilities})
+            ;   throw(context_fault(adapter_not_registered(Name)))
+            )
+          ),
+          Exception,
+          structured_context_exception(adapter_info, Exception, Outcome)).
+
+validate_adapter_definition(Capabilities, MetadataHandler, OperationHandler) :-
+    (   is_dict(Capabilities), ground(Capabilities)
+    ->  true
+    ;   throw(context_fault(invalid_adapter_capabilities(Capabilities)))
+    ),
+    (   get_dict(operations, Capabilities, Operations),
+        is_list(Operations),
+        Operations \== [],
+        maplist(valid_adapter_operation_name, Operations)
+    ->  true
+    ;   throw(context_fault(invalid_adapter_operations(Capabilities)))
+    ),
+    (   callable(MetadataHandler), ground(MetadataHandler)
+    ->  true
+    ;   throw(context_fault(invalid_adapter_handler(metadata,
+                                                    MetadataHandler)))
+    ),
+    (   callable(OperationHandler), ground(OperationHandler)
+    ->  true
+    ;   throw(context_fault(invalid_adapter_handler(operation,
+                                                    OperationHandler)))
+    ).
+
+valid_adapter_operation_name(Name) :-
+    memberchk(Name, [peek, slice, search, partition, map, reduce]),
+    !.
+valid_adapter_operation_name(Name) :-
+    throw(context_fault(invalid_adapter_operation_name(Name))).
+
+normalize_adapter_name(Name, Name) :- atom(Name), Name \== '', !.
+normalize_adapter_name(Name0, Name) :-
+    string(Name0), Name0 \== "", !,
+    atom_string(Name, Name0).
+normalize_adapter_name(Name, _) :-
+    throw(context_fault(invalid_adapter_name(Name))).
+
+/* -------------------------------------------------------------------------
+ * Context registration
+ * ---------------------------------------------------------------------- */
 
 context_register(Source, Options, Outcome) :-
     catch(context_register_(Source, Options, Outcome),
@@ -60,6 +190,92 @@ register_source(ok(source_stats{bytes:Bytes, items:Items}), Kind, Payload,
                                 items:Items,
                                 version:Version,
                                 created_at:CreatedAt},
+    register_context_record(Id,
+                            Version,
+                            Kind,
+                            Payload,
+                            Metadata,
+                            CreatedAt,
+                            Ref).
+
+context_register_adapter(Name0, SourceRef, Options, Outcome) :-
+    catch(context_register_adapter_(Name0, SourceRef, Options, Outcome),
+          Exception,
+          structured_context_exception(adapter_register_source,
+                                       Exception,
+                                       Outcome)).
+
+context_register_adapter_(Name0, SourceRef, Options, Outcome) :-
+    normalize_adapter_name(Name0, Name),
+    (   ground(SourceRef)
+    ->  true
+    ;   throw(context_fault(non_ground_adapter_source(Name)))
+    ),
+    validate_limits(Options, LimitsOutcome),
+    (   LimitsOutcome = error(Error)
+    ->  Outcome = error(Error)
+    ;   context_adapter_definition(Name,
+                                   Capabilities,
+                                   MetadataHandler,
+                                   _)
+    ->  adapter_source_metadata(Name,
+                                MetadataHandler,
+                                SourceRef,
+                                AdapterMetadata),
+        register_adapter_source(Name,
+                                Capabilities,
+                                SourceRef,
+                                AdapterMetadata,
+                                Outcome)
+    ;   throw(context_fault(adapter_not_registered(Name)))
+    ).
+
+adapter_source_metadata(Name, MetadataHandler, SourceRef, Metadata) :-
+    (   call(MetadataHandler, SourceRef, RawMetadata)
+    ->  true
+    ;   throw(context_fault(adapter_metadata_failed(Name)))
+    ),
+    (   is_dict(RawMetadata), ground(RawMetadata)
+    ->  Metadata = RawMetadata
+    ;   throw(context_fault(invalid_adapter_metadata(Name, RawMetadata)))
+    ).
+
+register_adapter_source(Name,
+                        Capabilities,
+                        SourceRef,
+                        AdapterMetadata,
+                        ok(Ref)) :-
+    uuid(Id, [version(4)]),
+    Version = 1,
+    get_time(CreatedAt),
+    dict_default(AdapterMetadata, bytes, unknown, Bytes),
+    dict_default(AdapterMetadata, items, unknown, Items),
+    dict_default(AdapterMetadata, kind, Name, SourceKind),
+    Metadata = context_metadata{backend:adapter(Name),
+                                kind:SourceKind,
+                                bytes:Bytes,
+                                items:Items,
+                                version:Version,
+                                created_at:CreatedAt,
+                                adapter:Name,
+                                adapter_capabilities:Capabilities,
+                                source:AdapterMetadata},
+    Payload = adapter_payload{name:Name, source_ref:SourceRef},
+    register_context_record(Id,
+                            Version,
+                            adapter(Name),
+                            Payload,
+                            Metadata,
+                            CreatedAt,
+                            Ref).
+
+register_context_record(Id,
+                        Version,
+                        Kind,
+                        Payload,
+                        Metadata,
+                        CreatedAt,
+                        Ref) :-
     with_mutex(rlm_context_store,
                ( retractall(context_tombstone(Id, _)),
                  assertz(context_record(Id, Version, Kind, Payload,
@@ -94,7 +310,7 @@ normalize_source(Source, unknown, none,
                  error(context_error{operation:register,
                                      kind:unsupported_source,
                                      source_shape:Shape,
-                                     message:"only text(Text) and terms(List) are accepted"})) :-
+                                     message:"context_register/3 accepts only text(Text) and terms(List); trusted external sources use context_register_adapter/4"})) :-
     source_shape(Source, Shape).
 
 source_shape(Source, Functor/Arity) :-
@@ -108,6 +324,10 @@ source_shape(Source, Type) :-
     ;   var(Source) -> Type = variable
     ;   Type = other
     ).
+
+/* -------------------------------------------------------------------------
+ * Public operations
+ * ---------------------------------------------------------------------- */
 
 context_metadata(Handle, Outcome) :-
     resolve_handle(Handle, Resolved),
@@ -173,6 +393,20 @@ run_timed_operation(Limits, Operation, Kind, Payload, Metadata, WorkOutcome) :-
     ;   WorkOutcome = exception(context_fault(internal_failure(Operation)))
     ).
 
+operation_work(peek(metadata), _, _, Metadata, _,
+               work{value:Metadata,
+                    bytes_inspected:0,
+                    items_inspected:0,
+                    truncated:false}) :-
+    !.
+operation_work(Operation,
+               adapter(Name),
+               adapter_payload{name:Name, source_ref:SourceRef},
+               _,
+               Limits,
+               Work) :-
+    !,
+    adapter_operation_work(Name, Operation, SourceRef, Limits, Work).
 operation_work(peek(Selector), Kind, Payload, Metadata, Limits, Work) :-
     !,
     peek_work(Selector, Kind, Payload, Metadata, Limits, Work).
@@ -193,6 +427,92 @@ operation_work(reduce(Reducer), Kind, Payload, _, _, Work) :-
     reduce_work(Reducer, Kind, Payload, Work).
 operation_work(Operation, _, _, _, _, _) :-
     throw(context_fault(unsupported_operation(Operation))).
+
+adapter_operation_work(Name, Operation, SourceRef, Limits, Work) :-
+    (   context_adapter_definition(Name,
+                                   Capabilities,
+                                   _,
+                                   OperationHandler)
+    ->  true
+    ;   throw(context_fault(adapter_not_registered(Name)))
+    ),
+    adapter_operation_name(Operation, OperationName),
+    get_dict(operations, Capabilities, Allowed),
+    (   memberchk(OperationName, Allowed)
+    ->  true
+    ;   throw(context_fault(adapter_operation_denied(Name, OperationName)))
+    ),
+    (   call(OperationHandler,
+             Operation,
+             SourceRef,
+             Limits,
+             RawWork)
+    ->  true
+    ;   throw(context_fault(adapter_operation_failed(Name, Operation)))
+    ),
+    validate_adapter_work(Name, RawWork, ValidWork),
+    bound_adapter_work(ValidWork, Limits, Work).
+
+adapter_operation_name(peek(_), peek) :- !.
+adapter_operation_name(slice(_, _), slice) :- !.
+adapter_operation_name(search(_), search) :- !.
+adapter_operation_name(partition(_), partition) :- !.
+adapter_operation_name(map(_), map) :- !.
+adapter_operation_name(reduce(_), reduce) :- !.
+adapter_operation_name(Operation, _) :-
+    throw(context_fault(unsupported_operation(Operation))).
+
+validate_adapter_work(Name, Raw, Work) :-
+    (   is_dict(Raw),
+        get_dict(value, Raw, Value),
+        get_dict(bytes_inspected, Raw, Bytes),
+        get_dict(items_inspected, Raw, Items),
+        get_dict(truncated, Raw, Truncated),
+        ground(Value),
+        integer(Bytes), Bytes >= 0,
+        integer(Items), Items >= 0,
+        memberchk(Truncated, [true, false])
+    ->  Work = work{value:Value,
+                    bytes_inspected:Bytes,
+                    items_inspected:Items,
+                    truncated:Truncated}
+    ;   throw(context_fault(invalid_adapter_work(Name, Raw)))
+    ).
+
+bound_adapter_work(Work0, Limits, Work) :-
+    get_dict(value, Work0, Value0),
+    get_dict(max_results, Limits, MaxResults),
+    get_dict(max_bytes, Limits, MaxBytes),
+    bound_adapter_value(Value0,
+                        MaxResults,
+                        MaxBytes,
+                        Value,
+                        LimitTruncated),
+    get_dict(truncated, Work0, RawTruncated),
+    bool_or([RawTruncated == true, LimitTruncated == true], Truncated),
+    Work = work{value:Value,
+                bytes_inspected:Work0.bytes_inspected,
+                items_inspected:Work0.items_inspected,
+                truncated:Truncated}.
+
+bound_adapter_value(Value0, _, MaxBytes, Value, Truncated) :-
+    string(Value0),
+    !,
+    truncate_text_bytes(Value0, MaxBytes, Value, Truncated).
+bound_adapter_value(Value0, MaxResults, MaxBytes, Value, Truncated) :-
+    is_list(Value0),
+    !,
+    take_n(Value0, MaxResults, ResultsLimited),
+    bounded_term_list(ResultsLimited, MaxBytes, Value, ByteTruncated),
+    length(Value0, RawCount),
+    length(ResultsLimited, LimitedCount),
+    bool_or([RawCount > LimitedCount, ByteTruncated == true], Truncated).
+bound_adapter_value(Value0, _, MaxBytes, Value, Truncated) :-
+    bounded_term(Value0, MaxBytes, Value, Truncated).
+
+/* -------------------------------------------------------------------------
+ * Memory backend operations
+ * ---------------------------------------------------------------------- */
 
 peek_work(metadata, _, _, Metadata, _,
           work{value:Metadata,
@@ -630,6 +950,10 @@ reduce_work(byte_count, terms, Terms, Work) :-
 reduce_work(Reducer, Kind, _, _) :-
     throw(context_fault(capability_denied(reduce(Kind), Reducer))).
 
+/* -------------------------------------------------------------------------
+ * Results, trace, handles
+ * ---------------------------------------------------------------------- */
+
 finalize_work(exception(Exception), _, _, _, Operation, _, Outcome) :-
     !,
     structured_context_exception(Operation, Exception, Outcome).
@@ -744,6 +1068,10 @@ resolve_identity(ok(Id, Version), Outcome) :-
                                       message:"context handle is not registered"})
     ).
 
+/* -------------------------------------------------------------------------
+ * Limits and errors
+ * ---------------------------------------------------------------------- */
+
 validate_limits(Options, Outcome) :-
     (   is_list(Options)
     ->  option_value(max_results, Options, 32, MaxResults),
@@ -838,6 +1166,88 @@ fault_error(Operation, internal_failure(Requested),
                           kind:internal_failure,
                           requested:Requested,
                           message:"context worker failed without a structured result"}).
+fault_error(Operation, adapter_conflict(Name),
+            context_error{operation:Operation,
+                          kind:adapter_conflict,
+                          adapter:Name,
+                          message:"adapter name is already registered with different trusted handlers or capabilities"}).
+fault_error(Operation, adapter_in_use(Name),
+            context_error{operation:Operation,
+                          kind:adapter_in_use,
+                          adapter:Name,
+                          message:"adapter has live context handles and cannot be unregistered"}).
+fault_error(Operation, adapter_not_registered(Name),
+            context_error{operation:Operation,
+                          kind:adapter_not_registered,
+                          adapter:Name,
+                          message:"trusted context adapter is not registered"}).
+fault_error(Operation, invalid_adapter_name(Name),
+            context_error{operation:Operation,
+                          kind:invalid_adapter,
+                          adapter:Name,
+                          message:"adapter name must be non-empty text"}).
+fault_error(Operation, invalid_adapter_capabilities(Value),
+            context_error{operation:Operation,
+                          kind:invalid_adapter,
+                          value:Value,
+                          message:"adapter capabilities must be a ground dict"}).
+fault_error(Operation, invalid_adapter_operations(Value),
+            context_error{operation:Operation,
+                          kind:invalid_adapter,
+                          value:Value,
+                          message:"adapter capabilities must declare a non-empty operations list"}).
+fault_error(Operation, invalid_adapter_operation_name(Name),
+            context_error{operation:Operation,
+                          kind:invalid_adapter,
+                          requested:Name,
+                          message:"adapter operation name is outside the context operation vocabulary"}).
+fault_error(Operation, invalid_adapter_handler(Field, Value),
+            context_error{operation:Operation,
+                          kind:invalid_adapter,
+                          field:Field,
+                          value_shape:Shape,
+                          message:"adapter handler must be a ground trusted callable"}) :-
+    source_shape(Value, Shape).
+fault_error(Operation, non_ground_adapter_source(Name),
+            context_error{operation:Operation,
+                          kind:invalid_adapter_source,
+                          adapter:Name,
+                          message:"adapter source ref must be ground"}).
+fault_error(Operation, adapter_metadata_failed(Name),
+            context_error{operation:Operation,
+                          kind:adapter_metadata_failed,
+                          adapter:Name,
+                          message:"adapter metadata callback failed"}).
+fault_error(Operation, invalid_adapter_metadata(Name, Value),
+            context_error{operation:Operation,
+                          kind:invalid_adapter_metadata,
+                          adapter:Name,
+                          value_shape:Shape,
+                          message:"adapter metadata callback must return a ground dict"}) :-
+    source_shape(Value, Shape).
+fault_error(Operation, adapter_operation_denied(Name, Requested),
+            context_error{operation:Operation,
+                          kind:capability_denied,
+                          adapter:Name,
+                          requested:Requested,
+                          message:"adapter does not declare this context operation"}).
+fault_error(Operation, adapter_operation_failed(Name, Requested),
+            context_error{operation:Operation,
+                          kind:adapter_operation_failed,
+                          adapter:Name,
+                          requested:Requested,
+                          message:"adapter operation callback failed"}).
+fault_error(Operation, invalid_adapter_work(Name, Value),
+            context_error{operation:Operation,
+                          kind:invalid_adapter_work,
+                          adapter:Name,
+                          value_shape:Shape,
+                          message:"adapter callback returned an invalid work record"}) :-
+    source_shape(Value, Shape).
+
+/* -------------------------------------------------------------------------
+ * Generic helpers
+ * ---------------------------------------------------------------------- */
 
 require_nonnegative_integer(Value) :-
     (   integer(Value), Value >= 0
@@ -950,6 +1360,12 @@ bool_or(Conditions, true) :-
     call(Condition),
     !.
 bool_or(_, false).
+
+dict_default(Dict, Key, Default, Value) :-
+    (   is_dict(Dict), get_dict(Key, Dict, Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
 
 take_n(_, 0, []) :-
     !.

@@ -4,6 +4,7 @@
 :- use_module('../prolog/rlm_context_budget', []).
 :- use_module('../prolog/rlm_conversation', []).
 :- use_module('../prolog/rlm_conversation_warm', []).
+:- use_module('../prolog/rlm_conversation_runtime', []).
 :- use_module('../prolog/rlm_effect', []).
 :- use_module('../prolog/rlm_effect_authority', []).
 :- use_module('../prolog/rlm_effect_executor', []).
@@ -30,6 +31,7 @@ main(_) :-
         rlm_context_budget:rlm_context_budget_ready,
         rlm_conversation:rlm_conversation_ready,
         rlm_conversation_warm:rlm_conversation_warm_ready,
+        rlm_conversation_runtime:rlm_conversation_runtime_ready,
         rlm_evidence:rlm_evidence_ready,
         rlm_assertion:rlm_assertion_ready,
         rlm_spec:rlm_spec_ready,
