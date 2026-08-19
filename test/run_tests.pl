@@ -65,6 +65,7 @@
 :- consult(rlm_spec_workflow_test).
 :- consult(rlm_project_source_test).
 :- consult(prolog_agent_ui_v1_test).
+:- consult(prolog_agent_ui_fixture_command_codec_test).
 
 main(_) :-
     (   run_tool_mcp_async_cases,
