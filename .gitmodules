@@ -1,3 +1,0 @@
-[submodule "third_party/mattpocock-skills/upstream"]
-	path = third_party/mattpocock-skills/upstream
-	url = https://github.com/mattpocock/skills.git
