@@ -66,6 +66,7 @@
 :- consult(rlm_project_source_test).
 :- consult(prolog_agent_ui_v1_test).
 :- consult(agentprolog_config_test).
+:- consult(agentprolog_config_relative_test).
 
 main(_) :-
     (   run_tool_mcp_async_cases,
