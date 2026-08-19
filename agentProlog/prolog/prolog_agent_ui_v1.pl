@@ -525,15 +525,18 @@ update_item_fields(Id, Fields, Items0, Items) :-
     append(Before, [Item|After], Items).
 
 select_item(Id, Items, Item, Before, After) :-
-    append(Before, [Item|After], Items),
-    get_dict(id, Item, Id),
+    existing_item(Id, Items, Item, Before, After),
     !.
 select_item(Id, _, _, _, _) :-
     throw(ui_fault(replay_missing_entity, _{id:Id})).
 
+existing_item(Id, Items, Item, Before, After) :-
+    append(Before, [Item|After], Items),
+    get_dict(id, Item, Id).
+
 upsert_by_id(Item, Items0, Items) :-
     Id = Item.id,
-    (   select_item(Id, Items0, _Old, Before, After)
+    (   existing_item(Id, Items0, _Old, Before, After)
     ->  append(Before, [Item|After], Items)
     ;   append(Items0, [Item], Items)
     ).
@@ -557,7 +560,7 @@ normalize_payload(Payload, _{value:Payload}).
 
 put_optional_correlation(none, Base, Base) :- !.
 put_optional_correlation(CausedBy, Base, Frame) :-
-    put_dict(caused_by, Base, CausedBy, Frame).
+    put_dict(caused_by, Base, Frame).
 
 put_optional_request(none, Base, Base) :- !.
 put_optional_request(RequestId, Base, Frame) :-
