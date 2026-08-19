@@ -16,6 +16,8 @@
 :- consult(rlm_mcp_boundary_test).
 :- consult(rlm_mcp_declaration_security_test).
 :- consult(rlm_context_test).
+:- consult(rlm_context_budget_test).
+:- consult(rlm_conversation_test).
 :- consult(rlm_plan_test).
 :- consult(rlm_tool_test).
 :- consult(rlm_tool_loader_test).
