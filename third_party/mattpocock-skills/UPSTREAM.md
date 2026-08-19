@@ -1,6 +1,6 @@
 # mattpocock/skills provenance
 
-This directory vendors selected stable skills from Matt Pocock's `mattpocock/skills` project for the default `prolog-rlm` skill catalog.
+This directory integrates Matt Pocock's `mattpocock/skills` collection for the `prolog-rlm` skill compiler.
 
 - Upstream repository: `https://github.com/mattpocock/skills`
 - Pinned revision: `9c9f36ccd3995266cd675468af71639c8dde1ec5`
@@ -9,6 +9,14 @@ This directory vendors selected stable skills from Matt Pocock's `mattpocock/ski
 
 Thank you to Matt Pocock for publishing the skill collection and making it available under the MIT License.
 
-`prolog-rlm` does not preserve the upstream model-side invocation mechanism. The vendored Markdown remains third-party instructional material, while Prolog owns activation. `disable-model-invocation: true` is normalized to trusted explicit-user-only activation; other stable skills are eligible for deterministic Prolog selection.
+The complete upstream repository is pinned as the git submodule `third_party/mattpocock-skills/upstream`. Initialize it with:
 
-The default vendored corpus intentionally excludes upstream `deprecated/` and `in-progress/` trees. Update the pin and copied files together; never fetch floating upstream skill content at runtime.
+```sh
+git submodule update --init third_party/mattpocock-skills/upstream
+```
+
+`third_party/mattpocock-skills/skills` remains a vendored stable fallback so ordinary source archives and CI checkouts that do not initialize submodules still have a deterministic default catalog. The fallback intentionally excludes upstream `deprecated/` and `in-progress/` trees. The submodule preserves the complete pinned upstream collection for callers that want the full catalog rather than the fallback subset.
+
+`prolog-rlm` does not preserve the upstream model-side invocation mechanism. The Markdown remains third-party instructional material, while Prolog owns discovery and activation. `disable-model-invocation: true` is normalized to trusted explicit-user-only activation; other stable skills are eligible for deterministic Prolog selection. Skill resources are loaded only after Prolog selects a skill and remain inert text, including shell templates.
+
+Never fetch floating upstream skill content at runtime. Updating the collection means reviewing and updating the pinned submodule revision, provenance, fallback corpus where applicable, and deterministic skill tests together.
