@@ -59,6 +59,7 @@
 :- consult(rlm_spec_verify_test).
 :- consult(rlm_spec_lang_test).
 :- consult(rlm_spec_workflow_test).
+:- consult(prolog_agent_ui_v1_test).
 
 main(_) :-
     (   run_tool_mcp_async_cases,
