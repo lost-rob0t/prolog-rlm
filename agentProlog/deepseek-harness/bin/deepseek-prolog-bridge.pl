@@ -50,7 +50,7 @@ request_loop :-
 
 handle_line(Line) :-
     catch(( atom_string(Atom, Line),
-            atom_json_dict(Atom, Request, []),
+            atom_json_dict(Atom, Request, [default_tag(json)]),
             deepseek_prolog_host_bridge:deepseek_host_bridge_handle(Request,
                                                                    Response)
           ),
