@@ -1,0 +1,561 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-011-managed-context-tool-discovery
+:END:
+#+title: RLM-RESEARCH-011 Managed Context Tool Discovery and Activation
+#+status: RESEARCHED
+#+filetags: :rlm:prompt:compiler:context:tools:mcp:discovery:budget:security:
+
+* Research Question
+
+How should the symbolic prompt compiler from =RLM-RESEARCH-010= integrate with the now-implemented managed conversation/token-budget runtime, while supporting contextual activation/deactivation, bounded model-facing discovery, MCP metadata, model-authored =needs(...)= evidence, and child-agent capability narrowing without confusing visibility with authority or creating a second context optimizer?
+
+This is deliberately a follow-up to =RLM-RESEARCH-010= rather than a replacement. Research 010 established the common compilation-unit algebra, evidence-driven selection, dependency closure, explainability, and the rule that compiler selection never grants execution authority. The materially new question is how those conclusions compose with the concrete =rlm_context_budget= and managed conversation surfaces that landed afterward, plus whether a bounded model-facing catalog search is ready to become a first-class interface.
+
+* Primary Sources
+
+** Repository state inspected 2026-08-19
+
+- canonical =main= and =AGENTS.md=;
+- =RLM-RESEARCH-000=, =002=, =003=, =005=, =006=, =007=, =009=, and =010=;
+- issues #49, #50, #68, #69, and #101;
+- merged managed-conversation/token-budget and warm-context source;
+- open hot/warm/cold orchestration PR #106;
+- =prolog/rlm_tool.pl=;
+- =prolog/rlm_tool_loader.pl=;
+- =prolog/rlm_completion.pl=;
+- =prolog/rlm_context_budget.pl=;
+- =prolog/rlm_conversation.pl=;
+- =prolog/rlm_conversation_warm.pl=;
+- canonical MCP facade/model modules and their tests.
+
+** External primary sources rechecked 2026-08-19
+
+- Anthropic Tool Search: https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
+- Anthropic tool context management: https://platform.claude.com/docs/en/agents-and-tools/tool-use/manage-tool-context
+- Microsoft Semantic Kernel Contextual Function Selection: https://learn.microsoft.com/en-us/semantic-kernel/frameworks/agent/agent-contextual-function-selection
+- MCP 2026-07-28 specification release notes: https://blog.modelcontextprotocol.io/posts/2026-07-28/
+- Semantic Tool Discovery for LLMs: https://arxiv.org/abs/2603.20313
+- ToolFlood: https://arxiv.org/abs/2607.XXXXX
+
+The ToolFlood identifier should be replaced with the canonical paper identifier before publication if the retrieved source record does not expose it reliably. Its security result is used only as supporting evidence for an already-required fail-closed design; no implementation depends on the citation string.
+
+* Findings
+
+** The conclusions of RLM-RESEARCH-010 still hold
+
+The following conclusions remain compatible with current source and should not be redesigned:
+
+1. Model-visible context is a compiled projection of a larger trusted runtime catalog.
+2. Skills, tools, MCP units, resources, and instructions should share one compilation-unit algebra rather than separate routers.
+3. Signals are evidence, not imperative routing commands.
+4. Dependency closure, conflicts, supersession, capability filtering, and negative evidence belong in deterministic Prolog policy.
+5. Model-authored =needs(...)= may request semantic capability discovery but may not register code, grant capabilities, or choose trusted callables.
+6. Compiler output should be structured and inspectable before provider rendering.
+7. The trusted tool/MCP execution runtimes remain authoritative after a tool becomes model-visible.
+8. A flat all-tools mode remains useful as a compatibility and benchmark baseline, but is not the scalable default.
+
+The most important refinement is vocabulary. Research 010 used =candidate != available != authorized=. Current requirements need a four-state distinction:
+
+#+begin_example
+registered(Unit) != available(Unit) != active(Unit) != authorized(Unit)
+#+end_example
+
+=active(Unit)= means selected into the current provider-visible projection. It is disposable per compilation. It does not mutate the runtime registry and does not imply invocation authority.
+
+** Contextual unload is projection change, not lifecycle change
+
+The existing tool loader already gives physical loading a trusted lifecycle meaning: a package loader registers schemas/handlers into a registry, and loading does not grant capabilities. Destroying a registry, disabling a package, disconnecting an MCP endpoint, or tearing down a runtime is therefore a materially different event from a topic change.
+
+Normal prompt compilation should not retract registered handlers, unload Prolog modules, clear loader bookkeeping, or disconnect MCP servers when a tool stops being relevant. The next provider request simply omits that unit.
+
+This gives a strong invariant:
+
+#+begin_example
+Turn A: registered(git_diff), active(git_diff)
+Turn B: registered(git_diff), \+ active(git_diff)
+Turn C: registered(git_diff), active(git_diff)
+#+end_example
+
+No re-registration is required between A and C.
+
+** The token-budget substrate now exists, so a second compiler optimizer would be a regression
+
+=rlm_context_budget= already models provider-visible context as fixed sections plus selectable units. A unit can have multiple representations with independent token costs and utilities. Mandatory units cannot be silently omitted. Optional units receive an omitted representation. CLP(FD) chooses a feasible highest-utility pack under the effective context ceiling after output reserve and safety margin are charged.
+
+The managed conversation runtime already expresses transcript turns and warm artifacts as the same =context_unit= form. Therefore the prompt compiler should not implement its own independent token knapsack or append tools after conversation packing.
+
+The correct composition is:
+
+#+begin_example
+compiler evidence/candidates
+        |
+        v
+closure + policy + representation variants
+        |
+        v
+compiler context_unit values
+        |
+        +-----------------------------+
+        |                             |
+conversation/warm/cold context_units  |
+        |                             |
+        +-------------+---------------+
+                      v
+             rlm_context_budget
+               one CLP(FD) pack
+                      |
+                      v
+             one token ledger
+#+end_example
+
+This is stronger than the original Research 010 suggestion to begin with a separate deterministic threshold/ceiling policy. That suggestion was reasonable before the shared packer existed; it is now obsolete for final budget selection. Deterministic evidence scoring and candidate narrowing should still happen before the packer so a 5,000-unit catalog does not become a 5,000-variable optimization problem on every turn.
+
+** Tool definitions must be charged using the same representation that is rendered
+
+A schema token estimate that is unrelated to the actual provider-visible serialization makes the ledger advisory rather than authoritative. The compiler therefore needs representation variants whose token count is derived from the exact canonical text or provider-neutral value that the renderer will expose.
+
+At minimum, a tool can support:
+
+- compact discovery metadata: name, category/kind, short description;
+- full model-visible invocation schema;
+- omitted, only when the unit is optional.
+
+Provider-native deferred references may be added later as another representation, but canonical identity remains =tool(Name)= or =mcp_tool(Server, Name)=. Provider rendering is a property of the chosen representation, not of unit identity.
+
+** Automatic host-side narrowing should be the default
+
+Anthropic Tool Search and Semantic Kernel Contextual Function Selection independently expose a small relevant subset instead of the complete function catalog. Anthropic's current tool-search interface explicitly supports deferred definitions and bounded result counts; Semantic Kernel similarly advertises only the top contextual functions. Both support the design conclusion already present in Research 010: large static catalogs waste context and enlarge the model's action space.
+
+For prolog-rlm, automatic narrowing should prefer deterministic evidence already available in the runtime: explicit selection, structured intent, phrases, verbs/objects, aliases, project/runtime facts, workflow stage, failures, negative evidence, and prior =needs(...)= requests. Optional lexical/semantic retrieval can generate candidates, but it does not decide authority.
+
+The scalable path is therefore:
+
+#+begin_example
+5,000 registered units
+      |
+      v
+bounded candidate generation
+      |
+      v
+closure/policy/conflict checks
+      |
+      v
+small packable frontier
+      |
+      v
+chosen active representations
+#+end_example
+
+The =all_tools= mode bypasses candidate narrowing for baseline/debug work but still does not bypass capability or execution authority checks.
+
+** Bounded model-facing catalog search is ready, but only as sanitized discovery
+
+The current repository already has two important precedents:
+
+- =rlm_tool:tool_discover/2= returns schemas, never handler callables;
+- =rlm_tool_loader:rlm_tool_catalog/1= returns declarative pack metadata, never trusted loader callables.
+
+That makes a bounded compiler catalog search safe enough for this slice if it preserves the same separation. A search result may contain canonical unit identity, kind/category, description, availability status, and declarative capability requirements. It must not contain:
+
+- Prolog handler closures;
+- preflight predicates;
+- loader predicates;
+- process/thread/transport handles;
+- MCP connection/session internals;
+- secrets or raw configuration;
+- authority continuations or pending-operation tokens.
+
+Search is discovery, not activation or invocation. A result can become evidence for the next compilation. Full schema exposure still requires normal compiler selection. Invocation still crosses the normal runtime capability/authority/effect boundary.
+
+The search itself should be bounded by both a result limit and normalized input size. A hard maximum prevents prompt injection or pathological metadata from turning search into an accidental full-catalog dump.
+
+** Model-authored needs(...) is a semantic request, not a trusted reference
+
+A model may emit terms such as:
+
+#+begin_src prolog
+needs(source_search).
+needs(repository_history).
+needs(database_lookup).
+#+end_src
+
+These terms should enter the next compilation as evidence. They are not accepted as executable unit names and do not bypass catalog resolution.
+
+The trusted path is:
+
+#+begin_example
+needs(repository_history)
+        |
+        v
+semantic candidate resolution
+        |
+        v
+registered + available candidates
+        |
+        v
+dependency closure
+        |
+        v
+discovery/capability/policy filtering
+        |
+        v
+context-budget selection
+        |
+        v
+next provider-visible projection
+#+end_example
+
+This is intentionally one model step later. It prevents a model response from changing the executable surface halfway through the same trusted invocation boundary.
+
+** Discovery scope and invocation authority are separate, especially for child agents
+
+The existing runtime has narrowing-only capability inheritance for execution. Model-visible catalog discovery needs an additional scope because it can be useful to let a child learn that a capability exists without giving it invocation authority.
+
+For example:
+
+#+begin_example
+parent discovery: filesystem, git, process
+parent invocation: filesystem, git, process
+
+child discovery: filesystem, git
+child invocation: filesystem
+#+end_example
+
+The child may receive sanitized metadata for a Git tool if host policy permits discovery, but the compiler must not expose an executable full schema as authorized merely because discovery succeeded. The tool runtime must reject invocation without the required capability even if the name was learned elsewhere.
+
+This should be represented as host compiler options/policy, not by minting a second execution-capability system. Existing execution capabilities remain authoritative; discovery scope only narrows what metadata may be surfaced.
+
+** Dependency closure must run before final packing
+
+Required dependencies are semantic constraints, not optional relevance hints. If a Skill requires a tool and the tool requires an MCP server or policy instruction, those dependencies form a closure before the packer is asked to choose representations.
+
+A required dependency that is absent, unavailable, capability-denied, conflicting, or incapable of fitting under the hard budget must produce a structured rejection/error. The packer must not silently omit a required dependency to rescue arithmetic.
+
+Suggested dependencies remain optional evidence and may be omitted.
+
+** MCP list caching makes a synchronized metadata catalog reasonable
+
+MCP 2026-07-28 explicitly makes =tools/list=, =prompts/list=, =resources/list=, and =resources/read= results cacheable through =ttlMs= and =cacheScope=. The current prolog-rlm MCP facade already normalizes tools, prompts, and resources independently of protocol version.
+
+The compiler should index only normalized/sanitized metadata and preserve server-local namespacing:
+
+#+begin_src prolog
+mcp_server(Server).
+mcp_tool(Server, Name).
+mcp_prompt(Server, Name).
+#+end_src
+
+Compiler selection must not install, start, or connect an MCP server solely because model text named it. Where host policy already defines an available lifecycle/connection dependency, selection may request trusted resolution through that policy. MCP descriptions and annotations are retrieval evidence, not authorization facts.
+
+** Cache/recompile semantics should be material-input based
+
+Compilation is cheap enough to rerun at model-context boundaries if candidate generation is bounded, but a stable fingerprint is still useful for prompt caching and introspection.
+
+Material fingerprint inputs should include at least:
+
+- catalog revision/fingerprint;
+- normalized evidence/signals;
+- available-unit state;
+- discovery scope;
+- execution capability set;
+- host policy/authority-relevant visibility policy;
+- workflow/project state that participates in triggers;
+- dependency/conflict/supersession rules;
+- token policy and representation token counts;
+- managed-context revision where it affects selection;
+- provider renderer/profile if it changes representation costs.
+
+A tool result, capability change, MCP catalog refresh, =needs(...)= event, topic change, or budget change therefore naturally creates a new projection. Identical material inputs should produce the same fingerprint and selection.
+
+The compiled value should be immutable/inspectable. There should be no global mutable list called "currently loaded tools" whose history determines correctness.
+
+** Catalog scale requires two stages, not one giant constraint problem
+
+The shared CLP(FD) packer is appropriate for the final frontier, not for semantic search across thousands of irrelevant units. Candidate generation should first reduce the catalog using indexed deterministic metadata. Dependency closure may add required units afterward. Only that bounded frontier becomes packer variables.
+
+Scale acceptance should record both candidate and selected counts. A successful 5,000-unit test that feeds all 5,000 units to CLP(FD) would technically pass selection but miss the architecture goal.
+
+** Security and adversarial cases are part of selection correctness
+
+Tool metadata is attackable input when it comes from plugins/MCP servers, and retrieval systems can be manipulated by descriptions crafted to dominate semantic search. The compiler therefore must distinguish trusted host rules from untrusted descriptive evidence.
+
+Required protections for this slice:
+
+- normalize and size-bound descriptions/aliases/search queries;
+- never deserialize model text into callable Prolog;
+- never copy handlers/loaders/transports into search results or compiled provider metadata;
+- intersect executable activation with host availability and existing capabilities;
+- apply explicit negative user evidence before ordinary positive lexical evidence;
+- keep mandatory host instructions/dependencies outside untrusted ranking competition;
+- deterministic tie-breaking by canonical unit identity;
+- structured rejection when conflicts/dependencies cannot be resolved;
+- child discovery and invocation scopes can only narrow;
+- model =needs(...)= cannot mutate catalog registration or host policy;
+- MCP descriptions/annotations never become capability or authority declarations.
+
+* Inference
+
+The cleanest current architecture is not a standalone "tool router" in front of =rlm_completion=. It is a provider-neutral compiler that produces two related things:
+
+1. structured compilation metadata: signals, candidates, closure, rejections, reasons, policy state, and fingerprint;
+2. ordinary =context_unit= values representing provider-visible compiler output.
+
+The managed conversation layer can merge those compiler units with conversation/warm/cold units and call =rlm_context_budget= once. The resulting selected representations are then reflected back into the immutable compiled-context IR and rendered into the provider request.
+
+This keeps TaskIR and compiled context distinct:
+
+- TaskIR (#69) owns normalized task/execution metadata and references the exact Frozen Spec where acceptance semantics live;
+- compiled context owns the disposable provider-visible projection for one model-context boundary;
+- the conversation store owns durable transcript state;
+- the artifact store owns durable derived task state;
+- the tool/MCP runtimes own executable bindings and authority checks.
+
+A TaskIR may reference or be an input signal to a compiled context, but it should not duplicate the catalog or become the mutable active-tool set.
+
+* Implementation Implications
+
+** Public module
+
+Add one core module, tentatively =rlm_prompt_compiler=, rather than separate tool/Skill/MCP routers.
+
+The public semantics should cover:
+
+#+begin_src prolog
+prompt_catalog_create(-Catalog).
+prompt_catalog_destroy(+Catalog).
+prompt_catalog_register(+Catalog, +UnitSpec, -Outcome).
+prompt_catalog_register_tool_registry(+Catalog, +Registry, +Options, -Outcome).
+prompt_catalog_search(+Catalog, +Query, +Options, -Outcome).
+prompt_compile(+Catalog, +Input, +Options, -Outcome).
+prompt_recompile(+Compiled0, +Event, +Options, -Outcome).
+prompt_explain(+Compiled, +Unit, -Outcome).
+prompt_render(+Compiled, +Provider, -Outcome).
+#+end_src
+
+Exact names may be adjusted to repository conventions during implementation. Registration APIs accept declarative metadata only. Trusted executable bindings remain in their existing registries.
+
+** Canonical compilation units
+
+Support at least:
+
+#+begin_src prolog
+unit(skill(Name)).
+unit(tool(Name)).
+unit(mcp_server(Name)).
+unit(mcp_tool(Server, Name)).
+unit(mcp_prompt(Server, Name)).
+unit(resource(Name)).
+unit(instruction(Name)).
+#+end_src
+
+Each normalized spec may contain signals/triggers, =requires=, =suggests=, =conflicts=, =supersedes=, discovery policy, required execution capability, priority, availability, provenance, and representation variants.
+
+** Final budget ownership
+
+Do not add a second optimizer. Convert eligible compiler representations into existing =context_unit/context_variant= values and pass them to =rlm_context_budget=context_pack/4= together with conversation/warm/cold units.
+
+Mandatory required units remain mandatory. Optional units may have an omitted representation. The compiler records why the chosen representation was full, compact, or omitted.
+
+** Completion integration
+
+Replace the current flat =tool_discover -> planner_prompt= schema path with a selected projection.
+
+The runtime registry used by =plan_run= remains the full trusted runtime binding set. Only the schemas given to the planner/model are narrowed.
+
+Support an explicit =all_tools= compatibility mode that reproduces the old visible-schema behavior for regression/benchmark comparison while preserving normal execution checks.
+
+** Managed conversation integration
+
+Managed turns should compile compiler units from the same current evidence that forms the turn projection, merge them into the normal =context_units= list, and run one pack. The token ledger must therefore contain tool/Skill/MCP/instruction stages beside hot/warm/cold context stages.
+
+The renderer must consume exactly the selected representation values so token accounting and actual provider-visible content cannot drift.
+
+** Model discovery
+
+Implement bounded =prompt_catalog_search= in this slice. It returns sanitized declarative metadata and a structured limit/truncation status.
+
+Expose it to model workflows only through an ordinary trusted tool wrapper or typed planner operation after the host explicitly configures that surface. The compiler module itself should not smuggle a globally privileged =search_tools= tool into every runtime.
+
+Model-authored =needs(...)= should be accepted as an input/recompile event and resolved through the same catalog-search/candidate machinery.
+
+** MCP integration
+
+Provide registration/import helpers over canonical =rlm_mcp_model= terms or already-cached normalized MCP metadata. Do not call transport/lifecycle operations from pure compilation.
+
+An MCP server refresh changes catalog revision/fingerprint. Connection/start/install remains a trusted host runtime concern.
+
+** Explainability
+
+The compiled IR should contain fields equivalent to:
+
+#+begin_src prolog
+compiled_context{
+    input:Input,
+    signals:Signals,
+    candidates:Candidates,
+    selected:Selected,
+    dependencies:Dependencies,
+    rejected:Rejected,
+    reasons:Reasons,
+    discovery_scope:DiscoveryScope,
+    capabilities:Capabilities,
+    instructions:Instructions,
+    skills:Skills,
+    tools:Tools,
+    mcp_servers:MCPServers,
+    mcp_tools:MCPTools,
+    mcp_prompts:MCPPrompts,
+    resources:Resources,
+    token_ledger:Ledger,
+    fingerprint:Fingerprint
+}.
+#+end_src
+
+The exact dict shape may be refined. It must remain ground, provider-neutral, and free of executable callables/transport handles.
+
+* Rejected Alternatives
+
+** Physical tool unregistering as contextual unload
+
+Rejected. It confuses provider attention with runtime lifecycle, makes topic switching mutate trusted state, and creates re-registration races/cache churn.
+
+** A second prompt-compiler token optimizer
+
+Rejected now that =rlm_context_budget= exists. Two solvers could each satisfy their local budget while the final provider request violates the real cap.
+
+** Tools appended after conversation packing
+
+Rejected. It would make the conversation token solver decorative and permit an unbounded tool catalog after a supposedly hard context ceiling.
+
+** All tools visible by default
+
+Rejected for scalable operation. Retained only as explicit compatibility/debug/benchmark mode.
+
+** Search result equals authorization
+
+Rejected. Search reveals sanitized metadata only. Activation and invocation remain later, independently checked operations.
+
+** Model-supplied exact handler/tool binding
+
+Rejected. =needs(...)= expresses semantics, not trusted runtime topology. The host resolves a semantic request to registered candidates.
+
+** Separate discovery routers for local tools and MCP tools
+
+Rejected. Both are compilation units with kind-specific metadata and rendering. Separate routers would duplicate ranking, closure, policy, and explainability.
+
+** Automatic MCP install/start/connect on mention
+
+Rejected. Lifecycle changes are trusted host operations and may be effectful. Descriptive selection cannot manufacture availability.
+
+** Embedding-only routing
+
+Rejected as a correctness or security boundary. Semantic retrieval may become an optional candidate generator later, but deterministic host policy, dependencies, negative evidence, and capability filtering remain authoritative.
+
+* Open Questions
+
+- Whether the first model-facing wrapper should be named =search_tools= or a broader =search_capabilities= once Skills/resources are also searchable.
+- Whether provider-native deferred tool references should land in this slice or remain a renderer optimization after canonical full/compact representations are proven.
+- Whether catalog persistence is needed immediately; a process-local catalog with deterministic rebuild may be sufficient for the first slice because executable registries already have their own lifecycle.
+- How much recent conversation text should feed automatic lexical candidate generation. The first implementation should use bounded current-turn/project/workflow evidence rather than scan lifetime history.
+- Whether a capability-denied unit should ever expose compact discovery metadata by default. The recommended default is yes only when discovery policy explicitly permits it; full executable schema remains filtered.
+- Whether TaskIR integration should occur directly in this slice or as #69 follow-up. Current evidence favors accepting TaskIR-derived signals without making compiled context part of TaskIR's canonical acceptance ownership.
+
+* Acceptance Experiments
+
+** Activation and deactivation
+
+- [ ] phrase evidence activates the expected unit;
+- [ ] verb/object evidence activates the expected unit;
+- [ ] explicit host/user selection dominates heuristic scoring;
+- [ ] explicit negative evidence suppresses ordinary positive lexical evidence;
+- [ ] conflicts and supersession resolve deterministically;
+- [ ] required dependency closure is transitive and explainable;
+- [ ] Turn A activates Git tools, Turn B changes topic and omits them, Turn C returns to Git and reactivates the same registered tools without re-registration.
+
+** Authority separation
+
+- [ ] registered/available/active/authorized are observable as separate states;
+- [ ] an active/discovered unit without required invocation capability cannot execute;
+- [ ] =needs(...)= never widens capabilities or registers a handler;
+- [ ] child compilation cannot widen discovery scope or execution capability set.
+
+** Bounded discovery
+
+- [ ] catalog search obeys configured result limit and hard maximum;
+- [ ] results contain sanitized metadata only;
+- [ ] no handler/preflight/loader/transport/authority continuation appears anywhere in discovery or compiled IR;
+- [ ] a discovered unit does not become automatically active or authorized.
+
+** MCP
+
+- [ ] namespaced MCP tool/prompt/resource metadata can enter the catalog from canonical normalized terms;
+- [ ] MCP descriptions/annotations affect discovery only as evidence;
+- [ ] selection cannot implicitly install/start/connect an MCP server;
+- [ ] catalog refresh changes the material fingerprint without changing compiler APIs.
+
+** Token accounting
+
+- [ ] full tool schemas consume the same provider-visible token budget as conversation/warm/cold context;
+- [ ] dropping an irrelevant tool changes selected tokens and the shared ledger;
+- [ ] compact vs full representation choice is explained and charged using the rendered representation;
+- [ ] required units cannot be silently omitted to fit the cap;
+- [ ] impossible mandatory context fails structurally;
+- [ ] no provider-visible compiler section is appended outside the ledger.
+
+** Recompilation/cache
+
+- [ ] identical material inputs produce the same compiled fingerprint and projection;
+- [ ] new user topic, =needs(...)=, capability change, budget change, or catalog refresh changes the fingerprint when materially relevant;
+- [ ] compilation does not depend on historical mutation of an active-tool list.
+
+** Scale and baseline
+
+For synthetic catalogs of 10, 100, 1,000, and 5,000 units record:
+
+- compile latency;
+- total catalog size;
+- candidate frontier size;
+- selected count;
+- provider-visible schema/context tokens;
+- required-unit recall;
+- irrelevant-unit precision;
+- dependency-resolution failures.
+
+Compare =all_tools= against compiled mode using deterministic fixtures. The compiled path should shrink the candidate and visible sets without losing required units. No LLM call is required for this benchmark.
+
+** Adversarial
+
+- [ ] malicious metadata cannot inject a callable or authority token;
+- [ ] a huge description/query is bounded or rejected;
+- [ ] a retrieval-dominating untrusted description cannot displace mandatory host units;
+- [ ] negative user evidence cannot be undone by lower-priority positive metadata;
+- [ ] a child that learns a parent-only tool name still cannot expose/invoke it outside its narrowed policy.
+
+* Conclusion
+
+RLM-RESEARCH-010 remains the correct general architecture. The managed conversation work changes one important implementation decision: final prompt/tool/context selection must reuse the shared =rlm_context_budget= solver rather than introducing a compiler-local optimizer. Compiler logic narrows and explains the frontier; the context packer owns the single hard provider-visible budget.
+
+The next implementation slice is therefore bounded and coherent: one provider-neutral compilation-unit catalog, deterministic contextual evidence and dependency closure, sanitized bounded catalog search, =needs(...)= recompilation evidence, capability/discovery filtering, multi-representation context units, one shared token ledger, selected-schema integration in =rlm_completion=, managed-conversation integration, explainability, an =all_tools= baseline, and deterministic scale/adversarial tests.
+
+The invariant remains simple even if humans keep inventing more layers around it:
+
+#+begin_example
+large trusted catalog
+       |
+       v
+symbolic candidate/closure/policy compiler
+       |
+       v
+shared context-unit packer + token ledger
+       |
+       v
+bounded provider-visible projection
+       |
+       v
+model request
+       |
+       v
+trusted execution runtime rechecks schema/capability/authority/effects
+#+end_example
+
+Visibility controls attention. It does not manufacture authority.
