@@ -1,6 +1,7 @@
 :- initialization(main, main).
 
 :- use_module('../prolog/rlm').
+:- use_module('../prolog/rlm_skill', []).
 :- use_module('../prolog/rlm_context_budget', []).
 :- use_module('../prolog/rlm_conversation', []).
 :- use_module('../prolog/rlm_conversation_warm', []).
@@ -28,6 +29,7 @@
 
 main(_) :-
     (   rlm:rlm_ready,
+        rlm_skill:rlm_skill_ready,
         rlm_context_budget:rlm_context_budget_ready,
         rlm_conversation:rlm_conversation_ready,
         rlm_conversation_warm:rlm_conversation_warm_ready,
