@@ -29,6 +29,12 @@ settings. An explicit load/reload creates a fresh isolated config generation;
 explicitly reloaded or invalidated by a trusted write. A failed candidate load
 never replaces the last active projected source.
 
+Each executable generation is compiled from the real config file stream under a
+generation-specific synthetic source identifier located in the same directory.
+This avoids SWI's single-module ownership of traditional source files while
+preserving the expected directory context for relative includes/imports. The
+real path remains the canonical AgentProlog source identity.
+
 Repository-local `.agentprolog/config.prolog` is different from the user's XDG
 file: discovery alone is not execution authority. The resolver loads project
 config only when the trusted host marks that explicit structured project
@@ -247,13 +253,19 @@ load_candidate(json, Path, _, null, Patch) :-
     load_json_patch(Path, Patch).
 load_candidate(prolog, Path, Generation, Module, Patch) :-
     fresh_config_module(Generation, Module),
-    catch(load_files(Path,
-                     [ module(Module),
-                       if(true),
-                       silent(true)
-                     ]),
-          Exception,
-          throw(config_fault(prolog_load_failed(Path, Exception)))),
+    synthetic_source_id(Path, Generation, SourceId),
+    setup_call_cleanup(
+        open(Path, read, Stream, [encoding(utf8)]),
+        catch(load_files(SourceId,
+                         [ stream(Stream),
+                           module(Module),
+                           check_script(false),
+                           derived_from(Path),
+                           silent(true)
+                         ]),
+              Exception,
+              throw(config_fault(prolog_load_failed(Path, Exception)))),
+        close(Stream)),
     collect_prolog_patch(Module, Path, Patch).
 
 fresh_config_module(Generation, Module) :-
@@ -261,6 +273,15 @@ fresh_config_module(Generation, Module) :-
     format(atom(Module),
            'agentprolog_config_~d_~w',
            [Generation, UUID]).
+
+synthetic_source_id(Path, Generation, SourceId) :-
+    file_directory_name(Path, Directory),
+    file_base_name(Path, Base),
+    uuid(UUID, [version(4)]),
+    format(atom(SourceName),
+           '.~w.agentprolog-generation-~d-~w',
+           [Base, Generation, UUID]),
+    directory_file_path(Directory, SourceName, SourceId).
 
 load_json_patch(Path, Patch) :-
     setup_call_cleanup(open(Path, read, Stream, [encoding(utf8)]),
