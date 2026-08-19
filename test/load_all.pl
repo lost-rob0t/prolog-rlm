@@ -27,6 +27,8 @@
 :- use_module('../agentProlog/prolog/prolog_agent_ui_fixture', []).
 :- use_module('../agentProlog/deepseek-harness/prolog/deepseek_prolog_settings', []).
 :- use_module('../agentProlog/deepseek-harness/prolog/deepseek_prolog_bridge', []).
+:- use_module('../agentProlog/deepseek-harness/prolog/deepseek_prolog_route_store', []).
+:- use_module('../agentProlog/deepseek-harness/prolog/deepseek_prolog_host_bridge', []).
 
 main(_) :-
     (   rlm:rlm_ready,
@@ -44,7 +46,9 @@ main(_) :-
         prolog_agent_ui_facade:ui_facade_ready,
         prolog_agent_ui_fixture:ui_fixture_ready,
         deepseek_prolog_settings:deepseek_settings_ready,
-        deepseek_prolog_bridge:deepseek_bridge_ready
+        deepseek_prolog_bridge:deepseek_bridge_ready,
+        deepseek_prolog_route_store:deepseek_route_store_ready,
+        deepseek_prolog_host_bridge:deepseek_host_bridge_ready
     ->  halt(0)
     ;   halt(1)
     ).

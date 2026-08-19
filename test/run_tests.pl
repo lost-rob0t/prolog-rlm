@@ -65,6 +65,8 @@
 :- consult(rlm_spec_workflow_test).
 :- consult(prolog_agent_ui_v1_test).
 :- consult(deepseek_harness_bridge_test).
+:- consult(deepseek_harness_route_store_test).
+:- consult(deepseek_harness_host_bridge_test).
 :- consult(deepseek_harness_profile_test).
 
 main(_) :-

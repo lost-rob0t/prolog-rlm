@@ -1,17 +1,18 @@
 :- initialization(main, main).
 
 :- use_module(library(http/json)).
-:- use_module('../prolog/deepseek_prolog_bridge').
+:- use_module('../prolog/deepseek_prolog_host_bridge').
 :- use_module('../prolog/deepseek_prolog_settings').
 
 main(Argv) :-
     settings_path(Argv, SettingsPath),
-    deepseek_prolog_bridge:deepseek_bridge_open(SettingsPath, OpenOutcome),
+    deepseek_prolog_host_bridge:deepseek_host_bridge_open(SettingsPath,
+                                                         OpenOutcome),
     (   OpenOutcome = ok(_)
     ->  setup_call_cleanup(
             true,
             request_loop,
-            deepseek_prolog_bridge:deepseek_bridge_close(_)),
+            deepseek_prolog_host_bridge:deepseek_host_bridge_close(_)),
         halt(0)
     ;   OpenOutcome = error(Error),
         write_wire(_{protocol:"prolog_rlm_deepseek_bridge_v1",
@@ -50,7 +51,8 @@ request_loop :-
 handle_line(Line) :-
     catch(( atom_string(Atom, Line),
             atom_json_dict(Atom, Request, []),
-            deepseek_prolog_bridge:deepseek_bridge_handle(Request, Response)
+            deepseek_prolog_host_bridge:deepseek_host_bridge_handle(Request,
+                                                                   Response)
           ),
           Exception,
           parse_error_response(Exception, Response)),
