@@ -26,6 +26,7 @@ Each record should contain:
 - `RLM-RESEARCH-008-adaptive-recursion.org` — depth/cost evidence and adaptive recursion policy.
 - `RLM-RESEARCH-009-durable-artifact-context.org` — fresh reasoning roots, blackboards and durable task state.
 - `RLM-RESEARCH-010-symbolic-prompt-compiler.org` — progressive disclosure, symbolic capability routing, dependency closure, bounded context compilation, and explainable selection.
+- `RLM-RESEARCH-011-managed-context-tool-discovery.org` — integration of the symbolic compiler with managed rolling context, the shared token solver, contextual activation/deactivation, bounded model discovery, MCP metadata, and child-agent scope narrowing.
 
 ## Rule
 
