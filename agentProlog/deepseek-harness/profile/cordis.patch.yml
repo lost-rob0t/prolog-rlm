@@ -1,13 +1,9 @@
 # PrologAgent semantic-owner fence for DeepSeek Harness.
 #
-# Apply after dsh-base and the selected surface bundle.  These rows are
-# intentionally disabled before the Prolog-backed Cordis Agent factory is
-# mounted: a missing/failed Prolog provider must fail agent creation instead of
-# silently falling back to the stock DeepSeek Harness loop or history rewriting.
-#
-# This is an overlay, not a complete runnable profile yet.  The next slice adds
-# the local Prolog Agent factory row and projects prolog_agent_ui_v1 events into
-# the Harness session/UI vocabulary.
+# Apply after dsh-base and the selected surface bundle. The stock agent loop
+# and any history rewriting remain disabled. The replacement factory is an
+# out-of-tree package whose driver crosses the NDJSON boundary into Prolog-RLM.
+# If that package or bridge is missing, profile boot/agent creation fails closed.
 
 - id: agent-loop
   disabled: true
@@ -20,3 +16,13 @@
 
 - id: tool-result-pruner
   disabled: true
+
+# The stock first-prompt title generator performs an auxiliary DSH-owned LLM
+# call after a user message. Keep it off until title generation is routed
+# through a Prolog-owned semantic command.
+- id: session-title-llm
+  disabled: true
+
+- id: prolog-agent-factory
+  name: '@prolog-rlm/dsh-agent-factory'
+  config: {}

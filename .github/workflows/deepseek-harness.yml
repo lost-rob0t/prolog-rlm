@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   host-bridge:
-    name: Host transport and real SWI bridge
+    name: Host transport, factory, and real SWI bridge
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -23,8 +23,16 @@ jobs:
         with:
           node-version: 22.19.0
 
-      - name: Test host NDJSON transport
-        run: node --test agentProlog/deepseek-harness/host/bridge-client.test.mjs
+      - name: Test host transport and Prolog-backed factory
+        run: node --test agentProlog/deepseek-harness/host/*.test.mjs
+
+      - name: Install pinned Harness adapter dependencies
+        working-directory: agentProlog/deepseek-harness/profile
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Verify pinned Harness runtime imports
+        working-directory: agentProlog/deepseek-harness/profile
+        run: node -e "Promise.all([import('@deepseek-ai/dsh-agent'), import('@deepseek-ai/dsh-scope')])"
 
       - name: Install SWI-Prolog
         run: |
