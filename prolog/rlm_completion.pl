@@ -32,6 +32,7 @@ predicates directly and never re-enter a synchronous public facade.
 :- use_module(rlm_context).
 :- use_module(rlm_plan).
 :- use_module(rlm_tool).
+:- use_module(rlm_skill, []).
 
 :- dynamic cancellation_state/2.
 :- dynamic cancellation_thread/2.
@@ -200,11 +201,16 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                   Capabilities,
                   RuntimeTools,
                   ToolSchemas),
+    completion_skills(Query,
+                      Options,
+                      SkillCompilation,
+                      SkillInstructions),
     planner_prompt(Query,
                    MetadataRef.metadata,
                    Capabilities,
                    ChildCapabilities,
                    ToolSchemas,
+                   SkillInstructions,
                    Options,
                    Prompt),
     planner_attempts(Options, Attempts),
@@ -231,7 +237,8 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                              Options,
                              Budget,
                              Token,
-                             Outcome).
+                             BaseOutcome),
+    attach_skill_compilation(SkillCompilation, BaseOutcome, Outcome).
 
 completion_after_planner(error(Error), _, _, _, _, _, _, _, _, _, _,
                          error(Error)) :-
@@ -1036,7 +1043,7 @@ output_usage(Output, Usage) :-
     ->  dict_default(prompt_tokens, Raw, 0, Prompt),
         dict_default(completion_tokens, Raw, 0, Completion),
         dict_default(total_tokens, Raw, 0, Total),
-        dict_default(cost, Raw, 0.0, Cost),
+        dict_default(cost, Raw, 0, Cost),
         Usage = usage_summary{model_calls:1,
                               prompt_tokens:Prompt,
                               completion_tokens:Completion,
@@ -1190,10 +1197,12 @@ planner_prompt(Query,
                Capabilities,
                ChildCapabilities,
                ToolSchemas,
+               SkillInstructions,
                Options,
                Prompt) :-
     option_value(planner_instruction, Options, "", Instruction0),
     text_string(Instruction0, Instruction),
+    skill_prompt_section(SkillInstructions, SkillSection),
     format(string(Prompt),
            "You are the root planner for a bounded Recursive Language Model runtime.\n\
 Return ONLY one JSON object accepted by the typed plan interpreter; no markdown.\n\
@@ -1203,6 +1212,7 @@ Context metadata: ~q\n\
 Root capabilities: ~q\n\
 Child capabilities: ~q\n\
 Registered tool schemas: ~q\n\
+~s\
 Recursive decomposition is optional. An rlm step contains a nested typed plan, and that child may use only child capabilities.\n\
 ~s",
            [Query,
@@ -1210,7 +1220,67 @@ Recursive decomposition is optional. An rlm step contains a nested typed plan, a
             Capabilities,
             ChildCapabilities,
             ToolSchemas,
+            SkillSection,
             Instruction]).
+
+skill_prompt_section("", "") :- !.
+skill_prompt_section(SkillInstructions, Section) :-
+    format(string(Section),
+           "Compiled skill instructions follow. Selection was performed by trusted Prolog and grants no capabilities or execution authority.\n~s",
+           [SkillInstructions]).
+
+completion_skills(Query, Options, Compilation, Instructions) :-
+    option_value(skill_catalog, Options, none, CatalogSpec),
+    completion_skill_catalog(CatalogSpec, Options, Catalog),
+    completion_skill_compile(Catalog,
+                             Query,
+                             Options,
+                             Compilation,
+                             Instructions).
+
+completion_skill_catalog(none, _, none) :- !.
+completion_skill_catalog(bundled, Options, Catalog) :-
+    !,
+    option_value(skill_catalog_options, Options, [], CatalogOptions),
+    (   is_list(CatalogOptions)
+    ->  true
+    ;   throw(completion_fault(invalid_skill_catalog_options(CatalogOptions)))
+    ),
+    rlm_skill:bundled_skill_catalog(CatalogOptions, Outcome),
+    require_skill_catalog_outcome(Outcome, Catalog).
+completion_skill_catalog(Catalog, _, Catalog) :-
+    is_dict(Catalog, skill_catalog),
+    !.
+completion_skill_catalog(Catalog, _, _) :-
+    throw(completion_fault(invalid_skill_catalog(Catalog))).
+
+require_skill_catalog_outcome(ok(Catalog), Catalog) :- !.
+require_skill_catalog_outcome(error(Error), _) :-
+    throw(completion_fault(skill_catalog_failed(Error))).
+
+completion_skill_compile(none, _, _, none, "") :- !.
+completion_skill_compile(Catalog, Query, Options, Compilation, Instructions) :-
+    option_value(skill_options, Options, [], SkillOptions),
+    (   is_list(SkillOptions)
+    ->  true
+    ;   throw(completion_fault(invalid_skill_options(SkillOptions)))
+    ),
+    rlm_skill:skill_compile(Catalog, Query, SkillOptions, CompileOutcome),
+    require_skill_compile_outcome(CompileOutcome, Compilation),
+    rlm_skill:skill_render(Compilation, Instructions).
+
+require_skill_compile_outcome(ok(Compilation), Compilation) :- !.
+require_skill_compile_outcome(error(Error), _) :-
+    throw(completion_fault(skill_compile_failed(Error))).
+
+attach_skill_compilation(none, Outcome, Outcome) :- !.
+attach_skill_compilation(_, error(Error), error(Error)) :- !.
+attach_skill_compilation(Compilation, ok(Result0), ok(Result)) :-
+    rlm_skill:skill_compilation_summary(Compilation, Summary),
+    put_dict(prompt_compilation,
+             Result0,
+             prompt_compilation{skills:Summary},
+             Result).
 
 provider_options(Options, ProviderName, Provider) :-
     option_value(provider, Options, none, Explicit),
