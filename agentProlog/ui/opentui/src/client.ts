@@ -66,11 +66,13 @@ export class ProtocolClient {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    this.failAll(new Error("transport_closed"))
     await this.transport.close()
     await this.readLoop
   }
 
   private async request(frame: CommandFrame | ReturnType<typeof negotiateFrame>): Promise<ResultFrame> {
+    if (this.closed) throw new Error("client_closed")
     const promise = new Promise<ResultFrame>((resolve, reject) => {
       this.pending.set(frame.request_id, { resolve, reject })
     })
