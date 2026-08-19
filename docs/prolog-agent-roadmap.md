@@ -33,6 +33,7 @@ Still missing for a useful coding agent:
 - remaining canonical #57 effect-boundary adoption after the merged #86 tool-path slice, especially provider, MCP, and process/lifecycle paths tracked by #79;
 - a standard project tool pack with search, write/edit, git, and test/process tools;
 - durable project-scoped settings and remembered bounded approvals;
+- completion of the programmable AgentProlog configuration track in #126-#131: executable XDG/project config, hooks, config-defined tools, detectors, and frontend integration;
 - the versioned CST/query/semantic/freshness layers from #96-#99 that turn the landed #94/#95 parser and registry substrate into the actual project parser/indexer and canonical project KB;
 - TaskIR/context/result-acceptance integration around the Frozen Spec substrate from #56 and #68-#71;
 - a headless coding loop that wires project inspection, edits, re-indexing, verification, and repair to those shared runtime concepts;
@@ -66,6 +67,8 @@ coding workflow + external tool pack + project parser/indexer
 ```
 
 Core must not gain ambient repository write access just because `PrologAgent` needs it. Coding tools remain separately loadable and capability-gated. A frontend never becomes a second execution engine. The project parser/indexer also remains a semantic observation producer, not a hidden executor.
+
+Trusted AgentProlog `config.prolog` is different from a model tool: it is explicitly trusted host extension code, analogous to an Emacs init file. The XDG user config is trusted by ownership. Repository-local executable config is never trusted merely because it exists; it requires an explicit project trust decision bound to structured project identity before execution.
 
 ## Phase 0: finish the write-safety substrate
 
@@ -123,7 +126,7 @@ git_diff()
 
 Every step remains a normal traced tool operation. File mutation does not bypass authority simply because it came from a coding workflow.
 
-## Phase 2: project state, project knowledge, and instructions
+## Phase 2: project state, programmable configuration, project knowledge, and instructions
 
 Land the scoped-state work in #74 through #77 far enough for a coding frontend to remember project-local operator choices without inventing product-specific persistence in the TUI.
 
@@ -135,7 +138,26 @@ Land the scoped-state work in #74 through #77 far enough for a coding frontend t
 - explicitly granted bounded project permissions;
 - UI preferences that are safe to persist.
 
-It must not persist `allow_session`, silently promote permissions to `dangerous`, or auto-execute arbitrary project Prolog files.
+It must not persist `allow_session` or silently promote permissions to `dangerous`.
+
+### Programmable AgentProlog configuration
+
+The downstream configuration track is #126-#131. It has one Prolog-owned configuration runtime with two front doors:
+
+```text
+$XDG_CONFIG_HOME/prolog-rlm/agentProlog/config.prolog
+$XDG_CONFIG_HOME/prolog-rlm/agentProlog/config.json
+```
+
+Prolog is primary. The XDG `config.prolog` is trusted executable host code and may define normal predicates, helper rules, hooks, tools, detectors, and other registered extensions. JSON is an input source consumed by the same runtime rather than a second settings authority.
+
+Project configuration uses the AgentProlog downstream convention under `.agentprolog/`. Discovery does not imply execution: project `config.prolog` becomes executable only after an explicit trust decision for the structured project identity. Once trusted it is host extension code, not sandboxed declarative data.
+
+This trust decision must stay separate from runtime operation authority. A tool registered by config still crosses the canonical tool schema/capability/authority/effect path when invoked. Conversely, arbitrary trusted config code itself has the privileges of the AgentProlog process; documentation must not promise a sandbox that does not exist.
+
+AgentProlog must never silently rewrite executable configuration. Frontend/model requests to edit config use the normal authority-mediated file mutation path. AgentProlog-created or rewritten config files use mode `0600`, and invalid edits should leave the prior valid file intact.
+
+#127 establishes executable XDG config, JSON loading, project trust/discovery, config-generation provenance, and private-file writes. #128 adds typed executable hook/extension registration, #129 config-defined tools, #130 error/loop/non-progress detectors, and #131 migrates the DeepSeek Harness frontend from its private settings authority to these canonical APIs.
 
 Project instructions should enter the coding context with provenance. Repository instructions, current source/tests, operator requirements, and model inference are not the same kind of evidence.
 
@@ -266,6 +288,9 @@ Before calling the first release useful, cover these behaviors end to end:
 - repair may change Plan but cannot weaken Frozen Spec acceptance requirements;
 - static project observations and runtime evidence from incompatible revisions cannot silently pass as one coherent state;
 - project A permissions never leak into project B;
+- untrusted repository config is discovered without being executed;
+- trusted project config is bound to the exact structured project identity that was approved;
+- AgentProlog-mediated config writes are permissioned and leave files at mode `0600`;
 - reconnecting a frontend obtains canonical state instead of guessing from partial local history;
 - unknown tools remain renderable through a generic safe representation;
 - unsupported required protocol extensions fail closed;
@@ -276,7 +301,7 @@ Before calling the first release useful, cover these behaviors end to end:
 
 `PrologAgent v0.1` is reached when a user can open a repository, give a coding task, watch the model inspect and edit files, approve mutations, run tests, review the final diff, and receive a structured completion result without granting ambient shell/filesystem authority.
 
-The first release does not need IDE parity, a plugin marketplace, background daemons, arbitrary shell access, every OpenCode feature, or all researched frontend implementations. It needs a trustworthy inspect/edit/re-index/verify loop, a stable frontend contract, and at least one good terminal client.
+The first release does not need IDE parity, a plugin marketplace, background daemons, arbitrary shell access, every OpenCode feature, or all researched frontend implementations. It needs a trustworthy inspect/edit/re-index/verify loop, a stable frontend contract, programmable operator-owned configuration, and at least one good terminal client.
 
 ## Dependency map
 
@@ -290,8 +315,10 @@ Current core and product issues that materially affect the roadmap:
 - #69: TaskIR should reference the exact Frozen Spec and carry task/execution metadata rather than own a competing acceptance contract.
 - #70: project context should incorporate canonical project-KB snapshot references and provenance; #94 supplies direct Tree-sitter parser mechanics and #95 supplies Project/File/Language/grammar selection, while #96-#99 still need the versioned CST, structural-query, semantic, and freshness layers.
 - #71: workflow execution/resume must remain bound to the exact Frozen Spec; the Spec-bound graph foundation now demonstrates that invariant, while full TaskIR/continuation integration remains open.
-- #74-#77: durable project state, instructions, and bounded persistent authorization.
+- #74-#77: durable scoped state, project identity, declarative/untrusted project policy, and bounded persistent authorization. #77 remains the safe core provider boundary; explicit AgentProlog executable project trust is a downstream layer above it.
 - #93/#96-#99: #94/#95 are the direct parser and declarative source-registry substrate; the remaining child issues are required before the canonical project parser/indexer and project KB are complete.
 - #109: the renderer-independent `prolog_agent_ui_v1` protocol/replay foundation is landed; the next renderer slice is the small OpenTUI + SolidJS reference client against its deterministic fixture.
+- #126-#131: programmable AgentProlog configuration, typed hooks, config-defined tools, error/loop detectors, and frontend config editing. #127 is the first executable-config substrate slice.
+- #124/#125: parallel DeepSeek Harness frontend path; it remains a client of Prolog-RLM semantics and will consume the canonical AgentProlog config runtime through #131.
 
 Do not wait for every P1 research idea before starting `agentProlog/`. Build against stable public contracts, keep optional integrations optional, and let the first usable coding loop drive the remaining abstractions.
