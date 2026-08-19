@@ -1,0 +1,236 @@
+#+TITLE: RLM-RESEARCH-022 Common Lisp terminal UI for PrologAgent
+#+DATE: 2026-08-18
+#+OPTIONS: toc:3 num:nil
+
+* Research question
+
+Can a Common Lisp frontend provide a full OpenCode-style PrologAgent TUI without embedding product logic into =prolog-rlm=, and which CL terminal toolkit gives the best balance of responsiveness, widgets, composability, and maintenance risk?
+
+* Primary sources
+
+Retrieved 2026-08-18.
+
+- =atgreen/cl-tuition= =master=: README and architecture description.
+- =nallen05/old-norse= =main=: README and design pillars.
+- =doby162/croatoan= =master=: README.
+- =RLM-RESEARCH-020= for the cross-frontend behavioral contract.
+
+* Findings
+
+** Tuition is the strongest high-level CL candidate
+
+=cl-tuition= follows an Elm/Bubble Tea style Model-View-Update architecture using CLOS:
+
+- a CLOS model holds application state;
+- typed message classes represent keyboard, mouse, timer, and custom events;
+- generic update methods transform state;
+- a pure view renders the model;
+- commands run asynchronous work and return messages to the UI loop.
+
+This is almost exactly the architecture we need for a frontend consuming PrologAgent events. Runtime events become Tuition messages; the UI model is a projection of backend truth plus frontend-local presentation state.
+
+Tuition also already provides many expensive-to-reimplement pieces:
+
+- text input and textarea;
+- viewport/scrolling;
+- lists, tables, pagination and filtering;
+- spinners/progress/timers;
+- keyboard and mouse input with modifiers;
+- scroll coalescing and batched input;
+- borders, layout, alignment and wrapping;
+- alternate-screen/raw-terminal lifecycle;
+- zones for mouse-hit regions;
+- safe suspension/restoration around external editor execution.
+
+That does not prove production maturity, but it significantly lowers the amount of terminal mechanics PrologAgent would own.
+
+** Old Norse is an attractive lower-level option
+
+Old Norse provides an SBCL-oriented stack:
+
+- Bifrost for low-level terminal control;
+- Skald for buffered/diff-based grid rendering;
+- Flokkr for timing and input events;
+- Meadhorn for out-of-band debugging.
+
+Its design explicitly targets low latency, 60fps-style redraws, immediate input response, and whole-screen rendering with efficient diff updates.
+
+The tradeoff is equally explicit: it is a graphics/event toolkit, not a rich widget library. A PrologAgent client would need to own textarea editing, viewport semantics, selection, dialog focus, diff widgets, wrapping, command palette behavior, and most reusable controls.
+
+Old Norse is therefore a strong fallback if Tuition's abstraction or performance fails, and a useful source of performance techniques, but not the default v0 implementation.
+
+** Croatoan is not the preferred path
+
+Croatoan provides a Lispy/CLOS wrapper over ncurses, but its own README describes the API as early and unstable and documents an old ncurses/Ubuntu/SBCL support baseline. It is lower-level than Tuition and carries ncurses ABI concerns without a compensating PrologAgent-specific advantage.
+
+It should not be the first implementation target.
+
+* Proposed architecture
+
+Split the CL frontend into two ASDF systems even if they initially live in one repository:
+
+#+begin_example
+prolog-agent-client/
+  protocol.lisp
+  transport.lisp
+  events.lisp
+  commands.lisp
+  session.lisp
+
+prolog-agent-tui/
+  package.lisp
+  model.lisp
+  update.lisp
+  view.lisp
+  keymap.lisp
+  theme.lisp
+  components/
+  dialogs/
+#+end_example
+
+=prolog-agent-client= must not depend on Tuition. It should be usable from a REPL, Lem, another CL GUI, or tests.
+
+=prolog-agent-tui= consumes the client and maps protocol messages into Tuition messages.
+
+* Client object model
+
+Represent wire concepts as closed CLOS classes or structs rather than passing arbitrary decoded alists throughout the UI:
+
+#+begin_src lisp
+(defclass session-event ()
+  ((session-id :initarg :session-id :reader session-id)
+   (seq        :initarg :seq        :reader event-seq)))
+
+(defclass tool-started-event (session-event)
+  ((call-id :initarg :call-id :reader call-id)
+   (name    :initarg :name    :reader tool-name)
+   (input   :initarg :input   :reader tool-input)))
+#+end_src
+
+Unknown event kinds should be preserved as opaque extension events rather than crashing the decoder.
+
+Commands should return request references/futures at the client layer, not block the UI loop.
+
+* Concurrency model
+
+The terminal event loop must own screen mutation. Network/process I/O should happen outside it and enqueue typed messages back to Tuition.
+
+Conceptually:
+
+#+begin_example
+Prolog transport reader
+      |
+      v
+protocol decode -> CL event object
+      |
+      v
+Tuition async command/message queue
+      |
+      v
+update(model,event)
+      |
+      v
+view(model)
+#+end_example
+
+Do not mutate the TUI model directly from a transport thread. This preserves a single serialized state transition path and makes replay tests possible.
+
+The first transport can use a child =swipl= process or local socket. The exact CL socket/thread library is an implementation choice behind =prolog-agent-client=, not part of the UI contract.
+
+* Layout
+
+Tuition's pure view model is well suited to the layout from =RLM-RESEARCH-020=.
+
+** Wide
+
+Use a horizontal composition of transcript area and a fixed-ish auxiliary sidebar, with a bottom composer/approval dock and one-line status footer.
+
+** Medium/narrow
+
+Switch the auxiliary area into an overlay or full-width route. At very narrow widths stack approval actions vertically. Keep the transcript viewport and composer as independent components so focus remains predictable.
+
+* Components to implement
+
+Even with Tuition, PrologAgent needs app-specific components:
+
+- transcript viewport with message anchors;
+- incremental assistant message block;
+- compact/expanded tool card;
+- generic unknown-tool card;
+- syntax-aware or at least clearly formatted diff viewer;
+- permission prompt;
+- operator question prompt;
+- sidebar sections for changed files, context, subagents/todo, verification and usage;
+- command palette/which-key view;
+- status line;
+- model/session selector.
+
+Reuse Tuition's textarea, viewport, list/table, style, border, mouse-zone, and execution-suspension facilities rather than inventing replacements.
+
+* Diff strategy
+
+Tuition does not make the same rich-diff guarantee as OpenTUI. Treat diff rendering as a focused spike.
+
+Minimum acceptable v0 diff:
+
+- unified diff;
+- line numbers or clear hunk positions;
+- distinct added/removed/context styles;
+- wrapping or horizontal scrolling;
+- file path and operation state;
+- bounded viewport;
+- no corruption from ANSI width accounting.
+
+Side-by-side diff can follow if the terminal is wide enough and the implementation remains legible.
+
+Syntax highlighting is presentation-only. Approval identity remains the normalized Prolog operation/ticket.
+
+* Common Lisp-specific advantages
+
+- Interactive development in a live image is excellent for UI iteration.
+- CLOS generic dispatch fits typed frontend events cleanly.
+- A reusable CL client can be shared with the Lem integration.
+- Conditions/restarts can make frontend transport/reconnect failures inspectable without converting them into runtime authorization semantics.
+- CL can eventually host a richer local cache or plugin presentation layer without changing the Prolog backend.
+
+* Common Lisp-specific risks
+
+- Terminal UI ecosystem maturity is lower than JavaScript's current OpenTUI/Ink ecosystem.
+- Unicode display width, grapheme handling, clipboard conventions, and terminal quirks need explicit testing.
+- CL deployment is heavier if users do not already run SBCL.
+- A live Lisp image tempts developers to put backend/coding policy into the frontend because it is convenient. Resist that. The CL process is still only a client.
+- Tuition is promising but newer than long-established ncurses bindings, so pin a known revision and test actual terminals.
+
+* Rejected alternatives
+
+- Build directly on ncurses/Croatoan first. Too much low-level lifecycle/layout work for no product advantage.
+- Make Old Norse the default because it is fast. Performance is useful, but rebuilding a text editor widget and dialog system is not free.
+- Run SWI-Prolog through arbitrary shell strings from the CL UI. The client must use a framed protocol and explicit commands.
+- Share mutable backend state through FFI. A process/socket boundary is easier to reason about and keeps the UI replaceable.
+
+* Acceptance experiment
+
+Implement a disposable Tuition spike using the deterministic =prolog_agent_ui_v1= event fixture.
+
+It must prove:
+
+1. transcript + textarea composer + status line;
+2. wide sidebar and narrow overlay modes;
+3. 10,000 streamed text deltas while input remains responsive;
+4. scrollback and message jumping;
+5. known and unknown tool cards;
+6. unified edit diff inside a scrollable viewport;
+7. permission choice and optional rejection guidance;
+8. asynchronous transport event injection without cross-thread screen mutation;
+9. external editor suspend/resume without terminal corruption;
+10. clean terminal restoration on normal exit, error and interrupt.
+
+Repeat under at least Linux terminal emulators and tmux. If practical, include SSH because CL TUIs are unusually attractive for remote use.
+
+* Recommendation
+
+Use =cl-tuition= for the first Common Lisp standalone PrologAgent UI spike.
+
+Keep Old Norse as a performance-oriented alternative if the spike reveals redraw, input-latency, or rendering limitations that cannot be fixed cleanly. Do not use Croatoan as the initial product layer.
+
+More importantly, build =prolog-agent-client= as an independent CL library. That client should later be reused by Lem so the standalone CL TUI and the Common Lisp editor integration do not invent two transports and two event semantics.
