@@ -199,6 +199,7 @@ bridge_command("session/stats", Payload, Result) :-
 bridge_command("session/turn", Payload, Result) :-
     !,
     prepare_turn(Payload, Conversation, Content, TurnOptions, Route),
+    ensure_session_not_running(Conversation.id),
     rlm_conversation:conversation_turn(Conversation,
                                        message(user, Content),
                                        TurnOptions,
@@ -492,7 +493,7 @@ content_text(Content, Text) :-
                                 max_depth(20)
                               ])).
 
-wire_safe(Value, Value) :-
+wire_safe(Value, "<unbound>") :-
     var(Value),
     !.
 wire_safe(Value, Value) :-

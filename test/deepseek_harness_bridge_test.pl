@@ -188,6 +188,30 @@ test(async_run_blocks_overlapping_session_turns_without_model_call,
     retractall(deepseek_prolog_bridge:bridge_run(test_busy_run,
                                                  _, _, _, _)).
 
+test(async_run_blocks_overlapping_blocking_turn_without_model_call,
+     [ setup(memory_bridge_with_session(SettingsPath, 'busy-sync-session')),
+       cleanup(close_memory_bridge(SettingsPath))
+     ]) :-
+    rlm_async_submit(slow_bridge_test_task, Future),
+    assertz(deepseek_prolog_bridge:bridge_run(test_busy_sync_run,
+                                              'busy-sync-session',
+                                              Future,
+                                              _{provider:"test",
+                                                model:"test",
+                                                history_mode:"lossless_rlm",
+                                                compaction:false},
+                                              1.0)),
+    Turn = _{request_id:"busy-sync-turn",
+             command:"session/turn",
+             payload:_{session_id:"busy-sync-session",
+                       content:"must not reach a provider"}},
+    deepseek_bridge_handle(Turn, TurnResponse),
+    assertion(TurnResponse.ok == false),
+    rlm_future_cancel(Future, _),
+    rlm_future_destroy(Future),
+    retractall(deepseek_prolog_bridge:bridge_run(test_busy_sync_run,
+                                                 _, _, _, _)).
+
 test(bridge_close_cancels_and_destroys_owned_runs,
      [ setup(memory_bridge(SettingsPath)),
        cleanup(close_memory_bridge(SettingsPath))
@@ -204,6 +228,10 @@ test(bridge_close_cancels_and_destroys_owned_runs,
                                                     _, _, _, _)),
     catch(rlm_future_status(Future, _), Error, true),
     assertion(nonvar(Error)).
+
+test(wire_safe_never_leaks_unbound_json_values) :-
+    deepseek_prolog_bridge:wire_safe(_, Safe),
+    assertion(Safe == "<unbound>").
 
 test(bridge_settings_update_persists,
      [ setup(memory_bridge(SettingsPath)),
