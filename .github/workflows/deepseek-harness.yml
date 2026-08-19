@@ -46,7 +46,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected='99f6f02fecdb7dff40c3fbc9470f5907c29f74ca'
+          expected='141eb6fef83422698aef7a981029e843e8161534'
           actual="$(git ls-tree HEAD agentProlog/deepseek-harness/upstream | awk '{print $3}')"
           test "$actual" = "$expected"
 
