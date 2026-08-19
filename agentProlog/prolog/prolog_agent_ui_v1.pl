@@ -207,7 +207,10 @@ validate_kind("result", Frame) :- !,
     require_id(Frame, session_id, _),
     require_id(Frame, request_id, _),
     require_string(Frame, status, Status),
-    memberchk(Status, ["ok","rejected"]),
+    (   memberchk(Status, ["ok","rejected"])
+    ->  true
+    ;   throw(ui_fault(invalid_result_status, _{status:Status}))
+    ),
     require_dict(Frame, payload, _).
 validate_kind("error", Frame) :- !,
     require_id(Frame, session_id, _),
@@ -251,8 +254,8 @@ validate_snapshot_bound(State) :-
     bounded_lists(State),
     with_output_to(string(Json),
                    json_write_dict(current_output, State, [width(0)])),
-    string_codes(Json, Codes),
-    length(Codes, Bytes),
+    string_bytes(Json, WireBytes, utf8),
+    length(WireBytes, Bytes),
     ui_v1_snapshot_max_bytes(Max),
     (   Bytes =< Max
     ->  true
@@ -352,12 +355,20 @@ ui_v1_apply_event(View0, Frame, Outcome) :-
     ).
 
 ui_v1_replay(Snapshot, Events, Outcome) :-
-    ui_v1_initial_view(Snapshot.session_id, Empty),
-    ui_v1_apply_snapshot(Empty, Snapshot, SnapshotOutcome),
-    (   SnapshotOutcome = error(Error)
+    ui_v1_validate_frame(Snapshot, Validation),
+    (   Validation = error(Error)
     ->  Outcome = error(Error)
-    ;   SnapshotOutcome = ok(View0),
-        replay_events(Events, View0, Outcome)
+    ;   Snapshot.kind \== "snapshot"
+    ->  Outcome = error(ui_error{code:"expected_snapshot",
+                                 message:"Expected snapshot frame",
+                                 details:_{kind:Snapshot.kind}})
+    ;   ui_v1_initial_view(Snapshot.session_id, Empty),
+        ui_v1_apply_snapshot(Empty, Snapshot, SnapshotOutcome),
+        (   SnapshotOutcome = error(Error)
+        ->  Outcome = error(Error)
+        ;   SnapshotOutcome = ok(View0),
+            replay_events(Events, View0, Outcome)
+        )
     ).
 
 replay_events([], View, ok(View)).
@@ -435,11 +446,13 @@ reduce_known_or_extension("tool_started", Payload, _, View0, View) :- !,
     put_dict(tools, View0, Tools, View).
 reduce_known_or_extension("tool_output", Payload, _, View0, View) :- !,
     required_payload_id(Payload, tool_id, ToolId),
-    update_item_fields(ToolId, _{output:Payload}, View0.tools, Tools),
+    require_payload_field(Payload, output, Output),
+    update_item_fields(ToolId, _{output:Output}, View0.tools, Tools),
     put_dict(tools, View0, Tools, View).
 reduce_known_or_extension("tool_finished", Payload, _, View0, View) :- !,
     required_payload_id(Payload, tool_id, ToolId),
-    update_item_fields(ToolId, _{status:"finished", outcome:Payload},
+    require_payload_field(Payload, outcome, Outcome),
+    update_item_fields(ToolId, _{status:"finished", outcome:Outcome},
                        View0.tools, Tools),
     put_dict(tools, View0, Tools, View).
 reduce_known_or_extension("approval_required", Payload, _, View0, View) :- !,
@@ -484,7 +497,8 @@ reduce_known_or_extension("effect_indeterminate", Payload, _, View0, View) :- !,
     append_bounded(View0.indeterminate_effects, Payload, Effects),
     put_dict(indeterminate_effects, View0, Effects, View).
 reduce_known_or_extension("run_finished", Payload, _, View0, View) :- !,
-    put_dict(_{status:"finished", run:Payload}, View0, View).
+    merge_run_finish(View0.run, Payload, Run),
+    put_dict(_{status:"finished", run:Run}, View0, View).
 reduce_known_or_extension(_Unknown, Payload, Frame, View0, View) :-
     Extension = Frame.extension,
     Record = _{event_type:Frame.event_type,
@@ -492,6 +506,12 @@ reduce_known_or_extension(_Unknown, Payload, Frame, View0, View) :-
                payload:Payload},
     append_bounded(View0.extensions, Record, Extensions),
     put_dict(extensions, View0, Extensions, View).
+
+merge_run_finish(Run0, Payload, Run) :-
+    (   is_dict(Run0)
+    ->  put_dict(Payload, Run0, Run)
+    ;   Run = Payload
+    ).
 
 update_message_delta(MessageId, Delta, Messages0, Messages) :-
     select_item(MessageId, Messages0, Message0, Before, After),
@@ -620,6 +640,12 @@ must_all_strings([Value|Rest]) :-
 
 required_payload_id(Payload, Key, Id) :-
     require_id(Payload, Key, Id).
+
+require_payload_field(Payload, Key, Value) :-
+    (   get_dict(Key, Payload, Value)
+    ->  true
+    ;   throw(ui_fault(missing_payload_field, _{field:Key}))
+    ).
 
 validation_outcome(ui_fault(Code, Details),
                    error(ui_error{code:CodeString,
