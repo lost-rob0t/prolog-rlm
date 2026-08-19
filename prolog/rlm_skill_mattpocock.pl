@@ -19,6 +19,8 @@ mattpocock_skill_rules([
     requires('grill-me', grilling),
     requires('grill-with-docs', grilling),
     requires('grill-with-docs', 'domain-modeling'),
+    requires(implement, tdd),
+    requires(implement, 'code-review'),
     alias(tdd, "test first"),
     alias(tdd, "red green refactor"),
     alias('diagnosing-bugs', "root cause"),
