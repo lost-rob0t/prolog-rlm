@@ -97,6 +97,18 @@ Supported rules are `alias/2`, `trigger/3`, `requires/2`, `conflicts/2`, and `pr
 
 Automatic evidence is deterministic: exact skill-name phrases, aliases, configured trigger phrases, and normalized lexical overlap with the skill name/description contribute scores. Explicit trusted selection dominates heuristic evidence. Common negation forms such as `do not use tdd` suppress ordinary automatic activation.
 
+## Distribution overlays
+
+Third-party skill documents stay inert and may contain routing syntax for another runtime. `prolog-rlm` does not rewrite that text and does not emulate a model-callable router. Instead, a trusted distribution overlay can translate known compatibility relationships into ordinary compiler rules.
+
+The pinned Matt Pocock distribution uses `rlm_skill_mattpocock:mattpocock_skill_rules/1`. For example, upstream `grill-me` is explicit-user-only and says to call a `Skill` tool with `grilling`; the trusted overlay represents that as:
+
+```prolog
+requires('grill-me', grilling).
+```
+
+An explicit host selection of `grill-me` therefore causes Prolog dependency closure to select `grilling` before the planner request exists. The model sees both compiled instruction bodies but never performs the activation itself. Custom catalogs do not receive Matt-specific rules automatically; hosts supply their own `skill_rules/1` when needed.
+
 ## Prompt budget
 
 Skill files are assigned a conservative byte-based prompt-token estimate at discovery time. Selection is bounded by both `skill_max_count` and `skill_max_tokens`; only admitted skill bodies are read. This is a skill-local ceiling, not a replacement for the completion provider's measured token/cost budget.
@@ -109,6 +121,6 @@ The compiled result records selected skills, rejected skills with structured rea
 
 ## Default distribution
 
-The repository pins a copy of Matt Pocock's `mattpocock/skills` under `third_party/mattpocock-skills/`. The default catalog is loaded from its stable vendored skill set when present. Deprecated and experimental/in-progress material is not part of the default vendored corpus.
+The repository pins selected stable skills from Matt Pocock's `mattpocock/skills` under `third_party/mattpocock-skills/`. The default catalog is loaded from that vendored set when present. Deprecated and experimental/in-progress material is not part of the default corpus.
 
-The upstream collection remains third-party material under its MIT license. See `third_party/mattpocock-skills/UPSTREAM.md` and `LICENSE` for provenance and attribution.
+Vendored upstream files are byte-for-byte copies from pinned revision `9c9f36ccd3995266cd675468af71639c8dde1ec5`. Runtime compatibility belongs in Prolog overlay rules, not edits to the vendored Markdown. The upstream collection remains third-party material under its MIT license. See `third_party/mattpocock-skills/UPSTREAM.md` and `LICENSE` for provenance and attribution.
