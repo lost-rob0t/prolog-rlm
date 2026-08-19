@@ -13,6 +13,7 @@ Already available in core and the downstream application boundary:
 - real OpenAI-compatible providers and streaming;
 - typed model-selected plans;
 - capability-gated tools and a confined `project_read` tool;
+- deterministic Prolog-owned `SKILL.md` discovery/activation with explicit-only handling, dependency closure, prompt ceilings, explainable decisions, lazy body/resource loading, and canonical completion injection before the planner call;
 - supervised logical agents and recursive subagents;
 - bounded async Futures, cancellation, and worker pools;
 - durable graphs, checkpoints, interrupts, and traces;
@@ -29,14 +30,14 @@ Already available in core and the downstream application boundary:
 
 Still missing for a useful coding agent:
 
-- remaining #57 effect-boundary adoption for provider, MCP request, and lifecycle/process paths tracked by #79;
+- canonical #57 effect-boundary adoption across the remaining effectful paths tracked by #79;
 - a standard project tool pack with search, write/edit, git, and test/process tools;
 - durable project-scoped settings and remembered bounded approvals;
 - the Prolog-side Project/File/Language/grammar registry and CST/query/semantic/freshness layers from #95-#99 that turn the landed #94 parser mechanics into the actual project parser/indexer and canonical project KB;
 - TaskIR/context/result-acceptance integration around the Frozen Spec substrate from #56 and #68-#71;
 - a headless coding loop that wires project inspection, edits, re-indexing, verification, and repair to those shared runtime concepts;
 - nonblocking approval/diff handling wired from the real coding workflow into the UI facade;
-- project instructions/context discovery for coding work;
+- project instructions/context discovery plus tool/MCP/project-instruction accounting in the same bounded prompt compiler now used for skills;
 - the actual OpenTUI reference terminal client and native editor clients.
 
 A reasonable description is: **the runtime foundation is roughly three quarters built, but the end-user coding agent is closer to halfway than finished.** The remaining work is smaller than building another agent framework, but larger than writing a terminal renderer.
@@ -68,7 +69,7 @@ Core must not gain ambient repository write access just because `PrologAgent` ne
 
 ## Phase 0: finish the write-safety substrate
 
-The generic durable effect substrate is already on `main` through #78, #83, and #85. PR #86 has now landed the first canonical tool-path adoption slice: effectful `rlm_tool` execution crosses the #57 prepared-ticket authority/admission boundary before mutation. Phase 0 remains incomplete until the remaining provider, effectful MCP request, and lifecycle/process paths tracked by #79 use the same boundary where applicable.
+The generic durable effect substrate is already on `main` through #78, #83, and #85, and the first effectful tool path from #86 is adopted. Before repository mutation is a normal product feature, finish the **remaining canonical adoption** work tracked by #79.
 
 Required outcome:
 
@@ -122,7 +123,7 @@ git_diff()
 
 Every step remains a normal traced tool operation. File mutation does not bypass authority simply because it came from a coding workflow.
 
-## Phase 2: project state, project knowledge, and instructions
+## Phase 2: project state, project knowledge, instructions, and prompt compilation
 
 Land the scoped-state work in #74 through #77 far enough for a coding frontend to remember project-local operator choices without inventing product-specific persistence in the TUI.
 
@@ -136,7 +137,9 @@ Land the scoped-state work in #74 through #77 far enough for a coding frontend t
 
 It must not persist `allow_session`, silently promote permissions to `dangerous`, or auto-execute arbitrary project Prolog files.
 
-Project instructions should enter the coding context with provenance. Repository instructions, current source/tests, operator requirements, and model inference are not the same kind of evidence.
+The first symbolic prompt-compiler slice is now concrete: Prolog can select `SKILL.md` instructions before the planner call and account for their bounded prompt cost without making the model decide which skills exist. Extend the same compiler ledger to project instructions, tool schemas, MCP metadata, rendering overhead, and the managed rolling-context budget rather than growing parallel prompt-assembly paths.
+
+Project instructions should enter the coding context with provenance. Repository instructions, current source/tests, operator requirements, skill instructions, and model inference are not the same kind of evidence.
 
 The direct Tree-sitter mechanics from #94 are now substrate. Implement #95-#99 behind the semantic project-state boundary established by `rlm_spec`/`rlm_verify`: register Project/File/Language/grammar relationships, project concrete syntax into versioned observations, run structural queries, normalize semantic source relations, and enforce incremental freshness. Source, build metadata, package metadata, and configuration should be parsed once into canonical project knowledge. Planner and verifier consumers query that knowledge through trusted semantic providers. Do not add a planner-only parser and a verifier-only parser.
 
@@ -161,7 +164,7 @@ operator requirements
 -> finish with structured evidence
 ```
 
-Reuse `rlm_spec`, `rlm_verify`, `rlm_spec_workflow`, `rlm_agent`, `rlm_graph`, `rlm_async`, `rlm_authority`, traces, effects, and artifacts. Do not create a special coding-agent scheduler or a second acceptance language.
+Reuse `rlm_spec`, `rlm_verify`, `rlm_spec_workflow`, `rlm_agent`, `rlm_graph`, `rlm_async`, `rlm_authority`, traces, effects, artifacts, and the shared prompt-compiler inputs. Do not create a special coding-agent scheduler, a second acceptance language, or a frontend-owned prompt router.
 
 TaskIR work from #69 should carry/reference the exact Frozen Spec rather than becoming a second canonical owner of acceptance criteria. Result acceptance work from #56 should share the same evidence/verifier substrate instead of growing an incompatible verifier stack. Resume/restart work from #71 must remain bound to the original Spec identity.
 
@@ -281,7 +284,7 @@ The first release does not need IDE parity, a plugin marketplace, background dae
 
 Current core and product issues that materially affect the roadmap:
 
-- #79: canonical external-effect adoption still blocks normal repository mutation as a complete product capability. The #57 generic substrate and #86 tool-path Slice 1 are merged; provider, effectful MCP request, and lifecycle/process adoption remain.
+- #79: canonical external-effect adoption; the generic #57 substrate and first effectful tool-path adoption are merged, while the remaining effectful paths still need convergence.
 - #49 / #50: companion project/coding tool pack.
 - #54: async contract; core migrations are largely complete, while external process/test/network and downstream approval/TUI integration remain.
 - #56: result acceptance should build on the shared evidence/provenance/verifier substrate now used by Spec Verify; the broader result-envelope/delegation work remains open.
@@ -291,6 +294,7 @@ Current core and product issues that materially affect the roadmap:
 - #71: workflow execution/resume must remain bound to the exact Frozen Spec; the Spec-bound graph foundation now demonstrates that invariant, while full TaskIR/continuation integration remains open.
 - #74-#77: durable project state, instructions, and bounded persistent authorization.
 - #93/#95-#99: #94 is the direct Tree-sitter FFI substrate; the remaining child issues are required before the canonical project parser/indexer and project KB are complete.
+- #101/#117: #117 supplies the first concrete Prolog-owned prompt-compiler input for skills; #101 still tracks unified accounting for tools, MCP, project instructions, rendering overhead, and managed context.
 - #109: renderer-independent `prolog_agent_ui_v1` protocol/replay foundation; once merged and verified, the next renderer slice is the small OpenTUI + SolidJS reference client against its deterministic fixture.
 
 Do not wait for every P1 research idea before starting `agentProlog/`. Build against stable public contracts, keep optional integrations optional, and let the first usable coding loop drive the remaining abstractions.
