@@ -43,7 +43,10 @@ compiler material can share one hard provider-visible budget.
 
 rlm_prompt_compiler_ready :-
     rlm_context_budget:rlm_context_budget_ready,
-    rlm_tool:rlm_tool_ready.
+    setup_call_cleanup(
+        rlm_tool:tool_registry_create(Registry),
+        true,
+        rlm_tool:tool_registry_destroy(Registry)).
 
 /* -------------------------------------------------------------------------
  * Catalog lifecycle
