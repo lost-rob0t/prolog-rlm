@@ -10,6 +10,16 @@
             rlm_cancellation_token/1,
             rlm_cancel/1,
             default_completion_budget/1,
+            rlm_skill_ready/0,
+            skill_catalog_load/3,
+            bundled_skill_catalog/2,
+            bundled_skill_root/1,
+            skill_catalog_skills/2,
+            skill_compile/4,
+            skill_compilation_summary/2,
+            skill_explain/3,
+            skill_render/2,
+            skill_resource_read/4,
             default_context_policy/1,
             context_policy/2,
             token_count_text/3,
@@ -178,6 +188,18 @@ latency is represented by a deferred pending-operation Future; no shared
 :- use_module(rlm_context).
 :- use_module(rlm_plan).
 :- use_module(rlm_tool).
+:- use_module(rlm_skill,
+              [ rlm_skill_ready/0,
+                skill_catalog_load/3,
+                bundled_skill_catalog/2,
+                bundled_skill_root/1,
+                skill_catalog_skills/2,
+                skill_compile/4,
+                skill_compilation_summary/2,
+                skill_explain/3,
+                skill_render/2,
+                skill_resource_read/4
+              ]).
 :- use_module(rlm_async,
               [ rlm_async_ready/0,
                 rlm_async_submit/2,
@@ -386,6 +408,7 @@ rlm_ready :-
     rlm_context:context_backend(memory, _),
     rlm_plan:default_plan_budget(_),
     rlm_tool:capabilities_normalize([], ok([])),
+    rlm_skill:rlm_skill_ready,
     rlm_async:rlm_async_ready,
     rlm_authority:rlm_authority(runtime(ready_probe), approve_diff),
     rlm_completion:default_completion_budget(_),
