@@ -98,6 +98,7 @@ The same CLI supports JSONL traces and custom OpenAI-compatible endpoints. See:
 
 - `docs/cli-demo-traces.md` for commands, provider configuration, budgets, capabilities, failures, and trace format;
 - `docs/deep-recursion-experiments.md` for the explicit depth >1 experiment gate, shared-tree safety invariants, deterministic/live benchmark commands, and promotion rule;
+- `docs/skills.md` for deterministic Prolog-owned `SKILL.md` discovery, activation, token ceilings, completion integration, and the pinned bundled skill catalog;
 - `examples/README.md` for reproducible direct, context, tool, recursion, graph, MCP, hosted-provider, and local-provider walkthroughs.
 
 Controlled depth >1 experiments are available separately and remain opt-in:
@@ -124,6 +125,7 @@ Production namespaces live under `prolog/`:
 - `rlm_chain` — provider/model abstraction;
 - `rlm_context` — bounded opaque external-context operations;
 - `rlm_tool` — capability-gated local tool execution;
+- `rlm_skill` — deterministic host-owned `SKILL.md` catalog, activation, dependency closure, prompt budgeting, and explainability;
 - `rlm_completion` — model-to-plan-to-execution RLM loop;
 - `rlm_recursion_policy` / `rlm_recursion_runtime` — bounded adaptive recursion selection and execution;
 - `rlm_deep_experiment` — explicit depth 0/1/2 comparison, alternative recursive harnesses, and promotion evidence;
@@ -226,9 +228,13 @@ Provider-neutral model access, messages, prompts, structured output, streaming, 
 
 Opaque context handles and bounded `peek`, `search`, `slice`, `partition`, `map`, and `reduce` operations with byte/item/time accounting.
 
+### `rlm_skill`
+
+Host-owned `SKILL.md` discovery and prompt compilation. It reads bounded frontmatter, scores deterministic lexical evidence, respects explicit-only and negation rules, closes dependencies, applies a hard skill-prompt token ceiling, and lazily loads only selected bodies. Selection never grants execution authority. See `docs/skills.md`.
+
 ### `rlm_completion`
 
-The high-level RLM execution loop: root model planning, closed-plan validation, capability checks, bounded context/tool/model execution, recursive child calls, structured repair, usage aggregation, and trajectories.
+The high-level RLM execution loop: root model planning, closed-plan validation, capability checks, bounded context/tool/model execution, recursive child calls, structured repair, usage aggregation, trajectories, and optional Prolog-compiled skill instructions before the root planner call.
 
 ### `rlm_graph`
 
@@ -256,6 +262,8 @@ Controlled depth >1 evaluation over the existing runtimes. It compares nested ty
 rlm_completion(+Query, +Context, +Options, -Result).
 llm_query(+Prompt, +Options, -Result).
 rlm_query(+Query, +SubContext, +Options, -Result).
+skill_catalog_load(+Root, +Options, -Outcome).
+skill_compile(+Catalog, +Input, +Options, -Outcome).
 deep_experiment_run(+Options, -Outcome).
 deep_experiment_promotion(+Evidence, -Decision).
 agent_spawn(+Runtime, +Parent, +Spec, +Capabilities, -Outcome).
@@ -286,7 +294,8 @@ The runnable core includes:
 12. dual-version MCP interoperability;
 13. deterministic benchmark/conformance plus live provider gates;
 14. a CLI/demo/trace surface over the same production runtime;
-15. controlled depth 0/1/2 experiments with explicit opt-in, alternative recursive harness comparisons, and non-automatic promotion criteria.
+15. controlled depth 0/1/2 experiments with explicit opt-in, alternative recursive harness comparisons, and non-automatic promotion criteria;
+16. deterministic Prolog-owned skill selection and lazy prompt injection with a hard skill-context ceiling.
 
 Fake model providers are required **only for deterministic tests**.
 
@@ -294,7 +303,7 @@ Fake model providers are required **only for deterministic tests**.
 
 `research/` contains durable numbered research records. See `research/README.md`.
 
-Current records span `RLM-RESEARCH-000` through `RLM-RESEARCH-009` and cover RLM foundations, Prolog runtime design, agentic harnesses, typed symbolic execution, repair loops, SWI agent runtime, MCP dual-version interoperability, LangChain/LangGraph semantics, adaptive recursion, and durable artifact context.
+Current records include the symbolic prompt-compiler research in `RLM-RESEARCH-010` alongside the earlier RLM foundations, runtime design, typed execution, repair, agent, MCP, adaptive-recursion, and artifact-context work.
 
 ## Non-goals
 
@@ -307,6 +316,10 @@ Current records span `RLM-RESEARCH-000` through `RLM-RESEARCH-009` and cover RLM
 - no MCP Sampling dependency for core model inference;
 - no attempt to maximize recursive depth as a goal in itself.
 
+## Acknowledgements
+
+Thanks to **Matt Pocock** for the public `skills` collection used as the optional bundled skill distribution. It is pinned as the `third_party/mattpocock-skills` submodule at commit `9c9f36ccd3995266cd675468af71639c8dde1ec5`; upstream provenance and the MIT license are preserved under `third_party/`.
+
 ## Status
 
-The P1 executable core, adaptive recursion, benchmark/conformance, CLI/demo/trace surface, and controlled depth >1 experiment harness are implemented. The generic durable effect identity/observation substrate is also merged and hardened, but canonical effectful provider/tool/MCP/process adoption remains incomplete under #79. The v0.1/manual-validation umbrella in #3 still has open correctness work in #42, #44, #45, and #46. Production recursion defaults to depth 1; deeper recursion remains explicitly experimental until the encoded live-evidence promotion rule is satisfied.
+The P1 executable core, adaptive recursion, benchmark/conformance, CLI/demo/trace surface, controlled depth >1 experiment harness, and first Prolog-owned symbolic prompt-compiler slice for skills are implemented. The generic durable effect identity/observation substrate is also merged and hardened, but canonical effectful provider/tool/MCP/process adoption remains incomplete under #79. Tool/MCP/project-instruction accounting still needs to join the same prompt compiler and managed-context ledger. The v0.1/manual-validation umbrella in #3 still has open correctness work in #42, #44, #45, and #46. Production recursion defaults to depth 1; deeper recursion remains explicitly experimental until the encoded live-evidence promotion rule is satisfied.
