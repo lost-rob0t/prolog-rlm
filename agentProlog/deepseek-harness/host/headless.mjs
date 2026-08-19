@@ -3,6 +3,11 @@ import { randomUUID } from 'node:crypto'
 export const name = 'prolog-headless-runner'
 export const inject = ['agents']
 
+export const internals = {
+  stdout: process.stdout,
+  stderr: process.stderr,
+}
+
 const userMessage = (task) => Object.freeze({
   id: `prolog-rlm:user:${randomUUID()}`,
   role: 'user',
@@ -77,6 +82,6 @@ export default function prologHeadlessRunner(ctx, config = {}) {
   if (exit === undefined) {
     throw new Error('prolog-headless-runner requires the DeepSeek Harness appExit service')
   }
-  const io = { stdout: process.stdout, stderr: process.stderr, exit }
+  const io = { stdout: internals.stdout, stderr: internals.stderr, exit }
   void run(ctx, task, io).catch((error) => fail(io, error))
 }
