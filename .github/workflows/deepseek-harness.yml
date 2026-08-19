@@ -13,34 +13,46 @@ jobs:
     name: Host transport, factory, and real SWI bridge
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
+      - name: Check out repository and pinned Harness
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Use DeepSeek Harness Node runtime
         uses: actions/setup-node@v6
         with:
           node-version: 22.19.0
 
-      - name: Test host transport and Prolog-backed factory
-        run: node --test agentProlog/deepseek-harness/host/*.test.mjs
-
-      - name: Install pinned Harness adapter dependencies
-        working-directory: agentProlog/deepseek-harness/profile
-        run: npm install --ignore-scripts --no-audit --no-fund
-
-      - name: Verify pinned Harness runtime imports
-        working-directory: agentProlog/deepseek-harness/profile
-        run: node -e "Promise.all([import('@deepseek-ai/dsh-agent'), import('@deepseek-ai/dsh-scope')])"
-
       - name: Install SWI-Prolog
         run: |
           sudo apt-get update
           sudo apt-get install --yes swi-prolog-nox
 
-      - name: Test real host to Prolog composition
+      - name: Install pinned Harness adapter dependencies
+        working-directory: agentProlog/deepseek-harness/profile
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Verify exact Harness package versions
+        working-directory: agentProlog/deepseek-harness/profile
+        run: |
+          npm ls --depth=0 \
+            @deepseek-ai/dsh-agent@0.1.0-rc.8 \
+            @deepseek-ai/dsh-scope@0.1.0-rc.8 \
+            @deepseek-ai/dsh-session@0.1.0-rc.8
+          node -e "Promise.all([import('@deepseek-ai/dsh-agent'), import('@deepseek-ai/dsh-scope'), import('@deepseek-ai/dsh-session')])"
+
+      - name: Test host transport and Prolog-backed factory
+        run: node --test agentProlog/deepseek-harness/host/*.test.mjs
+
+      - name: Test real host to Prolog composition explicitly
         run: node --test agentProlog/deepseek-harness/host/bridge-client.integration.test.mjs
+
+      - name: Run deterministic Prolog suite
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENROUTER_TEST_MODEL: ""
+        run: swipl -q -s test/run_tests.pl
 
       - name: Verify pinned DeepSeek Harness gitlink
         shell: bash
@@ -49,6 +61,7 @@ jobs:
           expected='141eb6fef83422698aef7a981029e843e8161534'
           actual="$(git ls-tree HEAD agentProlog/deepseek-harness/upstream | awk '{print $3}')"
           test "$actual" = "$expected"
+          test "$(git -C agentProlog/deepseek-harness/upstream rev-parse HEAD)" = "$expected"
 
       - name: Check whitespace errors
         run: |
