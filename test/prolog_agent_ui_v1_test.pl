@@ -16,6 +16,37 @@ test(ndjson_codec_roundtrip) :-
     assertion(Decoded == Frame).
 
 
+test(invalid_result_status_is_structured_error) :-
+    Frame = _{protocol:"prolog_agent_ui_v1",
+              kind:"result",
+              session_id:"s1",
+              request_id:"r1",
+              status:"maybe",
+              payload:_{}},
+    ui_v1_validate_frame(Frame, error(Error)),
+    assertion(Error.code == "invalid_result_status").
+
+
+test(malformed_replay_snapshot_is_structured_error) :-
+    Snapshot = _{protocol:"prolog_agent_ui_v1", kind:"snapshot"},
+    ui_v1_replay(Snapshot, [], error(Error)),
+    assertion(Error.code == "invalid_string_field").
+
+
+test(snapshot_limit_counts_utf8_wire_bytes) :-
+    length(Codes, 270000),
+    maplist(=(0x1f600), Codes),
+    string_codes(Text, Codes),
+    ui_v1_initial_view("s1", View0),
+    Message = _{id:"m1", role:"assistant", text:Text, status:"complete"},
+    put_dict(messages, View0, [Message], View),
+    ui_v1_snapshot_state(View, State),
+    ui_v1_snapshot_frame("s1", "snap_utf8", 0, State, Snapshot),
+    ui_v1_validate_frame(Snapshot, error(Error)),
+    assertion(Error.code == "snapshot_too_large"),
+    assertion(Error.details.bytes > 1048576).
+
+
 test(request_ids_are_correlation_not_sequence) :-
     ui_v1_command_frame("s1", "req_77", "approval.decide",
                         _{approval_id:"a1", decision:"allow_once"}, Command),
@@ -81,12 +112,23 @@ test(golden_ndjson_replays_complete_coding_session) :-
     ui_v1_replay(Snapshot, Events, ok(View)),
     assertion(View.at_seq =:= 24),
     assertion(View.status == "finished"),
+    assertion(View.run.run_id == "run_fixture_1"),
+    assertion(View.run.task == "repair authority tests"),
+    assertion(View.run.outcome.status == "ok"),
     View.messages = [Message],
     assertion(Message.text == "I will inspect the authority path."),
     assertion(Message.status == "complete"),
     assertion(length(View.tools, 3)),
+    member(SearchTool, View.tools),
+    SearchTool.id == "tool_1",
+    assertion(SearchTool.output.matches =:= 3),
+    assertion(SearchTool.outcome.matches =:= 3),
+    member(PatchTool, View.tools),
+    PatchTool.id == "tool_2",
+    assertion(PatchTool.outcome.changed == true),
     member(UnknownTool, View.tools),
     UnknownTool.name == "mystery_linter",
+    assertion(UnknownTool.outcome.warnings =:= 0),
     assertion(length(View.approvals, 1)),
     View.approvals = [Approval],
     assertion(Approval.status == "resolved"),
@@ -147,7 +189,8 @@ test(ten_thousand_deltas_preserve_semantic_order_and_bound_snapshot) :-
                        FinalSnapshot),
     ui_v1_validate_frame(FinalSnapshot, ok(_)),
     ui_v1_encode_frame(FinalSnapshot, ok(Line)),
-    string_length(Line, Bytes),
+    string_bytes(Line, WireBytes, utf8),
+    length(WireBytes, Bytes),
     ui_v1_snapshot_max_bytes(Max),
     assertion(Bytes < Max).
 
