@@ -26,6 +26,7 @@
 :- use_module('../agentProlog/prolog/prolog_agent_ui_v1', []).
 :- use_module('../agentProlog/prolog/prolog_agent_ui_facade', []).
 :- use_module('../agentProlog/prolog/prolog_agent_ui_fixture', []).
+:- use_module('../agentProlog/prolog/agentprolog_config', []).
 
 main(_) :-
     (   rlm:rlm_ready,
@@ -42,7 +43,8 @@ main(_) :-
         rlm_project_source:rlm_project_source_ready,
         prolog_agent_ui_v1:ui_v1_ready,
         prolog_agent_ui_facade:ui_facade_ready,
-        prolog_agent_ui_fixture:ui_fixture_ready
+        prolog_agent_ui_fixture:ui_fixture_ready,
+        agentprolog_config:agentprolog_config_ready
     ->  halt(0)
     ;   halt(1)
     ).
