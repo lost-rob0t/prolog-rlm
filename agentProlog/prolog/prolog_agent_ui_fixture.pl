@@ -170,10 +170,44 @@ server_loop(In, Out, NextSeq0) :-
     (   Line == end_of_file
     ->  true
     ;   ui_v1_decode_frame(Line, Decoded),
-        handle_decoded(Decoded, NextSeq0, Frames, NextSeq),
+        dispatch_decoded(Decoded, NextSeq0, Frames, NextSeq),
         write_frames(Out, Frames),
         server_loop(In, Out, NextSeq)
     ).
+
+dispatch_decoded(Decoded, NextSeq0, Frames, NextSeq) :-
+    catch((   handle_decoded(Decoded, NextSeq0, Frames0, NextSeq1)
+          ->  Frames = Frames0,
+              NextSeq = NextSeq1
+          ;   decoded_error_frame(Decoded,
+                                  "fixture_handler_failed",
+                                  "Fixture request handler failed",
+                                  _{},
+                                  ErrorFrame),
+              Frames = [ErrorFrame],
+              NextSeq = NextSeq0
+          ),
+          Exception,
+          ( term_string(Exception, ExceptionText,
+                        [quoted(true), numbervars(true)]),
+            decoded_error_frame(Decoded,
+                                "fixture_handler_exception",
+                                "Fixture request handler raised an exception",
+                                _{exception:ExceptionText},
+                                ErrorFrame),
+            Frames = [ErrorFrame],
+            NextSeq = NextSeq0
+          )).
+
+decoded_error_frame(ok(Frame), Code, Message, Details, ErrorFrame) :- !,
+    frame_session(Frame, SessionId),
+    frame_request(Frame, RequestId),
+    ui_v1_error_frame(SessionId, RequestId, Code, Message, Base),
+    put_dict(details, Base, Details, ErrorFrame).
+decoded_error_frame(_, Code, Message, Details, ErrorFrame) :-
+    ui_fixture_session_id(SessionId),
+    ui_v1_error_frame(SessionId, none, Code, Message, Base),
+    put_dict(details, Base, Details, ErrorFrame).
 
 handle_decoded(error(Error), Next, [Frame], Next) :- !,
     ui_fixture_session_id(SessionId),
