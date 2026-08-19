@@ -13,18 +13,20 @@
             conversation_export/3,
             conversation_context_pack/3,
             conversation_token_ledger/3,
+            conversation_cold_context/3,
             conversation_turn/4
           ]).
 
 /** <module> Durable managed conversation runtime
 
-A conversation owns the complete chronological transcript.  Provider-visible
+A conversation owns the complete chronological transcript. Provider-visible
 context is a compiled projection of that transcript; removing a message from an
-active context pack never removes it from the transcript.
+active context pack never removes it from the conversation.
 
 `conversation_turn/4` is a managed facade layered above the existing
-`rlm_completion/4` fresh-root primitive.  The primitive remains unchanged and
-usable independently.
+`rlm_completion/4` fresh-root primitive. The primitive remains unchanged and
+usable independently. Cold history is exposed through a trusted lazy
+`rlm_context` adapter rather than copied into a `terms/1` payload on every turn.
 */
 
 :- use_module(library(option)).
@@ -32,6 +34,11 @@ usable independently.
 :- use_module(rlm_chain_schema,
               [ message_normalize/2 ]).
 :- use_module(rlm_completion, []).
+:- use_module(rlm_context,
+              [ context_adapter_register/5,
+                context_register_adapter/4,
+                context_delete/2
+              ]).
 :- use_module(rlm_context_budget).
 :- use_module(rlm_conversation_persist).
 
@@ -40,7 +47,8 @@ usable independently.
 :- dynamic conversation_memory_message/4.
 
 rlm_conversation_ready :-
-    rlm_context_budget:rlm_context_budget_ready.
+    rlm_context_budget:rlm_context_budget_ready,
+    ensure_conversation_context_adapter.
 
 /* -------------------------------------------------------------------------
  * Store lifecycle
@@ -395,6 +403,271 @@ message_context_unit(Message,
                         variants:[Variant]}.
 
 /* -------------------------------------------------------------------------
+ * Lazy cold-history adapter
+ * ---------------------------------------------------------------------- */
+
+conversation_cold_context(Conversation, Options, Outcome) :-
+    conversation_outcome(cold_context,
+                         conversation_cold_context_(Conversation, Options),
+                         Outcome).
+
+conversation_cold_context_(Conversation, Options, Ref) :-
+    require_conversation(Conversation, _, _),
+    require_options(Options),
+    ensure_conversation_context_adapter,
+    context_register_adapter(conversation,
+                             Conversation,
+                             Options,
+                             ContextOutcome),
+    require_context_outcome(ContextOutcome, Ref).
+
+ensure_conversation_context_adapter :-
+    conversation_context_capabilities(Capabilities),
+    context_adapter_register(
+        conversation,
+        Capabilities,
+        rlm_conversation:conversation_context_metadata,
+        rlm_conversation:conversation_context_operation,
+        Outcome),
+    require_context_outcome(Outcome, _).
+
+conversation_context_capabilities(
+    capabilities{source_kinds:[conversation],
+                 operations:[peek, slice, search],
+                 persistent:external,
+                 filesystem:false,
+                 network:false}).
+
+conversation_context_metadata(Conversation, Metadata) :-
+    conversation_stats_(Conversation, Stats),
+    conversation_messages_(Conversation, recent(1), [], Recent),
+    latest_sequence(Recent, Revision),
+    conversation_store_kind(Conversation.store, StoreKind),
+    Metadata = conversation_source{kind:conversation,
+                                   bytes:unknown,
+                                   items:Stats.messages,
+                                   conversation_id:Conversation.id,
+                                   source_revision:Revision,
+                                   store_backend:StoreKind}.
+
+latest_sequence([], 0).
+latest_sequence([Message], Message.sequence).
+
+conversation_store_kind(conversation_store(memory, _), memory) :- !.
+conversation_store_kind(conversation_store(persist, _), persist) :- !.
+conversation_store_kind(_, unknown).
+
+conversation_context_operation(peek(head(Count)),
+                               Conversation,
+                               Limits,
+                               Work) :-
+    !,
+    require_nonnegative_integer(Count, peek_count),
+    conversation_messages_(Conversation, all, [], Messages),
+    Effective is min(Count, Limits.max_results),
+    take_first(Effective, Messages, Selected),
+    messages_work(Selected, false, Work0),
+    length(Messages, Total),
+    length(Selected, Returned),
+    bool_value([Count > Limits.max_results,
+                Returned < min(Count, Total)],
+               Truncated),
+    put_dict(truncated, Work0, Truncated, Work).
+conversation_context_operation(peek(tail(Count)),
+                               Conversation,
+                               Limits,
+                               Work) :-
+    !,
+    require_nonnegative_integer(Count, peek_count),
+    Effective is min(Count, Limits.max_results),
+    conversation_messages_(Conversation,
+                           recent(Effective),
+                           [],
+                           Selected),
+    messages_work(Selected, false, Work0),
+    conversation_stats_(Conversation, Stats),
+    length(Selected, Returned),
+    bool_value([Count > Limits.max_results,
+                Returned < min(Count, Stats.messages)],
+               Truncated),
+    put_dict(truncated, Work0, Truncated, Work).
+conversation_context_operation(peek(item(Index)),
+                               Conversation,
+                               _,
+                               Work) :-
+    !,
+    require_nonnegative_integer(Index, item_index),
+    Sequence is Index+1,
+    (   conversation_message_(Conversation, Sequence, Message)
+    ->  message_view(Message, View),
+        view_utf8_size(View, Bytes),
+        Work = work{value:View,
+                    bytes_inspected:Bytes,
+                    items_inspected:1,
+                    truncated:false}
+    ;   throw(context_fault(out_of_range(Index)))
+    ).
+conversation_context_operation(slice(Start, Length),
+                               Conversation,
+                               Limits,
+                               Work) :-
+    !,
+    require_nonnegative_integer(Start, slice_start),
+    require_nonnegative_integer(Length, slice_length),
+    conversation_stats_(Conversation, Stats),
+    (   Start =< Stats.messages
+    ->  true
+    ;   throw(context_fault(out_of_range(Start)))
+    ),
+    EffectiveLength is min(Length, Limits.max_results),
+    StartSequence is Start+1,
+    EndSequence is min(Stats.messages, Start+EffectiveLength),
+    (   EffectiveLength =:= 0
+    ->  Selected = []
+    ;   conversation_messages_(Conversation,
+                               range(StartSequence, EndSequence),
+                               [],
+                               Selected)
+    ),
+    messages_work(Selected, false, Work0),
+    Available is max(0, Stats.messages-Start),
+    length(Selected, Returned),
+    Target is min(Length, Available),
+    bool_value([Length > Limits.max_results,
+                Returned < Target],
+               Truncated),
+    put_dict(truncated, Work0, Truncated, Work).
+conversation_context_operation(search(Pattern),
+                               Conversation,
+                               Limits,
+                               Work) :-
+    !,
+    conversation_messages_(Conversation, all, [], Messages),
+    search_conversation_messages(Messages,
+                                 Pattern,
+                                 Limits,
+                                 0,
+                                 0,
+                                 0,
+                                 [],
+                                 RevMatches,
+                                 Bytes,
+                                 Items,
+                                 Truncated),
+    reverse(RevMatches, Matches),
+    Work = work{value:Matches,
+                bytes_inspected:Bytes,
+                items_inspected:Items,
+                truncated:Truncated}.
+conversation_context_operation(Operation, _, _, _) :-
+    throw(context_fault(unsupported_operation(Operation))).
+
+messages_work(Messages, Truncated,
+              work{value:Views,
+                   bytes_inspected:Bytes,
+                   items_inspected:Items,
+                   truncated:Truncated}) :-
+    maplist(message_view, Messages, Views),
+    maplist(view_utf8_size, Views, Sizes),
+    sum_list(Sizes, Bytes),
+    length(Views, Items).
+
+message_view(Message,
+             conversation_message_view{sequence:Message.sequence,
+                                       ref:Message.ref,
+                                       role:Message.role,
+                                       content:Message.content}).
+
+search_conversation_messages([], _, _, Index, Bytes, _, Matches, Matches,
+                             Bytes, Index, false) :-
+    !.
+search_conversation_messages(Remaining,
+                             _,
+                             Limits,
+                             Index,
+                             Bytes,
+                             OutBytes,
+                             Matches,
+                             Matches,
+                             Bytes,
+                             Index,
+                             true) :-
+    length(Matches, Count),
+    (Count >= Limits.max_results ; OutBytes >= Limits.max_bytes),
+    Remaining \== [],
+    !.
+search_conversation_messages([Message|Messages],
+                             Pattern,
+                             Limits,
+                             Index0,
+                             Bytes0,
+                             OutBytes0,
+                             Matches0,
+                             Matches,
+                             Bytes,
+                             Items,
+                             Truncated) :-
+    render_message(Message, Text),
+    utf8_text_size(Text, InspectedBytes),
+    Bytes1 is Bytes0+InspectedBytes,
+    Index1 is Index0+1,
+    (   sub_string(Text, _, _, _, Pattern)
+    ->  message_match(Message, Match),
+        view_utf8_size(Match, MatchBytes),
+        NextOutBytes is OutBytes0+MatchBytes,
+        (   NextOutBytes =< Limits.max_bytes
+        ->  search_conversation_messages(Messages,
+                                         Pattern,
+                                         Limits,
+                                         Index1,
+                                         Bytes1,
+                                         NextOutBytes,
+                                         [Match|Matches0],
+                                         Matches,
+                                         Bytes,
+                                         Items,
+                                         Truncated)
+        ;   Matches = Matches0,
+            Bytes = Bytes1,
+            Items = Index1,
+            Truncated = true
+        )
+    ;   search_conversation_messages(Messages,
+                                     Pattern,
+                                     Limits,
+                                     Index1,
+                                     Bytes1,
+                                     OutBytes0,
+                                     Matches0,
+                                     Matches,
+                                     Bytes,
+                                     Items,
+                                     Truncated)
+    ).
+
+message_match(Message,
+              conversation_match{index:Index,
+                                 sequence:Message.sequence,
+                                 ref:Message.ref,
+                                 role:Message.role,
+                                 content:Message.content}) :-
+    Index is Message.sequence-1.
+
+view_utf8_size(Value, Bytes) :-
+    term_string(Value, Text, [quoted(true), numbervars(true)]),
+    utf8_text_size(Text, Bytes).
+
+utf8_text_size(Text, Bytes) :-
+    string_bytes(Text, Octets, utf8),
+    length(Octets, Bytes).
+
+bool_value(Conditions, true) :-
+    member(Condition, Conditions),
+    call(Condition),
+    !.
+bool_value(_, false).
+
+/* -------------------------------------------------------------------------
  * Managed RLM turn
  * ---------------------------------------------------------------------- */
 
@@ -416,25 +689,53 @@ conversation_turn_(Conversation, UserMessage0, Options, TurnResult) :-
     conversation_append_(Conversation, UserMessage, UserRecord),
     option(context_options(ContextOptions), Options, []),
     conversation_context_pack_(Conversation, ContextOptions, ContextPack),
-    render_selected_context(ContextPack.selected, HotContext),
-    conversation_messages_(Conversation, all, [], FullMessages),
-    maplist(message_payload, FullMessages, FullPayloads),
+    render_selected_context(ContextPack.selected, ActiveContext),
     render_content(UserMessage.content, UserText),
     format(string(Query),
-           "Continue this managed conversation. Preserve established context and answer the current user request.\n\nActive rolling context:\n~s\n\nCurrent user request:\n~s",
-           [HotContext, UserText]),
+           "Continue this managed conversation. Preserve established context and answer the current user request. The complete historical transcript is available through the opaque context handle; search or slice it only when needed.\n\nActive rolling context:\n~s\n\nCurrent user request:\n~s",
+           [ActiveContext, UserText]),
     option(completion_options(CompletionOptions0), Options, []),
     require_options(CompletionOptions0),
-    CompletionOptions = [session_id(Conversation.id)|CompletionOptions0],
-    rlm_completion:rlm_completion(Query,
-                                  terms(FullPayloads),
-                                  CompletionOptions,
-                                  CompletionOutcome),
+    managed_completion_options(Conversation.id,
+                               CompletionOptions0,
+                               CompletionOptions),
+    option(cold_context_options(ColdOptions), Options, []),
+    require_options(ColdOptions),
+    conversation_cold_context_(Conversation, ColdOptions, ColdRef),
+    setup_call_cleanup(
+        true,
+        rlm_completion:rlm_completion(Query,
+                                      ColdRef,
+                                      CompletionOptions,
+                                      CompletionOutcome),
+        context_delete(ColdRef.handle, _)),
     managed_completion_result(CompletionOutcome,
                               Conversation,
                               UserRecord,
                               ContextPack,
                               TurnResult).
+
+managed_completion_options(SessionId, Options0, Options) :-
+    (   member(Option, Options0),
+        Option = capabilities(_)
+    ->  CapabilityOptions = Options0
+    ;   managed_provider_name(Options0, ProviderName),
+        Capabilities = [rlm,
+                        model(ProviderName),
+                        context(peek),
+                        context(slice),
+                        context(search)],
+        CapabilityOptions = [capabilities(Capabilities)|Options0]
+    ),
+    Options = [session_id(SessionId)|CapabilityOptions].
+
+managed_provider_name(Options, Name) :-
+    (   member(provider_name(Explicit), Options), atom(Explicit)
+    ->  Name = Explicit
+    ;   member(provider(provider(Name0, _)), Options), atom(Name0)
+    ->  Name = Name0
+    ;   Name = openrouter
+    ).
 
 managed_completion_result(error(Error), _, UserRecord, ContextPack, _) :-
     throw(conversation_fault(completion_failed(Error,
@@ -569,8 +870,6 @@ render_content(Content, Text) :-
                                 portray(false),
                                 max_depth(12)
                               ])).
-
-message_payload(Record, Record.message).
 
 completion_value_text(Value, Text) :-
     string(Value),
@@ -753,6 +1052,10 @@ require_budget_outcome(ok(Value), Value) :- !.
 require_budget_outcome(error(Error), _) :-
     throw(conversation_fault(context_budget_failed(Error))).
 
+require_context_outcome(ok(Value), Value) :- !.
+require_context_outcome(error(Error), _) :-
+    throw(conversation_fault(context_adapter_failed(Error))).
+
 conversation_outcome(Phase, Goal, Outcome) :-
     catch(( call(Goal, Value),
             Outcome = ok(Value)
@@ -766,6 +1069,12 @@ conversation_exception(Phase, conversation_fault(Detail), error(Error)) :-
                                kind:conversation_error,
                                detail:Detail,
                                message:"conversation operation failed"}.
+conversation_exception(Phase, context_fault(Detail), error(Error)) :-
+    !,
+    Error = conversation_error{phase:Phase,
+                               kind:context_error,
+                               detail:Detail,
+                               message:"conversation context operation failed"}.
 conversation_exception(Phase, Exception, error(Error)) :-
     safe_exception(Exception, Safe),
     Error = conversation_error{phase:Phase,
