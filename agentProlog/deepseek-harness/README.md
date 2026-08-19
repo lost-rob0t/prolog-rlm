@@ -4,7 +4,7 @@ This directory contains the parallel DeepSeek Harness frontend/host path for
 PrologAgent. It deliberately does **not** create a second coding-agent runtime.
 
 The official `deepseek-ai/deepseek-harness` repository is pinned at
-`upstream/` as a git submodule. The current pin is:
+`upstream/` as a git submodule:
 
 - upstream commit: `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`
 - upstream release: `dsh@0.1.0-rc.7`
@@ -16,24 +16,32 @@ DeepSeek Harness is used for its host, client, and UI ecosystem. Prolog-RLM is
 the canonical agent runtime.
 
 ```text
-DeepSeek Harness UI / host
-          |
-          | NDJSON bridge now
-          | Cordis Agent provider next
-          v
+DeepSeek Harness UI / Cordis host
+              |
+              v
+host/bridge-client.mjs
+  NDJSON framing + cancellation propagation only
+              |
+              v
 deepseek_prolog_bridge
-          |
-          v
-rlm_conversation
-          |
-          v
-rlm_completion / plans / tools / authority / effects / tracing
+  sessions + Prolog-owned async run handles
+              |
+              v
+rlm_conversation + rlm_async
+              |
+              v
+completion / plans / tools / authority / effects / tracing
 ```
 
-The frontend must not execute tools, decide permissions, compact conversation
-history, or run an independent think-act loop.
+The frontend must not execute tools, decide permissions, select context,
+compact conversation history, or run an independent think-act loop.
 
-### Infinite-chat semantics
+The Harness-side transport client is intentionally boring. It correlates NDJSON
+requests and maps a host `AbortSignal` to `run/cancel`. The run itself is an
+`rlm_async` Future owned by Prolog, so cancellation reaches the actual operation
+instead of merely hiding its output.
+
+## Infinite-chat semantics
 
 "Infinite" means the canonical conversation transcript is durable, append-only,
 and never replaced by a summary. It does **not** mean sending an unbounded byte
@@ -92,7 +100,7 @@ The default durable conversation store is under `$XDG_STATE_HOME`, falling back
 to `~/.local/state/prolog-rlm/`.
 
 Settings are materialized on first bridge startup. Supported persisted fields
-are intentionally small for the first slice:
+are intentionally small:
 
 ```json
 {
@@ -138,7 +146,10 @@ receive the same ID back.
 {"request_id":"1","command":"hello","payload":{}}
 {"request_id":"2","command":"session/create","payload":{"id":"demo","metadata":{}}}
 {"request_id":"3","command":"session/messages","payload":{"session_id":"demo","limit":"all"}}
-{"request_id":"4","command":"session/turn","payload":{"session_id":"demo","content":"Inspect this project."}}
+{"request_id":"4","command":"session/turn/start","payload":{"session_id":"demo","content":"Inspect this project."}}
+{"request_id":"5","command":"run/status","payload":{"run_id":"<run-id>"}}
+{"request_id":"6","command":"run/cancel","payload":{"run_id":"<run-id>"}}
+{"request_id":"7","command":"run/result","payload":{"run_id":"<run-id>"}}
 ```
 
 Current bridge commands:
@@ -153,21 +164,63 @@ Current bridge commands:
 - `session/search`
 - `session/stats`
 - `session/turn`
+- `session/turn/start`
+- `run/status`
+- `run/result`
+- `run/cancel`
 
-`session/turn` is the important boundary: it calls
-`rlm_conversation:conversation_turn/4`, which in turn drives the canonical
-Prolog-RLM completion runtime. There is no generic DeepSeek Harness agent loop
-behind that command.
+`session/turn` and `session/turn/start` both enter the canonical
+`rlm_conversation` runtime. The asynchronous form additionally registers the
+work with `rlm_async`, giving the host a real cancellable run handle without
+moving scheduling into JavaScript.
 
-## Status and next slice
+## Harness profile fence
 
-This first slice establishes the pinned upstream, lossless session contract,
-persistent settings, OpenRouter/DeepSeek route selection, and the Prolog NDJSON
-authority bridge.
+`profile/cordis.patch.yml` is applied after the normal Harness bundles. It
+explicitly disables:
 
-The next integration slice is the out-of-tree DeepSeek Harness Cordis provider
-that implements its `Agent` seam by spawning this bridge, projects PrologAgent
-events into the Harness session/UI vocabulary, and disables the stock
-`agent-loop`, `compaction-basic`, `command-compact`, and tool-result-pruning
-rows for Prolog-backed profiles. Until that provider lands, do not ship a
-profile that silently falls back to the stock Harness agent loop.
+- `agent-loop`
+- `compaction-basic`
+- `command-compact`
+- `tool-result-pruner`
+
+That overlay is deliberately fail-closed. Until the Prolog-backed Cordis
+`AgentFactory` is mounted, a Prolog profile must fail agent creation rather than
+fall back to the stock Harness loop or history rewriting.
+
+## Tests
+
+The normal SWI suite covers settings, provider routing, bridge sessions,
+persistence across close/reopen, async run cancellation, run cleanup, and the
+fail-closed Harness profile.
+
+`.github/workflows/deepseek-harness.yml` adds a separate host composition gate:
+
+1. Node-only NDJSON correlation and cancellation tests;
+2. a real Node -> `swipl` bridge process test that negotiates the Prolog runtime
+   and performs session/settings operations without a model call;
+3. verification that the DeepSeek Harness gitlink remains pinned to the audited
+   upstream revision.
+
+## Next integration slice
+
+The next slice is the out-of-tree Cordis `AgentFactory` package. DeepSeek
+Harness profiles explicitly support out-of-tree plugin dependencies, so this
+can live beside the pinned upstream rather than modifying it.
+
+That factory will:
+
+- spawn/own `host/bridge-client.mjs`;
+- create or resume the canonical Prolog session for each Harness agent;
+- use `session/turn/start` and the Prolog Future for the driver lifetime;
+- map `Agent.cancel()` to `run/cancel` and make `whenIdle()` follow actual
+  Prolog quiescence;
+- project canonical `prolog_agent_ui_v1` events into Harness session/UI events;
+- route approval/question/steer/inject operations back to Prolog commands;
+- never call Harness LLM, tool, permission, compaction, or pruning services for
+  a Prolog-backed session.
+
+Streaming, approval/question interaction, steering and injection must be backed
+by the canonical PrologAgent event/command boundary before the factory claims
+those capabilities. Unsupported semantics fail loudly; they are not simulated
+in TypeScript.
