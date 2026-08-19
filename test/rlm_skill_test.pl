@@ -137,6 +137,25 @@ test(completion_injects_prolog_selected_skill_before_planner,
     assertion(sub_string(Prompt, _, _, _, "TDD_SKILL_MARKER")),
     assertion(\+ sub_string(Prompt, _, _, _, "GRILL_SKILL_MARKER")).
 
+test(default_distribution_auto_activates_without_model_routing,
+     [setup((skill_default_catalog_reset,
+             skill_test_support:reset_capture))]) :-
+    Options = [ planner_handler(skill_test_support:capture_planner),
+                capabilities([rlm, model(openrouter)]),
+                child_capabilities([model(openrouter)]),
+                skill_min_score(40)
+              ],
+    rlm_completion("Build this parser feature test first",
+                   text("opaque"),
+                   Options,
+                   Outcome),
+    assertion(Outcome = ok(Result)),
+    assertion(Result.value == "skill-ok"),
+    skill_test_support:captured_prompt(Prompt),
+    assertion(sub_string(Prompt, _, _, _, "## Skill: tdd")),
+    assertion(sub_string(Prompt, _, _, _, "# Test-Driven Development")),
+    assertion(\+ sub_string(Prompt, _, _, _, "## Skill: grill-me")).
+
 test(default_distribution_wrapper_dependency_is_prolog_resolved,
      [setup((skill_default_catalog_reset,
              skill_test_support:reset_capture))]) :-
