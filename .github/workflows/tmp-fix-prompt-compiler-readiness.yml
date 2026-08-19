@@ -1,0 +1,54 @@
+name: Temporary prompt compiler readiness patch
+
+on:
+  push:
+    branches:
+      - agent/prompt-context-compiler
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply exact readiness fix
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("prolog/rlm_prompt_compiler.pl")
+          text = path.read_text()
+          old = """rlm_prompt_compiler_ready :-
+              rlm_context_budget:rlm_context_budget_ready,
+              rlm_tool:rlm_tool_ready.
+          """
+          new = """rlm_prompt_compiler_ready :-
+              rlm_context_budget:rlm_context_budget_ready,
+              setup_call_cleanup(
+                  rlm_tool:tool_registry_create(Registry),
+                  true,
+                  rlm_tool:tool_registry_destroy(Registry)).
+          """
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one readiness block, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+          git diff --check
+          git diff -- prolog/rlm_prompt_compiler.pl
+
+      - name: Commit patch and remove helper workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/tmp-fix-prompt-compiler-readiness.yml
+          git add prolog/rlm_prompt_compiler.pl
+          git commit -m "Fix prompt compiler readiness lifecycle"
+          git push origin HEAD:agent/prompt-context-compiler
