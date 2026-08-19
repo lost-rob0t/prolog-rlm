@@ -4,6 +4,8 @@ import { createInterface } from 'node:readline'
 
 const PROTOCOL = 'prolog_rlm_deepseek_bridge_v1'
 
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+
 export class PrologRlmBridgeError extends Error {
   constructor(message, detail) {
     super(message)
@@ -15,7 +17,8 @@ export class PrologRlmBridgeError extends Error {
 /**
  * Transport-only client for the Prolog-RLM DeepSeek Harness bridge.
  *
- * This class owns subprocess framing and request correlation only. It does not
+ * This class owns subprocess framing, request correlation, and translation of
+ * host cancellation into the bridge's Prolog-owned run handles. It does not
  * implement an agent loop, tools, permissions, context selection, or session
  * semantics; those remain in Prolog.
  */
@@ -96,6 +99,51 @@ export class PrologRlmBridgeClient {
         pending.reject(error)
       })
     })
+  }
+
+  async startTurn(sessionId, content) {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      throw new TypeError('sessionId must be a non-empty string')
+    }
+    if (typeof content !== 'string') throw new TypeError('content must be a string')
+    return this.request('session/turn/start', { session_id: sessionId, content })
+  }
+
+  async cancelRun(runId) {
+    if (typeof runId !== 'string' || runId.length === 0) {
+      throw new TypeError('runId must be a non-empty string')
+    }
+    return this.request('run/cancel', { run_id: runId })
+  }
+
+  async waitForRun(runId, { signal, pollIntervalMs = 25 } = {}) {
+    if (typeof runId !== 'string' || runId.length === 0) {
+      throw new TypeError('runId must be a non-empty string')
+    }
+    if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 1) {
+      throw new TypeError('pollIntervalMs must be a positive integer')
+    }
+
+    let cancellationSent = false
+    for (;;) {
+      if (signal?.aborted && !cancellationSent) {
+        await this.cancelRun(runId)
+        cancellationSent = true
+      }
+      const status = await this.request('run/status', { run_id: runId })
+      if (status.state === 'completed' || status.state === 'cancelled') {
+        return this.request('run/result', { run_id: runId })
+      }
+      if (status.state !== 'pending' && status.state !== 'running') {
+        throw new PrologRlmBridgeError(`unexpected Prolog-RLM run state: ${String(status.state)}`, status)
+      }
+      await sleep(pollIntervalMs)
+    }
+  }
+
+  async runTurn(sessionId, content, options = {}) {
+    const run = await this.startTurn(sessionId, content)
+    return this.waitForRun(run.run_id, options)
   }
 
   async close() {
