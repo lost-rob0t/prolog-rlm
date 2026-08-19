@@ -19,7 +19,7 @@ When `XDG_CONFIG_HOME` is unset, AgentProlog falls back to `$HOME/.config`. If `
 
 The XDG `config.prolog` is **trusted executable operator code**. AgentProlog loads it as Prolog. It therefore has the privileges of the AgentProlog process, exactly as an Emacs init file has the privileges of Emacs. Do not put code in it that you do not trust.
 
-Default ordinary runtime settings keep conversation history lossless, disable compaction, persist sessions, and select OpenRouter with `openrouter/free`. Direct DeepSeek routing is optional.
+The default ordinary runtime settings are lossless conversation history, no compaction, persistent sessions, and OpenRouter using `openrouter/free`. Direct DeepSeek routing is not required by AgentProlog configuration.
 
 ## Programmable Prolog configuration
 
@@ -141,17 +141,23 @@ The project root is discovery metadata, not the durable security identity. #75 s
 
 Changing executable configuration is a privileged mutation. A model suggestion is not permission to rewrite the file that will run on the next reload.
 
-Frontends must request config edits through the AgentProlog authority-mediated file-mutation path. `agentprolog_config_save_file/4` is a trusted host API for the final write; it is not intended to be exposed as an unrestricted model tool.
+Frontends must request config edits through the AgentProlog authority-mediated file-mutation path. `agentprolog_config_save_file/4` is a trusted whole-file writer for the final host-side write; it is not intended to be exposed as an unrestricted model tool. General editing of hand-written executable Prolog should use an authority-mediated text/diff mutation so helper code is not accidentally replaced by a generated `config/1` fact.
 
-AgentProlog-created or AgentProlog-rewritten config files are forced to POSIX mode `0600`. Writes use a temporary file and replacement so an invalid configuration value is rejected before the existing file is touched.
+AgentProlog-created or AgentProlog-rewritten config files are forced to POSIX mode `0600`. Writes use a temporary file and replacement so an invalid canonical configuration value is rejected before the existing file is touched.
 
 Generated Prolog files contain a `config/1` fact and remain ordinary executable Prolog files. Users can edit them and add helper predicates, hooks, tools, or detectors.
 
-## Reload semantics
+## Load and reload lifecycle
 
-A Prolog path is loaded into a stable generated module. Reloading that path reconsults it into the same module and advances the config generation. Clauses removed from the file are removed on reconsult rather than accumulating forever.
+Reading effective configuration does not repeatedly execute `config.prolog`.
 
-The generation is exposed in source provenance so #128-#130 can attach executable hook/tool/detector registrations to a specific config generation and clean stale registrations on reload.
+The first load of a path creates an isolated generated config module and records an active generation. Later `agentprolog_config_resolve/2` calls reuse that active generation without re-running directives or `initialization/1` hooks.
+
+An explicit `agentprolog_config_reload_file/3` loads the current file into a **fresh generated module**. The new module and projected settings become active only after the candidate load and projection succeed. A failed reload therefore leaves the previous active projection selected. Trusted candidate code may still have performed its own side effects before failing; executable configuration is host code, not a transaction sandbox.
+
+Old generated modules are inactive after a successful reload. Generation identity is exposed in source provenance so #128-#130 can remove stale hook/tool/detector registrations owned by the previous generation instead of accumulating duplicate active extensions.
+
+A successful trusted whole-file write invalidates the cached generation. The next resolve or explicit reload loads the newly written file as a new generation.
 
 ## Secrets
 
@@ -169,6 +175,7 @@ agentprolog_config_json_path(-Path).
 agentprolog_project_config_paths(+ProjectRoot, -PrologPath, -JsonPath).
 agentprolog_config_defaults(-Config).
 agentprolog_config_load_file(+Path, +Format, -Outcome).
+agentprolog_config_reload_file(+Path, +Format, -Outcome).
 agentprolog_config_normalize(+Config, -Outcome).
 agentprolog_config_resolve(+Context, -Outcome).
 agentprolog_config_save_file(+Path, +Format, +Config, -Outcome).
