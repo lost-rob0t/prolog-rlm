@@ -86,6 +86,25 @@ user_config_is_executable_prolog_(Root) :-
     assertion(call(Module:loaded_marker(ok))),
     assertion(call(Module:helper_model("rule/model"))).
 
+test(resolve_reuses_active_generation_without_rerunning_config) :-
+    with_temp_tree(resolve_reuses_active_generation_without_rerunning_config_).
+
+resolve_reuses_active_generation_without_rerunning_config_(Root) :-
+    directory_file_path(Root, 'config.prolog', Path),
+    write_text(Path,
+               ":- dynamic init_runs/1.\nbump :- (retract(init_runs(N)) -> N1 is N+1 ; N1 = 1), assertz(init_runs(N1)).\n:- initialization(bump).\nsetting(model, \"cached/model\").\n"),
+    agentprolog_config_resolve(_{user_path:Path}, FirstOutcome),
+    require_ok(FirstOutcome, FirstResolution),
+    FirstResolution.sources = [FirstSource],
+    Module = FirstSource.module,
+    assertion(call(Module:init_runs(1))),
+    agentprolog_config_resolve(_{user_path:Path}, SecondOutcome),
+    require_ok(SecondOutcome, SecondResolution),
+    SecondResolution.sources = [SecondSource],
+    assertion(SecondSource.module == Module),
+    assertion(SecondSource.generation == FirstSource.generation),
+    assertion(call(Module:init_runs(1))).
+
 test(prolog_and_json_normalize_to_same_effective_config) :-
     with_temp_tree(prolog_and_json_normalize_to_same_effective_config_).
 
@@ -206,26 +225,49 @@ secret_settings_are_rejected_from_canonical_projection_(Root) :-
     assertion(Outcome = error(Error)),
     assertion(Error.kind == secret_settings_forbidden).
 
-test(reconsult_replaces_old_config_code_without_duplicate_state) :-
-    with_temp_tree(reconsult_replaces_old_config_code_without_duplicate_state_).
+test(explicit_reload_activates_new_isolated_generation) :-
+    with_temp_tree(explicit_reload_activates_new_isolated_generation_).
 
-reconsult_replaces_old_config_code_without_duplicate_state_(Root) :-
+explicit_reload_activates_new_isolated_generation_(Root) :-
     directory_file_path(Root, 'config.prolog', Path),
     write_text(Path,
                "old_helper.\nsetting(model, \"first/model\").\n"),
     agentprolog_config_load_file(Path, prolog, FirstOutcome),
     require_ok(FirstOutcome, First),
-    FirstModule = First.module,
-    assertion(call(FirstModule:old_helper)),
+    assertion(call(First.module:old_helper)),
     write_text(Path,
                "new_helper.\nsetting(model, \"second/model\").\n"),
-    agentprolog_config_load_file(Path, prolog, SecondOutcome),
+    agentprolog_config_reload_file(Path, prolog, SecondOutcome),
     require_ok(SecondOutcome, Second),
-    assertion(Second.module == FirstModule),
+    assertion(Second.module \== First.module),
     assertion(Second.generation > First.generation),
     assertion(Second.patch.settings.model == "second/model"),
-    assertion(\+ current_predicate(FirstModule:old_helper/0)),
-    assertion(call(FirstModule:new_helper)).
+    assertion(call(First.module:old_helper)),
+    assertion(call(Second.module:new_helper)),
+    agentprolog_config_resolve(_{user_path:Path}, ResolveOutcome),
+    require_ok(ResolveOutcome, Resolution),
+    assertion(Resolution.sources = [Active]),
+    assertion(Active.module == Second.module),
+    assertion(Active.generation == Second.generation),
+    assertion(Resolution.effective.settings.model == "second/model").
+
+test(failed_reload_keeps_last_active_projection) :-
+    with_temp_tree(failed_reload_keeps_last_active_projection_).
+
+failed_reload_keeps_last_active_projection_(Root) :-
+    directory_file_path(Root, 'config.prolog', Path),
+    write_text(Path, "setting(model, \"good/model\").\n"),
+    agentprolog_config_load_file(Path, prolog, FirstOutcome),
+    require_ok(FirstOutcome, First),
+    write_text(Path, "setting(model, .\n"),
+    agentprolog_config_reload_file(Path, prolog, ReloadOutcome),
+    assertion(ReloadOutcome = error(_)),
+    agentprolog_config_resolve(_{user_path:Path}, ResolveOutcome),
+    require_ok(ResolveOutcome, Resolution),
+    assertion(Resolution.sources = [Active]),
+    assertion(Active.module == First.module),
+    assertion(Active.generation == First.generation),
+    assertion(Resolution.effective.settings.model == "good/model").
 
 test(save_roundtrips_both_formats) :-
     with_temp_tree(save_roundtrips_both_formats_).
@@ -246,6 +288,27 @@ save_roundtrips_both_formats_(Root) :-
     require_ok(JsonLoad, JsonSource),
     assertion(PrologSource.patch == JsonSource.patch),
     assertion(PrologSource.patch.settings.model == "roundtrip/model").
+
+test(save_invalidates_cached_generation_until_next_resolve) :-
+    with_temp_tree(save_invalidates_cached_generation_until_next_resolve_).
+
+save_invalidates_cached_generation_until_next_resolve_(Root) :-
+    directory_file_path(Root, 'config.prolog', Path),
+    write_text(Path, "setting(model, \"old/model\").\n"),
+    agentprolog_config_resolve(_{user_path:Path}, FirstOutcome),
+    require_ok(FirstOutcome, FirstResolution),
+    FirstResolution.sources = [FirstSource],
+    agentprolog_config_defaults(Defaults),
+    put_dict(model, Defaults.settings, "written/model", Settings),
+    put_dict(settings, Defaults, Settings, Config),
+    agentprolog_config_save_file(Path, prolog, Config, SaveOutcome),
+    require_ok(SaveOutcome, _),
+    agentprolog_config_resolve(_{user_path:Path}, SecondOutcome),
+    require_ok(SecondOutcome, SecondResolution),
+    SecondResolution.sources = [SecondSource],
+    assertion(SecondSource.generation > FirstSource.generation),
+    assertion(SecondSource.module \== FirstSource.module),
+    assertion(SecondResolution.effective.settings.model == "written/model").
 
 test(save_forces_0600,
      [condition(current_prolog_flag(unix, true))]) :-
