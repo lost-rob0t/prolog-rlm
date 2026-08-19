@@ -101,6 +101,29 @@ test(bridge_creates_and_lists_sessions_without_model_call,
     assertion(ListResponse.result = [Session|_]),
     assertion(Session.session_id == "session-test").
 
+test(bridge_sessions_survive_close_and_reopen,
+     [ setup(persistent_bridge(SettingsPath, StorePath)),
+       cleanup(close_persistent_bridge(SettingsPath, StorePath))
+     ]) :-
+    Create = _{request_id:"persist-create",
+               command:"session/create",
+               payload:_{id:"persistent-session",
+                         metadata:_{purpose:"restart-proof"}}},
+    deepseek_bridge_handle(Create, CreateResponse),
+    assertion(CreateResponse.ok == true),
+    deepseek_bridge_close(CloseOutcome),
+    assertion(CloseOutcome == ok(closed)),
+    deepseek_bridge_open(SettingsPath, ReopenOutcome),
+    assertion(ReopenOutcome = ok(_)),
+    Open = _{request_id:"persist-open",
+             command:"session/open",
+             payload:_{session_id:"persistent-session"}},
+    deepseek_bridge_handle(Open, OpenResponse),
+    assertion(OpenResponse.ok == true),
+    assertion(OpenResponse.result.session_id == "persistent-session"),
+    assertion(OpenResponse.result.history_mode == "lossless_rlm"),
+    assertion(OpenResponse.result.compaction == false).
+
 test(bridge_settings_update_persists,
      [ setup(memory_bridge(SettingsPath)),
        cleanup(close_memory_bridge(SettingsPath))
@@ -163,6 +186,31 @@ memory_bridge(SettingsPath) :-
 close_memory_bridge(SettingsPath) :-
     deepseek_bridge_close(_),
     cleanup_path(SettingsPath).
+
+persistent_bridge(SettingsPath, StorePath) :-
+    temp_path(SettingsPath),
+    temp_path(StorePath),
+    atom_string(StorePath, StorePathString),
+    deepseek_settings_defaults(Defaults),
+    put_dict(_{persist_sessions:true,
+               conversation_store:StorePathString},
+             Defaults,
+             Settings),
+    deepseek_settings_save(SettingsPath, Settings, SaveOutcome),
+    (   SaveOutcome = ok(_)
+    ->  true
+    ;   throw(SaveOutcome)
+    ),
+    deepseek_bridge_open(SettingsPath, OpenOutcome),
+    (   OpenOutcome = ok(_)
+    ->  true
+    ;   throw(OpenOutcome)
+    ).
+
+close_persistent_bridge(SettingsPath, StorePath) :-
+    deepseek_bridge_close(_),
+    cleanup_path(SettingsPath),
+    cleanup_path(StorePath).
 
 temp_path(Path) :-
     tmp_file_stream(text, Path, Stream),

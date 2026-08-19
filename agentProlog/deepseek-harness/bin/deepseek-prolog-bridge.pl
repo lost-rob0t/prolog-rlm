@@ -24,9 +24,9 @@ main(Argv) :-
 settings_path([], Path) :-
     !,
     deepseek_prolog_settings:deepseek_settings_default_path(Path).
-settings_path(["--settings", Path0], Path) :-
-    !,
-    atom_string(Path, Path0).
+settings_path(['--settings', Path], Path) :-
+    atom(Path),
+    !.
 settings_path([Path], Path) :-
     atom(Path),
     !.
