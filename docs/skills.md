@@ -26,7 +26,7 @@ planner instruction
 model
 ```
 
-Activation is not authorization. A selected skill can change model-visible instructions, but it cannot register a callable, grant a tool capability, change authority mode, start an MCP server, or bypass the existing execution policy.
+Activation is not authorization. A selected skill can change model-visible instructions, but it cannot register a callable, grant a tool capability, change authority mode, start an MCP server, execute a bundled script, or bypass the existing execution policy.
 
 ## Skill format
 
@@ -40,7 +40,7 @@ disable-model-invocation: false
 ---
 ```
 
-The Markdown body is not read during catalog discovery. Unknown frontmatter keys are ignored and never interpreted as Prolog. After Prolog selects a skill, the body and sibling `.md`/`.txt` resources are read and rendered into the planner instruction.
+The Markdown body is not read during catalog discovery. Unknown frontmatter keys are ignored and never interpreted as Prolog. After Prolog selects a skill, the body and bounded recursive text resources under that skill directory are read and rendered into the planner instruction. Resource types include Markdown, text, shell templates, configuration, and common source formats. They remain inert text even when their filename is executable-looking.
 
 `disable-model-invocation: true` is normalized as `explicit_user`. In `prolog-rlm` that name is historical compatibility metadata: it means **automatic Prolog activation is disabled**. A trusted host may still select the skill with `explicit_skills([...])`.
 
@@ -73,7 +73,7 @@ Catalog entries contain only normalized metadata and canonical file locations. T
 The first deterministic compiler slice supports:
 
 - `skill_mode(auto|off)`
-- `skill_catalog(default|none|Catalog)` on the public completion facade
+- `skill_catalog(default|none|Catalog)` on completion
 - `explicit_skills(Names)` for trusted explicit user/host selections
 - `disabled_skills(Names)` for hard host exclusions
 - `skill_min_score(N)`
@@ -109,18 +109,35 @@ requires('grill-me', grilling).
 
 An explicit host selection of `grill-me` therefore causes Prolog dependency closure to select `grilling` before the planner request exists. The model sees both compiled instruction bodies but never performs the activation itself. Custom catalogs do not receive Matt-specific rules automatically; hosts supply their own `skill_rules/1` when needed.
 
+## Completion boundary
+
+`rlm_skill_completion` wraps the canonical guarded completion predicate inside the scheduled completion task. This means public `rlm:rlm_completion/4`, lower-level `rlm_completion:rlm_completion/4`, managed conversation paths, and the CLI all reach the same Prolog skill-compilation boundary before a planner request exists. A compilation fingerprint marker prevents nested facades from injecting the same skill prompt twice.
+
+`skill_catalog(none)` or `skill_mode(off)` preserves the non-skill path. Existing caller `planner_instruction` content is retained unchanged and no catalog or skill body is exposed to the model.
+
 ## Prompt budget
 
-Skill files are assigned a conservative byte-based prompt-token estimate at discovery time. Selection is bounded by both `skill_max_count` and `skill_max_tokens`; only admitted skill bodies are read. This is a skill-local ceiling, not a replacement for the completion provider's measured token/cost budget.
+Skill files are assigned a conservative byte-based prompt-token estimate at discovery time. Selection is bounded by both `skill_max_count` and `skill_max_tokens`; only admitted skill bodies/resources are read. This is a skill-local ceiling, not a replacement for the completion provider's measured token/cost budget.
 
 The compiled result records selected skills, rejected skills with structured reasons, estimated prompt tokens, and a stable fingerprint over catalog/input/compiler state.
 
 ## Resource confinement
 
-`skill_read_resource/3` accepts only relative paths and resolves them canonically under the selected skill directory. Absolute paths, missing files, and `..`/symlink escapes are rejected. Discovery likewise canonicalizes paths beneath each configured root.
+`skill_read_resource/3` accepts only relative paths and resolves them under the selected skill directory. Catalog scanning and resource loading reject descendant symlinks before following them, then re-check the resolved path remains inside the configured root. Absolute paths, missing files, `..` traversal, symlink escapes, oversized resources, and non-text resources are rejected.
 
-## Default distribution
+Recursive resource discovery deliberately supports nested inert templates such as `scripts/*.sh` because the pinned upstream collection references them. Loading such text does not grant process or shell authority.
 
-The repository pins selected stable skills from Matt Pocock's `mattpocock/skills` under `third_party/mattpocock-skills/`. The default catalog is loaded from that vendored set when present. Deprecated and experimental/in-progress material is not part of the default corpus.
+## Default and complete Matt Pocock distribution
 
-Vendored upstream files are byte-for-byte copies from pinned revision `9c9f36ccd3995266cd675468af71639c8dde1ec5`. Runtime compatibility belongs in Prolog overlay rules, not edits to the vendored Markdown. The upstream collection remains third-party material under its MIT license. See `third_party/mattpocock-skills/UPSTREAM.md` and `LICENSE` for provenance and attribution.
+The repository carries two forms of the same pinned upstream revision `9c9f36ccd3995266cd675468af71639c8dde1ec5`:
+
+- `third_party/mattpocock-skills/skills` is a vendored stable fallback used by ordinary checkouts and CI that do not initialize submodules;
+- `third_party/mattpocock-skills/upstream` is a git submodule pin to the complete upstream repository.
+
+Initialize the complete collection with:
+
+```sh
+git submodule update --init third_party/mattpocock-skills/upstream
+```
+
+A host can load its full stable catalog explicitly from `third_party/mattpocock-skills/upstream/skills`; the scanner excludes `deprecated/` and `in-progress/` unless explicitly configured otherwise. Runtime compatibility belongs in Prolog overlay rules, not edits to upstream Markdown. The upstream collection remains third-party material under its MIT license. See `third_party/mattpocock-skills/UPSTREAM.md` and `LICENSE` for provenance and attribution.
