@@ -29,7 +29,7 @@ Already available in core and the downstream application boundary:
 
 Still missing for a useful coding agent:
 
-- canonical #57 effect-boundary adoption across the effectful paths tracked by #79;
+- remaining #57 effect-boundary adoption for provider, MCP request, and lifecycle/process paths tracked by #79;
 - a standard project tool pack with search, write/edit, git, and test/process tools;
 - durable project-scoped settings and remembered bounded approvals;
 - the Prolog-side Project/File/Language/grammar registry and CST/query/semantic/freshness layers from #95-#99 that turn the landed #94 parser mechanics into the actual project parser/indexer and canonical project KB;
@@ -68,7 +68,7 @@ Core must not gain ambient repository write access just because `PrologAgent` ne
 
 ## Phase 0: finish the write-safety substrate
 
-The generic durable effect substrate is already on `main` through #78, #83, and #85. Before repository mutation is a normal feature, finish the **canonical adoption** work tracked by #79. Open PR #86 is the first tool-path slice, but it is not merged evidence and does not make the phase complete.
+The generic durable effect substrate is already on `main` through #78, #83, and #85. PR #86 has now landed the first canonical tool-path adoption slice: effectful `rlm_tool` execution crosses the #57 prepared-ticket authority/admission boundary before mutation. Phase 0 remains incomplete until the remaining provider, effectful MCP request, and lifecycle/process paths tracked by #79 use the same boundary where applicable.
 
 Required outcome:
 
@@ -281,7 +281,7 @@ The first release does not need IDE parity, a plugin marketplace, background dae
 
 Current core and product issues that materially affect the roadmap:
 
-- #79: canonical external-effect adoption; blocks normal repository mutation. The #57 generic substrate is merged, but adoption is not.
+- #79: canonical external-effect adoption still blocks normal repository mutation as a complete product capability. The #57 generic substrate and #86 tool-path Slice 1 are merged; provider, effectful MCP request, and lifecycle/process adoption remain.
 - #49 / #50: companion project/coding tool pack.
 - #54: async contract; core migrations are largely complete, while external process/test/network and downstream approval/TUI integration remain.
 - #56: result acceptance should build on the shared evidence/provenance/verifier substrate now used by Spec Verify; the broader result-envelope/delegation work remains open.
