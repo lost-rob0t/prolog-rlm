@@ -2,6 +2,7 @@
           [ effect_execute/6,
             effect_execute_async/6,
             effect_execute_execute/6,
+            effect_execute_prepared/4,
             effect_prepare/5,
             effect_reconcile/3,
             effect_adapter_submit/4,
@@ -17,6 +18,12 @@ These are code-owned extension points, never runtime/model-writable facts.
 The #54 direction remains:
 
   effect_execute_execute/6 -> rlm_async Future -> sync await wrapper
+
+Callers that must authorize an exact already-prepared effect ticket may use
+`effect_execute_prepared/4`. That ABI acquires the same effect-store execution
+lease and sends the supplied ground ticket through the canonical ticket
+validation, admission, dispatch, adapter, observation, uncertainty, and
+cancellation path. It never prepares a replacement ticket.
 
 The harness crosses the external boundary only after #57 has durably recorded
 `dispatching`. Any ordinary adapter exception after that point is preserved as
@@ -88,6 +95,28 @@ effect_execute_leased(Adapter, Kind, Request, EffectOptions, AuthorityRef,
     effect_prepare(Adapter, Kind, Request, EffectOptions, Decision),
     execute_after_prepare(Decision, Adapter, AuthorityRef, Outcome).
 
+%! effect_execute_prepared(+Adapter,+Ticket,+AuthorityRef,-Outcome)
+%
+%  Execute exactly Ticket under the canonical #57 execution lease. Ticket is
+%  validated by rlm_effect_admit/3 while the lease is held. A stale store,
+%  execution epoch, call identity, fingerprint, attempt identity, mode, or
+%  lineage therefore fails closed rather than being re-prepared.
+
+effect_execute_prepared(Adapter, Ticket, AuthorityRef, Outcome) :-
+    catch(effect_execute_prepared_(Adapter, Ticket, AuthorityRef, Outcome),
+          Exception,
+          executor_exception(Exception, Outcome)).
+
+effect_execute_prepared_(Adapter, Ticket, AuthorityRef, Outcome) :-
+    require_adapter_identity(Adapter),
+    (   rlm_effect:rlm_effect_store_id(StoreId)
+    ->  setup_call_cleanup(
+            rlm_effect_persist:effect_persist_acquire_lease(StoreId, Lease),
+            execute_prepared_ticket(Adapter, Ticket, AuthorityRef, Outcome),
+            rlm_effect_persist:effect_persist_release_lease(Lease))
+    ;   Outcome = error(effect_error{kind:store_not_open})
+    ).
+
 effect_prepare(Adapter, Kind, Request, EffectOptions0, Outcome) :-
     catch(( trusted_executor_options(Adapter, EffectOptions0, EffectOptions),
             rlm_effect:rlm_effect_prepare(Kind, Request, EffectOptions, Outcome)
@@ -142,6 +171,9 @@ execute_after_prepare(reconciliation_required(Attempt), Adapter, _, Outcome) :-
     !,
     reconcile_attempt(Adapter, Attempt, Outcome).
 execute_after_prepare(execute(Ticket), Adapter, AuthorityRef, Outcome) :-
+    execute_prepared_ticket(Adapter, Ticket, AuthorityRef, Outcome).
+
+execute_prepared_ticket(Adapter, Ticket, AuthorityRef, Outcome) :-
     catch(execute_ticket(Adapter, Ticket, AuthorityRef, Outcome),
           rlm_async_cancelled(FutureId),
           ( cancel_interrupted_ticket(Adapter, Ticket, Ticket.request, FutureId),
