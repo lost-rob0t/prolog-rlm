@@ -168,9 +168,93 @@ The sync facade starts the same canonical async execution and awaits its Future.
 Do not build another synchronous business-logic implementation around an
 adapter.
 
+When authority must bind an already prepared ticket, use the trusted prepared
+execution ABI instead of preparing again:
+
+```prolog
+effect_execute_prepared(Adapter, Ticket, Authority, Outcome).
+```
+
+It acquires the same #57 effect-store execution lease and validates, admits,
+dispatches, observes, cancels, and preserves uncertainty through the canonical
+executor path. It never substitutes a freshly prepared ticket for the ticket
+that was authorized.
+
 ## Fresh reads
 
 The effect runtime is not indiscriminate memoization. Pure logical predicates do
 not need this boundary, and freshness-sensitive reads may explicitly resample
 or use a read policy appropriate to their semantics. Use durable effect identity
 for work whose accidental repetition matters.
+
+## Canonical tool adapter
+
+Effectful `rlm_tool` execution no longer jumps from #53 authority directly to
+`perform_tool_effect`. The canonical path is:
+
+```text
+normalize executable operation (schema + preflight)
+-> capability / hard-policy / confinement
+-> rlm_effect_executor:effect_prepare(rlm_tool, tool, Request, Options, execute(Ticket A))
+-> #53 authority fingerprints Ticket A
+-> authorized continuation carries the ground Ticket A
+-> rlm_effect_executor:effect_execute_prepared(rlm_tool, Ticket A, Authority, Outcome)
+-> validate/admit Ticket A under the #57 execution lease
+-> durable dispatch of Ticket A
+-> effect_adapter_submit(rlm_tool, Attempt, Request, Outcome)
+-> perform_tool_effect (the trusted tool handler boundary)
+-> authoritative observation OR conservative uncertainty
+```
+
+There is no second preparation after authority. If the store namespace,
+execution epoch, call identity, fingerprint, attempt identity, mode, or parent
+lineage represented by Ticket A is stale at execution time, admission fails
+closed. Authority over Ticket A is never permission to prepare and execute a
+replacement Ticket B.
+
+Read tools (`effect:read`) retain the direct fresh-read path; they are not
+memoized through the effect ledger merely because the ledger exists. Imported
+effectful MCP tools inherit the same canonical tool path when they declare a
+non-read effect.
+
+The tool adapter is the static code-owned multifile hook
+`rlm_effect_executor:effect_adapter_submit(rlm_tool, ...)`. Adapter identity
+`rlm_tool` identifies that generic boundary, not the concrete trusted tool
+implementation behind it.
+
+For effectful tools, #57 executable semantics additionally contain a stable
+code-owned tool-executor digest derived from the trusted preflight and handler
+predicate entrypoints, together with the trusted effect class and effective
+execution limits. The digest is non-callable, contains no secrets, memory
+addresses, or runtime object IDs, and changes when the trusted execution binding
+materially changes. Semantics-bearing configuration hidden in a closure must be
+surfaced by trusted preflight into the normalized request/details rather than
+encoded as an ephemeral runtime handle.
+
+This stable tool-executor identity is deliberately distinct from:
+
+- the model-facing tool name and normalized arguments;
+- adapter identity `rlm_tool`;
+- the ephemeral `registry_N` live-registry allocation;
+- observational effect metadata.
+
+The ephemeral registry identity remains metadata only so the adapter can locate
+the live callable at dispatch time. It does not participate in durable
+executable identity, and the callable itself is never serialized into the
+ledger or exposed to the model.
+
+Editing a pending effectful tool proposal normalizes and preflights the edited
+payload, prepares a new ticket, composes a new #53 authority operation, and
+builds a continuation carrying that new ticket. The old ticket is not retained
+as an executable fallback.
+
+The continuation that runs after `approve_diff` approval calls the trusted
+`effect_execute_prepared/4` ABI directly. It never nests a Future wait inside an
+already-scheduled async worker, preserving the #54 single canonical execution
+direction.
+
+If no effect store is open, an effectful tool fails closed with
+`effect_store_required` rather than bypassing #57. Other #57 preparation
+failures retain their own structured cause instead of being mislabeled as a
+missing store. The legacy pre-v2 store fence remains fail-closed; effectful tool
+execution cannot bypass it.

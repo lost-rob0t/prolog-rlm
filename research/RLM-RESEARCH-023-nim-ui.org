@@ -1,0 +1,292 @@
+#+TITLE: RLM-RESEARCH-023 Nim terminal UI for PrologAgent
+#+DATE: 2026-08-18
+#+OPTIONS: toc:3 num:nil
+
+* Research question
+
+What is the best way to build a native Nim PrologAgent terminal client, and can Nim share enough renderer behavior with the OpenCode/OpenTUI reference to justify a first-class implementation?
+
+* Primary sources
+
+Retrieved 2026-08-18.
+
+- =johnnovak/illwill= =master=: README and documented feature/limitation set.
+- =arungeorgesaji/tide= =main=: README, demonstrating a modal editor built on Illwill.
+- =anomalyco/opentui= =main=: README; the native Zig core exposes a C ABI usable from other languages.
+- =hmbemba/nim-opentui= =master=: experimental Nim bindings for OpenTUI's C ABI.
+- =RLM-RESEARCH-020= for the frontend contract.
+
+* Findings
+
+** Illwill is simple, portable, and intentionally low-level
+
+Illwill is a pure-Nim terminal library with:
+
+- non-blocking keyboard input;
+- key combinations and special keys;
+- mouse events;
+- virtual terminal buffers;
+- double-buffered/diff updates;
+- UTF-8 box drawing;
+- full-screen terminal support;
+- no non-standard runtime dependency.
+
+Its own documentation is candid about the tradeoff: it is designed for custom immediate-mode interfaces, does not provide a widget system, is less robust than full curses implementations for obscure terminals/encodings, and has terminal suspend/resume limitations.
+
+That makes it attractive for a small native client, but a full coding-agent UI would need to implement substantial app-level machinery itself.
+
+** Tide proves editor-grade interaction is possible on Illwill
+
+=Tide= is a Vim-like modal editor written in Nim on top of Illwill and demonstrates search, syntax highlighting, minimap, themes, undo/redo, line numbers, diff mode, and modal editing.
+
+This is useful evidence against dismissing Illwill as only suitable for dashboards. It also proves the opposite point: those higher-level editing features live in the application, not the library. PrologAgent would own similar complexity if it chose this path.
+
+** OpenTUI's C ABI creates a second Nim route
+
+OpenTUI's native core is written in Zig and explicitly exposes a C ABI. An experimental =nim-opentui= repository already wraps that ABI with Nim FFI and resource-management helpers.
+
+The current binding is not enough to treat OpenTUI as a mature Nim framework. Its declarative node-tree DSL is described as not yet implemented, and packaging the native OpenTUI library is more involved than installing a pure-Nim module.
+
+Still, this changes the research question materially. Nim can potentially use the same native renderer family as the JS reference instead of reproducing terminal rendering from scratch.
+
+* Two viable implementation tracks
+
+** Track A: pure Nim with Illwill
+
+#+begin_example
+prolog_agent_ui_v1 events
+        |
+        v
+frontend model/reducer
+        |
+        v
+immediate-mode render(tb)
+        |
+        v
+Illwill TerminalBuffer
+#+end_example
+
+Advantages:
+
+- simple deployment;
+- pure Nim dependency chain;
+- straightforward double-buffered rendering;
+- excellent control over allocations and UI state;
+- natural fit for a small, fast binary.
+
+Costs:
+
+- build our own textarea/editor behavior;
+- build viewport/message anchoring;
+- build focus/dialog stack;
+- build layout/breakpoint helpers;
+- build diff widget;
+- build command palette/keymap abstraction;
+- handle Unicode display-width correctness carefully;
+- own more terminal lifecycle edge cases.
+
+** Track B: Nim binding over OpenTUI native core
+
+#+begin_example
+Nim frontend state
+   |
+   +--> Nim OpenTUI adapter
+             |
+             v
+       OpenTUI C ABI
+             |
+             v
+        Zig renderer
+#+end_example
+
+Potential advantages:
+
+- renderer parity with the JS reference;
+- shared native terminal behavior;
+- possible reuse of code/diff/render primitives exposed by the C ABI over time;
+- less need to tune terminal diff rendering independently.
+
+Current costs/risks:
+
+- unofficial/experimental binding;
+- native library packaging on every target;
+- high-level component/layout API may still need to be written in Nim;
+- C ABI coverage may lag TypeScript features;
+- version skew between binding and OpenTUI native ABI;
+- debugging crosses Nim/Zig/FFI boundaries.
+
+Do not make an unofficial third-party binding a mandatory dependency without pinning and auditing it. A PrologAgent experiment may vendor a tiny adapter against a known OpenTUI C ABI revision instead.
+
+* Proposed Nim client architecture
+
+Regardless of renderer choice:
+
+#+begin_example
+agentProlog/ui-nim/
+  src/
+    protocol.nim
+    transport.nim
+    events.nim
+    commands.nim
+    state.nim
+    reducer.nim
+    layout.nim
+    keymap.nim
+    theme.nim
+    ui/
+      home.nim
+      session.nim
+      transcript.nim
+      composer.nim
+      tools.nim
+      diff.nim
+      permission.nim
+      sidebar.nim
+      status.nim
+  tests/
+#+end_example
+
+The reducer must be renderer-neutral. This makes an A/B spike between Illwill and OpenTUI possible without rewriting protocol semantics.
+
+* Event loop
+
+Never make model/provider or Prolog runtime I/O part of the draw loop.
+
+The conceptual loop is:
+
+#+begin_example
+poll terminal input
+poll/drain bounded backend-event queue
+reduce events and input into UI state
+render changed state
+sleep/wait efficiently
+#+end_example
+
+The transport reader can run through Nim's asynchronous/process facilities or a dedicated thread, but screen state changes should be serialized through the main frontend reducer.
+
+Backpressure matters. A fast stream of token deltas should be coalesced before repainting. There is no value in drawing every network chunk as a separate frame if ten chunks arrive before the next terminal refresh.
+
+Suggested policy:
+
+- preserve every semantic event boundary;
+- coalesce adjacent text deltas for the same message before render;
+- cap render frequency under heavy streaming while processing keyboard input immediately;
+- never coalesce authority, tool terminal-state, verifier terminal-state, or error events away.
+
+* UI layout
+
+Follow =RLM-RESEARCH-020= rather than an Illwill-specific grid model.
+
+For Illwill, calculate a small layout tree each frame:
+
+#+begin_src nim
+Layout(
+  header: Rect,
+  transcript: Rect,
+  sidebar: Option[Rect],
+  composer: Rect,
+  status: Rect
+)
+#+end_src
+
+At wide sizes reserve approximately 40-44 columns for the sidebar. At medium/narrow sizes use the whole width for the active route and make sidebar/diff/timeline separate overlay states.
+
+Avoid scattering coordinate math across widgets. Illwill makes that temptation extremely easy.
+
+* Prompt editor
+
+The composer is the largest hidden cost in a low-level Nim TUI.
+
+Required behavior:
+
+- multiline text;
+- cursor movement by rune/grapheme-aware display position;
+- home/end and word movement;
+- insertion/deletion;
+- history;
+- paste handling;
+- dynamic height up to a configured maximum;
+- scrolling when content exceeds that height;
+- clean handoff of exact UTF-8 text to the protocol client.
+
+Do not implement a general text editor. The goal is a robust prompt textarea.
+
+Tide is useful for implementation patterns but should not be imported wholesale merely to obtain an editor widget.
+
+* Diff and syntax presentation
+
+For pure Illwill v0:
+
+- implement unified diff first;
+- tokenize diff lines into add/remove/context/hunk headers;
+- preserve line numbers;
+- use vertical scrolling;
+- optionally horizontal scrolling before attempting sophisticated wrapping;
+- syntax highlighting can be deferred behind the JS reference.
+
+If OpenTUI C ABI exposes or later exposes a stable rich diff primitive suitable for foreign-language bindings, reevaluate before duplicating it.
+
+* Native-client advantages
+
+- fast startup and low steady-state memory are achievable;
+- easy single-binary client distribution if using pure Illwill;
+- Nim data types are good for a strict protocol decoder;
+- UI state can be explicit and allocation-conscious;
+- a Nim client is attractive for SSH/remote environments where a JS runtime is unwanted.
+
+* Risks
+
+- The high-level Nim TUI ecosystem is thin compared with JS and Emacs.
+- Illwill explicitly gives up some terminal/encoding robustness.
+- OpenTUI FFI gives renderer reuse at the cost of native dependency packaging and ABI maintenance.
+- A hand-built immediate-mode UI can become coordinate spaghetti unless the layout and reducer boundaries are rigid.
+- Unicode/grapheme width bugs are product bugs in a chat/code UI, not cosmetic edge cases.
+
+* Rejected alternatives
+
+- Poll Prolog synchronously inside the Illwill render loop.
+- Depend on shell commands or log scraping as the frontend protocol.
+- Build a full Vim-like editor inside the TUI before the coding-agent workflow is proven.
+- Adopt =nim-opentui= blindly as production infrastructure. Audit/pin or write the minimal adapter we need.
+- Duplicate the runtime's state machine in Nim to make the UI feel faster.
+
+* Acceptance experiment
+
+Build the same semantic UI twice at small scope:
+
+** Spike A, Illwill
+
+- home;
+- session transcript;
+- multiline composer;
+- one tool card;
+- unified diff approval;
+- sidebar breakpoint;
+- large streaming replay.
+
+** Spike B, OpenTUI C ABI
+
+- render the same event fixture;
+- measure executable/package complexity;
+- compare resize correctness, redraw latency, Unicode behavior and implementation size;
+- determine how much high-level layout/widget logic is actually reusable from OpenTUI outside TypeScript.
+
+For both spikes verify:
+
+1. 70/100/140-column layouts;
+2. immediate keyboard response during 10,000 delta replay;
+3. terminal restored after interrupt/crash path where recoverable;
+4. unknown tool fallback;
+5. pending permission blocks prompt submission but not navigation;
+6. no semantic difference in commands emitted to Prolog.
+
+* Recommendation
+
+Do not choose the Nim renderer before the two-spike comparison.
+
+The default expectation is:
+
+- Illwill wins if we value a tiny self-contained native client and accept implementing app-specific widgets;
+- OpenTUI C ABI wins if the FFI exposes enough stable layout/render primitives to materially reduce implementation duplication.
+
+Either way, Nim should remain a client of =prolog_agent_ui_v1=. It should not delay the reference JS UI or the headless coding-agent runtime.

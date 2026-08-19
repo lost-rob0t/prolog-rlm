@@ -1,0 +1,253 @@
+#+TITLE: RLM-RESEARCH-021 JavaScript terminal UI for PrologAgent
+#+DATE: 2026-08-18
+#+OPTIONS: toc:3 num:nil
+
+* Research question
+
+What JavaScript/TypeScript stack best implements the standalone PrologAgent terminal UI defined by =RLM-RESEARCH-020=, while keeping the frontend replaceable and the Prolog runtime authoritative?
+
+* Primary sources
+
+Retrieved 2026-08-18.
+
+- =anomalyco/opentui= =main=: project README and packages.
+- =anomalyco/opencode= =dev=: =packages/tui/package.json= and TUI sources.
+- =anomalyco/opencode= =dev=: =specs/tui-package.md=.
+- =vadimdemedes/ink= =master=: project README.
+
+* Findings
+
+** OpenTUI is the closest reference substrate
+
+OpenTUI is a native Zig terminal core with TypeScript bindings. It exposes a C ABI, has imperative primitives, Solid and React reconcilers, a keymap package, and is used by OpenCode itself.
+
+For our specific goal this is unusually relevant evidence. We are not merely choosing a fashionable TUI toolkit; we are black-boxing a product whose current UI is already implemented on this renderer family.
+
+Useful capabilities include:
+
+- flexbox-style layout;
+- retained renderables rather than line-oriented console printing;
+- scrolling and focusable input controls;
+- code and diff renderables;
+- syntax highlighting support;
+- mouse and keyboard handling;
+- Solid and React frontends;
+- a dedicated keymap/command engine;
+- native diff-oriented rendering suitable for approval review.
+
+OpenCode's package adds SolidJS, fuzzy search, diff utilities, clipboard support, persistence, and presentation-specific helpers around that renderer.
+
+** SolidJS is the lowest-risk OpenTUI binding for fidelity
+
+OpenCode uses =@opentui/solid=. A PrologAgent JS client does not need to copy its components, but using the same reconciler makes it straightforward to implement the same behavioral shapes:
+
+- reactive transcript deltas;
+- conditional permission/question surfaces;
+- wide/narrow layout breakpoints;
+- tool lifecycle cards;
+- sidebar slots;
+- modal dialogs;
+- transient status updates.
+
+Fine-grained signals also map naturally onto a stream of small runtime events. The important rule is to normalize those events into one frontend store first. Do not let individual components subscribe to raw transport messages and reconstruct backend truth independently.
+
+** React + Ink is credible, but less direct for this target
+
+Ink is a mature React renderer for command-line applications, uses Yoga/Flexbox, supports input/focus/window sizing, and is used by multiple coding-agent CLIs.
+
+It is therefore a real alternative, not a toy. Its advantages are React familiarity and a broad ecosystem. The downside for this project is that OpenTUI already supplies primitives closer to the target UI, especially rich terminal rendering and diff/code surfaces. Choosing Ink would deliberately move away from the renderer used by the UI we are studying while providing no obvious Prolog-specific benefit.
+
+Ink remains a useful fallback if OpenTUI packaging/runtime constraints become unacceptable.
+
+** Bun should be the first runtime target
+
+OpenTUI's normal JavaScript path is Bun-first. Its native/FFI packaging and OpenCode integration are already exercised there. Supporting Node later is possible, but it should not be a v0.1 requirement if doing so complicates native renderer loading or constrains OpenTUI features.
+
+The JS UI should remain a frontend package, not the process supervisor for PrologAgent. A small launcher may start/connect to the runtime, but tool execution, repository effects, providers, budgets, and authority remain in Prolog.
+
+* Proposed package architecture
+
+#+begin_example
+agentProlog/ui-js/
+  package.json
+  src/
+    main.tsx
+    protocol/
+      client.ts
+      decoder.ts
+      events.ts
+      commands.ts
+    state/
+      store.ts
+      reducer.ts
+    routes/
+      home.tsx
+      session.tsx
+    components/
+      composer.tsx
+      transcript.tsx
+      message.tsx
+      tool-card.tsx
+      diff-view.tsx
+      permission.tsx
+      question.tsx
+      sidebar.tsx
+      status-line.tsx
+    dialogs/
+    keymap/
+    theme/
+    test/
+#+end_example
+
+The protocol module is the only package area allowed to know the transport serialization. Components consume semantic frontend state.
+
+* Transport
+
+For a local first release, prefer one of:
+
+1. a child =swipl= process over stdin/stdout with one framed event protocol;
+2. a Unix-domain socket/local TCP endpoint managed by the PrologAgent host.
+
+The protocol should support request IDs plus unsolicited events. Newline-delimited JSON is the easiest polyglot baseline and can coexist with Prolog-term APIs inside the runtime.
+
+Do not parse human CLI output. Do not use ANSI logs as the data plane.
+
+The JS client should perform:
+
+#+begin_example
+connect
+-> negotiate protocol version/capabilities
+-> fetch session/project snapshot
+-> subscribe to ordered events
+-> reduce events into frontend state
+-> send explicit commands with correlation IDs
+#+end_example
+
+Reconnect must request a fresh snapshot and resume from a known sequence boundary where supported.
+
+* UI design
+
+** Home
+
+Use a centered prompt with a restrained maximum width, current project/model summary, recent sessions, and connection/provider status. The home route should be usable before any repository scan has completed.
+
+** Session
+
+Use a vertical application shell:
+
+#+begin_example
+header
+content: transcript + optional sidebar
+bottom dock: composer OR blocking permission/question
+status line
+#+end_example
+
+At wide widths the sidebar can remain visible. At narrow widths it becomes a dialog/overlay. The transcript should use virtualized or otherwise bounded rendering if long sessions make a naive tree expensive.
+
+** Message and tool rendering
+
+Render assistant text incrementally. Tool calls should have a compact line by default and expandable detail. Bespoke renderers may exist for file reads/searches/edits/tests/MCP, but unknown tools always fall back to a generic renderer showing safe name/status/inputs/results.
+
+A renderer exception must degrade one tool card, not take down the session.
+
+** Diff and approval
+
+The edit-approval view should use OpenTUI's diff capabilities where practical:
+
+- syntax highlighting;
+- unified view on medium/narrow terminals;
+- split view on wide terminals;
+- line numbers;
+- word wrapping or explicit horizontal navigation;
+- bounded scroll area;
+- exact file identity and operation state.
+
+The actions displayed come from negotiated runtime authority capabilities. The UI must not invent project-persistent approval before the runtime exposes it.
+
+* Keymap and command palette
+
+Use a command registry independent of physical keys. Commands should include navigation, session actions, display toggles, model selection, interrupt, approval decisions, file/diff inspection, and trace inspection.
+
+This makes which-key/command-palette behavior straightforward and prevents shortcuts from being buried inside component event handlers.
+
+Suggested baseline:
+
+#+begin_example
+ctrl+c          interrupt active run / exit when idle
+ctrl+n/p        next/previous message or selection
+pgup/pgdn      transcript navigation
+ctrl+l         command palette
+ctrl+b         toggle sidebar
+ctrl+o         open file/diff under focus
+ctrl+t         trace/details
+escape         close overlay / deny only when clearly scoped
+enter          submit/confirm
+#+end_example
+
+Exact defaults should be configurable; semantics are more important than copying OpenCode keys.
+
+* Testing strategy
+
+OpenTUI selection is only justified if the UI can be tested deterministically.
+
+Required tests:
+
+- pure reducer tests from protocol events to frontend state;
+- component tests for known/unknown tool parts;
+- resize/layout tests at 70, 100, and 140 columns;
+- approval diff snapshots;
+- command/keymap resolution tests;
+- reconnect/snapshot reconciliation tests;
+- replay of a large streamed response while synthetic key input remains responsive;
+- malformed optional metadata does not crash the route.
+
+A golden event fixture should be shared conceptually with the CL/Nim/Emacs/Lem research spikes.
+
+* Packaging and deployment
+
+First target:
+
+#+begin_example
+bun install
+bun run agent-prolog
+#+end_example
+
+Later packaging can produce a bundled executable or package the JS client alongside the Prolog application. Do not make Bun or npm a runtime dependency of =prolog-rlm= core itself.
+
+Themes and local frontend preferences can be stored by the JS client, but project authority/settings stay in Prolog's scoped-state substrate.
+
+* Rejected alternatives
+
+- A browser/Electron UI as the first standalone client. It adds a second platform problem before the terminal workflow is proven.
+- Directly importing OpenCode TUI source. Wrong product boundary and needless coupling.
+- React/Ink by default solely because React has a larger ecosystem. It is viable, but it moves farther from the black-box reference renderer.
+- Imperative OpenTUI core without a component layer for the whole app. Useful for specialized widgets, but unnecessarily manual for dynamic session composition.
+- Frontend-owned agent/tool state machines. These belong in Prolog.
+
+* Risks
+
+- OpenTUI is relatively new compared with ncurses-style libraries. Pin versions and keep our component layer thin.
+- Bun-first packaging is an extra dependency for the JS frontend.
+- Long transcripts can create rendering/memory pressure unless old message rendering is bounded or virtualized.
+- Syntax/highlighting parsers and diff rendering must remain presentation-only; they cannot become approval identity.
+
+* Acceptance experiment
+
+Build a disposable JS spike against a fake =prolog_agent_ui_v1= fixture. It must demonstrate:
+
+1. home and session routes;
+2. 70/100/140-column layouts;
+3. 10,000 streaming text deltas without unusable input latency;
+4. generic and specialized tool cards;
+5. edit approval with split/unified diff;
+6. question prompt;
+7. child-agent navigation;
+8. disconnect/reconnect snapshot reconciliation;
+9. keyboard command palette and sidebar toggle;
+10. no direct dependency on =prolog-rlm= implementation modules.
+
+* Recommendation
+
+Use TypeScript + OpenTUI + SolidJS as the reference standalone UI implementation unless the spike exposes a concrete deployment or responsiveness failure.
+
+The key word is /reference/. The frontend protocol must remain independent enough that Common Lisp, Nim, Emacs, and Lem clients can implement the same semantics without JavaScript in their process.

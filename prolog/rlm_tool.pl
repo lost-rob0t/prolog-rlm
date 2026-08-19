@@ -43,12 +43,18 @@ and relinquishes the worker; approval later schedules only the exact trusted
 continuation.
 */
 
+:- use_module(library(crypto)).
 :- use_module(library(gensym)).
 :- use_module(library(lists)).
 :- use_module(library(readutil)).
 :- use_module(library(time)).
 :- use_module(rlm_async, []).
 :- use_module(rlm_authority, []).
+:- use_module(rlm_effect, []).
+:- use_module(rlm_effect_executor, []).
+:- use_module(rlm_effect_authority, []).
+
+:- multifile rlm_effect_executor:effect_adapter_submit/4.
 
 :- dynamic tool_registry_alive/1.
 :- dynamic tool_registry_entry/4.
@@ -593,7 +599,7 @@ preflight_exception(Exception,
     safe_exception(Exception, Safe).
 
 invoke_after_preflight(error(Error), _, _, _, _, _, error(Error),
-                       denied, unknown, confinement_denied, 0, none, none) :- !.
+                        denied, unknown, confinement_denied, 0, none, none) :- !.
 invoke_after_preflight(ok(NormalizedArgs, Details),
                        Registry,
                        Schema,
@@ -609,6 +615,56 @@ invoke_after_preflight(ok(NormalizedArgs, Details),
                        ApprovalId) :-
     tool_authority_context(Registry, Options, Context),
     tool_correlation(Options, Correlation),
+    rlm_authority:rlm_authority(Context, AuthorityMode),
+    (   Schema.effect == read
+    ->  invoke_read_operation(Context,
+                              Schema,
+                              Binding,
+                              NormalizedArgs,
+                              Details,
+                              Limits,
+                              Correlation,
+                              Options,
+                              Outcome,
+                              Authorization,
+                              AuthorityMode,
+                              Status,
+                              Bytes,
+                              Fingerprint,
+                              ApprovalId)
+    ;   invoke_effectful_operation(Context,
+                                   Registry,
+                                   Schema,
+                                   Binding,
+                                   NormalizedArgs,
+                                   Details,
+                                   Limits,
+                                   Options,
+                                   Correlation,
+                                   Outcome,
+                                   Authorization,
+                                   AuthorityMode,
+                                   Status,
+                                   Bytes,
+                                   Fingerprint,
+                                   ApprovalId)
+    ).
+
+invoke_read_operation(Context,
+                       Schema,
+                       Binding,
+                       NormalizedArgs,
+                       Details,
+                       Limits,
+                       Correlation,
+                       Options,
+                       Outcome,
+                       Authorization,
+                       AuthorityMode,
+                       Status,
+                       Bytes,
+                       Fingerprint,
+                       ApprovalId) :-
     Operation = authority_operation{
                     name:Schema.name,
                     effect:Schema.effect,
@@ -623,12 +679,11 @@ invoke_after_preflight(ok(NormalizedArgs, Details),
                                                  Limits,
                                                  Context),
     EditValidator = rlm_tool:tool_edit_validate(Schema,
-                                                Binding,
-                                                Options,
-                                                Limits,
-                                                Context,
-                                                Correlation),
-    rlm_authority:rlm_authority(Context, AuthorityMode),
+                                                 Binding,
+                                                 Options,
+                                                 Limits,
+                                                 Context,
+                                                 Correlation),
     rlm_authority:rlm_authorize_operation(Context,
                                           Operation,
                                           Continuation,
@@ -647,6 +702,213 @@ invoke_after_preflight(ok(NormalizedArgs, Details),
                            Bytes,
                            Fingerprint,
                            ApprovalId).
+
+invoke_effectful_operation(Context,
+                           Registry,
+                           Schema,
+                           Binding,
+                           NormalizedArgs,
+                           Details,
+                           Limits,
+                           Options,
+                           Correlation,
+                           Outcome,
+                           Authorization,
+                           AuthorityMode,
+                           Status,
+                           Bytes,
+                           Fingerprint,
+                           ApprovalId) :-
+    registry_id(Registry, RegistryId),
+    tool_effect_request(Schema, NormalizedArgs, Details, Request),
+    tool_effect_options(RegistryId, Schema, Binding, Limits,
+                        Correlation, EffectOptions),
+    (   catch(rlm_effect_executor:effect_prepare(rlm_tool, tool, Request,
+                                                EffectOptions, PrepareDecision),
+              Exception,
+              effect_prepare_exception(Exception, PrepareDecision))
+    ->  true
+    ;   PrepareDecision = error(effect_error{kind:effect_prepare_failed})
+    ),
+    invoke_after_effect_prepare(PrepareDecision,
+                                Context,
+                                Registry,
+                                Schema,
+                                Binding,
+                                NormalizedArgs,
+                                Details,
+                                Limits,
+                                Options,
+                                Correlation,
+                                Request,
+                                EffectOptions,
+                                Outcome,
+                                Authorization,
+                                AuthorityMode,
+                                Status,
+                                Bytes,
+                                Fingerprint,
+                                ApprovalId).
+
+effect_prepare_exception(Exception, error(EffectError)) :-
+    effect_error_term(Exception, EffectError).
+
+effect_error_term(error(EffectError), EffectError) :- is_dict(EffectError), !.
+effect_error_term(effect_fault(Kind),
+                  effect_error{kind:Kind}) :- !.
+effect_error_term(error(permission_error(_, effect_store, _), _),
+                  effect_error{kind:store_lifecycle_conflict}) :- !.
+effect_error_term(Exception,
+                  effect_error{kind:effect_prepare_failed,
+                               detail:Safe}) :-
+    safe_exception_term(Exception, Safe).
+
+invoke_after_effect_prepare(error(Error),
+                            _Context, _Registry, _Schema, _Binding,
+                            _NormalizedArgs, _Details, _Limits, _Options,
+                            _Correlation, _Request, _EffectOptions,
+                            error(ToolError),
+                            denied, _AuthorityMode, Status,
+                            0, none, none) :-
+    !,
+    effect_prepare_tool_error(Error, ToolError, Status).
+
+effect_prepare_tool_error(Error, ToolError, Status) :-
+    (   is_dict(Error), get_dict(kind, Error, Kind)
+    ->  true
+    ;   Kind = effect_prepare_failed
+    ),
+    effect_prepare_tool_error_kind(Kind, Error, ToolError, Status).
+
+effect_prepare_tool_error_kind(store_not_open, Error,
+                               tool_error{
+                                   phase:effect,
+                                   kind:effect_store_required,
+                                   cause:Error,
+                                   message:"effectful tool requires an open #57 effect store"
+                               },
+                               effect_store_required) :-
+    !.
+effect_prepare_tool_error_kind(Kind, Error,
+                               tool_error{
+                                   phase:effect,
+                                   kind:Kind,
+                                   cause:Error,
+                                   message:"effectful tool preparation failed"
+                               },
+                               Kind).
+
+invoke_after_effect_prepare(replay(Observation),
+                            _Context, _Registry, Schema, _Binding,
+                            _NormalizedArgs, _Details, _Limits, _Options,
+                            _Correlation, _Request, _EffectOptions,
+                            Outcome,
+                            allowed, _AuthorityMode, replayed,
+                            Bytes, Fingerprint, none) :-
+    !,
+    tool_outcome_from_observation(Observation, Schema, Outcome, _Status0, Bytes),
+    Fingerprint = none.
+invoke_after_effect_prepare(in_progress(Attempt),
+                            _Context, _Registry, _Schema, _Binding,
+                            _NormalizedArgs, _Details, _Limits, _Options,
+                            _Correlation, _Request, _EffectOptions,
+                            error(ToolError),
+                            pending, _AuthorityMode, effect_in_progress,
+                            0, Fingerprint, none) :-
+    !,
+    Fingerprint = Attempt.fingerprint,
+    ToolError = tool_error{
+                    phase:effect,
+                    kind:effect_in_progress,
+                    attempt:Attempt.attempt_id,
+                    message:"admitted effect attempt is already in progress"
+                }.
+invoke_after_effect_prepare(reconciliation_required(Attempt),
+                            _Context, _Registry, _Schema, _Binding,
+                            _NormalizedArgs, _Details, _Limits, _Options,
+                            _Correlation, _Request, _EffectOptions,
+                            error(ToolError),
+                            pending, _AuthorityMode, effect_reconciliation_required,
+                            0, Fingerprint, none) :-
+    !,
+    Fingerprint = Attempt.fingerprint,
+    ToolError = tool_error{
+                    phase:effect,
+                    kind:effect_reconciliation_required,
+                    attempt:Attempt.attempt_id,
+                    message:"uncertain prior effect attempt requires reconciliation"
+                }.
+invoke_after_effect_prepare(terminal(Attempt),
+                            _Context, _Registry, _Schema, _Binding,
+                            _NormalizedArgs, _Details, _Limits, _Options,
+                            _Correlation, _Request, _EffectOptions,
+                            error(ToolError),
+                            denied, _AuthorityMode, effect_terminal,
+                            0, Fingerprint, none) :-
+    !,
+    Fingerprint = Attempt.fingerprint,
+    ToolError = tool_error{
+                    phase:effect,
+                    kind:effect_terminal,
+                    attempt:Attempt.attempt_id,
+                    message:"prior effect attempt is in a terminal state"
+                }.
+invoke_after_effect_prepare(execute(Ticket),
+                            Context,
+                            Registry,
+                            Schema,
+                            Binding,
+                            NormalizedArgs,
+                            Details,
+                            Limits,
+                            _Options,
+                            Correlation,
+                            Request,
+                            EffectOptions,
+                            Outcome,
+                            Authorization,
+                            AuthorityMode,
+                            Status,
+                            Bytes,
+                            Fingerprint,
+                            ApprovalId) :-
+    !,
+    BaseOperation = authority_operation{
+                        name:Schema.name,
+                        effect:Schema.effect,
+                        capability:Schema.capability,
+                        args:NormalizedArgs,
+                        details:Details
+                    },
+    rlm_effect_authority:effect_authority_operation(Ticket, BaseOperation,
+                                                     Correlation, Operation),
+    Continuation = rlm_tool:tool_effect_pending_execute(Context,
+                                                        Schema,
+                                                        Ticket),
+    EditValidator = rlm_tool:tool_effect_edit_validate(Context,
+                                                       Registry,
+                                                       Schema,
+                                                       Binding,
+                                                       Limits,
+                                                       Correlation,
+                                                       Request,
+                                                       EffectOptions),
+    rlm_authority:rlm_authorize_operation(Context,
+                                          Operation,
+                                          Continuation,
+                                          EditValidator,
+                                          AuthorityOutcome),
+    invoke_after_authority_effect(AuthorityOutcome,
+                                  Context,
+                                  Schema,
+                                  Ticket,
+                                  Outcome,
+                                  Authorization,
+                                  AuthorityMode,
+                                  Status,
+                                  Bytes,
+                                  Fingerprint,
+                                  ApprovalId).
 
 invoke_after_authority(error(Error), _, _, _, _, _, error(ToolError),
                        denied, _AuthorityMode, authority_denied, 0, none, none) :-
@@ -748,6 +1010,296 @@ tool_pending_execute(Schema, Binding, Args, Limits, _Context, Resolution) :-
 /* The continuation above deliberately does not call tool_invoke/7 or
    tool_invoke_async/6. Approval resumes the already-validated operation at the
    authoritative side-effect boundary exactly once. */
+
+/* -------------------------------------------------------------------------
+ * #57 effect-boundary integration for effectful tools
+ *
+ * Effectful tools (effect \== read) no longer jump from authority to
+ * perform_tool_effect. They prepare a durable #57 ticket before authority
+ * composition, preserve that exact ground ticket into the authorized
+ * continuation, and validate/admit/dispatch/observe that same ticket through
+ * rlm_effect_executor on approval. The tool handler itself runs as a static
+ * code-owned adapter submit hook. Only a stable code-owned binding digest
+ * participates in executable semantics; the ephemeral registry identity
+ * remains metadata for live dispatch lookup. Read tools retain the direct
+ * fresh-read path above.
+ * ---------------------------------------------------------------------- */
+
+invoke_after_authority_effect(error(Error), _Context, _Schema, _Ticket,
+                              error(ToolError),
+                              denied, _AuthorityMode, authority_denied,
+                              0, none, none) :-
+    !,
+    ToolError = tool_error{
+                    phase:authority,
+                    kind:authority_denied,
+                    cause:Error,
+                    message:"host authority rejected the normalized effectful tool operation"
+                }.
+invoke_after_authority_effect(approval_required(Pending), _Context, _Schema,
+                              _Ticket,
+                              approval_required(Pending),
+                              pending, _AuthorityMode, approval_required,
+                              0, Fingerprint, ApprovalId) :-
+    !,
+    Fingerprint = Pending.fingerprint,
+    ApprovalId = Pending.id.
+invoke_after_authority_effect(replay(Replay), _Context, _Schema, _Ticket,
+                              Replay,
+                              allowed, allow_once, replayed,
+                              0, Fingerprint, none) :-
+    !,
+    replay_metadata(Replay, _Bytes, Fingerprint).
+invoke_after_authority_effect(execute(Permit),
+                              Context,
+                              Schema,
+                              Ticket,
+                              Outcome,
+                              allowed,
+                              _AuthorityMode,
+                              Status,
+                              Bytes,
+                              Fingerprint,
+                              none) :-
+    !,
+    Fingerprint = Permit.fingerprint,
+    AuthorityRef = authority_ref{context:Context, permit:Permit},
+    tool_effect_dispatch(Ticket, AuthorityRef, EffectOutcome),
+    tool_outcome_from_effect(EffectOutcome, Schema, Outcome, Status, Bytes),
+    complete_allow_once(Permit, Context, Fingerprint, Outcome).
+
+tool_effect_pending_execute(Context, Schema, Ticket, Resolution) :-
+    get_time(Start),
+    AuthorityRef = authority_ref{context:Context},
+    tool_effect_dispatch(Ticket, AuthorityRef, EffectOutcome),
+    tool_outcome_from_effect(EffectOutcome, Schema, CoreOutcome, Status, Bytes),
+    get_time(End),
+    ElapsedMs is round((End-Start)*1000),
+    Resolution = tool_pending_resolution{
+                     outcome:CoreOutcome,
+                     status:Status,
+                     output_bytes:Bytes,
+                     elapsed_ms:ElapsedMs
+                 }.
+
+tool_effect_dispatch(Ticket, AuthorityRef, EffectOutcome) :-
+    catch(rlm_effect_executor:effect_execute_prepared(rlm_tool, Ticket,
+                                                      AuthorityRef,
+                                                      EffectOutcome),
+          Exception,
+          effect_dispatch_exception(Exception, EffectOutcome)).
+
+effect_dispatch_exception(rlm_async_cancelled(Id), _) :-
+    !,
+    throw(rlm_async_cancelled(Id)).
+effect_dispatch_exception(Exception,
+                          effect_result{state:indeterminate,
+                                        source:executor_exception,
+                                        attempt:none}) :-
+    safe_exception_term(Exception, _).
+
+tool_effect_request(Schema, NormalizedArgs, Details, Request) :-
+    Request = tool_effect_request{tool:Schema.name,
+                                  args:NormalizedArgs,
+                                  details:Details}.
+
+tool_effect_options(RegistryId, Schema, Binding, Limits, _Correlation,
+                    EffectOptions) :-
+    Tool = Schema.name,
+    tool_executor_identity(Binding, ExecutorIdentity),
+    Semantics = tool_effect_semantics{
+                    tool_executor:ExecutorIdentity,
+                    effect:Schema.effect,
+                    limits:Limits
+                },
+    EffectOptions = metadata_options{
+                        metadata:tool_effect_metadata{
+                            registry:RegistryId,
+                            tool:Tool,
+                            limits:Limits
+                        },
+                        semantics:Semantics
+                    }.
+
+tool_executor_identity(Binding,
+                       tool_executor_identity{version:1,
+                                              digest:Digest}) :-
+    tool_binding_entrypoints(Binding, Descriptor),
+    term_string(Descriptor, Serialized,
+                [quoted(true), numbervars(true), ignore_ops(true)]),
+    crypto_data_hash(Serialized, Hex,
+                     [algorithm(sha256), encoding(utf8)]),
+    atom_concat('sha256:', Hex, Digest).
+
+tool_binding_entrypoints(tool_binding(Preflight, Handler),
+                         tool_executor_descriptor{
+                             preflight:PreflightIdentity,
+                             handler:HandlerIdentity
+                         }) :-
+    trusted_callable_entrypoint(Preflight, 3, PreflightIdentity),
+    trusted_callable_entrypoint(Handler, 2, HandlerIdentity).
+
+trusted_callable_entrypoint(Callable, AddedArity,
+                            predicate_identity{module:Module,
+                                               name:Name,
+                                               arity:Arity}) :-
+    strip_module(Callable, Module, Plain),
+    functor(Plain, Name, BoundArity),
+    Arity is BoundArity+AddedArity.
+
+tool_outcome_from_effect(EffectOutcome, Schema, Outcome, Status, Bytes) :-
+    is_dict(EffectOutcome, effect_result),
+    !,
+    (   get_dict(state, EffectOutcome, observed),
+        get_dict(observation, EffectOutcome, Observation)
+    ->  tool_outcome_from_observation(Observation, Schema, Outcome, Status, Bytes)
+    ;   get_dict(state, EffectOutcome, indeterminate)
+    ->  Bytes = 0,
+        Outcome = error(tool_error{
+                            phase:effect,
+                            kind:effect_indeterminate,
+                            message:"effectful tool attempt is indeterminate and requires reconciliation"
+                        }),
+        Status = indeterminate
+    ;   get_dict(state, EffectOutcome, in_progress)
+    ->  Bytes = 0,
+        Outcome = error(tool_error{
+                            phase:effect,
+                            kind:effect_in_progress,
+                            message:"effectful tool attempt is still running"
+                        }),
+        Status = effect_in_progress
+    ;   get_dict(state, EffectOutcome, terminal)
+    ->  Bytes = 0,
+        Outcome = error(tool_error{
+                            phase:effect,
+                            kind:effect_terminal,
+                            message:"effectful tool attempt is in a terminal state"
+                        }),
+        Status = effect_terminal
+    ;   Bytes = 0,
+        Outcome = error(tool_error{
+                            phase:effect,
+                            kind:unknown_effect_result,
+                            detail:EffectOutcome
+                        }),
+        Status = unknown_effect_result
+    ).
+tool_outcome_from_effect(EffectError, _Schema, error(ToolError),
+                         effect_error, 0) :-
+    is_dict(EffectError, error),
+    !,
+    ToolError = tool_error{
+                    phase:effect,
+                    kind:effect_dispatch_failed,
+                    cause:EffectError,
+                    message:"effectful tool dispatch failed"
+                }.
+tool_outcome_from_effect(Other, _Schema,
+                         error(tool_error{phase:effect,
+                                          kind:unknown_effect_result,
+                                          detail:Other}),
+                         unknown_effect_result, 0).
+
+tool_outcome_from_observation(Observation, _Schema, Outcome, Status, Bytes) :-
+    observation_bytes(Observation, Bytes),
+    (   Observation.status == succeeded
+    ->  get_dict(value, Observation, Value),
+        Outcome = ok(Value),
+        Status = ok
+    ;   get_dict(value, Observation, Value),
+        Outcome = error(Value),
+        Status = failed
+    ).
+
+observation_bytes(Observation, Bytes) :-
+    (   get_dict(usage, Observation, Usage),
+        get_dict(output_bytes, Usage, Bytes)
+    ->  true
+    ;   Bytes = 0 ).
+
+tool_observation_from_outcome(ok(Value), _Status, Bytes, Schema,
+                              Observation) :-
+    !,
+    Observation = observation{status:succeeded,
+                              value:Value,
+                              usage:usage{units:1, output_bytes:Bytes},
+                              provenance:rlm_tool,
+                              tool:Schema.name}.
+tool_observation_from_outcome(error(Error), _Status, Bytes, Schema,
+                              Observation) :-
+    Observation = observation{status:failed,
+                              value:Error,
+                              usage:usage{units:1, output_bytes:Bytes},
+                              provenance:rlm_tool,
+                              tool:Schema.name}.
+
+/* Adapter submit: recover the trusted binding from the live registry, then
+   invoke the canonical tool handler boundary. The callable binding is never
+   persisted; the registry identity is metadata only and the stable executor
+   digest lives in executable semantics. */
+
+rlm_effect_executor:effect_adapter_submit(rlm_tool, Attempt, Request,
+                                          observed(Observation)) :-
+    get_dict(tool, Request, Name),
+    get_dict(args, Request, Args),
+    get_dict(metadata, Attempt, Metadata),
+    get_dict(registry, Metadata, RegistryId),
+    get_dict(limits, Metadata, Limits),
+    (   tool_registry_entry(RegistryId, Name, Schema, Binding)
+    ->  perform_tool_effect(Schema,
+                            Binding,
+                            Args,
+                            Limits,
+                            CoreOutcome,
+                            Status,
+                            Bytes),
+        tool_observation_from_outcome(CoreOutcome, Status, Bytes, Schema,
+                                      Observation)
+    ;   Observation = observation{status:failed,
+                                  value:tool_error{
+                                      phase:effect,
+                                      kind:tool_not_registered,
+                                      tool:Name,
+                                      message:"effectful tool binding is not available in this runtime"
+                                  },
+                                  usage:usage{units:0, output_bytes:0},
+                                  provenance:rlm_tool,
+                                  tool:Name}
+    ).
+
+/* Edit validator for effectful tools: re-normalize the edited payload,
+   re-preflight, re-prepare a fresh #57 ticket, and build the new trusted
+   continuation from that ticket. The old attempt ticket can never execute. */
+
+tool_effect_edit_validate(Context, Registry, Schema, Binding, Limits,
+                          Correlation, _OldRequest, _OldEffectOptions,
+                          Edited0, Operation, Continuation) :-
+    edited_args(Edited0, EditedArgs),
+    validate_schema(Schema.arguments, EditedArgs, args, ok),
+    preflight_tool(Binding, EditedArgs, Limits.time_limit,
+                   ok(NormalizedArgs, Details)),
+    registry_id(Registry, RegistryId),
+    tool_effect_request(Schema, NormalizedArgs, Details, Request),
+    tool_effect_options(RegistryId, Schema, Binding, Limits,
+                        Correlation, EffectOptions),
+    (   rlm_effect_executor:effect_prepare(rlm_tool, tool, Request,
+                                          EffectOptions, execute(Ticket))
+    ->  true
+    ;   throw(tool_fault(effect_prepare_failed_for_edit))
+    ),
+    BaseOperation = authority_operation{
+                        name:Schema.name,
+                        effect:Schema.effect,
+                        capability:Schema.capability,
+                        args:NormalizedArgs,
+                        details:Details
+                    },
+    rlm_effect_authority:effect_authority_operation(Ticket, BaseOperation,
+                                                     Correlation, Operation),
+    Continuation = rlm_tool:tool_effect_pending_execute(Context,
+                                                        Schema,
+                                                        Ticket).
 
 perform_tool_effect(Schema,
                     tool_binding(_, Handler),

@@ -1,0 +1,352 @@
+#+TITLE: RLM-RESEARCH-025 Lem UI and Common Lisp bindings for PrologAgent
+#+DATE: 2026-08-18
+#+OPTIONS: toc:3 num:nil
+
+* Research question
+
+How should Lem, the Common Lisp editor, expose a full PrologAgent chat/coding experience and reusable Common Lisp bindings while sharing the same runtime semantics as the standalone TUI and Emacs clients?
+
+* Primary sources
+
+Retrieved 2026-08-18.
+
+- Lem official documentation: extension/mode API, configuration/commands, buffers/windows/workspaces, display architecture, Common Lisp REPL integration.
+- =lem-project/lem= current repository and frontend structure.
+- =RLM-RESEARCH-022= for the reusable Common Lisp client boundary.
+- =RLM-RESEARCH-020= for the frontend protocol and semantic UI contract.
+
+* Findings
+
+** Lem is already the editor shell we would otherwise have to build
+
+Lem is a Common Lisp editor/IDE with:
+
+- extensible major/minor modes;
+- Lisp-defined commands and keymaps;
+- buffers and split windows;
+- project/file navigation;
+- completion/minibuffer interactions;
+- terminal integration;
+- Git and grep functionality;
+- multiple frontends, including ncurses, webview and SDL2;
+- a live Common Lisp environment for extending the editor while it runs.
+
+That means the Lem integration should behave like an editor extension, not a port of the standalone terminal renderer.
+
+The semantic reference remains the same: session transcript, tool lifecycle, approvals, questions, diffs, subagents, verification, usage and traces.
+
+** Lem's display architecture favors editor-native views
+
+Lem separates frontend-specific views from core screens/windows/buffers. Window splits form a tree and can display arbitrary buffers. This is a good fit for a PrologAgent session plus file/diff/task detail panes without binding the extension to the ncurses frontend.
+
+The extension should stay inside ordinary Lem buffer/window primitives so it can work under terminal and graphical Lem frontends.
+
+Do not draw directly through ncurses merely because the first implementation is tested in =lem-ncurses=.
+
+** Lem extensions are ordinary Common Lisp
+
+Major modes, commands and keymaps are defined directly in Lisp. This makes it practical to ship PrologAgent as a normal Lem extension and to share the protocol/client library with the standalone Common Lisp TUI.
+
+This is the important architectural opportunity:
+
+#+begin_example
+prolog-agent-client     Common Lisp library
+       |          \
+       |           \
+       v            v
+prolog-agent-tui    lem-prolog-agent
+(Tuition)           (Lem extension)
+#+end_example
+
+The transport, protocol decoder, session objects, commands and event classes should be identical between the two CL frontends.
+
+* Proposed package split
+
+#+begin_example
+common-lisp/
+  prolog-agent-client/
+    protocol.lisp
+    transport.lisp
+    events.lisp
+    commands.lisp
+    session.lisp
+
+lem/
+  lem-prolog-agent.asd
+  package.lisp
+  mode.lisp
+  session.lisp
+  render.lisp
+  commands.lisp
+  keymap.lisp
+  diff.lisp
+  sidebar.lisp
+  trace.lisp
+  verification.lisp
+  tests/
+#+end_example
+
+If repository layout later places these elsewhere, preserve the system boundary.
+
+* Common Lisp binding API
+
+The reusable client should expose APIs equivalent to:
+
+#+begin_src lisp
+(connect &key project transport options)
+(disconnect connection)
+(capabilities connection)
+
+(make-session connection &key model agent options)
+(open-session connection session-id)
+(session-snapshot connection session-id)
+(send-prompt connection session-id text &key options)
+(cancel-session connection session-id)
+(retry-session connection session-id)
+
+(reply-authority connection request-id decision &key payload)
+(answer-question connection request-id answer)
+
+(subscribe connection callback &key session-id)
+(unsubscribe subscription)
+#+end_src
+
+The implementation should return CLOS objects/conditions or documented structured values. It must never require Lem types.
+
+Lem then owns only conversion from these events into buffers/windows/presentation.
+
+* Transport and concurrency
+
+The first Lem integration should connect to a separate PrologAgent runtime process/socket using the same framed protocol as the standalone clients.
+
+Reasons not to embed =libswipl= inside Lem initially:
+
+- Common Lisp, Lem and SWI-Prolog would then share one process with two language runtimes and foreign-memory/thread lifecycle rules;
+- UI crashes or debugger restarts could affect the agent runtime;
+- the other frontends still need a process/socket protocol;
+- runtime restart/reconnect is easier to reason about across a process boundary;
+- no demonstrated product feature requires in-process SWI calls for v0.
+
+An optional FFI bridge can be researched after the client protocol is stable.
+
+Transport I/O must not block the Lem command loop. A background reader should decode complete frames and enqueue typed CL event objects. UI updates should be marshalled onto the editor's safe/main execution path rather than mutating buffers unpredictably from the transport thread.
+
+The exact Lem scheduling primitive should be chosen from current editor APIs during implementation and pinned by tests. Do not scatter raw Bordeaux Threads calls through rendering code.
+
+* Full chat mode
+
+Define a dedicated =prolog-agent-mode= with its own keymap and buffer-local session reference.
+
+A session buffer should display:
+
+- session title/project/model/agent status;
+- user prompts;
+- assistant streaming text;
+- reasoning summary/detail when enabled;
+- tool blocks;
+- verifier state;
+- pending questions/permissions;
+- final result/error state.
+
+As in Emacs, rendered blocks should retain structured metadata outside visible text so commands can identify the session/message/tool/diff under the cursor without reparsing strings.
+
+The composer can be implemented as one of:
+
+1. an editable tail region in the session buffer;
+2. a separate small input buffer/window.
+
+Lem's window model makes option 2 attractive because it cleanly separates read-only transcript from prompt editing. Spike both and choose based on focus/history ergonomics.
+
+* Recommended editor layout
+
+** Wide
+
+#+begin_example
++-------------------+----------------------------------------+
+| project/files     | PrologAgent session                    |
+| changed files     |                                        |
+| tasks/subagents   | transcript                              |
+| verification      | tool/activity blocks                   |
+|                   |                                        |
+|                   |----------------------------------------|
+|                   | prompt composer                        |
++-------------------+----------------------------------------+
+| model | session | runtime status | usage | trace           |
++------------------------------------------------------------+
+#+end_example
+
+The project/file pane should use Lem's existing project/file functionality where possible rather than maintain a second file tree.
+
+** Medium/narrow
+
+Use one main session window and open files/diffs/details in ordinary buffers or temporary windows. Do not compress every sidebar section into unreadable columns merely to claim parity with the standalone TUI.
+
+* File and code integration
+
+When a tool event references a project file, the primary action should visit that file in a Lem buffer and jump to the relevant location.
+
+The session UI can show a short preview, but Lem is the code viewer/editor.
+
+Important boundary:
+
+- the operator may independently edit files in Lem;
+- PrologAgent proposed writes still go through runtime tools and authority;
+- a buffer modification made by the user is not an implicit PrologAgent tool execution;
+- the pending patch should fail safely if its preimage is stale after the user edits the file.
+
+That interaction should be tested explicitly because editor-native clients make concurrent human edits much more likely than a standalone TUI.
+
+* Approval and diff workflow
+
+When =authority.pending= refers to an edit:
+
+1. render a compact pending block in the chat buffer;
+2. open a diff/review buffer or split;
+3. display current file identity plus proposed patch;
+4. provide editor commands for allowed authority decisions;
+5. after resolution, update the chat block from the backend event rather than assuming success locally.
+
+Suggested commands:
+
+#+begin_example
+prolog-agent-approve-once
+prolog-agent-approve-session
+prolog-agent-approve-project
+prolog-agent-deny
+prolog-agent-edit-pending
+prolog-agent-open-diff
+#+end_example
+
+Only advertise commands the negotiated runtime supports.
+
+For non-file effects, use a structured operation/detail buffer containing normalized executable fields, required capability, project scope, effect state, and other non-secret security context.
+
+An indeterminate external effect must remain visibly distinct from failure.
+
+* Subagents and tasks
+
+Lem's buffer/window model offers two good representations:
+
+- compact task/subagent list in a side buffer;
+- child session buffers for detailed conversation/trace.
+
+The parent session should link to child session IDs rather than paste all child output into one flat transcript. Commands should support enter child, return parent, next/previous child, and inspect task state.
+
+This maps naturally to =rlm_agent= supervision.
+
+* Verification UI
+
+Render verification summary inline:
+
+#+begin_example
+PlUnit authority             PASS  1.8s
+Deterministic benchmark      RUNNING
+REAL provider gate           NOT RUN
+#+end_example
+
+Detailed verifier output belongs in a dedicated buffer with file/location navigation when parsable. Runtime acceptance remains authoritative.
+
+A rerun command may request only a named trusted verification profile. The Lem UI must not synthesize arbitrary shell commands from model text.
+
+* Trace and Prolog-native inspection
+
+Lem is uniquely suited to exposing a more symbolic view without making that the default chat UI.
+
+Provide an inspector buffer capable of showing:
+
+- event sequence;
+- agent tree;
+- tool/effect identity;
+- authority decision lineage;
+- verifier outcomes;
+- usage/budgets;
+- artifact/trace references;
+- selected Prolog term representation where safe and useful.
+
+The inspector consumes sanitized runtime data. It must not expose trusted callables, secrets, or executable continuations.
+
+This is a stronger Lem-specific feature than pretending every backend object is merely JSON.
+
+* Commands and keymap
+
+Mode commands should be discoverable through Lem's normal command system and configurable keymaps.
+
+Suggested semantics:
+
+#+begin_example
+send prompt
+cancel run
+open session selector
+open current file/reference
+open diff
+open tool details
+open trace
+open task/subagent
+approve once
+approve session
+approve project when available
+deny/edit pending
+select model/agent
+retry
+#+end_example
+
+Avoid hard-coding an OpenCode keymap. Provide Emacs-like defaults in Lem's default mode and let vi-mode users bind the same semantic commands separately.
+
+* Graphical frontend opportunities
+
+Because Lem has webview/SDL2 frontends as well as ncurses, keep the first UI text-oriented but avoid APIs that forbid richer later presentation.
+
+Possible later enhancements:
+
+- graphical side-by-side diff;
+- clickable tool/file links;
+- richer agent tree;
+- image/media artifact preview;
+- floating permission dialogs.
+
+These are frontend enhancements, not reasons to alter =prolog_agent_ui_v1= semantics.
+
+* Common Lisp/Lem advantages
+
+- The standalone CL TUI and Lem extension can share one real client library.
+- Interactive Lisp development makes extension work fast.
+- CLOS maps naturally to typed events and presentation dispatch.
+- Lem already supplies editor, project, window, command, keymap and multi-frontend infrastructure.
+- A Prolog term/trace inspector can feel native in a Lisp editor.
+
+* Risks
+
+- Lem's extension APIs are less ubiquitous than Emacs's and may change more quickly.
+- Thread-safe editor mutation needs a deliberately tested scheduling boundary.
+- UI code can accidentally depend on one frontend if it reaches into ncurses/webview implementation details.
+- Sharing CL client objects across standalone TUI and Lem can become overabstracted if presentation concerns leak into the client.
+- Native Lisp enthusiasm can tempt in-process SWI embedding before the lifecycle problem is justified.
+
+* Rejected alternatives
+
+- Run the JS TUI in Lem's terminal pane and call that integration.
+- Implement a second CL transport just for Lem.
+- Embed SWI-Prolog in Lem before the process protocol is proven inadequate.
+- Draw directly to ncurses from the extension.
+- Make Lem file edits bypass the Prolog authority path because both processes are trusted local software.
+
+* Acceptance experiment
+
+Build a small =lem-prolog-agent= extension over the fake/shared client fixture:
+
+1. session major mode and prompt submission;
+2. asynchronous streaming without blocking cursor movement or file editing;
+3. file-reference navigation into ordinary Lem buffers;
+4. changed-file list buffer;
+5. edit permission opens a review buffer/split and sends allow-once/deny by request ID;
+6. stale pending patch remains visibly stale after a manual buffer/file edit and is rejected by runtime on execution;
+7. child session/task navigation;
+8. verifier detail buffer;
+9. trace inspector showing structured event lineage;
+10. run the same extension under at least ncurses and one graphical Lem frontend without frontend-private UI dependencies.
+
+* Recommendation
+
+Build the Lem integration as a first-class editor client on top of the same =prolog-agent-client= Common Lisp library proposed for the standalone CL TUI.
+
+Keep SWI-Prolog out of the Lem process for the first implementation. Use Lem's native buffer/window/project/command system for code navigation, chat, diffs, tasks and traces. The shared runtime protocol, not a shared terminal renderer, is what should make the standalone CL TUI and Lem client equivalent.

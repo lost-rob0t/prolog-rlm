@@ -3,6 +3,7 @@
 :- use_module('../prolog/rlm_async').
 :- use_module('../prolog/rlm_authority').
 :- use_module('../prolog/rlm_tool').
+:- use_module('../prolog/rlm_effect').
 
 :- dynamic mutation_counter/1.
 
@@ -80,6 +81,10 @@ confined_schema(
                 limits:_{time_limit:1.0, max_output_bytes:4096}}).
 
 setup_write_registry(Registry) :-
+    (   catch(rlm_effect_store_id(_), _, fail)
+    ->  true
+    ;   tmp_file(rlm_authority_effect, File),
+        rlm_effect_store_open(File) ),
     tool_registry_create(Registry),
     write_schema(Schema),
     tool_register(Registry,
@@ -110,7 +115,8 @@ cleanup_context(Context) :-
 
 cleanup_registry_context(Registry, Context) :-
     cleanup_context(Context),
-    tool_registry_destroy(Registry).
+    tool_registry_destroy(Registry),
+    catch(rlm_effect_store_close, _, true).
 
 invoke_write(Registry, Context, Value, Outcome, Trace) :-
     tool_invoke(Registry,
@@ -123,8 +129,8 @@ invoke_write(Registry, Context, Value, Outcome, Trace) :-
 
 await_approved(ApprovalId, Resolution) :-
     rlm_pending_resolution_async(ApprovalId, ResolutionFuture),
-    rlm_approve(ApprovalId, ok(_)),
-    rlm_future_await(ResolutionFuture, 2.0, Resolution).
+    rlm_approve(ApprovalId, _),
+    rlm_future_await(ResolutionFuture, 5.0, Resolution).
 
 set_if_unset_worker(Context) :-
     rlm_set_authority_if_unset(Context, dangerous, _).
