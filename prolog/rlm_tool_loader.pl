@@ -321,13 +321,27 @@ call_pack_loader(Loader, Registry, Info, Outcome) :-
     ).
 
 remember_successful_load(error(Error), _, _, error(Error)) :- !.
-remember_successful_load(ok(Value), Registry, Info,
-                         ok(tool_pack_load{pack:Info.pack,
-                                           library:Info.library,
-                                           category:Info.category,
-                                           status:loaded,
-                                           result:Value})) :-
-    assertz(loaded_tool_pack(Registry, Info.pack, Info, Value)).
+remember_successful_load(ok(Value), Registry, Info, Outcome) :-
+    assertz(loaded_tool_pack(Registry, Info.pack, Info, Value)),
+    finalize_successful_load(Registry, Info, Value, Outcome).
+
+finalize_successful_load(Registry, Info, Value, Outcome) :-
+    (   registry_still_alive(Registry)
+    ->  Outcome = ok(tool_pack_load{pack:Info.pack,
+                                    library:Info.library,
+                                    category:Info.category,
+                                    status:loaded,
+                                    result:Value})
+    ;   rlm_tool_loader_forget_registry(Registry),
+        Outcome = error(tool_loader_error{
+                            kind:registry_destroyed,
+                            pack:Info.pack,
+                            message:"tool registry was destroyed while pack was loading"
+                        })
+    ).
+
+registry_still_alive(tool_registry(Id)) :-
+    rlm_tool:tool_registry_alive(Id).
 
 normalize_loader_outcome(ok(Value), _, ok(Value)) :- !.
 normalize_loader_outcome(error(Error), _, error(Error)) :- !.
