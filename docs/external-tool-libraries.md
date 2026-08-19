@@ -105,13 +105,15 @@ Successful pack loads are recorded per live registry.
 
 The first successful load reports `status:loaded`. Loading the same pack/category again in the same registry reports `status:reused` and does not call the trusted loader again, so duplicate registration is not used as the idempotency mechanism.
 
-Hosts that explicitly manage loader state independently of a registry may call:
+Ordinary `tool_registry_destroy/1` automatically reclaims the loader's per-registry idempotency bookkeeping when `rlm_tool_loader` is loaded. The loader observes the registry-liveness lifecycle through SWI-Prolog's named predicate listener; core does not import the loader or transfer registry ownership to it. Cleanup is scoped, deterministic and idempotent.
+
+Hosts that explicitly manage loader state independently of a registry may still call:
 
 ```prolog
 rlm_tool_loader_forget_registry(Registry).
 ```
 
-Normal fixture/test cleanup uses this when a registry is destroyed. Automatic cleanup from ordinary registry destruction remains tracked separately in #67.
+That explicit operation remains useful for unusual host lifecycles, but normal registry destruction does not require it.
 
 ## Conflict semantics
 
