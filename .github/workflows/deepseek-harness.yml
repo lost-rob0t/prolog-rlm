@@ -1,0 +1,51 @@
+name: DeepSeek Harness Prolog bridge
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-bridge:
+    name: Host transport and real SWI bridge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Use DeepSeek Harness Node runtime
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.19.0
+
+      - name: Test host NDJSON transport
+        run: node --test agentProlog/deepseek-harness/host/bridge-client.test.mjs
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes swi-prolog-nox
+
+      - name: Test real host to Prolog composition
+        run: node --test agentProlog/deepseek-harness/host/bridge-client.integration.test.mjs
+
+      - name: Verify pinned DeepSeek Harness gitlink
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='99f6f02fecdb7dff40c3fbc9470f5907c29f74ca'
+          actual="$(git ls-tree HEAD agentProlog/deepseek-harness/upstream | awk '{print $3}')"
+          test "$actual" = "$expected"
+
+      - name: Check whitespace errors
+        run: |
+          if [ -n "${{ github.base_ref }}" ]; then
+            git diff --check "origin/${{ github.base_ref }}...HEAD"
+          else
+            git diff --check HEAD^ HEAD
+          fi
