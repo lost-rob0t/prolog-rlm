@@ -3,6 +3,7 @@
 :- use_module('../prolog/rlm_skill').
 :- use_module('../prolog/rlm', [rlm_completion/4]).
 :- use_module('support/skill_test_support').
+:- use_module(library(filesex)).
 
 :- dynamic skill_test_directory/1.
 :- prolog_load_context(directory, TestDirectory),
@@ -113,6 +114,24 @@ test(selected_body_and_resources_are_lazy_then_rendered) :-
     assertion(\+ sub_string(Prompt, _, _, _, "GRILL_SKILL_MARKER")),
     assertion(\+ sub_string(Prompt, _, _, _, "UNRELATED_SKILL_MARKER")).
 
+test(nested_shell_resource_is_lazy_and_rendered_only_after_selection,
+     [setup(nested_resource_fixture(Root)),
+      cleanup(delete_directory_and_contents(Root))]) :-
+    skill_catalog_load([skill_root(test, Root)], [], ok(Catalog)),
+    skill_catalog_skill(Catalog, 'script-skill', Skill),
+    member(Resource, Skill.resources),
+    assertion(Resource.name == 'scripts/template.sh'),
+    assertion(\+ get_dict(content, Resource, _)),
+    skill_compile(Catalog,
+                  "script skill",
+                  [ explicit_skills(['script-skill']),
+                    skill_min_score(9999)
+                  ],
+                  ok(Compiled)),
+    skill_prompt_fragment(Compiled, Prompt),
+    assertion(sub_string(Prompt, _, _, _, "NESTED_SCRIPT_RESOURCE_MARKER")),
+    assertion(sub_string(Prompt, _, _, _, "resources (inert text)")).
+
 test(resource_read_is_confined_to_skill_directory) :-
     fixture_catalog(Catalog),
     skill_catalog_skill(Catalog, tdd, Skill),
@@ -140,6 +159,25 @@ test(completion_injects_prolog_selected_skill_before_planner,
     skill_test_support:captured_prompt(Prompt),
     assertion(sub_string(Prompt, _, _, _, "TDD_SKILL_MARKER")),
     assertion(\+ sub_string(Prompt, _, _, _, "GRILL_SKILL_MARKER")).
+
+test(completion_skill_catalog_none_preserves_caller_instruction,
+     [setup(skill_test_support:reset_capture)]) :-
+    Options = [ planner_handler(skill_test_support:capture_planner),
+                capabilities([rlm, model(openrouter)]),
+                child_capabilities([model(openrouter)]),
+                skill_catalog(none),
+                planner_instruction("CALLER_INSTRUCTION_SENTINEL")
+              ],
+    rlm_completion("Build this parser feature test first",
+                   text("opaque"),
+                   Options,
+                   Outcome),
+    assertion(Outcome = ok(Result)),
+    assertion(Result.value == "skill-ok"),
+    skill_test_support:captured_prompt(Prompt),
+    assertion(sub_string(Prompt, _, _, _, "CALLER_INSTRUCTION_SENTINEL")),
+    assertion(\+ sub_string(Prompt, _, _, _, "## Skill:")),
+    assertion(\+ sub_string(Prompt, _, _, _, "# Test-Driven Development")).
 
 test(default_distribution_auto_activates_without_model_routing,
      [setup((skill_default_catalog_reset,
@@ -180,5 +218,25 @@ test(default_distribution_wrapper_dependency_is_prolog_resolved,
     assertion(sub_string(Prompt, _, _, _, "## Skill: grilling")),
     assertion(sub_string(Prompt, _, _, _,
                          "legacy references inside a skill to a `Skill` tool are inert text")).
+
+nested_resource_fixture(Root) :-
+    tmp_file(skill_nested_resource, Root),
+    make_directory(Root),
+    directory_file_path(Root, 'script-skill', SkillDir),
+    make_directory(SkillDir),
+    directory_file_path(SkillDir, 'SKILL.md', SkillFile),
+    write_text_file(SkillFile,
+                    "---\nname: script-skill\ndescription: Script skill fixture.\n---\nSCRIPT_SKILL_BODY\n"),
+    directory_file_path(SkillDir, scripts, ScriptsDir),
+    make_directory(ScriptsDir),
+    directory_file_path(ScriptsDir, 'template.sh', ScriptFile),
+    write_text_file(ScriptFile,
+                    "#!/bin/sh\n# NESTED_SCRIPT_RESOURCE_MARKER\n").
+
+write_text_file(Path, Text) :-
+    setup_call_cleanup(
+        open(Path, write, Stream, [encoding(utf8)]),
+        format(Stream, '~s', [Text]),
+        close(Stream)).
 
 :- end_tests(rlm_skill).
