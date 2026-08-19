@@ -147,8 +147,7 @@ unused_mcp_transport(_, _, _) :-
 with_registry(Goal) :-
     setup_call_cleanup(tool_registry_create(Registry),
                        call(Goal, Registry),
-                       ( rlm_tool_loader_forget_registry(Registry),
-                         tool_registry_destroy(Registry) )).
+                       tool_registry_destroy(Registry)).
 
 catalog_has_callable(Catalog) :-
     sub_term(Sub, Catalog),
@@ -159,6 +158,68 @@ pack_status(Pack, Packs, Status) :-
     member(Entry, Packs),
     Entry.pack == Pack,
     Status = Entry.status.
+
+loader_state_count(Count) :-
+    findall(Registry-Pack,
+            rlm_tool_loader:loaded_tool_pack(Registry, Pack, _, _),
+            Rows),
+    length(Rows, Count).
+
+load_then_destroy_registry :-
+    setup_call_cleanup(
+        tool_registry_create(Registry),
+        rlm_load_tools(Registry, filesystem, ok(_)),
+        tool_registry_destroy(Registry)).
+
+/* Registry lifecycle --------------------------------------------------- */
+
+test(destroy_reclaims_loader_idempotency_state_automatically) :-
+    loader_state_count(Before),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( rlm_load_tools(Registry, filesystem, ok(_)),
+          assertion(rlm_tool_loader:loaded_tool_pack(Registry,
+                                                     alpha_filesystem,
+                                                     _, _)),
+          tool_registry_destroy(Registry),
+          assertion(\+ rlm_tool_loader:loaded_tool_pack(Registry, _, _, _)),
+          loader_state_count(After),
+          assertion(After =:= Before)
+        ),
+        ( rlm_tool_loader_forget_registry(Registry),
+          tool_registry_destroy(Registry)
+        )).
+
+test(destroy_cleanup_is_scoped_to_the_destroyed_registry) :-
+    tool_registry_create(RegistryA),
+    tool_registry_create(RegistryB),
+    setup_call_cleanup(
+        true,
+        ( rlm_load_tools(RegistryA, filesystem, ok(_)),
+          rlm_load_tools(RegistryB, filesystem, ok(_)),
+          tool_registry_destroy(RegistryA),
+          assertion(\+ rlm_tool_loader:loaded_tool_pack(RegistryA, _, _, _)),
+          assertion(rlm_tool_loader:loaded_tool_pack(RegistryB,
+                                                     alpha_filesystem,
+                                                     _, _))
+        ),
+        ( rlm_tool_loader_forget_registry(RegistryA),
+          rlm_tool_loader_forget_registry(RegistryB),
+          tool_registry_destroy(RegistryA),
+          tool_registry_destroy(RegistryB)
+        )).
+
+test(repeated_registry_churn_does_not_retain_loader_state) :-
+    loader_state_count(Before),
+    forall(between(1, 32, _), load_then_destroy_registry),
+    loader_state_count(After),
+    assertion(After =:= Before).
+
+test(destroying_registry_that_never_used_loader_remains_valid) :-
+    tool_registry_create(Registry),
+    tool_registry_destroy(Registry),
+    tool_registry_destroy(Registry).
 
 /* Discovery ------------------------------------------------------------- */
 
