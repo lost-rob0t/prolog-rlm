@@ -1,58 +1,69 @@
 # DeepSeek Harness PrologAgent path
 
-This directory contains the parallel DeepSeek Harness frontend/host path for
-PrologAgent. It deliberately does **not** create a second coding-agent runtime.
+This path keeps DeepSeek Harness as the headless host substrate while Prolog-RLM remains the only semantic agent runtime.
 
-The official `deepseek-ai/deepseek-harness` repository is pinned at
-`upstream/` as a git submodule:
+Pinned upstream:
 
-- upstream commit: `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`
-- upstream release: `dsh@0.1.0-rc.7`
-- license: MIT, with upstream attribution retained by the submodule
+- `deepseek-ai/deepseek-harness` commit `141eb6fef83422698aef7a981029e843e8161534`
+- `dsh@0.1.0-rc.8`
+- MIT license
 
-## Authority boundary
+## Run it
 
-DeepSeek Harness is used for its host, client, and UI ecosystem. Prolog-RLM is
-the canonical agent runtime.
+From the repository root:
 
-```text
-DeepSeek Harness UI / Cordis host
-              |
-              v
-host/bridge-client.mjs
-  NDJSON framing + cancellation propagation only
-              |
-              v
-deepseek_prolog_bridge
-  sessions + Prolog-owned async run handles
-              |
-              v
-rlm_conversation + rlm_async
-              |
-              v
-completion / plans / tools / authority / effects / tracing
+```sh
+export OPENROUTER_API_KEY='...'
+bin/agentProlog "Inspect this repository and report the failing tests."
 ```
 
-The frontend must not execute tools, decide permissions, select context,
-compact conversation history, or run an independent think-act loop.
+The first run initializes the pinned git submodule if needed, installs the upstream workspace with its committed pnpm lockfile, builds that exact Harness revision, mounts the source-controlled `agentProlog` profile, and launches the DeepSeek headless CLI. Later runs reuse the build while the pinned upstream SHA is unchanged.
 
-The Harness-side transport client is intentionally boring. It correlates NDJSON
-requests and maps a host `AbortSignal` to `run/cancel`. The run itself is an
-`rlm_async` Future owned by Prolog, so cancellation reaches the actual operation
-instead of merely hiding its output.
+Useful non-model commands:
 
-## Infinite-chat semantics
+```sh
+bin/agentProlog --help
+bin/agentProlog --dump-config
+```
 
-"Infinite" means the canonical conversation transcript is durable, append-only,
-and never replaced by a summary. It does **not** mean sending an unbounded byte
-string to a finite-context model.
+`AGENTPROLOG_DSH_HOME` overrides the generated Harness state directory. Otherwise it lives under `$XDG_STATE_HOME/prolog-rlm/deepseek-harness`, falling back to `~/.local/state/prolog-rlm/deepseek-harness`.
 
-`rlm_conversation` keeps every turn. For each provider request it compiles a
-bounded working set and exposes omitted history through the RLM context handle,
-where it remains searchable and sliceable. The DeepSeek Harness compaction
-plugins are therefore not part of the canonical Prolog-backed session path.
+Requirements are Node >= 22.19, Corepack, SWI-Prolog, and Git.
 
-The settings validator hard-requires:
+## Runtime boundary
+
+The active DeepSeek Harness profile is deliberately tiny:
+
+```text
+DeepSeek headless argv startup
+            |
+            v
+DSH Agent registry + Session event log
+            |
+            v
+@prolog-rlm/dsh-agent-factory
+            |
+            v
+NDJSON bridge -> Prolog-RLM
+            |
+            v
+rlm_conversation + rlm_async
+            |
+            v
+providers / context / tools / authority / effects / tracing
+```
+
+The profile keeps only three upstream runtime rows enabled: `agent`, `session`, and `headless-startup`. The stock DSH headless runner is disabled and replaced by `@prolog-rlm/dsh-agent-factory/headless`.
+
+Everything that could become a second semantic owner is disabled, including DSH model routing, prompts, tools, filesystem effects, permissions, skills, commands, compaction, pruning, session persistence, titles, subagents, workflows, web search, telemetry, and the stock agent loop. Provider execution remains inside Prolog-RLM.
+
+The deterministic profile test reads the pinned upstream `dsh-base` and `dsh-headless` bundle patches and proves every row except the three allowed spine rows is disabled. A later Harness upgrade therefore fails closed if it introduces another runtime row.
+
+## Conversation and provider semantics
+
+The canonical transcript is append-only and lossless. DeepSeek Harness Session events are only a projection for the host surface; Prolog owns durable conversation state.
+
+Persisted Prolog settings require:
 
 ```json
 {
@@ -62,165 +73,28 @@ The settings validator hard-requires:
 }
 ```
 
-Any attempt to persist `compaction: true` is rejected.
+The default route is `openrouter` / `openrouter/free`, resolved through `OPENROUTER_API_KEY`. Direct DeepSeek routing remains available through the existing OpenAI-compatible Prolog provider and `DEEPSEEK_API_KEY`. Credentials are never persisted in the Harness profile.
 
-## Providers
+## Bridge
 
-Provider execution remains in Prolog-RLM.
-
-- `openrouter` reuses the existing `openrouter_provider/2` implementation and
-  resolves only `OPENROUTER_API_KEY` at request execution time.
-- `deepseek` uses the existing OpenAI-compatible provider boundary with
-  `https://api.deepseek.com/chat/completions` and `DEEPSEEK_API_KEY`.
-
-No API key is stored in the settings document.
-
-The default route is OpenRouter `openrouter/free`. A DeepSeek configuration can
-use, for example:
-
-```json
-{
-  "provider": "deepseek",
-  "model": "deepseek-v4-pro"
-}
-```
-
-## Persistent settings
-
-The default settings path is:
-
-```text
-$XDG_CONFIG_HOME/prolog-rlm/deepseek-harness.json
-```
-
-or `~/.config/prolog-rlm/deepseek-harness.json` when `XDG_CONFIG_HOME` is not
-set.
-
-The default durable conversation store is under `$XDG_STATE_HOME`, falling back
-to `~/.local/state/prolog-rlm/`.
-
-Settings are materialized on first bridge startup. Supported persisted fields
-are intentionally small:
-
-```json
-{
-  "schema_version": 1,
-  "driver": "prolog-rlm",
-  "history_mode": "lossless_rlm",
-  "compaction": false,
-  "persist_sessions": true,
-  "provider": "openrouter",
-  "model": "openrouter/free",
-  "conversation_store": "/home/me/.local/state/prolog-rlm/deepseek-harness-conversations.db"
-}
-```
-
-Unknown keys are rejected. This also prevents somebody from casually adding an
-`api_key` field and leaking a credential into a settings file or trace.
-
-## Running the bridge
-
-Initialize the pinned upstream:
-
-```sh
-git submodule update --init agentProlog/deepseek-harness/upstream
-```
-
-Run the Prolog bridge:
+The lower-level NDJSON bridge remains available for debugging:
 
 ```sh
 swipl -q -s agentProlog/deepseek-harness/bin/deepseek-prolog-bridge.pl
 ```
 
-or select a settings document explicitly:
+It exposes settings, session create/open/list/messages/search/stats, synchronous and asynchronous turns, run status/result, and real cancellation. The Node host client only frames requests and projects DSH events; it does not execute model or tool semantics.
 
-```sh
-swipl -q -s agentProlog/deepseek-harness/bin/deepseek-prolog-bridge.pl -- \
-  --settings /path/to/settings.json
-```
+## Verification
 
-The protocol is one JSON object per line. Requests may carry a `request_id` and
-receive the same ID back.
+`.github/workflows/deepseek-harness.yml` now gates the same runnable path as users:
 
-```json
-{"request_id":"1","command":"hello","payload":{}}
-{"request_id":"2","command":"session/create","payload":{"id":"demo","metadata":{}}}
-{"request_id":"3","command":"session/messages","payload":{"session_id":"demo","limit":"all"}}
-{"request_id":"4","command":"session/turn/start","payload":{"session_id":"demo","content":"Inspect this project."}}
-{"request_id":"5","command":"run/status","payload":{"run_id":"<run-id>"}}
-{"request_id":"6","command":"run/cancel","payload":{"run_id":"<run-id>"}}
-{"request_id":"7","command":"run/result","payload":{"run_id":"<run-id>"}}
-```
+1. verifies the executable launcher and exact rc.8 source packages;
+2. runs Node transport, factory, and headless-runner tests;
+3. runs the real Node -> SWI-Prolog bridge integration;
+4. runs the deterministic Prolog suite;
+5. invokes `bin/agentProlog --dump-config` to compose the actual headless profile;
+6. invokes `bin/agentProlog --help` without provider credentials;
+7. verifies the pinned submodule gitlink and checked-out SHA.
 
-Current bridge commands:
-
-- `hello`
-- `settings/get`
-- `settings/set`
-- `session/create`
-- `session/open`
-- `session/list`
-- `session/messages`
-- `session/search`
-- `session/stats`
-- `session/turn`
-- `session/turn/start`
-- `run/status`
-- `run/result`
-- `run/cancel`
-
-`session/turn` and `session/turn/start` both enter the canonical
-`rlm_conversation` runtime. The asynchronous form additionally registers the
-work with `rlm_async`, giving the host a real cancellable run handle without
-moving scheduling into JavaScript.
-
-## Harness profile fence
-
-`profile/cordis.patch.yml` is applied after the normal Harness bundles. It
-explicitly disables:
-
-- `agent-loop`
-- `compaction-basic`
-- `command-compact`
-- `tool-result-pruner`
-
-That overlay is deliberately fail-closed. Until the Prolog-backed Cordis
-`AgentFactory` is mounted, a Prolog profile must fail agent creation rather than
-fall back to the stock Harness loop or history rewriting.
-
-## Tests
-
-The normal SWI suite covers settings, provider routing, bridge sessions,
-persistence across close/reopen, async run cancellation, run cleanup, and the
-fail-closed Harness profile.
-
-`.github/workflows/deepseek-harness.yml` adds a separate host composition gate:
-
-1. Node-only NDJSON correlation and cancellation tests;
-2. a real Node -> `swipl` bridge process test that negotiates the Prolog runtime
-   and performs session/settings operations without a model call;
-3. verification that the DeepSeek Harness gitlink remains pinned to the audited
-   upstream revision.
-
-## Next integration slice
-
-The next slice is the out-of-tree Cordis `AgentFactory` package. DeepSeek
-Harness profiles explicitly support out-of-tree plugin dependencies, so this
-can live beside the pinned upstream rather than modifying it.
-
-That factory will:
-
-- spawn/own `host/bridge-client.mjs`;
-- create or resume the canonical Prolog session for each Harness agent;
-- use `session/turn/start` and the Prolog Future for the driver lifetime;
-- map `Agent.cancel()` to `run/cancel` and make `whenIdle()` follow actual
-  Prolog quiescence;
-- project canonical `prolog_agent_ui_v1` events into Harness session/UI events;
-- route approval/question/steer/inject operations back to Prolog commands;
-- never call Harness LLM, tool, permission, compaction, or pruning services for
-  a Prolog-backed session.
-
-Streaming, approval/question interaction, steering and injection must be backed
-by the canonical PrologAgent event/command boundary before the factory claims
-those capabilities. Unsupported semantics fail loudly; they are not simulated
-in TypeScript.
+Streaming, approvals/questions, steering, tools, subagents, verification, and richer events remain future adapter work. They must first exist as canonical Prolog semantics before the DeepSeek adapter can expose them.
