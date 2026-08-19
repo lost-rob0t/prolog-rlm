@@ -179,10 +179,11 @@ dispatch_decoded(Decoded, NextSeq0, Frames, NextSeq) :-
     catch((   handle_decoded(Decoded, NextSeq0, Frames0, NextSeq1)
           ->  Frames = Frames0,
               NextSeq = NextSeq1
-          ;   decoded_error_frame(Decoded,
+          ;   decoded_failure_details(Decoded, NextSeq0, Details),
+              decoded_error_frame(Decoded,
                                   "fixture_handler_failed",
                                   "Fixture request handler failed",
-                                  _{},
+                                  Details,
                                   ErrorFrame),
               Frames = [ErrorFrame],
               NextSeq = NextSeq0
@@ -198,6 +199,14 @@ dispatch_decoded(Decoded, NextSeq0, Frames, NextSeq) :-
             Frames = [ErrorFrame],
             NextSeq = NextSeq0
           )).
+
+decoded_failure_details(ok(Frame), NextSeq,
+                        _{kind:Kind, frame:Frame, next_seq:NextSeq}) :-
+    !,
+    ( get_dict(kind, Frame, Kind0) -> Kind = Kind0 ; Kind = "unknown" ).
+decoded_failure_details(Decoded, NextSeq,
+                        _{decoded:Text, next_seq:NextSeq}) :-
+    term_string(Decoded, Text, [quoted(true), numbervars(true)]).
 
 decoded_error_frame(ok(Frame), Code, Message, Details, ErrorFrame) :- !,
     frame_session(Frame, SessionId),
