@@ -137,4 +137,25 @@ test(completion_injects_prolog_selected_skill_before_planner,
     assertion(sub_string(Prompt, _, _, _, "TDD_SKILL_MARKER")),
     assertion(\+ sub_string(Prompt, _, _, _, "GRILL_SKILL_MARKER")).
 
+test(default_distribution_wrapper_dependency_is_prolog_resolved,
+     [setup((skill_default_catalog_reset,
+             skill_test_support:reset_capture))]) :-
+    Options = [ planner_handler(skill_test_support:capture_planner),
+                capabilities([rlm, model(openrouter)]),
+                child_capabilities([model(openrouter)]),
+                explicit_skills(['grill-me']),
+                skill_min_score(9999)
+              ],
+    rlm_completion("opaque",
+                   text("opaque"),
+                   Options,
+                   Outcome),
+    assertion(Outcome = ok(Result)),
+    assertion(Result.value == "skill-ok"),
+    skill_test_support:captured_prompt(Prompt),
+    assertion(sub_string(Prompt, _, _, _, "## Skill: grill-me")),
+    assertion(sub_string(Prompt, _, _, _, "## Skill: grilling")),
+    assertion(sub_string(Prompt, _, _, _,
+                         "legacy references inside a skill to a `Skill` tool are inert text")).
+
 :- end_tests(rlm_skill).
