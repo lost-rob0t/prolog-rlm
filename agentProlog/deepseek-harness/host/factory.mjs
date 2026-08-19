@@ -43,18 +43,110 @@ const textContent = (message) => {
   return chunks.join('')
 }
 
+const messageId = (message, prefix) => {
+  const sequence = message?.sequence
+  return Number.isSafeInteger(sequence) && sequence >= 0
+    ? `prolog-rlm:${prefix}:${sequence}`
+    : crypto.randomUUID()
+}
+
 const projectAssistantMessage = (turn) => {
-  const content = turn?.assistant?.content
+  const assistant = turn?.assistant
+  const content = assistant?.content
   const route = turn?.route
   if (typeof content !== 'string' || typeof route?.provider !== 'string' || typeof route?.model !== 'string') {
     throw new UnsupportedPrologSemanticError('assistant result projection', turn)
   }
   return Object.freeze({
-    id: crypto.randomUUID(),
+    id: messageId(assistant, 'assistant'),
     role: 'assistant',
     content: Object.freeze([{ type: 'text', text: content }]),
     source: Object.freeze({ kind: 'model', provider: route.provider, model: route.model }),
   })
+}
+
+const projectHistoricalMessage = (message) => {
+  if (typeof message?.content !== 'string') {
+    throw new UnsupportedPrologSemanticError('historical non-text message', message)
+  }
+  if (message.role === 'user') {
+    return Object.freeze({
+      id: messageId(message, 'user'),
+      role: 'user',
+      content: Object.freeze([{ type: 'text', text: message.content }]),
+      source: Object.freeze({ kind: 'user' }),
+    })
+  }
+  if (message.role === 'assistant') {
+    const route = message.route
+    if (typeof route?.provider !== 'string' || typeof route?.model !== 'string') {
+      throw new UnsupportedPrologSemanticError('historical assistant route provenance', message)
+    }
+    return Object.freeze({
+      id: messageId(message, 'assistant'),
+      role: 'assistant',
+      content: Object.freeze([{ type: 'text', text: message.content }]),
+      source: Object.freeze({ kind: 'model', provider: route.provider, model: route.model }),
+    })
+  }
+  throw new UnsupportedPrologSemanticError('historical message role', message)
+}
+
+const timestampMs = (value, fallback = 0) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return fallback
+  const milliseconds = Math.floor(value * 1000)
+  return Number.isSafeInteger(milliseconds) ? milliseconds : fallback
+}
+
+const projectHistorySeed = (messages) => {
+  if (!Array.isArray(messages)) {
+    throw new UnsupportedPrologSemanticError('historical message list', messages)
+  }
+  const events = []
+  let seq = 0
+  let turn = 0
+  const push = (type, time, data, surface = false) => {
+    events.push(Object.freeze({
+      type,
+      seq: seq++,
+      time,
+      data,
+      ...(surface ? { surfaceOp: 'append' } : {}),
+    }))
+  }
+
+  for (let index = 0; index < messages.length;) {
+    const user = messages[index]
+    const assistant = messages[index + 1]
+    if (user?.role !== 'user' || assistant?.role !== 'assistant') {
+      throw new UnsupportedPrologSemanticError('historical turn pairing', { index, user, assistant })
+    }
+    turn += 1
+    const step = 1
+    const userTime = timestampMs(user.created_at)
+    const assistantTime = timestampMs(assistant.created_at, userTime)
+    push('turn/start', userTime, { turn })
+    push('step/start', userTime, { turn, step })
+    push('user/message', userTime, projectHistoricalMessage(user), true)
+    push('assistant/message', assistantTime, {
+      turn,
+      step,
+      message: projectHistoricalMessage(assistant),
+    }, true)
+    push('step/end', assistantTime, { turn, step })
+    push('turn/end', assistantTime, { turn, reason: { kind: 'completed' } })
+    index += 2
+  }
+  return Object.freeze(events)
+}
+
+const resumedSessionMeta = (opened) => {
+  const meta = {}
+  const createdAt = timestampMs(opened?.created_at, Date.now())
+  meta.createdAt = createdAt
+  const cwd = opened?.metadata?.cwd
+  if (typeof cwd === 'string' && cwd.length > 0) meta.cwd = cwd
+  return meta
 }
 
 const abortedReason = (cause) => ({ kind: 'aborted', reason: cause ?? { kind: 'user' } })
@@ -68,7 +160,7 @@ export class PrologBackedAgent {
   #activeController
   #activeCancelCause
   #disposed = false
-  #turn = 0
+  #turn
 
   constructor({ baseCtx, id, options, session, bridge, Inbox, emitAgentEvent, createScope }) {
     this.id = id
@@ -83,6 +175,7 @@ export class PrologBackedAgent {
       claimed: (message, turn) => this.#emit('agent/inbox/claimed', { message, turn }),
       discarded: (message) => this.#emit('agent/inbox/discarded', { message }),
     })
+    this.#turn = session.events.findLast?.((event) => event.type === 'turn/start')?.data?.turn ?? 0
   }
 
   get status() {
@@ -187,7 +280,7 @@ export class PrologBackedAgent {
 
     this.session.append('turn/start', { turn })
     this.session.append('step/start', { turn, step })
-    this.session.append('user/message', message)
+    this.session.append('user/message', message, { surfaceOp: 'append' })
 
     try {
       let run
@@ -221,7 +314,11 @@ export class PrologBackedAgent {
       }
 
       const assistant = projectAssistantMessage(run.turn)
-      this.session.append('assistant/message', { turn, step, message: assistant })
+      this.session.append(
+        'assistant/message',
+        { turn, step, message: assistant },
+        { surfaceOp: 'append' },
+      )
       this.session.append('step/end', { turn, step })
       this.session.append('turn/end', { turn, reason: { kind: 'completed' } })
     } finally {
@@ -256,11 +353,75 @@ export class PrologAgentFactory {
     }
 
     const [runtime, bridge] = await Promise.all([this.#runtimeLoader(), this.#getBridge()])
-    const session = this.#ctx.sessions.prepare(options.sessionId, options.meta === undefined ? undefined : { meta: options.meta })
+    const session = this.#ctx.sessions.prepare(
+      options.sessionId,
+      options.meta === undefined ? undefined : { meta: options.meta },
+    )
+    return this.#publish(ownerCtx, {
+      id: options.sessionId,
+      session,
+      agentOptions: options.agentOptions ?? {},
+      setup: options.setup,
+      signal: options.signal,
+      source: 'startup',
+      runtime,
+      bridge,
+      beforePublish: async () => {
+        await bridge.request('session/create', {
+          id: String(options.sessionId),
+          metadata: {
+            source: 'deepseek-harness',
+            ...(options.meta?.cwd === undefined ? {} : { cwd: options.meta.cwd }),
+          },
+        })
+      },
+    })
+  }
+
+  async resume(ownerCtx, options) {
+    this.#assertActive()
+    ownerCtx.fiber?.assertActive?.()
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error('agent resume aborted')
+
+    const [runtime, bridge] = await Promise.all([this.#runtimeLoader(), this.#getBridge()])
+    const id = options.resumeSessionId
+    const [opened, messages] = await Promise.all([
+      bridge.request('session/open', { session_id: String(id) }),
+      bridge.request('session/messages', { session_id: String(id), limit: 'all' }),
+    ])
+    const seed = projectHistorySeed(messages)
+    const session = this.#ctx.sessions.prepare(id, {
+      seed,
+      meta: resumedSessionMeta(opened),
+    })
+    return this.#publish(ownerCtx, {
+      id,
+      session,
+      agentOptions: options.agentOptions ?? {},
+      setup: options.setup,
+      signal: options.signal,
+      source: 'resume',
+      runtime,
+      bridge,
+    })
+  }
+
+  async #publish(ownerCtx, details) {
+    const {
+      id,
+      session,
+      agentOptions,
+      setup,
+      signal,
+      source,
+      runtime,
+      bridge,
+      beforePublish,
+    } = details
     const agent = new PrologBackedAgent({
       baseCtx: this.#ctx,
-      id: options.sessionId,
-      options: options.agentOptions ?? {},
+      id,
+      options: agentOptions,
       session,
       bridge,
       ...runtime,
@@ -292,35 +453,25 @@ export class PrologAgentFactory {
     unfollowOwner = ownerCtx.effect?.(() => () => {
       if (disposing !== undefined) return
       return dispose(true)
-    }, `prologRlm.lifecycle(${options.sessionId})`) ?? (() => {})
+    }, `prologRlm.lifecycle(${id})`) ?? (() => {})
 
     try {
-      const setupCommit = await options.setup?.(agent.ctx)
-      if (options.signal?.aborted) throw options.signal.reason ?? new Error('agent creation aborted')
+      const setupCommit = await setup?.(agent.ctx)
+      if (signal?.aborted) throw signal.reason ?? new Error('agent creation aborted')
       setupCommit?.commit?.()
-
-      await bridge.request('session/create', {
-        id: String(options.sessionId),
-        metadata: {
-          source: 'deepseek-harness',
-          ...(options.meta?.cwd === undefined ? {} : { cwd: options.meta.cwd }),
-        },
-      })
+      await beforePublish?.()
+      if (signal?.aborted) throw signal.reason ?? new Error('agent creation aborted')
 
       detachSession = agent.ctx.sessions.enter(session)
       detachAgent = this.#ctx.agents.enter(agent, ownerCtx.agent)
       agent.ctx.sessions.announce(session)
       this.#ctx.agents.announce(agent)
-      runtime.emitAgentEvent(this.#ctx, agent, 'agent/session-start', { source: 'startup' })
+      runtime.emitAgentEvent(this.#ctx, agent, 'agent/session-start', { source })
       return { agent, dispose }
     } catch (error) {
       await dispose()
       throw error
     }
-  }
-
-  async resume(_ownerCtx, options) {
-    throw new UnsupportedPrologSemanticError('resume projection', { sessionId: options.resumeSessionId })
   }
 
   async dispose() {
