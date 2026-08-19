@@ -4,8 +4,12 @@
 :- use_module('../prolog/rlm', [rlm_completion/4]).
 :- use_module('support/skill_test_support').
 
+:- dynamic skill_test_directory/1.
+:- prolog_load_context(directory, TestDirectory),
+   assertz(skill_test_directory(TestDirectory)).
+
 fixture_root(Root) :-
-    prolog_load_context(directory, TestDir),
+    skill_test_directory(TestDir),
     directory_file_path(TestDir, 'fixtures/skills', Root).
 
 fixture_catalog(Catalog) :-
