@@ -29,6 +29,12 @@
             conversation_context_pack/3,
             conversation_token_ledger/3,
             conversation_turn/4,
+            default_warm_policy/1,
+            warm_context_schema/1,
+            conversation_warm_derive/4,
+            conversation_warm_publish/5,
+            conversation_warm_list/4,
+            conversation_warm_context_units/5,
             rlm_async_ready/0,
             rlm_async_submit/2,
             rlm_async_submit/3,
@@ -232,6 +238,15 @@ latency is represented by a deferred pending-operation Future; no shared
                 conversation_token_ledger/3,
                 conversation_turn/4
               ]).
+:- use_module(rlm_conversation_warm,
+              [ rlm_conversation_warm_ready/0,
+                default_warm_policy/1,
+                warm_context_schema/1,
+                conversation_warm_derive/4,
+                conversation_warm_publish/5,
+                conversation_warm_list/4,
+                conversation_warm_context_units/5
+              ]).
 :- use_module(rlm_recursion_policy,
               [ rlm_recursion_policy_ready/0,
                 default_recursion_policy/1,
@@ -371,6 +386,7 @@ rlm_ready :-
     rlm_completion:default_completion_budget(_),
     rlm_context_budget:rlm_context_budget_ready,
     rlm_conversation:rlm_conversation_ready,
+    rlm_conversation_warm:rlm_conversation_warm_ready,
     rlm_recursion_policy:rlm_recursion_policy_ready,
     rlm_recursion_runtime:rlm_recursion_runtime_ready,
     rlm_deep_experiment:rlm_deep_experiment_ready,
