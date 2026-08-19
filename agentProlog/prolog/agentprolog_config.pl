@@ -5,6 +5,7 @@
             agentprolog_config_json_path/1,
             agentprolog_project_config_paths/3,
             agentprolog_config_load_file/3,
+            agentprolog_config_reload_file/3,
             agentprolog_config_normalize/2,
             agentprolog_config_resolve/2,
             agentprolog_config_save_file/4
@@ -18,28 +19,31 @@ AgentProlog has two configuration front doors:
   * JSON consumed by the same Prolog configuration runtime.
 
 The XDG user `config.prolog` is deliberately host code, closer to an Emacs init
-file than a static preferences document. It is loaded into a fresh generated
-module and may contain directives, helper predicates, rules, imports, and other
-ordinary Prolog. The conventional `json/1`, `include_json/1`, `config/1`,
-`section/2`, and `setting/2` predicates are queried after load to build the
-canonical ordinary-settings projection. Rules are allowed, so these values may
-be computed by arbitrary trusted Prolog.
+file than a static preferences document. It may contain directives, imports,
+helper predicates, rules, initialization hooks and future hook/tool/detector
+registrations.
 
-Repository-local `.agentprolog/config.prolog` is different: discovery alone is
-not execution authority. The resolver only loads it when the trusted host marks
-that explicit project identity as trusted. #75/#76 can later replace this
-temporary host boolean with durable scoped project policy without changing the
-file format.
+Executable config is not re-run every time a frontend asks for effective
+settings. An explicit load/reload creates a fresh isolated config generation;
+`agentprolog_config_resolve/2` reuses the active generation until it is
+explicitly reloaded or invalidated by a trusted write. A failed candidate load
+never replaces the last active projected source.
+
+Repository-local `.agentprolog/config.prolog` is different from the user's XDG
+file: discovery alone is not execution authority. The resolver loads project
+config only when the trusted host marks that explicit structured project
+identity as trusted.
 
 Trusted executable configuration has the privileges of the AgentProlog process.
-That is intentional. Registered runtime tools/hooks still use their canonical
-APIs when invoked, but config code itself is host extension code and must be
-treated accordingly.
+That is intentional. AgentProlog-managed tools/effects registered from config
+still use their canonical invocation boundaries, but arbitrary trusted config
+itself is host extension code and is not capability-sandboxed.
 
-Config writes are trusted host operations and are not model tools. Frontends must
-mediate them through the normal AgentProlog authority boundary. Files written by
-this module are atomically replaced where the platform permits and forced to
-POSIX mode 0600.
+`agentprolog_config_save_file/4` is a trusted whole-file writer, not a model
+operation. Frontends must mediate config edits through the normal AgentProlog
+mutation authority/effect path before calling a trusted writer. Files written by
+this module are replaced through a temporary file and forced to POSIX mode
+0600.
 */
 
 :- use_module(library(apply)).
@@ -49,12 +53,13 @@ POSIX mode 0600.
 :- use_module(library(uuid)).
 
 :- dynamic config_generation_counter/1.
-:- dynamic active_prolog_config/3.
-:- dynamic config_module_mapping/2.
+:- dynamic active_config_source/5.
 
 config_generation_counter(0).
 
 agentprolog_config_ready.
+
+/* Paths and defaults -------------------------------------------------- */
 
 agentprolog_config_default_path(Path) :-
     config_root(Root),
@@ -94,21 +99,26 @@ agentprolog_config_defaults(Config) :-
                  frontend:_{}
              }.
 
-/* Public load/normalize/resolve/write --------------------------------- */
+/* Public lifecycle ---------------------------------------------------- */
 
 agentprolog_config_load_file(Path0, Format0, Outcome) :-
     config_outcome(load,
                    agentprolog_config_load_file_(Path0, Format0),
                    Outcome).
 
+agentprolog_config_reload_file(Path0, Format0, Outcome) :-
+    config_outcome(reload,
+                   agentprolog_config_load_file_(Path0, Format0),
+                   Outcome).
+
 agentprolog_config_load_file_(Path0, Format0, Source) :-
-    path_atom(Path0, Path),
-    require_existing_file(Path),
+    canonical_config_path(Path0, Path),
     resolve_format(Path, Format0, Format),
-    canonical_readable_file(Path, Canonical),
-    load_patch(Format, Canonical, Patch, Module, Generation),
+    next_config_generation(Generation),
+    load_candidate(Format, Path, Generation, Module, Patch),
+    remember_active_source(Path, Format, Module, Generation, Patch),
     Source = config_source{format:Format,
-                           path:Canonical,
+                           path:Path,
                            module:Module,
                            generation:Generation,
                            patch:Patch}.
@@ -121,9 +131,9 @@ agentprolog_config_normalize(Config0, Outcome) :-
 normalize_effective(Config0, Config) :-
     normalize_patch(Config0, Patch),
     agentprolog_config_defaults(Defaults),
-    overlay_config(Defaults, Patch, Config0Merged),
-    validate_effective(Config0Merged),
-    Config = Config0Merged.
+    overlay_config(Defaults, Patch, Merged),
+    validate_effective(Merged),
+    Config = Merged.
 
 agentprolog_config_resolve(Context0, Outcome) :-
     config_outcome(resolve,
@@ -136,10 +146,10 @@ agentprolog_config_resolve_(Context0, Resolution) :-
     resolve_user_source(Context, UserSource),
     apply_optional_source(Defaults, UserSource, AfterUser),
     resolve_project_source(Context, ProjectSource),
-    apply_optional_source(AfterUser, ProjectSource, Effective0),
-    validate_effective(Effective0),
+    apply_optional_source(AfterUser, ProjectSource, Effective),
+    validate_effective(Effective),
     source_list(UserSource, ProjectSource, Sources),
-    Resolution = config_resolution{effective:Effective0,
+    Resolution = config_resolution{effective:Effective,
                                    sources:Sources,
                                    project:Context.project,
                                    history_mode:"lossless_rlm",
@@ -163,10 +173,11 @@ agentprolog_config_save_file_(Path0, Format0, Config0, Saved) :-
           ( catch(delete_file(Temporary), _, true),
             throw(Exception)
           )),
+    invalidate_written_path(Path),
     Saved = config_saved{format:Format,
-                          path:Path,
-                          mode:0o600,
-                          config:Config}.
+                         path:Path,
+                         mode:0o600,
+                         config:Config}.
 
 write_atomic_config(Temporary, Path, Format, Config) :-
     setup_call_cleanup(
@@ -179,34 +190,46 @@ write_atomic_config(Temporary, Path, Format, Config) :-
     rename_file(Temporary, Path),
     chmod(Path, 0o600).
 
-/* Loading ------------------------------------------------------------- */
+invalidate_written_path(Path0) :-
+    (   absolute_file_name(Path0,
+                           Path,
+                           [ file_type(regular),
+                             access(read),
+                             file_errors(fail)
+                           ])
+    ->  with_mutex(agentprolog_config_registry,
+                   retractall(active_config_source(Path, _, _, _, _)))
+    ;   true
+    ).
 
-load_patch(json, Path, Patch, null, null) :-
-    load_json_patch(Path, Patch).
-load_patch(prolog, Path, Patch, Module, Generation) :-
-    load_executable_prolog(Path, Module, Generation),
-    collect_prolog_patch(Module, Path, Patch).
+/* Active-generation cache -------------------------------------------- */
 
-load_json_patch(Path, Patch) :-
-    setup_call_cleanup(open(Path, read, Stream, [encoding(utf8)]),
-                       json_read_dict(Stream, Raw),
-                       close(Stream)),
-    normalize_patch(Raw, Patch).
-
-load_executable_prolog(Path, Module, Generation) :-
-    config_module_name(Path, Module),
-    next_config_generation(Generation),
-    catch(load_files(Path,
-                     [ module(Module),
-                       if(true),
-                       silent(true)
-                     ]),
-          Exception,
-          throw(config_fault(prolog_load_failed(Path, Exception)))),
+remember_active_source(Path, Format, Module, Generation, Patch) :-
     with_mutex(agentprolog_config_registry,
-               ( retractall(active_prolog_config(Path, _, _)),
-                 assertz(active_prolog_config(Path, Module, Generation))
+               ( retractall(active_config_source(Path, _, _, _, _)),
+                 assertz(active_config_source(Path,
+                                              Format,
+                                              Module,
+                                              Generation,
+                                              Patch))
                )).
+
+cached_or_load_file(Path0, Format0, Source) :-
+    canonical_config_path(Path0, Path),
+    resolve_format(Path, Format0, Format),
+    (   with_mutex(agentprolog_config_registry,
+                   active_config_source(Path,
+                                        Format,
+                                        Module,
+                                        Generation,
+                                        Patch))
+    ->  Source = config_source{format:Format,
+                               path:Path,
+                               module:Module,
+                               generation:Generation,
+                               patch:Patch}
+    ;   agentprolog_config_load_file_(Path, Format, Source)
+    ).
 
 next_config_generation(Generation) :-
     with_mutex(agentprolog_config_registry,
@@ -218,16 +241,32 @@ next_config_generation(Generation) :-
                  assertz(config_generation_counter(Generation))
                )).
 
-config_module_name(Path, Module) :-
-    with_mutex(agentprolog_config_registry,
-               ( config_module_mapping(Path, Existing)
-               -> Module = Existing
-               ;  uuid(UUID, [version(4)]),
-                  format(atom(Module),
-                         'agentprolog_config_~w',
-                         [UUID]),
-                  assertz(config_module_mapping(Path, Module))
-               )).
+/* Candidate loading --------------------------------------------------- */
+
+load_candidate(json, Path, _, null, Patch) :-
+    load_json_patch(Path, Patch).
+load_candidate(prolog, Path, Generation, Module, Patch) :-
+    fresh_config_module(Generation, Module),
+    catch(load_files(Path,
+                     [ module(Module),
+                       if(true),
+                       silent(true)
+                     ]),
+          Exception,
+          throw(config_fault(prolog_load_failed(Path, Exception)))),
+    collect_prolog_patch(Module, Path, Patch).
+
+fresh_config_module(Generation, Module) :-
+    uuid(UUID, [version(4)]),
+    format(atom(Module),
+           'agentprolog_config_~d_~w',
+           [Generation, UUID]).
+
+load_json_patch(Path, Patch) :-
+    setup_call_cleanup(open(Path, read, Stream, [encoding(utf8)]),
+                       json_read_dict(Stream, Raw),
+                       close(Stream)),
+    normalize_patch(Raw, Patch).
 
 collect_prolog_patch(Module, Path, Patch) :-
     empty_patch(Empty),
@@ -244,7 +283,8 @@ collect_prolog_patch(Module, Path, Patch) :-
     normalize_patch(Patch0, Patch).
 
 config_values1(Module, Name, Values) :-
-    (   current_predicate(Module:Name/1)
+    functor(Head, Name, 1),
+    (   predicate_property(Module:Head, visible)
     ->  findall(Value,
                 ( Goal =.. [Name, Value],
                   call(Module:Goal)
@@ -254,7 +294,8 @@ config_values1(Module, Name, Values) :-
     ).
 
 config_values2(Module, Name, Values) :-
-    (   current_predicate(Module:Name/2)
+    functor(Head, Name, 2),
+    (   predicate_property(Module:Head, visible)
     ->  findall(Key-Value,
                 ( Goal =.. [Name, Key, Value],
                   call(Module:Goal)
@@ -294,7 +335,7 @@ include_json_patch(ConfigPath, Include0, Patch) :-
     ->  Candidate = IncludeAtom
     ;   directory_file_path(ConfigDir, IncludeAtom, Candidate)
     ),
-    canonical_readable_file(Candidate, IncludePath),
+    canonical_config_path(Candidate, IncludePath),
     load_json_patch(IncludePath, Patch).
 
 /* Resolution and project trust --------------------------------------- */
@@ -454,7 +495,7 @@ load_source(Scope,
             Format0,
             Shadowed,
             Source) :-
-    agentprolog_config_load_file_(Path, Format0, Loaded),
+    cached_or_load_file(Path, Format0, Loaded),
     Source = config_source{scope:Scope,
                            project_identity:Identity,
                            status:loaded,
@@ -558,8 +599,8 @@ overlay_config(Base, Patch, Result) :-
     overlay_section(R2, Patch, tools, R3),
     overlay_section(R3, Patch, detectors, R4),
     overlay_section(R4, Patch, prompt, R5),
-    overlay_section(R5, Patch, frontend, Result0),
-    put_dict(schema_version, Result0, 1, Result).
+    overlay_section(R5, Patch, frontend, R0),
+    put_dict(schema_version, R0, 1, Result).
 
 overlay_section(Base, Patch, Name, Result) :-
     section_dict(Base, Name, BaseSection),
@@ -624,7 +665,7 @@ secret_key(secret).
 secret_key(credentials).
 secret_key(credential).
 
-/* Closed JSON-compatible projection values --------------------------- */
+/* Closed JSON-compatible projected values ---------------------------- */
 
 normalize_dict_data(Value0, Value) :-
     require_dict(config_section, Value0),
@@ -721,6 +762,19 @@ extension_format(json, json) :- !.
 extension_format(Extension, _) :-
     throw(config_fault(unsupported_config_extension(Extension))).
 
+canonical_config_path(Path0, Canonical) :-
+    path_atom(Path0, Path),
+    require_existing_file(Path),
+    (   absolute_file_name(Path,
+                           Canonical,
+                           [ file_type(regular),
+                             access(read),
+                             file_errors(fail)
+                           ])
+    ->  true
+    ;   throw(config_fault(config_file_unavailable(Path)))
+    ).
+
 require_existing_file(Path) :-
     (   exists_file(Path)
     ->  true
@@ -748,17 +802,6 @@ path_atom(Value, Atom) :-
     atom_string(Atom, Value).
 path_atom(Value, _) :-
     throw(config_fault(invalid_path(Value))).
-
-canonical_readable_file(Path, Canonical) :-
-    (   absolute_file_name(Path,
-                           Canonical,
-                           [ file_type(regular),
-                             access(read),
-                             file_errors(fail)
-                           ])
-    ->  true
-    ;   throw(config_fault(config_file_unavailable(Path)))
-    ).
 
 config_root(Root) :-
     (   getenv('XDG_CONFIG_HOME', Candidate),
