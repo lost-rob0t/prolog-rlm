@@ -119,13 +119,23 @@ negotiate_frames(Frame, [Result, Snapshot|Resume]) :-
     intersection(Optional, Supported, AcceptedOptional),
     list_default(Payload, required_capabilities, [], Required),
     ui_fixture_session_id(SessionId),
-    ui_v1_result_frame(SessionId, Frame.request_id, "ok",
-                       _{protocol:"prolog_agent_ui_v1",
-                         required_capabilities:Required,
-                         accepted_optional_capabilities:AcceptedOptional},
-                       Result),
+    must_fixture_stage(
+        negotiate_result,
+        ui_v1_result_frame(SessionId, Frame.request_id, "ok",
+                           _{protocol:"prolog_agent_ui_v1",
+                             required_capabilities:Required,
+                             accepted_optional_capabilities:AcceptedOptional},
+                           Result)),
     dict_default(Payload, resume_from, 0, LastSeen),
-    ui_fixture_reconnect(LastSeen, Snapshot, Resume).
+    must_fixture_stage(
+        reconnect,
+        ui_fixture_reconnect(LastSeen, Snapshot, Resume)).
+
+must_fixture_stage(Stage, Goal) :-
+    (   call(Goal)
+    ->  true
+    ;   throw(error(ui_fixture_stage_failed(Stage), _))
+    ).
 
 fixture_command(Frame, NextSeq0, Frames, NextSeq) :-
     Command = Frame.command,
