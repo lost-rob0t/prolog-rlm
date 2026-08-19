@@ -1,0 +1,343 @@
+#+TITLE: RLM-RESEARCH-020 PrologAgent UI contract and OpenCode black-box layout
+#+DATE: 2026-08-18
+#+OPTIONS: toc:3 num:nil
+
+* Research question
+
+What functionality and layout contract does PrologAgent need to reproduce the useful behavior of an OpenCode-style coding-agent UI without coupling the frontend to OpenCode internals or to one implementation language?
+
+The target is a behavioral black box. We care about what the operator can see, navigate, approve, inspect, and control. We do not copy OpenCode's internal domain model or make its SDK a dependency.
+
+* Primary sources
+
+Retrieved 2026-08-18.
+
+- =anomalyco/opencode= =dev=: =packages/tui/src/routes/home.tsx=.
+- =anomalyco/opencode= =dev=: =packages/tui/src/routes/session/index.tsx=, =permission.tsx=, =sidebar.tsx=, and the session route directory.
+- =anomalyco/opencode= =dev=: =specs/tui-package.md=.
+- =anomalyco/opencode= =dev=: =packages/tui/package.json=.
+- =anomalyco/opentui= =main=: project README and package layout.
+
+* Source findings
+
+** The useful boundary is a client contract, not a component tree
+
+OpenCode has been separating its terminal package from backend implementation details. The TUI owns rendering, routes, dialogs, themes, keymaps, local presentation state, prompt history, tool presentation, selection, clipboard behavior, editor launching, and SDK event synchronization. Backend/domain operations are expected to cross a stable SDK boundary.
+
+For PrologAgent the analogous rule should be stronger:
+
+#+begin_example
+frontend
+  |
+  | typed snapshot + event stream + commands
+  v
+PrologAgent application/runtime facade
+  |
+  v
+prolog-rlm runtime + tool packs
+#+end_example
+
+A frontend must never need to import an authority implementation, tool handler, graph implementation, provider implementation, effect ledger, or repository mutation primitive just to draw the screen.
+
+** OpenCode's observable route shape is small
+
+There are two primary user-visible states:
+
+1. a home/start screen centered around a prompt and model/session bootstrap;
+2. a session screen centered around a scrollable transcript plus a prompt/composer.
+
+Everything else is auxiliary state around the active session: sidebar information, dialogs, permissions, questions, diffs, notifications, child-agent navigation, history/timeline, and display settings.
+
+That is a useful constraint. PrologAgent does not need a miniature IDE shell before it can be useful.
+
+** Session layout is responsive
+
+The current OpenCode TUI uses a wide-screen threshold above 120 terminal columns and an approximately 42-column sidebar. The sidebar is automatically hidden on narrower terminals and is also manually toggleable. Permission diffs prefer side-by-side presentation above the wide threshold and unified presentation below it. Permission controls switch from horizontal to vertical below roughly 80 columns.
+
+These values are implementation observations, not sacred numbers. They suggest three semantic breakpoints for PrologAgent:
+
+- narrow: one primary surface; auxiliaries become overlays/dialogs;
+- medium: transcript plus composer, with optional temporary auxiliary pane;
+- wide: transcript plus persistent auxiliary sidebar.
+
+** Permissions are first-class blocking interaction
+
+When a permission or question is pending, normal prompt submission is disabled. The permission surface presents the exact operation in a specialized form when possible. Edit permission can include a syntax-highlighted diff, line numbers, wrapping, scrolling, and unified/split layouts. Generic tools still have a fallback presentation.
+
+OpenCode currently distinguishes allow-once, an always/session-like rule, and reject. PrologAgent must present its own existing authority semantics exactly, not inherit these labels mechanically:
+
+- allow once;
+- allow for this session;
+- project-scoped persistent bounded grant when that substrate exists;
+- deny/reject;
+- edit/revise the pending proposal when supported by the authority API;
+- dangerous mode is a separate host state, never an ordinary approval button.
+
+A rejection may carry operator guidance. That is worth preserving: rejection is not merely a boolean failure; it can be a steering event.
+
+** The transcript is richer than alternating strings
+
+The session view needs structured renderers for:
+
+- user messages;
+- assistant text deltas and completed text;
+- optional reasoning/thinking summaries;
+- tool call lifecycle;
+- tool input and result detail;
+- errors/retries;
+- todo/task state;
+- subagent activity and child sessions;
+- permission and question events;
+- compacted/summarized history markers;
+- usage and trace metadata.
+
+Tool rendering must be keyed by stable wire identity and tolerate unknown tools. A plugin or future tool must not crash the session renderer merely because the UI lacks a bespoke card for it.
+
+** Navigation is part of the product contract
+
+OpenCode exposes timeline jumping, child/parent session navigation, first/last message movement, scroll commands, fork, undo/redo, copy/export, session rename, compact/summarize, and sidebar toggles. PrologAgent v0.1 does not need every command, but the data model must not make later session navigation impossible.
+
+* Inference: canonical PrologAgent frontend protocol
+
+All frontends should consume one versioned protocol. The exact serialization can differ by transport, but semantics may not.
+
+Suggested envelope:
+
+#+begin_src prolog
+ui_message{
+    protocol:prolog_agent_ui_v1,
+    session:SessionRef,
+    seq:Sequence,
+    kind:Kind,
+    payload:Payload
+}.
+#+end_src
+
+The event stream must be ordered per session and carry stable identifiers for messages, tool calls, pending operations, verifier runs, subagents, files/diffs, and trace references.
+
+** Required snapshot data
+
+A freshly connected frontend must be able to request a bounded current snapshot instead of reconstructing truth from old events:
+
+- runtime/protocol capabilities;
+- active project identity and display path;
+- session metadata and status;
+- current model/provider/agent selection;
+- transcript/message parts needed for display;
+- active tool calls;
+- pending authority requests and operator questions;
+- child/subagent session summaries;
+- changed-file/diff summary;
+- verifier/check status;
+- usage/budget summary;
+- trace reference;
+- frontend-safe project instruction/source references where appropriate.
+
+** Required events
+
+Minimum semantic event vocabulary:
+
+#+begin_example
+runtime.connected
+runtime.capabilities
+runtime.disconnected
+
+session.created
+session.updated
+session.status
+session.compacted
+session.finished
+
+message.started
+message.text_delta
+message.reasoning_delta
+message.completed
+
+agent.started
+agent.status
+agent.finished
+
+tool.proposed
+tool.started
+tool.progress
+tool.completed
+tool.failed
+
+diff.proposed
+diff.updated
+file.changed
+
+authority.pending
+authority.resolved
+question.pending
+question.resolved
+
+verification.started
+verification.output
+verification.completed
+
+usage.updated
+trace.updated
+notification
+error
+#+end_example
+
+Not every backend must physically emit every event. The facade may derive presentation events from canonical runtime traces/state. What matters is that derivation happens once outside the frontend.
+
+** Required commands
+
+At minimum:
+
+#+begin_example
+session.new
+session.open
+session.rename
+session.cancel
+session.retry
+session.fork          optional for v0.1
+session.compact       optional for v0.1
+
+prompt.submit
+prompt.interrupt
+
+model.select
+agent.select
+
+authority.allow_once
+authority.allow_session
+authority.allow_project   when supported
+authority.deny
+authority.edit            when supported
+
+question.answer
+
+view/open_file             advisory host action
+view/open_diff             advisory host action
+trace.inspect
+verification.run           only named trusted profiles
+#+end_example
+
+Frontend commands are requests. The runtime remains authoritative. A UI must never implement authorization by locally hiding or enabling a button.
+
+* Layout contract
+
+** Home
+
+#+begin_example
++------------------------------------------------------------+
+|                                                            |
+|                     PrologAgent                            |
+|                                                            |
+|        [ task / question / coding request ... ]            |
+|        [ model ] [ agent/mode ] [ project ]                |
+|                                                            |
+|        recent sessions / tips, if useful                   |
+|                                                            |
++------------------------------------------------------------+
+| provider | project | status | version                      |
++------------------------------------------------------------+
+#+end_example
+
+The prompt is primary. Setup controls should not dominate the first screen once sensible defaults exist.
+
+** Session: wide
+
+#+begin_example
++-------------------------------------------+----------------+
+| session / branch / model                  | project        |
+|-------------------------------------------| files changed  |
+|                                           | context        |
+| transcript                               | todo/subagents |
+|  user                                     | MCP/tools      |
+|  assistant stream                         | verification   |
+|  tool cards                               | usage          |
+|  errors / reasoning                       |                |
+|                                           |                |
+|-------------------------------------------|                |
+| composer / active permission or question |                |
++-------------------------------------------+----------------+
+| status | tokens/cost | trace | key hints                  |
++------------------------------------------------------------+
+#+end_example
+
+** Session: medium
+
+The transcript and composer remain permanent. The auxiliary panel is toggled or temporarily overlaid. Diff review can take over the content area without destroying session state.
+
+** Session: narrow
+
+Only one primary surface is visible. Sidebar, diff, timeline, model selection, and details become full-width dialogs/routes. Approval controls stack vertically. The composer must remain usable on 80x24-class terminals.
+
+** Approval surface
+
+An authority request is not a toast. It is a blocking interaction with enough space to inspect the operation. For an edit it should show file identity plus diff. For process/network/MCP operations it should show the normalized security-relevant details, not only a friendly label.
+
+The UI should make the difference between these states visually obvious:
+
+- proposed, not executed;
+- executing;
+- succeeded;
+- failed;
+- cancelled;
+- uncertain/indeterminate after external dispatch.
+
+That last state is particularly important because the effect runtime deliberately refuses to equate transport failure with proof that nothing happened.
+
+* State ownership
+
+Keep four layers separate:
+
+1. backend-authoritative state: session, tools, permissions, effects, verification, usage;
+2. frontend-local presentation state: scroll position, selected tab, expanded tool card, sidebar visibility;
+3. trusted host configuration: keymap/theme/default model/project policy;
+4. ephemeral overlays: dialogs, command palette, notifications.
+
+Do not persist backend truth in a frontend-local key/value store merely to make redraw easier.
+
+* Cross-frontend capability negotiation
+
+Different clients have different strengths. The protocol should advertise frontend capabilities rather than force false parity:
+
+#+begin_src prolog
+ui_capabilities{
+    rich_diff:true,
+    side_by_side_diff:true,
+    native_file_buffers:false,
+    mouse:true,
+    clipboard:true,
+    images:false,
+    editor_integration:false,
+    multiple_windows:false
+}.
+#+end_src
+
+Emacs/Lem can advertise native file buffers and multiple windows. A terminal client may advertise only one character-grid surface. Backend semantics must remain the same either way.
+
+* Rejected alternatives
+
+- Copy OpenCode's TypeScript domain types into PrologAgent. This would make a reference UI an accidental protocol authority.
+- Let every frontend derive its own meaning from low-level =rlm_trace= events. That guarantees semantic drift and repeated security-sensitive logic.
+- Make the TUI call tool handlers directly for speed. This bypasses the runtime boundary the rest of the project is deliberately building.
+- Treat approvals as simple yes/no popups. Repository mutation needs inspectable diffs and exact normalized operation context.
+- Implement a full IDE before a stable headless session protocol. Emacs and Lem already are editors; standalone clients only need coding-agent surfaces.
+
+* Acceptance experiments
+
+Before selecting a canonical standalone frontend, replay the same deterministic event fixture into every candidate UI and verify:
+
+1. 70x24, 100x30, and 140x40 layouts remain usable.
+2. Ten thousand text delta events do not freeze input/navigation.
+3. An edit permission displays a bounded diff and cannot be mistaken for an already-applied edit.
+4. A pending permission disables ordinary prompt submission without freezing navigation.
+5. An unknown tool renders through a generic fallback.
+6. Parent/child agent sessions can be entered and returned from.
+7. Disconnect/reconnect obtains a fresh snapshot and resumes without duplicating transcript parts.
+8. An =indeterminate= external effect is rendered distinctly from success and failure.
+9. Event replay is deterministic enough for snapshot/golden tests.
+10. Frontend-local state cannot widen runtime authority or capabilities.
+
+* Implementation implication
+
+Implement the frontend protocol and deterministic UI-event replay fixture before committing to one rich TUI implementation. JS, Common Lisp, Nim, Emacs, and Lem should all be clients of that boundary.
+
+The first standalone UI can then be chosen on ergonomics and implementation cost rather than by allowing its framework to dictate runtime semantics.

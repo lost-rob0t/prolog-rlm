@@ -1,0 +1,368 @@
+#+TITLE: RLM-RESEARCH-024 Emacs UI and Elisp bindings for PrologAgent
+#+DATE: 2026-08-18
+#+OPTIONS: toc:3 num:nil
+
+* Research question
+
+How should Emacs expose a full PrologAgent chat/coding interface and reusable Elisp bindings to =prolog-rlm= without reducing Emacs to an ANSI terminal host or duplicating agent/runtime logic in Elisp?
+
+* Primary sources
+
+Retrieved 2026-08-18.
+
+- GNU Emacs Lisp Reference Manual, Emacs 30.2: asynchronous processes, filters, sentinels, network processes, display primitives.
+- Sweep 0.27.6 manual: embedded SWI-Prolog architecture, =sweeprolog-open-query=, query conversion rules, asynchronous Prolog goals.
+- =karthink/gptel= =master=: README and chat/tool workflow.
+- =xenodium/agent-shell= =main=: README and current agent-shell ecosystem.
+- =RLM-RESEARCH-020= for the common frontend contract.
+
+* Findings
+
+** Emacs should be a native frontend, not a terminal emulator
+
+OpenCode's standalone terminal layout is a behavioral reference. Emacs already provides richer native concepts:
+
+- editable buffers;
+- multiple windows and side windows;
+- overlays and text properties;
+- buttons and keymaps on regions;
+- compilation buffers;
+- diff/Ediff workflows;
+- project-aware file visiting;
+- xref navigation;
+- persistent text files and Org buffers;
+- Transient command menus;
+- process filters and sentinels for asynchronous clients.
+
+The Emacs frontend should preserve the same session/tool/approval semantics while translating them into these native primitives.
+
+A fake character-grid clone inside one buffer would throw away the main reason to have an Emacs client.
+
+** gptel is useful UI evidence, not the runtime
+
+=gptel= demonstrates several Emacs-native interaction patterns worth keeping:
+
+- chat can live in an ordinary Markdown/Org/text buffer;
+- multiple conversations can exist naturally as buffers/files;
+- previous prompts and responses can remain editable when the workflow allows it;
+- requests can be inspected before sending;
+- tool use can be shown inline;
+- a package can provide both a dedicated chat experience and reusable programmatic request APIs;
+- Transient is a good fit for session/model/tool controls.
+
+PrologAgent should not put model-provider logic in gptel or ask gptel to execute its tools. =prolog-rlm= already owns those semantics. Reuse the interaction lessons, not the backend architecture.
+
+** agent-shell is direct evidence for editor-native coding agents
+
+=agent-shell= provides an Emacs-native shell for coding agents over ACP and has grown an ecosystem for sidebars, workspace/session management, review, notifications, dashboards, transcript persistence, project organization, and multi-agent coordination.
+
+This strongly supports treating PrologAgent as a real Emacs application surface rather than a special prompt command.
+
+It also demonstrates a useful architectural split: transport/protocol code can be separate from the UI package.
+
+** Sweep provides tight Prolog bindings, with an important concurrency limit
+
+Sweep embeds SWI-Prolog in Emacs and exposes direct Elisp query functions.
+
+Its query interface invokes arity-two predicates using a functional =In -> Out= convention. Supported automatic input conversion is intentionally simple, centered on trees of strings and numbers. Sweep executes one direct Prolog query at a time and queries must be closed/cut before another is opened.
+
+Sweep also supports asynchronous Prolog goals in separate Prolog threads with output captured into an Emacs buffer, but that facility is oriented around streamed textual goal output rather than a multiplexed structured agent event protocol.
+
+Therefore Sweep is excellent for direct control/query bindings, but it should not be the only mechanism considered for long-lived high-volume session streaming.
+
+* Proposed package split
+
+#+begin_example
+emacs/
+  prolog-rlm.el                 public client API
+  prolog-rlm-process.el         framed subprocess/socket backend
+  prolog-rlm-sweep.el           optional embedded Sweep backend
+  prolog-rlm-events.el          event normalization + dispatch
+  prolog-rlm-chat.el            full chat/session UI
+  prolog-rlm-diff.el            edit/approval integration
+  prolog-rlm-trace.el           trace/event inspector
+  prolog-rlm-transient.el       command menu
+  test/
+#+end_example
+
+The public =prolog-rlm.el= API should not require users to know whether a call uses Sweep or a separate =swipl= runtime.
+
+* Elisp client API
+
+Provide boring, stable functions. Illustrative names:
+
+#+begin_src emacs-lisp
+(prolog-rlm-connect &optional project options)
+(prolog-rlm-disconnect connection)
+(prolog-rlm-capabilities connection)
+
+(prolog-rlm-session-new connection &optional options)
+(prolog-rlm-session-open connection session-id)
+(prolog-rlm-session-snapshot connection session-id)
+(prolog-rlm-session-send connection session-id text &optional options)
+(prolog-rlm-session-cancel connection session-id)
+(prolog-rlm-session-retry connection session-id)
+
+(prolog-rlm-authority-reply connection request-id decision &optional payload)
+(prolog-rlm-question-answer connection request-id answer)
+
+(prolog-rlm-subscribe connection callback &optional session-id)
+(prolog-rlm-unsubscribe subscription)
+#+end_src
+
+Return structured Elisp values, not formatted CLI text. Asynchronous commands should return request objects or invoke callbacks/promises rather than block the command loop.
+
+* Dual transport design
+
+** Process/socket backend: default for full agent sessions
+
+GNU Emacs =make-process= supports asynchronous subprocesses with filters and sentinels. For internal machine communication, pipes are appropriate and avoid terminal/PTY semantics.
+
+Use a child =swipl= PrologAgent server or local socket and a framed protocol such as newline-delimited JSON.
+
+#+begin_example
+make-process
+  :connection-type 'pipe
+  :filter   protocol frame collector/decoder
+  :sentinel connection lifecycle handler
+#+end_example
+
+The filter must handle arbitrary chunk boundaries. One process callback may contain half an event or several events. Never call =json-parse-string= assuming one filter invocation equals one message.
+
+Decoded messages are normalized to =prolog-rlm-event= plists/structs and dispatched outside any component-specific rendering logic.
+
+This backend is the best fit for:
+
+- long-running streaming sessions;
+- multiple concurrent sessions;
+- reconnect/restart behavior;
+- keeping the same runtime process used by standalone clients;
+- avoiding embedded-runtime lifecycle coupling.
+
+** Sweep backend: optional tight integration
+
+Use Sweep for fast direct predicates and editor/runtime introspection where embedding is desirable.
+
+Define a small Prolog bridge module with arity-two adapter predicates that return Sweep-friendly trees:
+
+#+begin_src prolog
+:- module(rlm_emacs_bridge,
+          [ emacs_capabilities/2,
+            emacs_project_status/2,
+            emacs_session_snapshot/2,
+            emacs_trace_lookup/2
+          ]).
+#+end_src
+
+Elisp can wrap the open/next/close lifecycle:
+
+#+begin_src emacs-lisp
+(prolog-rlm-sweep-call "emacs_session_snapshot" input)
+#+end_src
+
+Do not expose arbitrary predicate names to model/session content. This is a trusted Elisp library API.
+
+Because Sweep's direct query bridge serializes queries and runs in the embedded runtime, use it primarily for bounded request/response operations. Keep the process/event backend available for the full asynchronous agent experience.
+
+Future research may determine whether a dedicated Sweep foreign bridge can efficiently push structured events into Elisp. That is not necessary for v0.
+
+* Full chat UI
+
+** Major mode
+
+Implement =prolog-rlm-chat-mode= as a dedicated major mode, probably derived from =text-mode= or =special-mode= plus a controlled editable composer strategy depending on the selected buffer design.
+
+Two viable interaction models:
+
+1. transcript and composer in one buffer, using text properties/fields to keep historical regions read-only and the tail prompt editable;
+2. read-only transcript buffer plus a small dedicated composer buffer/window.
+
+The first feels closer to gptel/comint. The second provides a cleaner authority over editability and multiline prompt handling. Spike both; do not let nostalgia for a REPL prompt decide without testing long coding sessions.
+
+Recommended default for v0: one session buffer with an editable composer region at the bottom, but make message blocks immutable once submitted unless a deliberate edit/replay command is invoked.
+
+** Message representation
+
+Each rendered block should carry text properties:
+
+#+begin_example
+prolog-rlm-kind
+prolog-rlm-session-id
+prolog-rlm-message-id
+prolog-rlm-part-id
+prolog-rlm-tool-call-id
+prolog-rlm-event-seq
+#+end_example
+
+These properties allow point-local commands such as open tool details, visit referenced file, copy message, jump to trace event, or rerun from a message without parsing display text.
+
+Use overlays for highly transient state such as a running spinner/status badge or pending-selection highlight. Durable transcript identity belongs in text properties/state records, not overlay positions alone.
+
+** Streaming
+
+On =message.text_delta=, append to the correct active assistant block while preserving point/window behavior:
+
+- if the user is following the end, keep following;
+- if the user scrolled away, do not yank point back to the bottom;
+- batch rapid delta insertion through a short timer or event queue to avoid redisplay for every tiny transport chunk;
+- never run expensive fontification over the entire transcript after each delta.
+
+Reasoning/tool details should be independently collapsible.
+
+** Tool calls
+
+Render a compact summary inline:
+
+#+begin_example
+▸ project_search  "rlm_authority"        done
+▸ project_patch   prolog/rlm_authority.pl pending approval
+▸ run_tests       authority               running
+#+end_example
+
+=RET= or a button opens/expands structured detail. Known tools get specialized renderers; unknown tools show a safe generic plist/JSON/tree view.
+
+File references should be buttons or text with local keymaps that call =find-file= / xref-style navigation. Emacs should visit the real project buffer, not render a second fake code viewer in chat.
+
+* Approval and diff UX
+
+This is where Emacs should substantially diverge from the terminal reference.
+
+On =authority.pending= for an edit:
+
+1. keep a compact pending block in the chat buffer;
+2. open a dedicated diff/review buffer, optionally in a side window;
+3. show the exact proposed patch against current file state;
+4. expose commands/buttons for the authority decisions actually supported by the runtime;
+5. keep the chat/session usable for inspection but disable ordinary prompt submission if the runtime says the session is mediation-blocked.
+
+Use =diff-mode= or Ediff where appropriate. Do not apply the patch locally as a preview. The Prolog runtime owns mutation after approval.
+
+Suggested commands:
+
+#+begin_example
+prolog-rlm-approve-once
+prolog-rlm-approve-session
+prolog-rlm-approve-project
+prolog-rlm-deny
+prolog-rlm-edit-pending
+#+end_example
+
+Project approval appears only if negotiated capabilities say it exists.
+
+For process/network/MCP approvals, display a structured operation buffer with normalized path/cwd/profile/endpoint/effect metadata rather than pretending every permission is a diff.
+
+* Side windows and auxiliary buffers
+
+Do not force all state into the chat transcript.
+
+Useful optional buffers:
+
+- =*PrologAgent Sessions*= using =tabulated-list-mode=;
+- =*PrologAgent Changes*= listing changed files and diff status;
+- =*PrologAgent Tasks*= for subagents/todo state;
+- =*PrologAgent Context*= for project instructions/context references;
+- =*PrologAgent Verification*= derived from =compilation-mode= when output maps to files/lines;
+- =*PrologAgent Trace*= structured event/trace inspector;
+- =*PrologAgent Details*= reusable side window for tool/event metadata.
+
+Use =display-buffer= actions so users can control placement. Do not hard-code a global window layout and fight the user's Emacs configuration.
+
+* Verification
+
+Verification events should appear compactly in the session and have a dedicated detail buffer.
+
+When verifier output follows compiler/test conventions, =compilation-mode= gives file/line navigation and familiar rerun/error traversal. The runtime still decides whether verification satisfies acceptance. The Emacs buffer is presentation only.
+
+* Session persistence
+
+The backend owns resumable execution/session truth. The Emacs client may persist lightweight frontend state:
+
+- known session IDs by project;
+- preferred display layout;
+- collapsed/expanded UI preferences;
+- last selected session/model only when this does not conflict with scoped runtime policy.
+
+Do not serialize authority grants, tool states, or assumed run completion into =custom-file= or desktop state.
+
+Org transcript export can be a frontend feature, but it is not the canonical runtime trajectory.
+
+* Keybindings
+
+Proposed mode-local baseline:
+
+#+begin_example
+C-c C-c   submit prompt / context-appropriate confirm
+C-c C-k   cancel active run
+C-c C-a   approval action transient
+C-c C-d   open current diff/changes
+C-c C-t   trace/details
+C-c C-s   session selector
+C-c C-m   model/agent selector
+M-p/M-n   prompt history when point is in composer
+RET       visit/expand object at point, otherwise newline in composer
+TAB       expand/collapse structured block
+#+end_example
+
+Use a Transient menu for discoverability. Users can remap everything; the semantic command names are the actual API.
+
+* Integration with project.el, Magit and xref
+
+- Resolve the display project through backend project identity, then map to an Emacs =project-current= root when possible.
+- Use =find-file= for runtime-returned file references inside the project.
+- xref-style locations should jump directly to source lines.
+- Magit integration is optional and presentation-only: opening status/diff is useful; committing/pushing remains explicit tool/runtime behavior unless the user independently performs it in Magit.
+
+Never interpret "the file is open in Magit" as runtime authorization.
+
+* Failure and reconnect behavior
+
+A dead process sentinel should mark sessions disconnected and preserve the visible transcript. Reconnect should negotiate capabilities and fetch fresh snapshots before accepting new commands.
+
+Do not optimistically mark pending tools failed simply because the UI connection died. For effectful operations, the backend may later report indeterminate/reconciliation-required state.
+
+* Testing
+
+Use ERT with a fake transport and deterministic event fixture.
+
+Required coverage:
+
+- frame decoder handles split and coalesced process output;
+- direct Sweep adapter closes/cuts queries correctly;
+- 10,000 message deltas can be batched without blocking interactive commands pathologically;
+- point is not forced to end when the user reads scrollback;
+- text properties preserve message/tool identity after insertions;
+- unknown tool renderer is safe;
+- edit approval opens diff without applying it;
+- authority buttons send exact request IDs/decisions;
+- process death + reconnect refreshes snapshot;
+- two sessions can stream independently;
+- project A UI state does not issue commands against project B session by accident.
+
+* Rejected alternatives
+
+- Run the standalone TUI inside =vterm= and call that the Emacs frontend. Useful fallback, not integration.
+- Use gptel as the PrologAgent backend. That would create a second model/tool runtime.
+- Use only synchronous Sweep queries for streaming agent sessions. The direct bridge is intentionally serialized.
+- Let Emacs apply proposed edits and merely notify Prolog afterward. That bypasses authority/effect identity.
+- Reimplement file editor/diff/navigation widgets inside chat instead of using Emacs buffers.
+
+* Acceptance experiment
+
+Build a vertical slice with:
+
+1. =prolog-rlm.el= process transport and fake event server;
+2. =prolog-rlm-chat-mode= with streaming transcript and multiline composer;
+3. one project-search tool card and one test tool card;
+4. edit permission opening a =diff-mode= review buffer;
+5. allow-once/deny round trip;
+6. session cancellation;
+7. trace/details side buffer;
+8. a Sweep-backed =prolog-rlm-capabilities= or snapshot call using a dedicated arity-two bridge predicate;
+9. ERT event replay tests;
+10. clean coexistence with ordinary project buffers and window layouts.
+
+* Recommendation
+
+Implement a first-class Emacs frontend with a transport-neutral Elisp client API.
+
+Use the asynchronous process/socket backend for full session streaming and make Sweep an optional tight-binding backend for bounded direct calls and Prolog-aware integration. Build the chat/diff/tool UI using native Emacs buffers, overlays, text properties, buttons, side windows, Transient, =diff-mode=/Ediff, and =compilation-mode= rather than reproducing the standalone terminal layout pixel-for-character.
