@@ -14,29 +14,26 @@
 
 /** <module> Trusted skill catalog and Prolog-owned activation
 
-Skills are inert instruction documents. The model never selects, loads or grants
-authority through this module. Trusted host configuration supplies skill roots
-and optional compiler rules; Prolog deterministically decides which skills enter
-the model-visible context.
+Skills are inert instruction documents. The model never selects, loads, or
+uses this module to grant authority. Trusted host configuration supplies skill
+roots and optional compiler rules; Prolog deterministically decides which
+skills enter model-visible context.
 
-A skill directory contains a `SKILL.md` file with YAML-style frontmatter. Only
-the small discovery subset required by the runtime is parsed:
-
-  * `name`
-  * `description`
-  * `disable-model-invocation`
-
-Unknown frontmatter is ignored and no value is ever interpreted as executable
-Prolog. Skill bodies are loaded only after selection. Relative resource reads
-are confined to the skill directory after canonical path resolution.
+Catalog discovery reads only bounded metadata from `SKILL.md` frontmatter.
+Instruction bodies and resource contents are loaded only after selection.
+Descendant symlinks are rejected rather than followed, and selected resources
+remain inert text: loading a shell template is not permission to execute it.
 */
 
 :- use_module(library(apply)).
+:- use_module(library(crypto)).
 :- use_module(library(filesex)).
 :- use_module(library(lists)).
 :- use_module(library(readutil)).
 
 :- dynamic default_catalog_cache/1.
+
+resource_file_max_bytes(524288).
 
 rlm_skill_ready :-
     skill_catalog_empty(Catalog),
@@ -46,6 +43,10 @@ skill_catalog_empty(
     skill_catalog{roots:[],
                   skills:[],
                   fingerprint:skill_catalog_0}).
+
+/* -------------------------------------------------------------------------
+ * Catalogs
+ * ---------------------------------------------------------------------- */
 
 skill_catalog_load(RootSpecs0, Options, Outcome) :-
     catch(skill_catalog_load_(RootSpecs0, Options, Outcome),
@@ -129,129 +130,6 @@ default_skill_root(Root) :-
                         'third_party/mattpocock-skills/skills',
                         Root).
 
-skill_compile(Catalog, Input0, Options, Outcome) :-
-    catch(skill_compile_(Catalog, Input0, Options, Outcome),
-          Exception,
-          skill_exception(compile, Exception, Outcome)).
-
-skill_compile_(Catalog, Input0, Options, ok(Compiled)) :-
-    require_catalog(Catalog),
-    require_list(Options, options),
-    text_string(Input0, Input),
-    option_value(skill_mode, Options, auto, Mode),
-    require_member(Mode, [auto, off], skill_mode),
-    (   Mode == off
-    ->  empty_compilation(Catalog, Input, Compiled)
-    ;   compile_active_skills(Catalog, Input, Options, Compiled)
-    ).
-
-empty_compilation(Catalog, Input,
-                  compiled_skills{input:Input,
-                                  selected:[],
-                                  rejected:[],
-                                  estimated_prompt_tokens:0,
-                                  fingerprint:Fingerprint}) :-
-    compile_fingerprint(Catalog.fingerprint,
-                        Input,
-                        off,
-                        [],
-                        [],
-                        Fingerprint).
-
-compile_active_skills(Catalog, Input, Options, Compiled) :-
-    compile_options(Options, Config),
-    normalize_requested_names(Config.explicit_skills, Explicit),
-    normalize_requested_names(Config.disabled_skills, Disabled),
-    validate_known_names(Explicit, Catalog, explicit_skill),
-    validate_known_names(Disabled, Catalog, disabled_skill),
-    input_features(Input, Features),
-    maplist(skill_decision(Features,
-                           Explicit,
-                           Disabled,
-                           Config.rules,
-                           Config.min_score),
-            Catalog.skills,
-            Decisions),
-    partition_candidate_decisions(Decisions, Candidates, Rejected0),
-    sort_candidates(Candidates, SortedCandidates),
-    admit_candidates(SortedCandidates,
-                     Catalog,
-                     Explicit,
-                     Disabled,
-                     Config,
-                     [],
-                     [],
-                     SelectedNames,
-                     Rejected0,
-                     Rejected1,
-                     ReasonsByName),
-    selected_skill_records(SelectedNames,
-                           Catalog,
-                           ReasonsByName,
-                           Selected,
-                           EstimatedTokens),
-    sort_rejections(Rejected1, Rejected),
-    compile_fingerprint(Catalog.fingerprint,
-                        Input,
-                        Config,
-                        SelectedNames,
-                        Rejected,
-                        Fingerprint),
-    Compiled = compiled_skills{
-                   input:Input,
-                   selected:Selected,
-                   rejected:Rejected,
-                   estimated_prompt_tokens:EstimatedTokens,
-                   fingerprint:Fingerprint
-               }.
-
-compile_options(Options,
-                skill_compile_options{
-                    explicit_skills:Explicit,
-                    disabled_skills:Disabled,
-                    rules:Rules,
-                    min_score:MinScore,
-                    max_skills:MaxSkills,
-                    max_skill_tokens:MaxTokens}) :-
-    option_value(explicit_skills, Options, [], Explicit),
-    option_value(disabled_skills, Options, [], Disabled),
-    option_value(skill_rules, Options, [], Rules),
-    option_value(skill_min_score, Options, 20, MinScore),
-    option_value(skill_max_count, Options, 4, MaxSkills),
-    option_value(skill_max_tokens, Options, 4096, MaxTokens),
-    require_list(Explicit, explicit_skills),
-    require_list(Disabled, disabled_skills),
-    require_list(Rules, skill_rules),
-    require_nonnegative_integer(MinScore, skill_min_score),
-    require_positive_integer(MaxSkills, skill_max_count),
-    require_nonnegative_integer(MaxTokens, skill_max_tokens),
-    maplist(validate_skill_rule, Rules).
-
-validate_skill_rule(alias(Name, Phrase)) :-
-    !,
-    skill_name_atom(Name, _),
-    nonempty_text(Phrase).
-validate_skill_rule(trigger(Name, Phrase, Weight)) :-
-    !,
-    skill_name_atom(Name, _),
-    nonempty_text(Phrase),
-    integer(Weight),
-    Weight >= 0.
-validate_skill_rule(requires(Name, Dependency)) :-
-    !,
-    skill_name_atom(Name, _),
-    skill_name_atom(Dependency, _).
-validate_skill_rule(priority(Name, Priority)) :-
-    !,
-    skill_name_atom(Name, _),
-    integer(Priority).
-validate_skill_rule(conflicts(Name, Other)) :-
-    !,
-    skill_name_atom(Name, _),
-    skill_name_atom(Other, _).
-validate_skill_rule(Rule) :-
-    throw(skill_fault(invalid_skill_rule(Rule))).
-
 normalize_root_specs(RootSpecs0, RootSpecs) :-
     (   is_list(RootSpecs0)
     ->  Raw = RootSpecs0
@@ -269,9 +147,7 @@ normalize_root_spec(Path0,
                     skill_root{source:external, path:Path}) :-
     canonical_directory(Path0, Path).
 
-normalize_source(Source, Source) :-
-    atom(Source),
-    !.
+normalize_source(Source, Source) :- atom(Source), !.
 normalize_source(Source0, Source) :-
     string(Source0),
     !,
@@ -296,10 +172,7 @@ scan_skill_root(IncludeDeprecated,
                 RootSpec,
                 root_scan{root:RootInfo, skills:Skills}) :-
     Root = RootSpec.path,
-    find_skill_files(Root,
-                     Root,
-                     IncludeDeprecated,
-                     Files0),
+    find_skill_files(Root, Root, IncludeDeprecated, Files0),
     sort(Files0, Files),
     maplist(load_skill_metadata(RootSpec), Files, Skills),
     RootInfo = skill_root{source:RootSpec.source, path:Root}.
@@ -311,7 +184,7 @@ find_skill_files(Root, Dir, IncludeDeprecated, Files) :-
             ( member(Entry, Entries),
               allowed_entry(Entry, IncludeDeprecated),
               directory_file_path(Dir, Entry, Candidate0),
-              canonical_under_root(Root, Candidate0, Candidate),
+              secure_descendant(Root, Candidate0, Candidate),
               entry_skill_files(Root,
                                 Candidate,
                                 IncludeDeprecated,
@@ -327,37 +200,81 @@ entry_skill_files(_, Candidate, _, [Candidate]) :-
 entry_skill_files(Root, Candidate, IncludeDeprecated, Files) :-
     exists_directory(Candidate),
     !,
-    find_skill_files(Root,
-                     Candidate,
-                     IncludeDeprecated,
-                     Files).
+    find_skill_files(Root, Candidate, IncludeDeprecated, Files).
 entry_skill_files(_, _, _, []).
 
 allowed_entry(deprecated, false) :- !, fail.
+allowed_entry('in-progress', false) :- !, fail.
 allowed_entry(_, _).
 
 dot_entry('.').
 dot_entry('..').
 dot_entry('.git').
 
-canonical_under_root(Root, Candidate0, Candidate) :-
+secure_descendant(Root, Candidate0, Candidate) :-
+    lexical_under_root(Root, Candidate0),
+    reject_symlink_descendant(Root, Candidate0),
     absolute_file_name(Candidate0,
                        Candidate,
                        [ access(read),
                          file_errors(fail),
                          solutions(first)
                        ]),
-    (   path_within(Root, Candidate)
-    ->  true
-    ;   throw(skill_fault(path_escape(Candidate0)))
-    ).
+    path_within(Root, Candidate),
+    !.
+secure_descendant(_, Candidate, _) :-
+    throw(skill_fault(path_escape(Candidate))).
+
+lexical_under_root(Root, Path) :-
+    Path == Root,
+    !.
+lexical_under_root(Root, Path) :-
+    directory_prefix(Root, Prefix),
+    atom_concat(Prefix, _, Path).
 
 path_within(Root, Path) :-
     Path == Root,
     !.
 path_within(Root, Path) :-
-    atom_concat(Root, '/', Prefix),
-    sub_atom(Path, 0, _, _, Prefix).
+    directory_prefix(Root, Prefix),
+    atom_concat(Prefix, _, Path).
+
+directory_prefix(Directory, Prefix) :-
+    (   sub_atom(Directory, _, 1, 0, '/')
+    ->  Prefix = Directory
+    ;   atom_concat(Directory, '/', Prefix)
+    ).
+
+reject_symlink_descendant(Root, Path) :-
+    relative_segments(Root, Path, Segments),
+    reject_symlink_segments(Root, Segments).
+
+relative_segments(Root, Root, []) :- !.
+relative_segments(Root, Path, Segments) :-
+    directory_prefix(Root, Prefix),
+    atom_concat(Prefix, Relative, Path),
+    atomic_list_concat(Segments0, '/', Relative),
+    Segments0 \== [],
+    \+ memberchk('..', Segments0),
+    exclude(empty_path_segment, Segments0, Segments),
+    !.
+relative_segments(Root, Path, _) :-
+    throw(skill_fault(path_escape(Path, Root))).
+
+empty_path_segment('').
+empty_path_segment('.').
+
+reject_symlink_segments(_, []).
+reject_symlink_segments(Base, [Segment|Segments]) :-
+    directory_file_path(Base, Segment, Path),
+    (   path_is_symlink(Path)
+    ->  throw(skill_fault(symlink_descendant(Path)))
+    ;   true
+    ),
+    reject_symlink_segments(Path, Segments).
+
+path_is_symlink(Path) :-
+    catch(read_link(Path, _, _), _, fail).
 
 load_skill_metadata(RootSpec, SkillFile, Skill) :-
     read_skill_frontmatter(SkillFile, Frontmatter),
@@ -372,55 +289,100 @@ load_skill_metadata(RootSpec, SkillFile, Skill) :-
     file_directory_name(SkillFile, SkillDir),
     relative_path(RootSpec.path, SkillDir, RelativeDir),
     skill_category(RelativeDir, Category),
-    skill_resource_metadata(RootSpec.path,
-                            SkillDir,
-                            Resources),
+    skill_resource_metadata(RootSpec.path, SkillDir, Resources),
     size_file(SkillFile, SkillBytes),
     bytes_tokens(SkillBytes, SkillTokens),
     resource_token_sum(Resources, ResourceTokens),
     Estimate is SkillTokens+ResourceTokens,
-    Skill = skill{
-                name:Name,
-                description:Description,
-                invocation:Invocation,
-                source:RootSpec.source,
-                root:RootSpec.path,
-                directory:SkillDir,
-                relative_directory:RelativeDir,
-                category:Category,
-                instruction_file:SkillFile,
-                resources:Resources,
-                estimated_tokens:Estimate
-            }.
+    Skill = skill{name:Name,
+                  description:Description,
+                  invocation:Invocation,
+                  source:RootSpec.source,
+                  root:RootSpec.path,
+                  directory:SkillDir,
+                  relative_directory:RelativeDir,
+                  category:Category,
+                  instruction_file:SkillFile,
+                  resources:Resources,
+                  estimated_tokens:Estimate}.
 
 invocation_policy(true, explicit_user).
 invocation_policy(false, automatic).
 
+/* Resource discovery records names and sizes only. Contents remain lazy. */
 skill_resource_metadata(Root, SkillDir, Resources) :-
-    directory_files(SkillDir, Entries0),
+    scan_skill_resources(Root, SkillDir, SkillDir, Resources0),
+    sort_resources(Resources0, Resources).
+
+scan_skill_resources(Root, SkillDir, Dir, Resources) :-
+    directory_files(Dir, Entries0),
     exclude(dot_entry, Entries0, Entries),
-    findall(Resource,
+    findall(EntryResources,
             ( member(Entry, Entries),
               Entry \== 'SKILL.md',
-              directory_file_path(SkillDir, Entry, Candidate0),
-              canonical_under_root(Root, Candidate0, Candidate),
-              exists_file(Candidate),
-              text_resource_extension(Candidate),
-              size_file(Candidate, Bytes),
-              bytes_tokens(Bytes, Tokens),
-              Resource = skill_resource{
-                             name:Entry,
-                             path:Candidate,
-                             estimated_tokens:Tokens
-                         }
+              directory_file_path(Dir, Entry, Candidate0),
+              secure_descendant(SkillDir, Candidate0, Candidate),
+              secure_descendant(Root, Candidate, _),
+              resource_entry(Root,
+                             SkillDir,
+                             Candidate,
+                             EntryResources)
             ),
-            Resources0),
-    sort(Resources0, Resources).
+            Nested),
+    append(Nested, Resources).
 
-text_resource_extension(Path) :-
+resource_entry(_, SkillDir, Candidate, []) :-
+    exists_directory(Candidate),
+    directory_file_path(Candidate, 'SKILL.md', NestedSkill),
+    exists_file(NestedSkill),
+    Candidate \== SkillDir,
+    !.
+resource_entry(Root, SkillDir, Candidate, Resources) :-
+    exists_directory(Candidate),
+    !,
+    scan_skill_resources(Root, SkillDir, Candidate, Resources).
+resource_entry(_, SkillDir, Candidate, [Resource]) :-
+    exists_file(Candidate),
+    text_resource(Candidate),
+    !,
+    size_file(Candidate, Bytes),
+    require_resource_size(Candidate, Bytes),
+    bytes_tokens(Bytes, Tokens),
+    relative_path(SkillDir, Candidate, Relative),
+    Resource = skill_resource{name:Relative,
+                              path:Candidate,
+                              bytes:Bytes,
+                              estimated_tokens:Tokens}.
+resource_entry(_, _, _, []).
+
+sort_resources(Resources0, Resources) :-
+    findall(Name-Resource,
+            ( member(Resource, Resources0), Name = Resource.name ),
+            Pairs0),
+    keysort(Pairs0, Pairs),
+    pairs_values(Pairs, Resources).
+
+text_resource(Path) :-
+    file_base_name(Path, Base),
+    memberchk(Base, ['Makefile', 'Dockerfile']),
+    !.
+text_resource(Path) :-
     file_name_extension(_, Ext0, Path),
     downcase_atom(Ext0, Ext),
-    memberchk(Ext, [md, txt]).
+    memberchk(Ext,
+              [ md, txt, sh, bash, zsh, fish,
+                json, yaml, yml, toml, ini, cfg, org,
+                html, css, js, jsx, ts, tsx,
+                py, pl, el, lisp, cl, scm, nim, rs,
+                c, h, cc, cpp, hpp, java, go, rb
+              ]).
+
+require_resource_size(Path, Bytes) :-
+    resource_file_max_bytes(Max),
+    (   Bytes =< Max
+    ->  true
+    ;   throw(skill_fault(resource_too_large(Path, Bytes, Max)))
+    ).
 
 resource_token_sum(Resources, Tokens) :-
     findall(TokenCount,
@@ -436,7 +398,7 @@ bytes_tokens(Bytes, Tokens) :-
 relative_path(Root, Path, Relative) :-
     (   Path == Root
     ->  Relative = '.'
-    ;   atom_concat(Root, '/', Prefix),
+    ;   directory_prefix(Root, Prefix),
         atom_concat(Prefix, Relative, Path)
     ).
 
@@ -445,6 +407,56 @@ skill_category(RelativeDir, Category) :-
     atomic_list_concat(Parts, '/', RelativeDir),
     Parts = [Category|_],
     !.
+
+roots_and_skills([], [], []).
+roots_and_skills([Scan|Scans], [Scan.root|Roots], Skills) :-
+    roots_and_skills(Scans, Roots, Rest),
+    append(Scan.skills, Rest, Skills).
+
+sort_skills(Skills0, Skills) :-
+    findall(Name-Skill,
+            ( member(Skill, Skills0), Name = Skill.name ),
+            Pairs0),
+    keysort(Pairs0, Pairs),
+    pairs_values(Pairs, Skills).
+
+pairs_values([], []).
+pairs_values([_-Value|Pairs], [Value|Values]) :-
+    pairs_values(Pairs, Values).
+
+require_unique_skill_names(Skills) :-
+    findall(Name,
+            ( select(SkillA, Skills, Rest),
+              member(SkillB, Rest),
+              SkillA.name == SkillB.name,
+              Name = SkillA.name
+            ),
+            Duplicates0),
+    sort(Duplicates0, Duplicates),
+    (   Duplicates == []
+    ->  true
+    ;   throw(skill_fault(duplicate_skill_names(Duplicates)))
+    ).
+
+catalog_fingerprint(Roots, Skills, Fingerprint) :-
+    findall(Source,
+            ( member(Root, Roots), Source = Root.source ),
+            Sources0),
+    sort(Sources0, Sources),
+    findall(skill(Skill.name,
+                  Skill.description,
+                  Skill.invocation,
+                  Skill.source,
+                  Skill.relative_directory,
+                  Skill.estimated_tokens),
+            member(Skill, Skills),
+            StableSkills),
+    stable_hash(skill_catalog(Sources, StableSkills), Hash),
+    atom_concat(skill_catalog_, Hash, Fingerprint).
+
+/* -------------------------------------------------------------------------
+ * Frontmatter
+ * ---------------------------------------------------------------------- */
 
 read_skill_frontmatter(Path, Frontmatter) :-
     setup_call_cleanup(
@@ -456,22 +468,29 @@ read_frontmatter_stream(Stream, Path, Frontmatter) :-
     read_line_to_string(Stream, First0),
     trim_string(First0, First),
     (   First == "---"
-    ->  read_frontmatter_lines(Stream, Path, [], Lines)
+    ->  read_frontmatter_lines(Stream, Path, 0, [], Lines)
     ;   throw(skill_fault(missing_frontmatter(Path)))
     ),
     maplist(frontmatter_line_pair, Lines, Pairs0),
     exclude(=(none), Pairs0, Pairs),
     Frontmatter = Pairs.
 
-read_frontmatter_lines(Stream, Path, Acc, Lines) :-
+read_frontmatter_lines(Stream, Path, Bytes0, Acc, Lines) :-
     read_line_to_string(Stream, Line0),
     (   Line0 == end_of_file
     ->  throw(skill_fault(unterminated_frontmatter(Path)))
-    ;   trim_string(Line0, Line),
+    ;   string_length(Line0, Length),
+        Bytes is Bytes0+Length+1,
+        (   Bytes =< 65536
+        ->  true
+        ;   throw(skill_fault(frontmatter_too_large(Path)))
+        ),
+        trim_string(Line0, Line),
         (   Line == "---"
         ->  reverse(Acc, Lines)
         ;   read_frontmatter_lines(Stream,
                                    Path,
+                                   Bytes,
                                    [Line0|Acc],
                                    Lines)
         )
@@ -480,6 +499,8 @@ read_frontmatter_lines(Stream, Path, Acc, Lines) :-
 frontmatter_line_pair(Line0, Pair) :-
     trim_string(Line0, Line),
     (   Line == ""
+    ->  Pair = none
+    ;   sub_string(Line, 0, 1, _, "#")
     ->  Pair = none
     ;   sub_string(Line, Before, 1, After, ":")
     ->  sub_string(Line, 0, Before, _, Key0),
@@ -531,64 +552,121 @@ parse_boolean(Raw0, _, Value) :-
     ;   throw(skill_fault(invalid_boolean(Raw0)))
     ).
 
-sort_skills(Skills0, Skills) :-
-    findall(Name-Skill,
-            ( member(Skill, Skills0),
-              Name = Skill.name
-            ),
-            Pairs0),
-    keysort(Pairs0, Pairs),
-    pairs_values(Pairs, Skills).
+/* -------------------------------------------------------------------------
+ * Compilation
+ * ---------------------------------------------------------------------- */
 
-pairs_values([], []).
-pairs_values([_-Value|Pairs], [Value|Values]) :-
-    pairs_values(Pairs, Values).
+skill_compile(Catalog, Input0, Options, Outcome) :-
+    catch(skill_compile_(Catalog, Input0, Options, Outcome),
+          Exception,
+          skill_exception(compile, Exception, Outcome)).
 
-require_unique_skill_names(Skills) :-
-    findall(Name,
-            ( select(SkillA, Skills, Rest),
-              member(SkillB, Rest),
-              SkillA.name == SkillB.name,
-              Name = SkillA.name
-            ),
-            Duplicates0),
-    sort(Duplicates0, Duplicates),
-    (   Duplicates == []
-    ->  true
-    ;   throw(skill_fault(duplicate_skill_names(Duplicates)))
+skill_compile_(Catalog, Input0, Options, ok(Compiled)) :-
+    require_catalog(Catalog),
+    require_list(Options, options),
+    text_string(Input0, Input),
+    option_value(skill_mode, Options, auto, Mode),
+    require_member(Mode, [auto, off], skill_mode),
+    (   Mode == off
+    ->  empty_compilation(Catalog, Input, Compiled)
+    ;   compile_active_skills(Catalog, Input, Options, Compiled)
     ).
 
-roots_and_skills([], [], []).
-roots_and_skills([Scan|Scans], [Scan.root|Roots], Skills) :-
-    roots_and_skills(Scans, Roots, Rest),
-    append(Scan.skills, Rest, Skills).
+empty_compilation(Catalog, Input,
+                  compiled_skills{input:Input,
+                                  selected:[],
+                                  rejected:[],
+                                  estimated_prompt_tokens:0,
+                                  fingerprint:Fingerprint}) :-
+    stable_hash(skill_compile(Catalog.fingerprint,
+                              Input,
+                              off,
+                              [],
+                              []),
+                Hash),
+    atom_concat(skill_compile_, Hash, Fingerprint).
 
-catalog_fingerprint(Roots, Skills, Fingerprint) :-
-    findall(Source,
-            ( member(Root, Roots), Source = Root.source ),
-            Sources0),
-    sort(Sources0, Sources),
-    findall(skill(Name,
-                  Description,
-                  Invocation,
-                  Source,
-                  Relative,
-                  Estimate),
-            ( member(Skill, Skills),
-              Name = Skill.name,
-              Description = Skill.description,
-              Invocation = Skill.invocation,
-              Source = Skill.source,
-              Relative = Skill.relative_directory,
-              Estimate = Skill.estimated_tokens
-            ),
-            StableSkills),
-    term_hash(skill_catalog(Sources, StableSkills), Hash),
-    format(atom(Fingerprint), 'skill_catalog_~16r', [Hash]).
+compile_active_skills(Catalog, Input, Options, Compiled) :-
+    compile_options(Options, Config),
+    normalize_requested_names(Config.explicit_skills, Explicit),
+    normalize_requested_names(Config.disabled_skills, Disabled),
+    validate_known_names(Explicit, Catalog, explicit_skill),
+    validate_known_names(Disabled, Catalog, disabled_skill),
+    input_features(Input, Features),
+    maplist(skill_decision(Features,
+                           Explicit,
+                           Disabled,
+                           Config.rules,
+                           Config.min_score),
+            Catalog.skills,
+            Decisions),
+    partition_candidate_decisions(Decisions, Candidates, Rejected0),
+    sort_candidates(Candidates, SortedCandidates),
+    admit_candidates(SortedCandidates,
+                     Catalog,
+                     Explicit,
+                     Disabled,
+                     Config,
+                     [],
+                     [],
+                     SelectedNames,
+                     Rejected0,
+                     Rejected1,
+                     ReasonsByName),
+    selected_skill_records(SelectedNames,
+                           Catalog,
+                           ReasonsByName,
+                           Selected,
+                           EstimatedTokens),
+    sort_rejections(Rejected1, Rejected),
+    compile_fingerprint(Catalog.fingerprint,
+                        Input,
+                        Config,
+                        SelectedNames,
+                        Rejected,
+                        Fingerprint),
+    Compiled = compiled_skills{input:Input,
+                               selected:Selected,
+                               rejected:Rejected,
+                               estimated_prompt_tokens:EstimatedTokens,
+                               fingerprint:Fingerprint}.
 
-input_features(Input,
-               input_features{lower:Lower,
-                              tokens:Tokens}) :-
+compile_options(Options,
+                skill_compile_options{explicit_skills:Explicit,
+                                      disabled_skills:Disabled,
+                                      rules:Rules,
+                                      min_score:MinScore,
+                                      max_skills:MaxSkills,
+                                      max_skill_tokens:MaxTokens}) :-
+    option_value(explicit_skills, Options, [], Explicit),
+    option_value(disabled_skills, Options, [], Disabled),
+    option_value(skill_rules, Options, [], Rules),
+    option_value(skill_min_score, Options, 20, MinScore),
+    option_value(skill_max_count, Options, 4, MaxSkills),
+    option_value(skill_max_tokens, Options, 4096, MaxTokens),
+    require_list(Explicit, explicit_skills),
+    require_list(Disabled, disabled_skills),
+    require_list(Rules, skill_rules),
+    require_nonnegative_integer(MinScore, skill_min_score),
+    require_positive_integer(MaxSkills, skill_max_count),
+    require_nonnegative_integer(MaxTokens, skill_max_tokens),
+    maplist(validate_skill_rule, Rules).
+
+validate_skill_rule(alias(Name, Phrase)) :-
+    !, skill_name_atom(Name, _), nonempty_text(Phrase).
+validate_skill_rule(trigger(Name, Phrase, Weight)) :-
+    !, skill_name_atom(Name, _), nonempty_text(Phrase),
+    integer(Weight), Weight >= 0.
+validate_skill_rule(requires(Name, Dependency)) :-
+    !, skill_name_atom(Name, _), skill_name_atom(Dependency, _).
+validate_skill_rule(priority(Name, Priority)) :-
+    !, skill_name_atom(Name, _), integer(Priority).
+validate_skill_rule(conflicts(Name, Other)) :-
+    !, skill_name_atom(Name, _), skill_name_atom(Other, _).
+validate_skill_rule(Rule) :-
+    throw(skill_fault(invalid_skill_rule(Rule))).
+
+input_features(Input, input_features{lower:Lower, tokens:Tokens}) :-
     string_lower(Input, Lower),
     text_tokens(Lower, Tokens0),
     sort(Tokens0, Tokens).
@@ -606,9 +684,7 @@ skill_decision(Features,
     ;   memberchk(Name, Explicit)
     ->  rule_priority(Name, Rules, Priority),
         Score is 10000+Priority,
-        Decision = candidate(Name,
-                             Score,
-                             [explicit_user_selection])
+        Decision = candidate(Name, Score, [explicit_user_selection])
     ;   Skill.invocation == explicit_user
     ->  Decision = rejected(Name, explicit_user_only)
     ;   rule_aliases(Name, Rules, Aliases),
@@ -748,49 +824,17 @@ significant_token(Token) :-
     Length >= 3,
     \+ stopword(Token).
 
-stopword("the").
-stopword("and").
-stopword("for").
-stopword("with").
-stopword("that").
-stopword("this").
-stopword("from").
-stopword("into").
-stopword("when").
-stopword("where").
-stopword("which").
-stopword("while").
-stopword("user").
-stopword("users").
-stopword("use").
-stopword("using").
-stopword("skill").
-stopword("skills").
-stopword("want").
-stopword("wants").
-stopword("work").
-stopword("working").
-stopword("current").
-stopword("agent").
-stopword("agents").
-stopword("code").
-stopword("project").
-stopword("file").
-stopword("files").
-stopword("make").
-stopword("have").
-stopword("has").
-stopword("are").
-stopword("was").
-stopword("were").
-stopword("you").
-stopword("your").
-stopword("they").
-stopword("their").
-stopword("about").
-stopword("only").
-stopword("than").
-stopword("then").
+stopword("the"). stopword("and"). stopword("for"). stopword("with").
+stopword("that"). stopword("this"). stopword("from"). stopword("into").
+stopword("when"). stopword("where"). stopword("which"). stopword("while").
+stopword("user"). stopword("users"). stopword("use"). stopword("using").
+stopword("skill"). stopword("skills"). stopword("want"). stopword("wants").
+stopword("work"). stopword("working"). stopword("current").
+stopword("agent"). stopword("agents"). stopword("code"). stopword("project").
+stopword("file"). stopword("files"). stopword("make"). stopword("have").
+stopword("has"). stopword("are"). stopword("was"). stopword("were").
+stopword("you"). stopword("your"). stopword("they"). stopword("their").
+stopword("about"). stopword("only"). stopword("than"). stopword("then").
 stopword("also").
 
 stem_token(Token0, Stem) :-
@@ -814,9 +858,7 @@ stem_token(Token0, Stem) :-
 
 intersection_count(A, B, Count) :-
     findall(Token,
-            ( member(Token, A),
-              memberchk(Token, B)
-            ),
+            ( member(Token, A), memberchk(Token, B) ),
             Shared0),
     sort(Shared0, Shared),
     length(Shared, Count).
@@ -832,6 +874,7 @@ skill_negated(LowerInput, Skill, Aliases) :-
 
 negation_prefix("do not use ").
 negation_prefix("don't use ").
+negation_prefix("dont use ").
 negation_prefix("do not activate ").
 negation_prefix("without ").
 negation_prefix("no ").
@@ -860,8 +903,7 @@ sort_candidates(Candidates0, Candidates) :-
     pairs_values(Pairs, Candidates).
 
 admit_candidates([], _, _, _, _, Selected, Reasons,
-                 Selected, Rejected, Rejected, Reasons) :-
-    !.
+                 Selected, Rejected, Rejected, Reasons) :- !.
 admit_candidates([candidate(Name, Score, CandidateReasons)|Candidates],
                  Catalog,
                  Explicit,
@@ -874,140 +916,130 @@ admit_candidates([candidate(Name, Score, CandidateReasons)|Candidates],
                  Rejected,
                  Reasons) :-
     (   memberchk(Name, Selected0)
-    ->  admit_candidates(Candidates,
-                         Catalog,
-                         Explicit,
-                         Disabled,
-                         Config,
-                         Selected0,
-                         Reasons0,
-                         Selected,
-                         Rejected0,
-                         Rejected,
-                         Reasons)
+    ->  Selected1 = Selected0,
+        Reasons1 = Reasons0,
+        Rejected1 = Rejected0
     ;   dependency_closure(Name,
                            Catalog,
                            Explicit,
                            Disabled,
                            Config.rules,
-                           Selected0,
                            Closure,
                            DependencyReasons),
         candidate_bundle(Closure, Selected0, Bundle),
         tentative_names(Selected0, Bundle, Tentative),
         selection_cost(Tentative, Catalog, Count, Tokens),
         candidate_conflict(Tentative, Config.rules, Conflict),
-        (   Conflict \== none
-        ->  Rejected1 = [skill_rejection{
-                              name:Name,
-                              reason:conflict(Conflict)
-                          }|Rejected0],
-            Selected1 = Selected0,
-            Reasons1 = Reasons0
-        ;   Count > Config.max_skills
-        ->  Rejected1 = [skill_rejection{
-                              name:Name,
-                              reason:max_skill_count(
-                                         Count,
-                                         Config.max_skills)
-                          }|Rejected0],
-            Selected1 = Selected0,
-            Reasons1 = Reasons0
-        ;   Tokens > Config.max_skill_tokens
-        ->  (   memberchk(Name, Explicit)
-            ->  throw(skill_fault(
-                         explicit_skill_budget_exceeded(
-                             Name,
-                             Tokens,
-                             Config.max_skill_tokens)))
-            ;   Rejected1 = [skill_rejection{
-                                  name:Name,
-                                  reason:skill_token_budget(
-                                             Tokens,
-                                             Config.max_skill_tokens)
-                              }|Rejected0],
-                Selected1 = Selected0,
-                Reasons1 = Reasons0
-            )
-        ;   append(Selected0, Bundle, Selected1),
-            add_reason(Name,
-                       [score(Score)|CandidateReasons],
-                       Reasons0,
-                       ReasonsA),
-            add_dependency_reasons(DependencyReasons,
-                                   ReasonsA,
-                                   Reasons1),
-            Rejected1 = Rejected0
-        ),
-        admit_candidates(Candidates,
-                         Catalog,
+        admission_result(Conflict,
+                         Count,
+                         Tokens,
+                         Name,
+                         Score,
+                         CandidateReasons,
                          Explicit,
-                         Disabled,
                          Config,
+                         Bundle,
+                         Selected0,
+                         Reasons0,
+                         Rejected0,
+                         DependencyReasons,
                          Selected1,
                          Reasons1,
-                         Selected,
-                         Rejected1,
-                         Rejected,
-                         Reasons)
-    ).
+                         Rejected1)
+    ),
+    admit_candidates(Candidates,
+                     Catalog,
+                     Explicit,
+                     Disabled,
+                     Config,
+                     Selected1,
+                     Reasons1,
+                     Selected,
+                     Rejected1,
+                     Rejected,
+                     Reasons).
 
+admission_result(Conflict, _, _, Name, _, _, _, _, _, Selected, Reasons,
+                 Rejected0, _, Selected, Reasons, Rejected) :-
+    Conflict \== none,
+    !,
+    Rejected = [skill_rejection{name:Name,
+                                reason:conflict(Conflict)}|Rejected0].
+admission_result(_, Count, _, Name, _, _, _, Config, _, Selected, Reasons,
+                 Rejected0, _, Selected, Reasons, Rejected) :-
+    Count > Config.max_skills,
+    !,
+    Rejected = [skill_rejection{name:Name,
+                                reason:max_skill_count(Count,
+                                                       Config.max_skills)}
+                |Rejected0].
+admission_result(_, _, Tokens, Name, _, _, Explicit, Config, _, Selected,
+                 Reasons, Rejected0, _, Selected, Reasons, Rejected) :-
+    Tokens > Config.max_skill_tokens,
+    !,
+    (   memberchk(Name, Explicit)
+    ->  throw(skill_fault(explicit_skill_budget_exceeded(
+                              Name,
+                              Tokens,
+                              Config.max_skill_tokens)))
+    ;   Rejected = [skill_rejection{name:Name,
+                                    reason:skill_token_budget(
+                                               Tokens,
+                                               Config.max_skill_tokens)}
+                    |Rejected0]
+    ).
+admission_result(_, _, _, Name, Score, CandidateReasons, _, _, Bundle,
+                 Selected0, Reasons0, Rejected, DependencyReasons,
+                 Selected, Reasons, Rejected) :-
+    append(Selected0, Bundle, Selected),
+    add_reason(Name,
+               [score(Score)|CandidateReasons],
+               Reasons0,
+               ReasonsA),
+    add_dependency_reasons(DependencyReasons, ReasonsA, Reasons).
+
+/* DFS produces dependency-first order and rejects cycles. */
 dependency_closure(Name,
                    Catalog,
                    Explicit,
                    Disabled,
                    Rules,
-                   AlreadySelected,
                    Closure,
                    Reasons) :-
-    dependency_closure_([Name],
-                        Catalog,
-                        Explicit,
-                        Disabled,
-                        Rules,
-                        AlreadySelected,
-                        [],
-                        Closure0,
-                        [],
-                        Reasons),
-    sort(Closure0, Closure).
+    dependency_visit(Name,
+                     Catalog,
+                     Explicit,
+                     Disabled,
+                     Rules,
+                     [],
+                     [],
+                     _,
+                     [],
+                     Closure,
+                     [],
+                     Reasons).
 
-dependency_closure_([], _, _, _, _, _, Closure, Closure,
-                    Reasons, Reasons).
-dependency_closure_([Name|Queue],
-                    Catalog,
-                    Explicit,
-                    Disabled,
-                    Rules,
-                    AlreadySelected,
-                    Closure0,
-                    Closure,
-                    Reasons0,
-                    Reasons) :-
-    (   memberchk(Name, AlreadySelected)
-    ;   memberchk(Name, Closure0)
-    ),
+dependency_visit(Name, _, _, _, _, Stack, _, _, _, _, _, _) :-
+    memberchk(Name, Stack),
     !,
-    dependency_closure_(Queue,
-                        Catalog,
-                        Explicit,
-                        Disabled,
-                        Rules,
-                        AlreadySelected,
-                        Closure0,
-                        Closure,
-                        Reasons0,
-                        Reasons).
-dependency_closure_([Name|Queue],
-                    Catalog,
-                    Explicit,
-                    Disabled,
-                    Rules,
-                    AlreadySelected,
-                    Closure0,
-                    Closure,
-                    Reasons0,
-                    Reasons) :-
+    reverse([Name|Stack], Cycle),
+    throw(skill_fault(skill_dependency_cycle(Cycle))).
+dependency_visit(Name, _, _, _, _, _, Seen, Seen, Order, Order,
+                 Reasons, Reasons) :-
+    memberchk(Name, Seen),
+    !.
+dependency_visit(Name,
+                 Catalog,
+                 Explicit,
+                 Disabled,
+                 Rules,
+                 Stack,
+                 Seen0,
+                 Seen,
+                 Order0,
+                 Order,
+                 Reasons0,
+                 Reasons) :-
     (   skill_catalog_skill(Catalog, Name, Skill)
     ->  true
     ;   throw(skill_fault(missing_skill_dependency(Name)))
@@ -1021,22 +1053,69 @@ dependency_closure_([Name|Queue],
     ),
     rule_dependencies(Name, Rules, Dependencies),
     validate_known_names(Dependencies, Catalog, dependency),
-    findall(dep_reason(Dependency,
-                       [required_by(Name)]),
-            member(Dependency, Dependencies),
-            DependencyReasons),
-    append(Queue, Dependencies, Queue1),
-    append(Reasons0, DependencyReasons, Reasons1),
-    dependency_closure_(Queue1,
-                        Catalog,
-                        Explicit,
-                        Disabled,
-                        Rules,
-                        AlreadySelected,
-                        [Name|Closure0],
-                        Closure,
-                        Reasons1,
-                        Reasons).
+    dependency_visit_list(Dependencies,
+                          Name,
+                          Catalog,
+                          Explicit,
+                          Disabled,
+                          Rules,
+                          [Name|Stack],
+                          [Name|Seen0],
+                          Seen1,
+                          Order0,
+                          Order1,
+                          Reasons0,
+                          Reasons1),
+    append(Order1, [Name], Order),
+    Seen = Seen1,
+    Reasons = Reasons1.
+
+dependency_visit_list([], _, _, _, _, _, _, Seen, Seen, Order, Order,
+                      Reasons, Reasons).
+dependency_visit_list([Dependency|Dependencies],
+                      Parent,
+                      Catalog,
+                      Explicit,
+                      Disabled,
+                      Rules,
+                      Stack,
+                      Seen0,
+                      Seen,
+                      Order0,
+                      Order,
+                      Reasons0,
+                      Reasons) :-
+    add_reason_term(Dependency,
+                    [required_by(Parent)],
+                    Reasons0,
+                    ReasonsA),
+    dependency_visit(Dependency,
+                     Catalog,
+                     Explicit,
+                     Disabled,
+                     Rules,
+                     Stack,
+                     Seen0,
+                     Seen1,
+                     Order0,
+                     Order1,
+                     ReasonsA,
+                     Reasons1),
+    dependency_visit_list(Dependencies,
+                          Parent,
+                          Catalog,
+                          Explicit,
+                          Disabled,
+                          Rules,
+                          Stack,
+                          Seen1,
+                          Seen,
+                          Order1,
+                          Order,
+                          Reasons1,
+                          Reasons).
+
+add_reason_term(Name, Why, Reasons0, [dep_reason(Name, Why)|Reasons0]).
 
 rule_dependencies(Name, Rules, Dependencies) :-
     findall(Dependency,
@@ -1050,11 +1129,8 @@ rule_dependencies(Name, Rules, Dependencies) :-
 
 candidate_bundle(Closure, Selected, Bundle) :-
     findall(Name,
-            ( member(Name, Closure),
-              \+ memberchk(Name, Selected)
-            ),
-            Bundle0),
-    sort(Bundle0, Bundle).
+            ( member(Name, Closure), \+ memberchk(Name, Selected) ),
+            Bundle).
 
 tentative_names(Selected, Bundle, Tentative) :-
     append(Selected, Bundle, Names0),
@@ -1089,9 +1165,7 @@ add_reason(Name, Reason, Reasons0, Reasons) :-
 add_reason(Name, Reason, Reasons, [Name-Reason|Reasons]).
 
 add_dependency_reasons([], Reasons, Reasons).
-add_dependency_reasons([dep_reason(Name, Reason)|Rest],
-                       Reasons0,
-                       Reasons) :-
+add_dependency_reasons([dep_reason(Name, Reason)|Rest], Reasons0, Reasons) :-
     add_reason(Name, Reason, Reasons0, Reasons1),
     add_dependency_reasons(Rest, Reasons1, Reasons).
 
@@ -1100,66 +1174,63 @@ selected_skill_records(Names,
                        ReasonsByName,
                        Selected,
                        EstimatedTokens) :-
-    maplist(selected_skill_record(Catalog, ReasonsByName),
-            Names,
-            Selected),
+    maplist(selected_skill_record(Catalog, ReasonsByName), Names, Selected),
     findall(Tokens,
-            ( member(Record, Selected),
-              Tokens = Record.estimated_tokens
-            ),
+            ( member(Record, Selected), Tokens = Record.estimated_tokens ),
             TokenCounts),
     sum_list(TokenCounts, EstimatedTokens).
 
-selected_skill_record(Catalog,
-                      ReasonsByName,
-                      Name,
-                      Selection) :-
+selected_skill_record(Catalog, ReasonsByName, Name, Selection) :-
     skill_catalog_skill(Catalog, Name, Skill),
     (   memberchk(Name-Reasons0, ReasonsByName)
     ->  sort(Reasons0, Reasons)
     ;   Reasons = [dependency_closure]
     ),
     read_skill_bundle(Skill, Instructions, ResourceBodies),
-    Selection = skill_selection{
-                    name:Name,
-                    description:Skill.description,
-                    source:Skill.source,
-                    category:Skill.category,
-                    invocation:Skill.invocation,
-                    estimated_tokens:Skill.estimated_tokens,
-                    reasons:Reasons,
-                    instructions:Instructions,
-                    resources:ResourceBodies
-                }.
+    Selection = skill_selection{name:Name,
+                                description:Skill.description,
+                                source:Skill.source,
+                                category:Skill.category,
+                                invocation:Skill.invocation,
+                                estimated_tokens:Skill.estimated_tokens,
+                                reasons:Reasons,
+                                instructions:Instructions,
+                                resources:ResourceBodies}.
 
 read_skill_bundle(Skill, Instructions, ResourceBodies) :-
-    read_file_to_string(Skill.instruction_file,
-                        Raw,
-                        [encoding(utf8)]),
+    secure_instruction_path(Skill, InstructionFile),
+    read_file_to_string(InstructionFile, Raw, [encoding(utf8)]),
     strip_frontmatter(Raw, Instructions),
-    maplist(read_skill_resource_body,
+    maplist(read_skill_resource_body(Skill),
             Skill.resources,
             ResourceBodies).
 
-read_skill_resource_body(Resource,
-                         skill_resource_body{
-                             name:Resource.name,
-                             content:Content,
-                             estimated_tokens:Resource.estimated_tokens}) :-
-    read_file_to_string(Resource.path,
-                        Content,
-                        [encoding(utf8)]).
+secure_instruction_path(Skill, InstructionFile) :-
+    require_skill(Skill),
+    skill_security_root(Skill, Root),
+    directory_file_path(Skill.directory, 'SKILL.md', Candidate0),
+    secure_descendant(Root, Candidate0, Candidate),
+    (   exists_file(Candidate)
+    ->  InstructionFile = Candidate
+    ;   throw(skill_fault(skill_instruction_missing(Skill.name)))
+    ).
+
+read_skill_resource_body(Skill,
+                         Resource,
+                         skill_resource_body{name:Resource.name,
+                                             content:Content,
+                                             estimated_tokens:Tokens}) :-
+    secure_resource_path(Skill, Resource.name, Candidate),
+    size_file(Candidate, Bytes),
+    require_resource_size(Candidate, Bytes),
+    bytes_tokens(Bytes, Tokens),
+    read_file_to_string(Candidate, Content, [encoding(utf8)]).
 
 strip_frontmatter(Raw, Body) :-
     split_string(Raw, "\n", "", Lines),
     strip_frontmatter_lines(Lines, BodyLines0),
     drop_leading_blank_lines(BodyLines0, BodyLines),
     atomics_to_string(BodyLines, "\n", Body).
-
-drop_leading_blank_lines([""|Lines], BodyLines) :-
-    !,
-    drop_leading_blank_lines(Lines, BodyLines).
-drop_leading_blank_lines(Lines, Lines).
 
 strip_frontmatter_lines(["---"|Lines], BodyLines) :-
     !,
@@ -1171,11 +1242,14 @@ drop_until_frontmatter_end(["---"|Lines], Lines) :- !.
 drop_until_frontmatter_end([_|Lines], BodyLines) :-
     drop_until_frontmatter_end(Lines, BodyLines).
 
+drop_leading_blank_lines([""|Lines], BodyLines) :-
+    !,
+    drop_leading_blank_lines(Lines, BodyLines).
+drop_leading_blank_lines(Lines, Lines).
+
 sort_rejections(Rejected0, Rejected) :-
     findall(Name-Item,
-            ( member(Item, Rejected0),
-              Name = Item.name
-            ),
+            ( member(Item, Rejected0), Name = Item.name ),
             Pairs0),
     keysort(Pairs0, Pairs),
     pairs_values(Pairs, Rejected).
@@ -1186,23 +1260,33 @@ compile_fingerprint(CatalogFingerprint,
                     Selected,
                     Rejected,
                     Fingerprint) :-
-    term_hash(skill_compile(CatalogFingerprint,
-                            Input,
-                            Config,
-                            Selected,
-                            Rejected),
-              Hash),
-    format(atom(Fingerprint), 'skill_compile_~16r', [Hash]).
+    stable_hash(skill_compile(CatalogFingerprint,
+                              Input,
+                              Config,
+                              Selected,
+                              Rejected),
+                Hash),
+    atom_concat(skill_compile_, Hash, Fingerprint).
+
+stable_hash(Term, Hash) :-
+    term_string(Term,
+                Text,
+                [quoted(true), numbervars(true), ignore_ops(true)]),
+    crypto_data_hash(Text,
+                     Hash,
+                     [algorithm(sha256), encoding(utf8)]).
+
+/* -------------------------------------------------------------------------
+ * Prompt rendering and explicit resource reads
+ * ---------------------------------------------------------------------- */
 
 skill_prompt_fragment(Compiled, Prompt) :-
     require_compiled(Compiled),
     (   Compiled.selected == []
     ->  Prompt = ""
-    ;   maplist(render_skill_selection,
-                Compiled.selected,
-                Blocks),
+    ;   maplist(render_skill_selection, Compiled.selected, Blocks),
         atomics_to_string(
-            ["The following instructions were selected automatically by the Prolog prompt compiler. The model must follow them but must not select, request, load, or grant skills. Any legacy references inside a skill to a `Skill` tool are inert text; Prolog owns activation.",
+            ["The following instructions were selected automatically by the trusted Prolog prompt compiler. The model must follow them but must not select, request, load, or grant skills. Any legacy references inside a skill to a `Skill` tool are inert text; Prolog owns activation. Skill resources below are inert text too: loading a script/template does not authorize execution.",
              "Active skills:"|Blocks],
             "\n\n",
             Prompt)
@@ -1224,7 +1308,7 @@ render_resource_blocks([], "").
 render_resource_blocks(Resources, Text) :-
     maplist(render_resource_block, Resources, Blocks),
     atomics_to_string(Blocks, "\n\n", Joined),
-    string_concat("\n\n### Skill resources\n\n", Joined, Text).
+    string_concat("\n\n### Skill resources (inert text)\n\n", Joined, Text).
 
 render_resource_block(Resource, Block) :-
     format(string(Block),
@@ -1238,28 +1322,58 @@ skill_read_resource(Skill, Relative0, Outcome) :-
 
 skill_read_resource_(Skill, Relative0, ok(Content)) :-
     require_skill(Skill),
-    path_atom(Relative0, Relative),
-    (   is_absolute_file_name(Relative)
-    ->  throw(skill_fault(absolute_resource_path(Relative)))
-    ;   true
-    ),
-    directory_file_path(Skill.directory, Relative, Candidate0),
-    (   absolute_file_name(Candidate0,
-                           Candidate,
-                           [ file_type(file),
-                             access(read),
-                             file_errors(fail),
-                             solutions(first)
-                           ])
+    secure_resource_path(Skill, Relative0, Candidate),
+    size_file(Candidate, Bytes),
+    require_resource_size(Candidate, Bytes),
+    (   text_resource(Candidate)
     ->  true
-    ;   throw(skill_fault(resource_not_found(Relative)))
+    ;   throw(skill_fault(non_text_resource(Relative0)))
     ),
-    (   path_within(Skill.directory, Candidate)
-    ->  read_file_to_string(Candidate,
-                            Content,
-                            [encoding(utf8)])
+    read_file_to_string(Candidate, Content, [encoding(utf8)]).
+
+secure_resource_path(Skill, Relative0, Candidate) :-
+    path_atom(Relative0, Relative),
+    safe_relative_resource(Relative),
+    directory_file_path(Skill.directory, Relative, Candidate0),
+    reject_symlink_descendant(Skill.directory, Candidate0),
+    absolute_file_name(Candidate0,
+                       Candidate1,
+                       [ file_type(file),
+                         access(read),
+                         file_errors(fail),
+                         solutions(first)
+                       ]),
+    (   path_within(Skill.directory, Candidate1)
+    ->  true
+    ;   throw(skill_fault(resource_path_escape(Relative)))
+    ),
+    skill_security_root(Skill, Root),
+    (   path_within(Root, Candidate1)
+    ->  Candidate = Candidate1
     ;   throw(skill_fault(resource_path_escape(Relative)))
     ).
+
+safe_relative_resource(Relative) :-
+    (   Relative == ''
+    ->  throw(skill_fault(invalid_resource_path(Relative)))
+    ;   is_absolute_file_name(Relative)
+    ->  throw(skill_fault(absolute_resource_path(Relative)))
+    ;   atomic_list_concat(Segments, '/', Relative),
+        ( memberchk('..', Segments)
+        -> throw(skill_fault(resource_path_escape(Relative)))
+        ; true
+        )
+    ).
+
+skill_security_root(Skill, Root) :-
+    (   get_dict(root, Skill, Candidate), atom(Candidate)
+    ->  Root = Candidate
+    ;   Root = Skill.directory
+    ).
+
+/* -------------------------------------------------------------------------
+ * Generic validation and errors
+ * ---------------------------------------------------------------------- */
 
 normalize_requested_names(Raw, Names) :-
     maplist(skill_name_atom, Raw, Names0),
@@ -1274,14 +1388,9 @@ validate_known_names([Name|Names], Catalog, Kind) :-
     validate_known_names(Names, Catalog, Kind).
 
 skill_name_atom(Name, Name) :-
-    atom(Name),
-    valid_skill_name(Name),
-    !.
+    atom(Name), valid_skill_name(Name), !.
 skill_name_atom(Name0, Name) :-
-    string(Name0),
-    atom_string(Name, Name0),
-    valid_skill_name(Name),
-    !.
+    string(Name0), atom_string(Name, Name0), valid_skill_name(Name), !.
 skill_name_atom(Name, _) :-
     throw(skill_fault(invalid_skill_name(Name))).
 
@@ -1290,21 +1399,15 @@ valid_skill_name(Name) :-
     skill_name_first_char(First),
     maplist(skill_name_char, Rest).
 
-skill_name_first_char(Char) :-
-    char_type(Char, alnum).
-
-skill_name_char(Char) :-
-    char_type(Char, alnum),
-    !.
+skill_name_first_char(Char) :- char_type(Char, alnum).
+skill_name_char(Char) :- char_type(Char, alnum), !.
 skill_name_char('-').
 skill_name_char('_').
 
 require_catalog(Catalog) :-
     (   is_dict(Catalog, skill_catalog),
-        get_dict(skills, Catalog, Skills),
-        is_list(Skills),
-        get_dict(roots, Catalog, Roots),
-        is_list(Roots),
+        get_dict(skills, Catalog, Skills), is_list(Skills),
+        get_dict(roots, Catalog, Roots), is_list(Roots),
         get_dict(fingerprint, Catalog, _)
     ->  true
     ;   throw(skill_fault(invalid_skill_catalog(Catalog)))
@@ -1312,16 +1415,14 @@ require_catalog(Catalog) :-
 
 require_compiled(Compiled) :-
     (   is_dict(Compiled, compiled_skills),
-        get_dict(selected, Compiled, Selected),
-        is_list(Selected)
+        get_dict(selected, Compiled, Selected), is_list(Selected)
     ->  true
     ;   throw(skill_fault(invalid_compiled_skills(Compiled)))
     ).
 
 require_skill(Skill) :-
     (   is_dict(Skill, skill),
-        get_dict(directory, Skill, Directory),
-        atom(Directory)
+        get_dict(directory, Skill, Directory), atom(Directory)
     ->  true
     ;   throw(skill_fault(invalid_skill(Skill)))
     ).
@@ -1332,48 +1433,34 @@ require_boolean(Value, Name) :-
     throw(skill_fault(invalid_option(Name, Value))).
 
 require_member(Value, Allowed, Name) :-
-    (   memberchk(Value, Allowed)
-    ->  true
-    ;   throw(skill_fault(invalid_option(Name, Value)))
+    ( memberchk(Value, Allowed)
+    -> true
+    ;  throw(skill_fault(invalid_option(Name, Value)))
     ).
 
-require_list(Value, _) :-
-    is_list(Value),
-    !.
+require_list(Value, _) :- is_list(Value), !.
 require_list(Value, Name) :-
     throw(skill_fault(invalid_option(Name, Value))).
 
-require_ground(Value, _) :-
-    ground(Value),
-    !.
+require_ground(Value, _) :- ground(Value), !.
 require_ground(Value, Name) :-
     throw(skill_fault(non_ground(Name, Value))).
 
 require_nonnegative_integer(Value, _) :-
-    integer(Value),
-    Value >= 0,
-    !.
+    integer(Value), Value >= 0, !.
 require_nonnegative_integer(Value, Name) :-
     throw(skill_fault(invalid_option(Name, Value))).
 
 require_positive_integer(Value, _) :-
-    integer(Value),
-    Value > 0,
-    !.
+    integer(Value), Value > 0, !.
 require_positive_integer(Value, Name) :-
     throw(skill_fault(invalid_option(Name, Value))).
 
 nonempty_text(Value) :-
-    text_string(Value, Text),
-    Text \== "".
+    text_string(Value, Text), Text \== "".
 
-text_string(Value, Value) :-
-    string(Value),
-    !.
-text_string(Value, Text) :-
-    atom(Value),
-    !,
-    atom_string(Value, Text).
+text_string(Value, Value) :- string(Value), !.
+text_string(Value, Text) :- atom(Value), !, atom_string(Value, Text).
 text_string(Value, _) :-
     throw(skill_fault(expected_text(Value))).
 
@@ -1382,13 +1469,8 @@ trim_string(Text0, Text) :-
     text_string(Text0, Raw),
     normalize_space(string(Text), Raw).
 
-path_atom(Path, Path) :-
-    atom(Path),
-    !.
-path_atom(Path0, Path) :-
-    string(Path0),
-    !,
-    atom_string(Path, Path0).
+path_atom(Path, Path) :- atom(Path), !.
+path_atom(Path0, Path) :- string(Path0), !, atom_string(Path, Path0).
 path_atom(Path, _) :-
     throw(skill_fault(invalid_path(Path))).
 
