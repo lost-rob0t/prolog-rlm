@@ -2,9 +2,9 @@
 
 `PrologAgent` is the planned downstream coding-agent application built on `prolog-rlm`.
 
-It is intentionally separate from the reusable runtime. Core owns model execution, agents, graphs, authority, async work, effects, MCP, traces, and durable state. `agentProlog/` owns the coding workflow, application-facing UI protocol, and terminal/editor UX that combine those pieces into an OpenCode-style tool.
+It is intentionally separate from the reusable runtime. Core owns model execution, agents, graphs, authority, async work, effects, MCP, traces, and durable state. `agentProlog/` owns the coding workflow, application-facing UI protocol, configuration convention, and terminal/editor UX that combine those pieces into an OpenCode-style tool.
 
-The implementation roadmap lives in [`docs/prolog-agent-roadmap.md`](../docs/prolog-agent-roadmap.md). The renderer-independent frontend contract is documented in [`docs/prolog-agent-ui-v1.md`](../docs/prolog-agent-ui-v1.md).
+The implementation roadmap lives in [`docs/prolog-agent-roadmap.md`](../docs/prolog-agent-roadmap.md). The renderer-independent frontend contract is documented in [`docs/prolog-agent-ui-v1.md`](../docs/prolog-agent-ui-v1.md). AgentProlog configuration is documented in [`docs/agentprolog-config.md`](../docs/agentprolog-config.md).
 
 ## Target experience
 
@@ -78,6 +78,20 @@ swipl -q -s agentProlog/bin/prolog-agent-ui-fixture.pl
 
 The golden polyglot session is `agentProlog/fixtures/prolog_agent_ui_v1_session.ndjson`.
 
+## Configuration
+
+AgentProlog has one canonical configuration model with two input formats: XDG `config.prolog` and JSON. Prolog is primary; JSON is normalized through the same resolver and can also be loaded from `config.prolog` with the built-in `json/1` or `include_json/1` declaration.
+
+The user default is:
+
+```text
+$XDG_CONFIG_HOME/prolog-rlm/agentProlog/config.prolog
+```
+
+Project configuration uses `<project-root>/.agentprolog/config.prolog` with a JSON fallback. Project root is discovery metadata only; the resolver requires a separate structured project identity so later #75 integration does not key security-sensitive state by raw cwd.
+
+Discovered Prolog configuration is read as closed ground data, not `consult`ed as ambient executable code. Configuration selects trusted runtime extensions but cannot grant capabilities or authority merely by existing.
+
 ## Security boundary
 
 Loading coding tools does not grant their capabilities. Repository writes, process execution, network access, and MCP effects remain explicit bounded operations.
@@ -92,6 +106,8 @@ The UI protocol does not weaken this boundary. A client command is a request to 
 
 The core agent/runtime substrate exists. `agentProlog/` is not yet a runnable coding agent or rich TUI.
 
-The `prolog_agent_ui_v1` foundation now defines the renderer-independent snapshot/event/command boundary, deterministic replay semantics, request correlation, reconnect behavior, NDJSON encoding, a child-process fixture server, golden fixtures, and 10,000-delta stress coverage. The next UI slice is a small OpenTUI + SolidJS reference client against that fixture, after the protocol branch is verified and merged.
+The `prolog_agent_ui_v1` foundation defines the renderer-independent snapshot/event/command boundary, deterministic replay semantics, request correlation, reconnect behavior, NDJSON encoding, a child-process fixture server, golden fixtures, and stress coverage.
+
+The AgentProlog configuration track is now split under #126. #127 establishes the Prolog-first/JSON canonical loader and project/user overlay contract; #128-#131 cover hooks/extensions, config-driven trusted tools, error/loop detectors, and DeepSeek Harness configuration integration.
 
 The headless coding workflow and concrete project tool pack still remain product dependencies. Update the roadmap in the same PR whenever implementation materially changes readiness or dependencies.
