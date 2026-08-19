@@ -1,25 +1,100 @@
 :- module(rlm_skill_completion,
           [ skill_completion_options/3,
-            rlm_skill_completion_ready/0
+            rlm_skill_completion_ready/0,
+            install_completion_skill_wrapper/0
           ]).
 
-/** <module> Skill compiler bridge for public completion
+/** <module> Skill compiler bridge for canonical completion
 
 This module is the boundary between the generic skill compiler and the RLM
-planner. It compiles skills before a model request exists and folds the selected
-instruction fragment into the trusted planner instruction option. The bridge
-never exposes the skill catalog to the model and never grants capabilities.
+planner. It compiles skills before a planner request exists and folds the
+selected instruction fragment into the trusted planner instruction option.
+The bridge never exposes the skill catalog to the model and never grants
+capabilities.
+
+The canonical completion guard is decorated with SWI-Prolog's predicate wrapper
+facility. Wrapping the guarded operation rather than the public async scheduler
+keeps file/catalog work inside the scheduled completion task and covers callers
+that use the low-level completion module through managed conversation or CLI
+facades. A compilation fingerprint marker prevents nested/public facades from
+injecting the same skill instructions twice.
 */
 
 :- use_module(library(apply)).
+:- use_module(library(prolog_wrap)).
+:- use_module(rlm_completion, []).
 :- use_module(rlm_skill).
 :- use_module(rlm_skill_mattpocock).
 
+:- initialization(install_completion_skill_wrapper).
+
 rlm_skill_completion_ready :-
     rlm_skill_mattpocock:rlm_skill_mattpocock_ready,
+    install_completion_skill_wrapper,
     skill_completion_options("",
                              [skill_mode(off)],
                              ok(skill_completion{options:_, compiled:_})).
+
+install_completion_skill_wrapper :-
+    prolog_wrap:wrap_predicate(
+        rlm_completion:rlm_completion_guarded(Query,
+                                              Context,
+                                              Options,
+                                              Outcome),
+        prolog_rlm_skill_compiler,
+        Wrapped,
+        rlm_skill_completion:completion_guarded_with_skills(
+            Wrapped,
+            Query,
+            Context,
+            Options,
+            Outcome)).
+
+completion_guarded_with_skills(call(Closure),
+                               Query,
+                               Context,
+                               Options,
+                               Outcome) :-
+    (   skill_compiled_marker(Options)
+    ->  call_completion_closure(Closure,
+                                Query,
+                                Context,
+                                Options,
+                                Outcome)
+    ;   skill_completion_options(Query, Options, SkillOutcome),
+        completion_guard_after_skills(SkillOutcome,
+                                      Closure,
+                                      Query,
+                                      Context,
+                                      Outcome)
+    ).
+
+completion_guard_after_skills(ok(Prepared),
+                              Closure,
+                              Query,
+                              Context,
+                              Outcome) :-
+    !,
+    call_completion_closure(Closure,
+                            Query,
+                            Context,
+                            Prepared.options,
+                            Outcome).
+completion_guard_after_skills(error(Error), _, _, _, error(CompletionError)) :-
+    CompletionError = completion_error{
+                          phase:prompt_compile,
+                          kind:skill_compilation_failed,
+                          cause:Error,
+                          message:"Prolog skill compilation failed before planner execution"
+                      }.
+
+call_completion_closure(Closure, Query, Context, Options, Outcome) :-
+    functor(Closure, ClosureBlob, 4),
+    call(ClosureBlob, Query, Context, Options, Outcome).
+
+skill_compiled_marker(Options) :-
+    is_list(Options),
+    memberchk(skill_compiled(_), Options).
 
 skill_completion_options(Query, Options0, Outcome) :-
     catch(skill_completion_options_(Query, Options0, Outcome),
@@ -35,7 +110,8 @@ skill_completion_options_(Query, Options0,
     skill_compile(Catalog, Query, CompileOptions, CompileOutcome),
     require_skill_compile(CompileOutcome, Compiled),
     skill_prompt_fragment(Compiled, SkillPrompt),
-    merge_planner_instruction(Options0, SkillPrompt, Options).
+    merge_planner_instruction(Options0, SkillPrompt, PromptOptions),
+    mark_skill_compiled(PromptOptions, Compiled.fingerprint, Options).
 
 completion_skill_catalog(Options, Catalog, DistributionRules) :-
     option_value(skill_catalog, Options, default, Spec),
@@ -85,6 +161,10 @@ merge_planner_instruction(Options0, SkillPrompt, Options) :-
 merged_instruction(SkillPrompt, "", SkillPrompt) :- !.
 merged_instruction(SkillPrompt, Existing, Combined) :-
     format(string(Combined), "~s\n\n~s", [SkillPrompt, Existing]).
+
+mark_skill_compiled(Options0, Fingerprint, Options) :-
+    exclude(named_option(skill_compiled), Options0, Rest),
+    Options = [skill_compiled(Fingerprint)|Rest].
 
 named_option(Name, Option) :-
     nonvar(Option),
