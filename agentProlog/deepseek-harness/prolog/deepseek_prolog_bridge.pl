@@ -8,21 +8,30 @@
 
 /** <module> DeepSeek Harness to Prolog-RLM authority bridge
 
-This is not an agent loop.  It is a narrow application boundary used by the
-DeepSeek Harness frontend/host path.  Durable conversation state and every
-model turn remain owned by `rlm_conversation`; provider-visible history is a
-bounded projection over the lossless transcript and no compaction replacement
-is permitted.
+This is not an agent loop. It is a narrow application boundary used by the
+DeepSeek Harness frontend/host path. Durable conversation state and every model
+turn remain owned by `rlm_conversation`; provider-visible history is a bounded
+projection over the lossless transcript and no compaction replacement is
+permitted.
+
+The bridge exposes asynchronous turn handles so a host can remain responsive
+while Prolog owns execution. The handles are wrappers over the canonical
+`rlm_async` runtime, including its real cancellation semantics. They are not a
+second scheduler.
 */
 
 :- use_module(library(filesex)).
+:- use_module(library(uuid)).
 :- use_module(deepseek_prolog_settings).
+:- use_module('../../../prolog/rlm_async').
 :- use_module('../../../prolog/rlm_conversation').
 
 :- dynamic bridge_runtime/3.
+:- dynamic bridge_run/5.
 
 deepseek_bridge_ready :-
     deepseek_prolog_settings:deepseek_settings_ready,
+    rlm_async:rlm_async_ready,
     rlm_conversation:rlm_conversation_ready.
 
 deepseek_bridge_open(SettingsPath, Outcome) :-
@@ -53,11 +62,22 @@ deepseek_bridge_close_(closed) :-
     close_runtime_if_open.
 
 close_runtime_if_open :-
+    close_all_runs,
     (   retract(bridge_runtime(_, _, Store))
     ->  rlm_conversation:conversation_store_close(Store, _),
         retractall(bridge_runtime(_, _, _))
     ;   true
     ).
+
+close_all_runs :-
+    findall(Future, bridge_run(_, _, Future, _, _), Futures0),
+    sort(Futures0, Futures),
+    maplist(cancel_and_destroy_future, Futures),
+    retractall(bridge_run(_, _, _, _, _)).
+
+cancel_and_destroy_future(Future) :-
+    catch(rlm_async:rlm_future_cancel(Future, _), _, true),
+    catch(rlm_async:rlm_future_destroy(Future), _, true).
 
 open_settings_store(Settings, Store) :-
     (   Settings.persist_sessions == true
@@ -94,6 +114,7 @@ bridge_command("hello", _, Result) :-
                canonical_agent_runtime:"prolog-rlm",
                history_mode:"lossless_rlm",
                compaction:false,
+               turn_execution:"rlm_async",
                commands:["settings/get",
                          "settings/set",
                          "session/create",
@@ -102,7 +123,11 @@ bridge_command("hello", _, Result) :-
                          "session/messages",
                          "session/search",
                          "session/stats",
-                         "session/turn"],
+                         "session/turn",
+                         "session/turn/start",
+                         "run/status",
+                         "run/result",
+                         "run/cancel"],
                runtime:Runtime}.
 bridge_command("settings/get", _, Settings) :-
     !,
@@ -173,21 +198,205 @@ bridge_command("session/stats", Payload, Result) :-
     stats_view(Stats, Result).
 bridge_command("session/turn", Payload, Result) :-
     !,
-    open_payload_conversation(Payload, Conversation),
-    require_string_key(Payload, content, Content),
-    current_runtime(_, Settings, _),
-    deepseek_bridge_completion_options(Settings,
-                                       CompletionOptions,
-                                       Route),
-    TurnOptions = [completion_options(CompletionOptions)],
+    prepare_turn(Payload, Conversation, Content, TurnOptions, Route),
     rlm_conversation:conversation_turn(Conversation,
                                        message(user, Content),
                                        TurnOptions,
                                        TurnOutcome),
     require_ok(TurnOutcome, Turn),
     turn_view(Turn, Route, Result).
+bridge_command("session/turn/start", Payload, Result) :-
+    !,
+    prepare_turn(Payload, Conversation, Content, TurnOptions, Route),
+    ensure_session_not_running(Conversation.id),
+    uuid(RunId, [version(4)]),
+    get_time(StartedAt),
+    Metadata = async_metadata{operation:deepseek_harness_turn,
+                              session_id:Conversation.id,
+                              run_id:RunId},
+    rlm_async:rlm_async_submit(
+        deepseek_prolog_bridge:bridge_turn_task(Conversation,
+                                                Content,
+                                                TurnOptions),
+        Metadata,
+        Future),
+    assertz(bridge_run(RunId,
+                       Conversation.id,
+                       Future,
+                       Route,
+                       StartedAt)),
+    run_identity_view(RunId, Conversation.id, StartedAt, "pending", Result).
+bridge_command("run/status", Payload, Result) :-
+    !,
+    payload_run(Payload, RunId, SessionId, Future, _, StartedAt),
+    rlm_async:rlm_future_status(Future, Status),
+    run_status_view(RunId, SessionId, StartedAt, Status, Result).
+bridge_command("run/result", Payload, Result) :-
+    !,
+    payload_run(Payload, RunId, SessionId, Future, Route, StartedAt),
+    rlm_async:rlm_future_status(Future, Status),
+    run_result_view(RunId,
+                    SessionId,
+                    StartedAt,
+                    Future,
+                    Route,
+                    Status,
+                    Result).
+bridge_command("run/cancel", Payload, Result) :-
+    !,
+    payload_run(Payload, RunId, SessionId, Future, _, StartedAt),
+    rlm_async:rlm_future_cancel(Future, CancelOutcome),
+    cancel_outcome_state(CancelOutcome, State),
+    run_identity_view(RunId, SessionId, StartedAt, State, Result).
 bridge_command(Command, _, _) :-
     throw(bridge_fault(unknown_command(Command))).
+
+prepare_turn(Payload, Conversation, Content, TurnOptions, Route) :-
+    open_payload_conversation(Payload, Conversation),
+    require_string_key(Payload, content, Content),
+    current_runtime(_, Settings, _),
+    deepseek_bridge_completion_options(Settings,
+                                       CompletionOptions,
+                                       Route),
+    TurnOptions = [completion_options(CompletionOptions)].
+
+bridge_turn_task(Conversation, Content, TurnOptions, TurnOutcome) :-
+    rlm_conversation:conversation_turn(Conversation,
+                                       message(user, Content),
+                                       TurnOptions,
+                                       TurnOutcome).
+
+ensure_session_not_running(SessionId) :-
+    (   bridge_run(RunId, SessionId, Future, _, _),
+        future_active(Future)
+    ->  atom_string(RunId, RunIdString),
+        throw(bridge_fault(session_busy(SessionId, RunIdString)))
+    ;   true
+    ).
+
+future_active(Future) :-
+    catch(rlm_async:rlm_future_status(Future, Status), _, fail),
+    memberchk(Status.state, [pending, running]).
+
+payload_run(Payload, RunId, SessionId, Future, Route, StartedAt) :-
+    require_string_key(Payload, run_id, RunIdString),
+    atom_string(RunId, RunIdString),
+    (   bridge_run(RunId, SessionId, Future, Route, StartedAt)
+    ->  true
+    ;   throw(bridge_fault(unknown_run(RunIdString)))
+    ).
+
+run_status_view(RunId, SessionId, StartedAt, Status, Result) :-
+    atom_string(Status.state, State),
+    run_identity_view(RunId, SessionId, StartedAt, State, Base),
+    (   Status.state == completed
+    ->  terminal_outcome_kind(Status.outcome, Kind),
+        put_dict(outcome_kind, Base, Kind, Result)
+    ;   Result = Base
+    ).
+
+terminal_outcome_kind(ok(_), "ok") :- !.
+terminal_outcome_kind(error(_), "error") :- !.
+terminal_outcome_kind(_, "unknown").
+
+run_result_view(RunId,
+                SessionId,
+                StartedAt,
+                Future,
+                Route,
+                Status,
+                Result) :-
+    (   Status.state == completed
+    ->  consume_completed_run(RunId,
+                              SessionId,
+                              StartedAt,
+                              Future,
+                              Route,
+                              Status.outcome,
+                              Result)
+    ;   Status.state == cancelled
+    ->  consume_cancelled_run(RunId,
+                              SessionId,
+                              StartedAt,
+                              Future,
+                              Result)
+    ;   atom_string(Status.state, State),
+        run_identity_view(RunId, SessionId, StartedAt, State, Result)
+    ).
+
+consume_completed_run(RunId,
+                      SessionId,
+                      StartedAt,
+                      Future,
+                      Route,
+                      ok(Turn),
+                      Result) :-
+    !,
+    turn_view(Turn, Route, TurnView),
+    run_identity_view(RunId,
+                      SessionId,
+                      StartedAt,
+                      "completed",
+                      Base),
+    put_dict(turn, Base, TurnView, Result),
+    forget_run(RunId, Future).
+consume_completed_run(RunId,
+                      SessionId,
+                      StartedAt,
+                      Future,
+                      _,
+                      error(Error),
+                      Result) :-
+    !,
+    wire_safe(Error, ErrorView),
+    run_identity_view(RunId,
+                      SessionId,
+                      StartedAt,
+                      "failed",
+                      Base),
+    put_dict(error, Base, ErrorView, Result),
+    forget_run(RunId, Future).
+consume_completed_run(RunId,
+                      SessionId,
+                      StartedAt,
+                      Future,
+                      _,
+                      Outcome,
+                      Result) :-
+    wire_safe(Outcome, OutcomeView),
+    run_identity_view(RunId,
+                      SessionId,
+                      StartedAt,
+                      "failed",
+                      Base),
+    put_dict(error, Base, OutcomeView, Result),
+    forget_run(RunId, Future).
+
+consume_cancelled_run(RunId, SessionId, StartedAt, Future, Result) :-
+    run_identity_view(RunId,
+                      SessionId,
+                      StartedAt,
+                      "cancelled",
+                      Result),
+    forget_run(RunId, Future).
+
+forget_run(RunId, Future) :-
+    retractall(bridge_run(RunId, _, Future, _, _)),
+    catch(rlm_async:rlm_future_destroy(Future), _, true).
+
+cancel_outcome_state(ok(cancelled), "cancelled") :- !.
+cancel_outcome_state(ok(already_cancelled), "cancelled") :- !.
+cancel_outcome_state(ok(already_completed), "completed") :- !.
+cancel_outcome_state(_, "unknown").
+
+run_identity_view(RunId, SessionId, StartedAt, State,
+                  _{run_id:RunIdString,
+                    session_id:SessionIdString,
+                    state:State,
+                    started_at:StartedAt,
+                    canonical_agent_runtime:"prolog-rlm"}) :-
+    atom_string(RunId, RunIdString),
+    atom_string(SessionId, SessionIdString).
 
 deepseek_bridge_completion_options(Settings, Options, Route) :-
     deepseek_prolog_settings:deepseek_settings_provider(Settings,
@@ -225,7 +434,8 @@ runtime_info(Settings,
                persist_sessions:Settings.persist_sessions,
                conversation_store:Settings.conversation_store,
                history_mode:"lossless_rlm",
-               compaction:false}).
+               compaction:false,
+               turn_execution:"rlm_async"}).
 
 conversation_view(Conversation, View) :-
     atom_string(Conversation.id, Id),
@@ -281,6 +491,43 @@ content_text(Content, Text) :-
                                 portray(false),
                                 max_depth(20)
                               ])).
+
+wire_safe(Value, Value) :-
+    var(Value),
+    !.
+wire_safe(Value, Value) :-
+    string(Value),
+    !.
+wire_safe(Value, Value) :-
+    number(Value),
+    !.
+wire_safe(true, true) :- !.
+wire_safe(false, false) :- !.
+wire_safe(null, null) :- !.
+wire_safe(Value, String) :-
+    atom(Value),
+    !,
+    atom_string(Value, String).
+wire_safe(Value, Safe) :-
+    is_dict(Value),
+    !,
+    dict_pairs(Value, Tag, Pairs0),
+    maplist(wire_safe_pair, Pairs0, Pairs),
+    dict_pairs(Safe, Tag, Pairs).
+wire_safe(Value, Safe) :-
+    is_list(Value),
+    !,
+    maplist(wire_safe, Value, Safe).
+wire_safe(Value, String) :-
+    with_output_to(string(String),
+                   write_term(Value,
+                              [ quoted(true),
+                                portray(false),
+                                max_depth(20)
+                              ])).
+
+wire_safe_pair(Key-Value, Key-Safe) :-
+    wire_safe(Value, Safe).
 
 current_runtime(SettingsPath, Settings, Store) :-
     bridge_runtime(SettingsPath, Settings, Store),

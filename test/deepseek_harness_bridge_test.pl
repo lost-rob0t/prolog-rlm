@@ -2,6 +2,7 @@
 
 :- use_module('../agentProlog/deepseek-harness/prolog/deepseek_prolog_settings').
 :- use_module('../agentProlog/deepseek-harness/prolog/deepseek_prolog_bridge').
+:- use_module('../prolog/rlm_async').
 
 test(defaults_are_lossless_and_uncompressed) :-
     deepseek_settings_defaults(Settings),
@@ -79,7 +80,12 @@ test(bridge_exposes_prolog_authority_contract,
     assertion(Result.canonical_agent_runtime == "prolog-rlm"),
     assertion(Result.history_mode == "lossless_rlm"),
     assertion(Result.compaction == false),
-    assertion(memberchk("session/turn", Result.commands)).
+    assertion(Result.turn_execution == "rlm_async"),
+    assertion(memberchk("session/turn", Result.commands)),
+    assertion(memberchk("session/turn/start", Result.commands)),
+    assertion(memberchk("run/status", Result.commands)),
+    assertion(memberchk("run/result", Result.commands)),
+    assertion(memberchk("run/cancel", Result.commands)).
 
 test(bridge_creates_and_lists_sessions_without_model_call,
      [ setup(memory_bridge(SettingsPath)),
@@ -124,6 +130,81 @@ test(bridge_sessions_survive_close_and_reopen,
     assertion(OpenResponse.result.history_mode == "lossless_rlm"),
     assertion(OpenResponse.result.compaction == false).
 
+test(async_run_status_cancel_and_result_use_core_future_runtime,
+     [ setup(memory_bridge(SettingsPath)),
+       cleanup(close_memory_bridge(SettingsPath))
+     ]) :-
+    rlm_async_submit(slow_bridge_test_task, Future),
+    assertz(deepseek_prolog_bridge:bridge_run(test_async_run,
+                                              'session-test',
+                                              Future,
+                                              _{provider:"test",
+                                                model:"test",
+                                                history_mode:"lossless_rlm",
+                                                compaction:false},
+                                              1.0)),
+    StatusRequest = _{request_id:"run-status",
+                      command:"run/status",
+                      payload:_{run_id:"test_async_run"}},
+    deepseek_bridge_handle(StatusRequest, StatusResponse),
+    assertion(StatusResponse.ok == true),
+    assertion(memberchk(StatusResponse.result.state, ["pending", "running"])),
+    CancelRequest = _{request_id:"run-cancel",
+                      command:"run/cancel",
+                      payload:_{run_id:"test_async_run"}},
+    deepseek_bridge_handle(CancelRequest, CancelResponse),
+    assertion(CancelResponse.ok == true),
+    assertion(CancelResponse.result.state == "cancelled"),
+    ResultRequest = _{request_id:"run-result",
+                      command:"run/result",
+                      payload:_{run_id:"test_async_run"}},
+    deepseek_bridge_handle(ResultRequest, ResultResponse),
+    assertion(ResultResponse.ok == true),
+    assertion(ResultResponse.result.state == "cancelled"),
+    assertion(\+ deepseek_prolog_bridge:bridge_run(test_async_run,
+                                                    _, _, _, _)).
+
+test(async_run_blocks_overlapping_session_turns_without_model_call,
+     [ setup(memory_bridge_with_session(SettingsPath, 'busy-session')),
+       cleanup(close_memory_bridge(SettingsPath))
+     ]) :-
+    rlm_async_submit(slow_bridge_test_task, Future),
+    assertz(deepseek_prolog_bridge:bridge_run(test_busy_run,
+                                              'busy-session',
+                                              Future,
+                                              _{provider:"test",
+                                                model:"test",
+                                                history_mode:"lossless_rlm",
+                                                compaction:false},
+                                              1.0)),
+    Start = _{request_id:"busy-start",
+              command:"session/turn/start",
+              payload:_{session_id:"busy-session",
+                        content:"must not reach a provider"}},
+    deepseek_bridge_handle(Start, StartResponse),
+    assertion(StartResponse.ok == false),
+    rlm_future_cancel(Future, _),
+    rlm_future_destroy(Future),
+    retractall(deepseek_prolog_bridge:bridge_run(test_busy_run,
+                                                 _, _, _, _)).
+
+test(bridge_close_cancels_and_destroys_owned_runs,
+     [ setup(memory_bridge(SettingsPath)),
+       cleanup(close_memory_bridge(SettingsPath))
+     ]) :-
+    rlm_async_submit(slow_bridge_test_task, Future),
+    assertz(deepseek_prolog_bridge:bridge_run(test_close_run,
+                                              'session-test',
+                                              Future,
+                                              _{},
+                                              1.0)),
+    deepseek_bridge_close(CloseOutcome),
+    assertion(CloseOutcome == ok(closed)),
+    assertion(\+ deepseek_prolog_bridge:bridge_run(test_close_run,
+                                                    _, _, _, _)),
+    catch(rlm_future_status(Future, _), Error, true),
+    assertion(nonvar(Error)).
+
 test(bridge_settings_update_persists,
      [ setup(memory_bridge(SettingsPath)),
        cleanup(close_memory_bridge(SettingsPath))
@@ -165,6 +246,9 @@ test(completion_options_keep_provider_in_prolog) :-
     assertion(Route.history_mode == "lossless_rlm"),
     assertion(Route.compaction == false).
 
+slow_bridge_test_task(ok(test_done)) :-
+    sleep(5.0).
+
 memory_bridge(SettingsPath) :-
     temp_path(SettingsPath),
     deepseek_settings_defaults(Defaults),
@@ -181,6 +265,19 @@ memory_bridge(SettingsPath) :-
     (   OpenOutcome = ok(_)
     ->  true
     ;   throw(OpenOutcome)
+    ).
+
+memory_bridge_with_session(SettingsPath, SessionId) :-
+    memory_bridge(SettingsPath),
+    atom_string(SessionId, SessionIdString),
+    Create = _{request_id:"setup-session",
+               command:"session/create",
+               payload:_{id:SessionIdString,
+                         metadata:_{purpose:"test"}}},
+    deepseek_bridge_handle(Create, Response),
+    (   Response.ok == true
+    ->  true
+    ;   throw(Response)
     ).
 
 close_memory_bridge(SettingsPath) :-
