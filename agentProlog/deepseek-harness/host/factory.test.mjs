@@ -3,8 +3,19 @@ import test from 'node:test'
 import { PrologAgentFactory, UnsupportedPrologSemanticError } from './factory.mjs'
 
 class FakeSession {
-  constructor(id) { this.id = id; this.events = [] }
-  append(type, data) { this.events.push({ type, data }); return this.events.at(-1) }
+  constructor(id, seed = []) {
+    this.id = id
+    this.events = [...seed]
+  }
+  append(type, data, options) {
+    const event = {
+      type,
+      data,
+      ...(options?.surfaceOp === undefined ? {} : { surfaceOp: options.surfaceOp }),
+    }
+    this.events.push(event)
+    return event
+  }
 }
 
 class FakeInbox {
@@ -39,11 +50,23 @@ const fakeEmitAgentEvent = (ctx, _agent, name, payload) => {
   ctx.log.push(`${name}:${payload.status ?? payload.source ?? ''}`)
 }
 
+const defaultHistory = [
+  { sequence: 1, role: 'user', content: 'old question', created_at: 10 },
+  {
+    sequence: 2,
+    role: 'assistant',
+    content: 'old answer',
+    created_at: 11,
+    route: { provider: 'openrouter', model: 'old/model' },
+  },
+]
+
 class FakeBridge {
-  constructor(log, { block = false, invalidHello = false } = {}) {
+  constructor(log, { block = false, invalidHello = false, history = defaultHistory } = {}) {
     this.log = log
     this.block = block
     this.invalidHello = invalidHello
+    this.history = history
   }
   async start() {
     this.log.push('bridge:start')
@@ -54,6 +77,10 @@ class FakeBridge {
   async request(command, payload) {
     this.log.push(`bridge:${command}`)
     if (command === 'session/create') return { session_id: payload.id }
+    if (command === 'session/open') {
+      return { session_id: payload.session_id, created_at: 9, metadata: { cwd: '/tmp/project' } }
+    }
+    if (command === 'session/messages') return this.history
     throw new Error(`unexpected request ${command}`)
   }
   async runTurn(sessionId, content, { signal }) {
@@ -62,7 +89,7 @@ class FakeBridge {
       return {
         state: 'completed',
         turn: {
-          assistant: { content: `reply:${content}` },
+          assistant: { sequence: 4, content: `reply:${content}` },
           route: { provider: 'openrouter', model: 'test/model' },
         },
       }
@@ -83,7 +110,10 @@ function harness({ bridgeOptions } = {}) {
   const ctx = {
     log,
     sessions: {
-      prepare(id) { log.push(`session:prepare:${id}`); return new FakeSession(id) },
+      prepare(id, options) {
+        log.push(`session:prepare:${id}`)
+        return new FakeSession(id, options?.seed ?? [])
+      },
       enter(session) {
         log.push('session:enter')
         sessions.set(session.id, session)
@@ -144,7 +174,7 @@ test('publishes only after canonical Prolog session creation', async () => {
   await factory.dispose()
 })
 
-test('followup drives one Prolog turn and projects completion', async () => {
+test('followup drives one Prolog turn with real DSH surface metadata', async () => {
   const { factory, ownerCtx } = harness()
   const { agent, dispose } = await factory.createAgent(ownerCtx, { sessionId: 's2' })
   agent.followup(user('hello'))
@@ -157,9 +187,53 @@ test('followup drives one Prolog turn and projects completion', async () => {
     'step/end',
     'turn/end',
   ])
+  assert.equal(agent.session.events[2].surfaceOp, 'append')
+  assert.equal(agent.session.events[3].surfaceOp, 'append')
   assert.equal(agent.session.events[3].data.message.content[0].text, 'reply:hello')
   assert.equal(agent.session.events[5].data.reason.kind, 'completed')
   await dispose()
+  await factory.dispose()
+})
+
+test('resume reconstructs Harness projection from canonical Prolog history', async () => {
+  const { factory, ownerCtx, log } = harness()
+  const { agent, dispose } = await factory.resume(ownerCtx, { resumeSessionId: 's-resume' })
+  assert.deepEqual(agent.session.events.slice(0, 6).map(event => event.type), [
+    'turn/start',
+    'step/start',
+    'user/message',
+    'assistant/message',
+    'step/end',
+    'turn/end',
+  ])
+  assert.equal(agent.session.events[2].surfaceOp, 'append')
+  assert.equal(agent.session.events[3].surfaceOp, 'append')
+  assert.deepEqual(agent.session.events[3].data.message.source, {
+    kind: 'model',
+    provider: 'openrouter',
+    model: 'old/model',
+  })
+  assert.ok(!log.includes('bridge:session/create'))
+  assert.ok(log.includes('agent/session-start:resume'))
+
+  agent.followup(user('new question'))
+  await agent.whenIdle()
+  const liveTurn = agent.session.events.findLast(event => event.type === 'turn/start')
+  assert.equal(liveTurn.data.turn, 2)
+  await dispose()
+  await factory.dispose()
+})
+
+test('resume fails closed when historical assistant provenance is missing', async () => {
+  const history = [
+    { sequence: 1, role: 'user', content: 'q', created_at: 10 },
+    { sequence: 2, role: 'assistant', content: 'a', created_at: 11, route: null },
+  ]
+  const { factory, ownerCtx } = harness({ bridgeOptions: { history } })
+  await assert.rejects(
+    factory.resume(ownerCtx, { resumeSessionId: 's-missing-route' }),
+    UnsupportedPrologSemanticError,
+  )
   await factory.dispose()
 })
 
@@ -187,10 +261,6 @@ test('unsupported Harness semantics fail closed', async () => {
   assert.throws(() => agent.runMaintenance(async () => {}), UnsupportedPrologSemanticError)
   assert.throws(
     () => agent.followup({ ...user('x'), content: [{ type: 'image', attachment: {} }] }),
-    UnsupportedPrologSemanticError,
-  )
-  await assert.rejects(
-    factory.resume(ownerCtx, { resumeSessionId: 's4' }),
     UnsupportedPrologSemanticError,
   )
   await dispose()
