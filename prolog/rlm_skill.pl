@@ -13,42 +13,40 @@
 
 /** <module> Deterministic host-owned SKILL.md selection
 
-Skills are inert instruction data.  This module discovers bounded metadata,
-selects skills from trusted host input plus deterministic lexical evidence,
-closes declared skill dependencies, applies a hard prompt-token ceiling, and
-only then loads the selected Markdown bodies.
+`SKILL.md` files are inert instruction data.  Prolog discovers bounded
+metadata, selects relevant skills, closes declared skill dependencies, applies
+a hard prompt-token ceiling, and only then reads selected Markdown bodies.
 
-Selection is not authorization.  A skill body cannot grant a tool, capability,
-filesystem path, network endpoint, or executable Prolog predicate.  Those
-remain owned by the existing trusted runtime boundaries.
+Activation is not authorization.  Nothing parsed here becomes executable
+Prolog or widens tool, filesystem, network, MCP, process, or model capability.
 */
 
 :- use_module(library(crypto)).
 :- use_module(library(filesex)).
 :- use_module(library(lists)).
 :- use_module(library(option)).
+:- use_module(library(ordsets)).
 :- use_module(library(readutil)).
 :- use_module(rlm_context_budget, [token_count_text/3]).
 
 rlm_skill_ready.
 
-/* -------------------------------------------------------------------------
- * Public catalog API
- * ---------------------------------------------------------------------- */
+/* Public catalog --------------------------------------------------------- */
 
 skill_catalog_load(Root0, Options, Outcome) :-
     catch(( require_options(Options),
             catalog_root(Root0, Root),
             catalog_limits(Options, Limits),
-            scan_skill_files(Root, Limits.max_skills, Files),
-            maplist(load_skill_metadata(Root, Limits), Files, Skills0),
-            sort_skills(Skills0, Skills),
+            scan_skill_files(Root, Limits.max_skills, Paths),
+            maplist(load_skill_metadata(Root, Limits), Paths, Skills0),
+            predsort(compare_skill_meta, Skills0, Skills),
             ensure_unique_skill_names(Skills),
-            catalog_fingerprint(Skills, CatalogFingerprint),
-            Outcome = ok(skill_catalog{root:Root,
-                                       skills:Skills,
-                                       limits:Limits,
-                                       fingerprint:CatalogFingerprint})
+            catalog_fingerprint(Skills, Fingerprint),
+            Catalog = skill_catalog{root:Root,
+                                    skills:Skills,
+                                    limits:Limits,
+                                    fingerprint:Fingerprint},
+            Outcome = ok(Catalog)
           ),
           Exception,
           skill_exception(catalog, Exception, Outcome)).
@@ -56,9 +54,11 @@ skill_catalog_load(Root0, Options, Outcome) :-
 bundled_skill_catalog(Options, Outcome) :-
     (   bundled_skill_root(Root)
     ->  skill_catalog_load(Root, Options, Outcome)
-    ;   Outcome = error(skill_error{phase:catalog,
-                                    kind:bundled_skills_unavailable,
-                                    message:"bundled Matt Pocock skills submodule is not initialized"})
+    ;   Outcome = error(skill_error{
+                            phase:catalog,
+                            kind:bundled_skills_unavailable,
+                            message:"bundled skills are not initialized; initialize the pinned third-party submodule"
+                        })
     ).
 
 bundled_skill_root(Root) :-
@@ -78,42 +78,33 @@ bundled_skill_root(Root) :-
 
 skill_catalog_skills(Catalog, Skills) :-
     require_catalog(Catalog),
-    findall(skill{Name:Name,
-                  description:Description,
-                  explicit_only:ExplicitOnly,
-                  relative_path:RelativePath,
-                  priority:Priority,
-                  requires:Requires},
-            ( member(Meta, Catalog.skills),
-              Name = Meta.name,
-              Description = Meta.description,
-              ExplicitOnly = Meta.explicit_only,
-              RelativePath = Meta.relative_path,
-              Priority = Meta.priority,
-              Requires = Meta.requires
-            ),
+    findall(skill{name:Meta.name,
+                  description:Meta.description,
+                  explicit_only:Meta.explicit_only,
+                  relative_path:Meta.relative_path,
+                  priority:Meta.priority,
+                  requires:Meta.requires},
+            member(Meta, Catalog.skills),
             Skills).
 
-/* -------------------------------------------------------------------------
- * Compilation
- * ---------------------------------------------------------------------- */
+/* Compilation ----------------------------------------------------------- */
 
 skill_compile(Catalog, Input0, Options, Outcome) :-
     catch(( require_catalog(Catalog),
             require_options(Options),
             text_string(Input0, Input),
             compile_options(Options, CompileOptions),
-            normalize_requested_names(CompileOptions.explicit_skills,
-                                      ExplicitNames),
+            normalize_skill_names(CompileOptions.explicit_skills,
+                                  ExplicitNames),
             ensure_known_explicit_skills(Catalog, ExplicitNames),
             normalize_input(Input, NormalizedInput),
-            evaluate_skills(Catalog.skills,
-                            NormalizedInput,
-                            ExplicitNames,
-                            CompileOptions.minimum_score,
-                            Evaluations),
+            evaluate_catalog(Catalog.skills,
+                             NormalizedInput,
+                             ExplicitNames,
+                             CompileOptions.minimum_score,
+                             Evaluations),
             candidate_evaluations(Evaluations, Candidates),
-            initial_rejections(Evaluations, InitialRejected),
+            initial_rejections(Evaluations, Rejected0),
             select_candidates(Candidates,
                               Catalog,
                               NormalizedInput,
@@ -121,30 +112,30 @@ skill_compile(Catalog, Input0, Options, Outcome) :-
                               CompileOptions,
                               [],
                               0,
-                              [],
-                              InitialRejected,
+                              Rejected0,
                               Selected0,
                               PromptTokens,
-                              Rejected0),
-            stable_selected(Selected0, Selected),
-            stable_rejected(Rejected0, Rejected),
-            compile_fingerprint(Catalog,
-                                Input,
-                                ExplicitNames,
-                                CompileOptions,
-                                Selected,
-                                Rejected,
-                                PromptTokens,
-                                Fingerprint),
-            skill_render_selected(Selected, Rendered),
-            Outcome = ok(skill_compilation{
-                             selected:Selected,
-                             rejected:Rejected,
-                             prompt_tokens:PromptTokens,
-                             max_prompt_tokens:CompileOptions.max_prompt_tokens,
-                             fingerprint:Fingerprint,
-                             rendered:Rendered
-                         })
+                              Rejected1),
+            stable_unique_selections(Selected0, Selected),
+            stable_rejections(Rejected1, Rejected),
+            render_selected_skills(Selected, Rendered),
+            compilation_fingerprint(Catalog,
+                                    Input,
+                                    ExplicitNames,
+                                    CompileOptions,
+                                    Selected,
+                                    Rejected,
+                                    PromptTokens,
+                                    Fingerprint),
+            Compilation = skill_compilation{
+                              selected:Selected,
+                              rejected:Rejected,
+                              prompt_tokens:PromptTokens,
+                              max_prompt_tokens:CompileOptions.max_prompt_tokens,
+                              fingerprint:Fingerprint,
+                              rendered:Rendered
+                          },
+            Outcome = ok(Compilation)
           ),
           Exception,
           skill_exception(compile, Exception, Outcome)).
@@ -195,32 +186,28 @@ skill_render(Compilation, Text) :-
     require_compilation(Compilation),
     Text = Compilation.rendered.
 
-/* -------------------------------------------------------------------------
- * Candidate evidence and ordering
- * ---------------------------------------------------------------------- */
-
 compile_options(Options,
-                skill_compile_options{explicit_skills:Explicit,
-                                      max_prompt_tokens:MaxTokens,
-                                      minimum_score:MinimumScore,
-                                      token_options:TokenOptions}) :-
-    option(explicit_skills(Explicit), Options, []),
-    option(max_skill_prompt_tokens(MaxTokens), Options, 8192),
+                skill_compile_options{
+                    explicit_skills:ExplicitSkills,
+                    max_prompt_tokens:MaxPromptTokens,
+                    minimum_score:MinimumScore,
+                    token_options:TokenOptions
+                }) :-
+    option(explicit_skills(ExplicitSkills), Options, []),
+    option(max_skill_prompt_tokens(MaxPromptTokens), Options, 8192),
     option(minimum_skill_score(MinimumScore), Options, 12),
     option(token_counter(TokenCounter), Options, none),
-    require_list(Explicit, explicit_skills),
-    require_positive_integer(MaxTokens, max_skill_prompt_tokens),
+    require_list(ExplicitSkills, explicit_skills),
+    require_positive_integer(MaxPromptTokens, max_skill_prompt_tokens),
     require_nonnegative_integer(MinimumScore, minimum_skill_score),
-    (   TokenCounter == none
-    ->  TokenOptions = []
-    ;   callable(TokenCounter)
-    ->  TokenOptions = [token_counter(TokenCounter)]
-    ;   throw(skill_fault(invalid_token_counter(TokenCounter)))
-    ).
+    token_options(TokenCounter, TokenOptions).
 
-normalize_requested_names(Names0, Names) :-
-    maplist(normalize_skill_name, Names0, Names1),
-    sort(Names1, Names).
+token_options(none, []) :- !.
+token_options(TokenCounter, [token_counter(TokenCounter)]) :-
+    callable(TokenCounter),
+    !.
+token_options(TokenCounter, _) :-
+    throw(skill_fault(invalid_token_counter(TokenCounter))).
 
 ensure_known_explicit_skills(_, []).
 ensure_known_explicit_skills(Catalog, [Name|Names]) :-
@@ -230,28 +217,27 @@ ensure_known_explicit_skills(Catalog, [Name|Names]) :-
     ),
     ensure_known_explicit_skills(Catalog, Names).
 
-evaluate_skills([], _, _, _, []).
-evaluate_skills([Meta|Skills], Input, ExplicitNames, MinimumScore,
-                [Evaluation|Evaluations]) :-
+evaluate_catalog([], _, _, _, []).
+evaluate_catalog([Meta|Metas], Input, ExplicitNames, MinimumScore,
+                 [Evaluation|Evaluations]) :-
     skill_evaluation(Meta,
                      Input,
                      ExplicitNames,
                      MinimumScore,
                      Evaluation),
-    evaluate_skills(Skills,
-                    Input,
-                    ExplicitNames,
-                    MinimumScore,
-                    Evaluations).
+    evaluate_catalog(Metas,
+                     Input,
+                     ExplicitNames,
+                     MinimumScore,
+                     Evaluations).
 
 skill_evaluation(Meta, Input, ExplicitNames, MinimumScore, Evaluation) :-
-    Name = Meta.name,
-    (   memberchk(Name, ExplicitNames)
+    (   memberchk(Meta.name, ExplicitNames)
     ->  Explicit = true,
         Score = 1000000,
-        Reasons = [explicit_selection]
+        Evidence = [explicit_selection]
     ;   Explicit = false,
-        lexical_score(Meta, Input, Score, Reasons)
+        lexical_evidence(Meta, Input, Score, Evidence)
     ),
     skill_negated(Meta, Input, Negated),
     evaluation_state(Meta,
@@ -261,30 +247,25 @@ skill_evaluation(Meta, Input, ExplicitNames, MinimumScore, Evaluation) :-
                      MinimumScore,
                      State,
                      StateReasons),
-    append(Reasons, StateReasons, AllReasons),
-    Evaluation = skill_evaluation{name:Name,
-                                  meta:Meta,
-                                  explicit:Explicit,
-                                  negated:Negated,
-                                  score:Score,
-                                  priority:Meta.priority,
-                                  state:State,
-                                  reasons:AllReasons}.
+    append(Evidence, StateReasons, Reasons),
+    Evaluation = skill_evaluation{
+                     name:Meta.name,
+                     meta:Meta,
+                     explicit:Explicit,
+                     negated:Negated,
+                     score:Score,
+                     priority:Meta.priority,
+                     state:State,
+                     reasons:Reasons
+                 }.
 
-evaluation_state(_, true, _, _, _, candidate, []).
-evaluation_state(Meta, false, true, _, _, rejected,
-                 [negated_by_input]) :-
-    Meta.explicit_only == false,
-    !.
-evaluation_state(Meta, false, _, Score, _, rejected,
-                 [explicit_selection_required]) :-
-    Meta.explicit_only == true,
-    Score > 0,
-    !.
+evaluation_state(_, true, _, _, _, candidate, []) :- !.
 evaluation_state(Meta, false, _, _, _, rejected,
                  [explicit_selection_required]) :-
     Meta.explicit_only == true,
     !.
+evaluation_state(_, false, true, _, _, rejected,
+                 [negated_by_input]) :- !.
 evaluation_state(_, false, _, Score, MinimumScore, candidate, []) :-
     Score >= MinimumScore,
     !.
@@ -292,96 +273,100 @@ evaluation_state(_, false, _, Score, MinimumScore, rejected,
                  [below_relevance_threshold(Score, MinimumScore)]).
 
 candidate_evaluations(Evaluations, Candidates) :-
-    include(is_candidate_evaluation, Evaluations, Raw),
-    predsort(compare_evaluation, Raw, Candidates).
+    include(candidate_evaluation, Evaluations, Candidate0),
+    predsort(compare_candidate, Candidate0, Candidates).
 
-is_candidate_evaluation(Evaluation) :- Evaluation.state == candidate.
+candidate_evaluation(Evaluation) :- Evaluation.state == candidate.
 
-compare_evaluation(Order, A, B) :-
-    candidate_rank(A, RankA),
-    candidate_rank(B, RankB),
-    compare(RankOrder, RankB, RankA),
-    (   RankOrder == (=)
+compare_candidate(Order, A, B) :-
+    candidate_key(A, KeyA),
+    candidate_key(B, KeyB),
+    compare(KeyOrder, KeyB, KeyA),
+    (   KeyOrder == (=)
     ->  compare(Order, A.name, B.name)
-    ;   Order = RankOrder
+    ;   Order = KeyOrder
     ).
 
-candidate_rank(Evaluation, rank(ExplicitRank, Score, Priority)) :-
-    ( Evaluation.explicit == true -> ExplicitRank = 1 ; ExplicitRank = 0 ),
+candidate_key(Evaluation, key(Explicit, Score, Priority)) :-
+    ( Evaluation.explicit == true -> Explicit = 1 ; Explicit = 0 ),
     Score = Evaluation.score,
     Priority = Evaluation.priority.
 
-initial_rejections(Evaluations, Rejected) :-
+initial_rejections(Evaluations, Rejections) :-
     findall(skill_rejection{name:Evaluation.name,
                             reasons:Evaluation.reasons},
             ( member(Evaluation, Evaluations),
               Evaluation.state == rejected
             ),
-            Rejected).
+            Rejections).
 
-lexical_score(Meta, Input, Score, Reasons) :-
+/* Lexical evidence ------------------------------------------------------ */
+
+lexical_evidence(Meta, Input, Score, Reasons) :-
     skill_display_phrase(Meta.name, NamePhrase),
-    phrase_score(NamePhrase, Input, 60, NameScore, NameReason),
-    list_phrase_scores(Meta.phrases,
-                       Input,
-                       phrase,
-                       45,
-                       PhraseScore,
-                       PhraseReasons),
-    list_phrase_scores(Meta.intents,
-                       Input,
-                       intent,
-                       30,
-                       IntentScore,
-                       IntentReasons),
-    list_phrase_scores(Meta.keywords,
-                       Input,
-                       keyword,
-                       15,
-                       KeywordScore,
-                       KeywordReasons),
-    description_overlap_score(Meta.description,
-                              Input,
-                              DescriptionScore,
-                              DescriptionReasons),
+    phrase_evidence(NamePhrase,
+                    Input,
+                    name_phrase,
+                    60,
+                    NameScore,
+                    NameReasons),
+    list_evidence(Meta.phrases,
+                  Input,
+                  phrase,
+                  45,
+                  PhraseScore,
+                  PhraseReasons),
+    list_evidence(Meta.intents,
+                  Input,
+                  intent,
+                  30,
+                  IntentScore,
+                  IntentReasons),
+    list_evidence(Meta.keywords,
+                  Input,
+                  keyword,
+                  15,
+                  KeywordScore,
+                  KeywordReasons),
+    description_evidence(Meta.description,
+                         Input,
+                         DescriptionScore,
+                         DescriptionReasons),
     Score is NameScore+PhraseScore+IntentScore+KeywordScore+DescriptionScore,
-    append([[NameReason],
+    append([NameReasons,
             PhraseReasons,
             IntentReasons,
             KeywordReasons,
             DescriptionReasons],
-           RawReasons),
-    exclude(no_reason, RawReasons, Reasons).
+           Reasons).
 
-no_reason(none).
-
-phrase_score("", _, _, 0, none) :- !.
-phrase_score(Phrase, Input, Weight, Weight, lexical_phrase(Phrase, Weight)) :-
-    sub_string(Input, _, _, _, Phrase),
-    !.
-phrase_score(_, _, _, 0, none).
-
-list_phrase_scores([], _, _, _, 0, []).
-list_phrase_scores([Phrase0|Phrases], Input, Kind, Weight, Score, Reasons) :-
+phrase_evidence("", _, _, _, 0, []) :- !.
+phrase_evidence(Phrase0, Input, Kind, Weight, Weight, [Reason]) :-
     normalize_input(Phrase0, Phrase),
-    phrase_score(Phrase, Input, Weight, Here, Reason0),
-    list_phrase_scores(Phrases,
-                       Input,
-                       Kind,
-                       Weight,
-                       Rest,
-                       RestReasons),
-    Score is Here+Rest,
-    tag_reason(Kind, Reason0, Reason),
-    ( Reason == none -> Reasons = RestReasons
-    ; Reasons = [Reason|RestReasons]
-    ).
-
-tag_reason(_, none, none) :- !.
-tag_reason(Kind, lexical_phrase(Phrase, Weight), Reason) :-
+    Phrase \== "",
+    sub_string(Input, _, _, _, Phrase),
+    !,
     Reason =.. [Kind, Phrase, Weight].
+phrase_evidence(_, _, _, _, 0, []).
 
-description_overlap_score(Description0, Input, Score, Reasons) :-
+list_evidence([], _, _, _, 0, []).
+list_evidence([Phrase|Phrases], Input, Kind, Weight, Score, Reasons) :-
+    phrase_evidence(Phrase,
+                    Input,
+                    Kind,
+                    Weight,
+                    HereScore,
+                    HereReasons),
+    list_evidence(Phrases,
+                  Input,
+                  Kind,
+                  Weight,
+                  RestScore,
+                  RestReasons),
+    Score is HereScore+RestScore,
+    append(HereReasons, RestReasons, Reasons).
+
+description_evidence(Description0, Input, Score, Reasons) :-
     normalize_input(Description0, Description),
     lexical_words(Description, DescriptionWords0),
     lexical_words(Input, InputWords0),
@@ -390,12 +375,16 @@ description_overlap_score(Description0, Input, Score, Reasons) :-
     sort(DescriptionWords1, DescriptionWords),
     sort(InputWords1, InputWords),
     ord_intersection(DescriptionWords, InputWords, Common),
-    length(Common, Count0),
-    Count is min(6, Count0),
+    take(6, Common, Limited),
+    length(Limited, Count),
     Score is Count*4,
-    findall(description_word(Word, 4),
-            ( nth1(Index, Common, Word), Index =< 6 ),
-            Reasons).
+    findall(description_word(Word, 4), member(Word, Limited), Reasons).
+
+take(0, _, []) :- !.
+take(_, [], []) :- !.
+take(Count, [Item|Items], [Item|Taken]) :-
+    Next is Count-1,
+    take(Next, Items, Taken).
 
 significant_word(Word) :-
     string_length(Word, Length),
@@ -409,7 +398,6 @@ stop_word("before").
 stop_word("from").
 stop_word("into").
 stop_word("only").
-stop_word("piece").
 stop_word("that").
 stop_word("their").
 stop_word("these").
@@ -424,37 +412,32 @@ skill_negated(Meta, Input, true) :-
     skill_display_phrase(Meta.name, NamePhrase),
     NamePhrase \== "",
     member(Prefix,
-           ["do not use ", "don't use ", "dont use ", "avoid ", "without "]),
+           ["do not use ", "dont use ", "don t use ", "avoid ", "without "]),
     string_concat(Prefix, NamePhrase, Pattern),
     sub_string(Input, _, _, _, Pattern),
     !.
 skill_negated(_, _, false).
 
-/* -------------------------------------------------------------------------
- * Dependency closure and budgeted selection
- * ---------------------------------------------------------------------- */
+/* Dependency closure and budget ---------------------------------------- */
 
 select_candidates([], _, _, _, _, Selected, Tokens, Rejected,
-                  Rejected, Selected, Tokens) :- !.
-select_candidates([Evaluation|Candidates],
+                  Selected, Tokens, Rejected).
+select_candidates([Evaluation|Evaluations],
                   Catalog,
                   Input,
                   ExplicitNames,
                   Options,
                   Selected0,
                   Tokens0,
-                  SeenCandidates0,
                   Rejected0,
                   Selected,
                   Tokens,
                   Rejected) :-
-    Name = Evaluation.name,
-    (   memberchk(Name, SeenCandidates0)
+    (   selected_name(Selected0, Evaluation.name)
     ->  Selected1 = Selected0,
         Tokens1 = Tokens0,
-        Rejected1 = Rejected0,
-        SeenCandidates1 = SeenCandidates0
-    ;   attempt_candidate(Evaluation,
+        Rejected1 = Rejected0
+    ;   candidate_attempt(Evaluation,
                           Catalog,
                           Input,
                           ExplicitNames,
@@ -462,30 +445,28 @@ select_candidates([Evaluation|Candidates],
                           Selected0,
                           Tokens0,
                           Attempt),
-        candidate_attempt_result(Attempt,
-                                 Evaluation,
-                                 Selected0,
-                                 Tokens0,
-                                 Rejected0,
-                                 Selected1,
-                                 Tokens1,
-                                 Rejected1),
-        SeenCandidates1 = [Name|SeenCandidates0]
+        apply_candidate_attempt(Attempt,
+                                Evaluation,
+                                Selected0,
+                                Tokens0,
+                                Rejected0,
+                                Selected1,
+                                Tokens1,
+                                Rejected1)
     ),
-    select_candidates(Candidates,
+    select_candidates(Evaluations,
                       Catalog,
                       Input,
                       ExplicitNames,
                       Options,
                       Selected1,
                       Tokens1,
-                      SeenCandidates1,
                       Rejected1,
                       Selected,
                       Tokens,
                       Rejected).
 
-attempt_candidate(Evaluation,
+candidate_attempt(Evaluation,
                   Catalog,
                   Input,
                   ExplicitNames,
@@ -498,52 +479,55 @@ attempt_candidate(Evaluation,
                                Input,
                                ExplicitNames,
                                Closure),
-            new_dependency_names(Closure, Selected, NewNames),
-            load_new_selections(NewNames,
-                                Evaluation,
-                                Catalog,
-                                Options.token_options,
-                                NewSelections,
-                                AddedTokens),
-            Total is Tokens+AddedTokens,
-            (   Total =< Options.max_prompt_tokens
+            missing_selection_names(Closure, Selected, NewNames),
+            load_selections(NewNames,
+                            Evaluation,
+                            Catalog,
+                            Options.token_options,
+                            NewSelections,
+                            AddedTokens),
+            NewTotal is Tokens+AddedTokens,
+            (   NewTotal =< Options.max_prompt_tokens
             ->  append(Selected, NewSelections, Selected1),
-                Attempt = selected(Selected1, Total)
-            ;   Attempt = budget_exceeded(Total,
+                Attempt = selected(Selected1, NewTotal)
+            ;   Attempt = budget_exceeded(NewTotal,
                                           Options.max_prompt_tokens)
             )
           ),
           skill_fault(Fault),
           Attempt = dependency_error(Fault)).
 
-candidate_attempt_result(selected(Selected, Tokens), _, _, _, Rejected,
-                         Selected, Tokens, Rejected) :- !.
-candidate_attempt_result(budget_exceeded(Needed, Limit), Evaluation,
-                         Selected, Tokens, Rejected0,
-                         Selected, Tokens, Rejected) :-
+apply_candidate_attempt(selected(Selected, Tokens), _, _, _, Rejected,
+                        Selected, Tokens, Rejected) :- !.
+apply_candidate_attempt(budget_exceeded(Needed, Limit), Evaluation,
+                        Selected, Tokens, Rejected0,
+                        Selected, Tokens, Rejected) :-
     (   Evaluation.explicit == true
     ->  throw(skill_fault(explicit_skill_budget_exceeded(Evaluation.name,
                                                          Needed,
                                                          Limit)))
-    ;   Rejection = skill_rejection{
-                        name:Evaluation.name,
-                        reasons:[prompt_budget_exceeded(Needed, Limit)|
-                                 Evaluation.reasons]
-                    },
-        upsert_rejection(Rejection, Rejected0, Rejected)
+    ;   upsert_rejection(
+            skill_rejection{
+                name:Evaluation.name,
+                reasons:[prompt_budget_exceeded(Needed, Limit)|Evaluation.reasons]
+            },
+            Rejected0,
+            Rejected)
     ),
     !.
-candidate_attempt_result(dependency_error(Fault), Evaluation,
-                         Selected, Tokens, Rejected0,
-                         Selected, Tokens, Rejected) :-
+apply_candidate_attempt(dependency_error(Fault), Evaluation,
+                        Selected, Tokens, Rejected0,
+                        Selected, Tokens, Rejected) :-
     (   Evaluation.explicit == true
     ->  throw(skill_fault(explicit_skill_dependency_failed(Evaluation.name,
                                                             Fault)))
-    ;   Rejection = skill_rejection{
-                        name:Evaluation.name,
-                        reasons:[dependency_failed(Fault)|Evaluation.reasons]
-                    },
-        upsert_rejection(Rejection, Rejected0, Rejected)
+    ;   upsert_rejection(
+            skill_rejection{
+                name:Evaluation.name,
+                reasons:[dependency_failed(Fault)|Evaluation.reasons]
+            },
+            Rejected0,
+            Rejected)
     ).
 
 dependency_closure(Catalog, Name, Input, ExplicitNames, Closure) :-
@@ -553,19 +537,17 @@ dependency_closure(Catalog, Name, Input, ExplicitNames, Closure) :-
                      ExplicitNames,
                      [],
                      [],
-                     Closure0,
-                     _),
-    reverse(Closure0, Closure).
+                     Closure,
+                     _).
 
 dependency_visit(_, Name, _, _, Stack, _, _, _) :-
     memberchk(Name, Stack),
     !,
     reverse([Name|Stack], Cycle),
     throw(skill_fault(dependency_cycle(Cycle))).
-dependency_visit(_, Name, _, _, _, Visited, Closure, Visited) :-
+dependency_visit(_, Name, _, _, _, Visited, [], Visited) :-
     memberchk(Name, Visited),
-    !,
-    Closure = [].
+    !.
 dependency_visit(Catalog,
                  Name,
                  Input,
@@ -579,26 +561,26 @@ dependency_visit(Catalog,
     ;   throw(skill_fault(missing_dependency(Name)))
     ),
     dependency_admissible(Meta, Input, ExplicitNames),
-    dependency_visit_list(Meta.requires,
-                          Catalog,
-                          Input,
-                          ExplicitNames,
-                          [Name|Stack],
-                          [Name|Visited0],
-                          ChildClosure,
-                          Visited1),
-    append([Name], ChildClosure, Closure),
+    dependency_list(Meta.requires,
+                    Catalog,
+                    Input,
+                    ExplicitNames,
+                    [Name|Stack],
+                    [Name|Visited0],
+                    DependencyClosure,
+                    Visited1),
+    append(DependencyClosure, [Name], Closure),
     Visited = Visited1.
 
-dependency_visit_list([], _, _, _, _, Visited, [], Visited).
-dependency_visit_list([Name|Names],
-                      Catalog,
-                      Input,
-                      ExplicitNames,
-                      Stack,
-                      Visited0,
-                      Closure,
-                      Visited) :-
+dependency_list([], _, _, _, _, Visited, [], Visited).
+dependency_list([Name|Names],
+                Catalog,
+                Input,
+                ExplicitNames,
+                Stack,
+                Visited0,
+                Closure,
+                Visited) :-
     dependency_visit(Catalog,
                      Name,
                      Input,
@@ -607,14 +589,14 @@ dependency_visit_list([Name|Names],
                      Visited0,
                      Here,
                      Visited1),
-    dependency_visit_list(Names,
-                          Catalog,
-                          Input,
-                          ExplicitNames,
-                          Stack,
-                          Visited1,
-                          Rest,
-                          Visited),
+    dependency_list(Names,
+                    Catalog,
+                    Input,
+                    ExplicitNames,
+                    Stack,
+                    Visited1,
+                    Rest,
+                    Visited),
     append(Here, Rest, Closure).
 
 dependency_admissible(Meta, _, ExplicitNames) :-
@@ -630,41 +612,47 @@ dependency_admissible(Meta, Input, _) :-
     throw(skill_fault(negated_dependency(Meta.name))).
 dependency_admissible(_, _, _).
 
-new_dependency_names([], _, []).
-new_dependency_names([Name|Names], Selected, NewNames) :-
+missing_selection_names([], _, []).
+missing_selection_names([Name|Names], Selected, Missing) :-
     (   selected_name(Selected, Name)
-    ->  NewNames = Rest
-    ;   NewNames = [Name|Rest]
+    ->  Missing = Rest
+    ;   Missing = [Name|Rest]
     ),
-    new_dependency_names(Names, Selected, Rest).
+    missing_selection_names(Names, Selected, Rest).
 
 selected_name(Selected, Name) :-
     member(Selection, Selected),
     Selection.name == Name.
 
-load_new_selections([], _, _, _, [], 0).
-load_new_selections([Name|Names], RootEvaluation, Catalog, TokenOptions,
-                    [Selection|Selections], TotalTokens) :-
+load_selections([], _, _, _, [], 0).
+load_selections([Name|Names], Evaluation, Catalog, TokenOptions,
+                [Selection|Selections], Tokens) :-
     catalog_skill(Catalog, Name, Meta),
-    read_selected_skill(Meta, TokenOptions, Body, Rendered,
-                        TokenCount, BodyHash),
-    selection_reasons(Name, RootEvaluation, Reasons),
-    Selection = skill_selection{name:Name,
-                                relative_path:Meta.relative_path,
-                                priority:Meta.priority,
-                                reasons:Reasons,
-                                tokens:TokenCount.tokens,
-                                token_count:TokenCount,
-                                body_hash:BodyHash,
-                                body:Body,
-                                rendered:Rendered},
-    load_new_selections(Names,
-                        RootEvaluation,
-                        Catalog,
-                        TokenOptions,
-                        Selections,
-                        RestTokens),
-    TotalTokens is TokenCount.tokens+RestTokens.
+    load_selected_body(Meta,
+                       TokenOptions,
+                       Body,
+                       Rendered,
+                       TokenCount,
+                       BodyHash),
+    selection_reasons(Name, Evaluation, Reasons),
+    Selection = skill_selection{
+                    name:Name,
+                    relative_path:Meta.relative_path,
+                    priority:Meta.priority,
+                    reasons:Reasons,
+                    tokens:TokenCount.tokens,
+                    token_count:TokenCount,
+                    body_hash:BodyHash,
+                    body:Body,
+                    rendered:Rendered
+                },
+    load_selections(Names,
+                    Evaluation,
+                    Catalog,
+                    TokenOptions,
+                    Selections,
+                    RestTokens),
+    Tokens is TokenCount.tokens+RestTokens.
 
 selection_reasons(Name, Evaluation, Reasons) :-
     (   Name == Evaluation.name
@@ -672,8 +660,8 @@ selection_reasons(Name, Evaluation, Reasons) :-
     ;   Reasons = [required_by(Evaluation.name)]
     ).
 
-read_selected_skill(Meta, TokenOptions, Body, Rendered,
-                    TokenCount, BodyHash) :-
+load_selected_body(Meta, TokenOptions, Body, Rendered,
+                   TokenCount, BodyHash) :-
     size_file(Meta.path, Size),
     (   Size =< Meta.max_body_bytes
     ->  true
@@ -696,56 +684,55 @@ require_token_count(ok(TokenCount), TokenCount) :- !.
 require_token_count(error(Error), _) :-
     throw(skill_fault(token_count_failed(Error))).
 
-upsert_rejection(Rejection, Rejected0, Rejected) :-
-    exclude(rejection_named(Rejection.name), Rejected0, Rest),
-    Rejected = [Rejection|Rest].
+upsert_rejection(Rejection, Rejections0, Rejections) :-
+    exclude(rejection_named(Rejection.name), Rejections0, Rest),
+    Rejections = [Rejection|Rest].
 
 rejection_named(Name, Rejection) :- Rejection.name == Name.
 
-stable_selected(Selected0, Selected) :-
-    unique_selection_names(Selected0, [], Selected).
+stable_unique_selections(Selections0, Selections) :-
+    unique_selections(Selections0, [], Selections).
 
-unique_selection_names([], _, []).
-unique_selection_names([Selection|Selections], Seen, Unique) :-
+unique_selections([], _, []).
+unique_selections([Selection|Selections], Seen, Unique) :-
     (   memberchk(Selection.name, Seen)
     ->  Unique = Rest,
         Seen1 = Seen
     ;   Unique = [Selection|Rest],
         Seen1 = [Selection.name|Seen]
     ),
-    unique_selection_names(Selections, Seen1, Rest).
+    unique_selections(Selections, Seen1, Rest).
 
-stable_rejected(Rejected0, Rejected) :-
-    predsort(compare_rejection, Rejected0, Rejected).
+stable_rejections(Rejections0, Rejections) :-
+    predsort(compare_rejection, Rejections0, Rejections).
 
 compare_rejection(Order, A, B) :- compare(Order, A.name, B.name).
 
-skill_render_selected([], "").
-skill_render_selected(Selected, Text) :-
-    Selected \== [],
+render_selected_skills([], "").
+render_selected_skills(Selections, Text) :-
+    Selections \== [],
     findall(Rendered,
-            ( member(Selection, Selected), Rendered = Selection.rendered ),
+            ( member(Selection, Selections),
+              Rendered = Selection.rendered
+            ),
             Parts),
     atomics_to_string([
-        "The following skill instructions were selected by the trusted Prolog runtime. They are inert model-visible instructions only and grant no tools, capabilities, filesystem/network access, or execution authority.\n\n"
-        |Parts],
-        "",
-        Text).
+        "The following skill instructions were selected by the trusted Prolog runtime. They are model-visible instruction data only and grant no execution authority or capabilities.\n\n"
+        | Parts
+    ], "", Text).
 
-/* -------------------------------------------------------------------------
- * Resource confinement
- * ---------------------------------------------------------------------- */
+/* Resource confinement -------------------------------------------------- */
 
 skill_resource_read(Catalog, Name0, Relative0, Outcome) :-
     catch(( require_catalog(Catalog),
             normalize_skill_name(Name0, Name),
-            ( catalog_skill(Catalog, Name, Meta)
-            -> true
-            ;  throw(skill_fault(unknown_skill(Name)))
+            (   catalog_skill(Catalog, Name, Meta)
+            ->  true
+            ;   throw(skill_fault(unknown_skill(Name)))
             ),
             text_atom(Relative0, Relative),
-            safe_relative_resource(Relative, Segments),
-            assert_no_symlink_segments(Meta.directory, Segments),
+            safe_relative_path(Relative, Segments),
+            reject_symlink_path(Meta.directory, Segments),
             directory_file_path(Meta.directory, Relative, Candidate),
             absolute_file_name(Candidate,
                                Absolute,
@@ -753,14 +740,14 @@ skill_resource_read(Catalog, Name0, Relative0, Outcome) :-
                                  access(read),
                                  solutions(first)
                                ]),
-            ensure_within_directory(Catalog.root, Absolute),
-            ensure_within_directory(Meta.directory, Absolute),
+            ensure_within(Meta.directory, Absolute),
+            ensure_within(Catalog.root, Absolute),
             size_file(Absolute, Size),
-            ( Size =< Catalog.limits.max_resource_bytes
-            -> true
-            ;  throw(skill_fault(resource_too_large(Relative,
-                                                    Size,
-                                                    Catalog.limits.max_resource_bytes)))
+            (   Size =< Catalog.limits.max_resource_bytes
+            ->  true
+            ;   throw(skill_fault(resource_too_large(Relative,
+                                                     Size,
+                                                     Catalog.limits.max_resource_bytes)))
             ),
             read_file_to_string(Absolute, Text, [encoding(utf8)]),
             Outcome = ok(skill_resource{name:Name,
@@ -770,46 +757,44 @@ skill_resource_read(Catalog, Name0, Relative0, Outcome) :-
           Exception,
           skill_exception(resource, Exception, Outcome)).
 
-safe_relative_resource(Relative, Segments) :-
+safe_relative_path(Relative, Segments) :-
     (   Relative == ''
     ->  throw(skill_fault(invalid_resource_path(Relative)))
     ;   sub_atom(Relative, 0, 1, _, '/')
     ->  throw(skill_fault(resource_path_escape(Relative)))
-    ;   sub_atom(Relative, 1, 1, _, ':')
-    ->  throw(skill_fault(resource_path_escape(Relative)))
     ;   atomic_list_concat(Segments0, '/', Relative),
-        ( memberchk('..', Segments0)
-        -> throw(skill_fault(resource_path_escape(Relative)))
-        ;  true
+        (   memberchk('..', Segments0)
+        ->  throw(skill_fault(resource_path_escape(Relative)))
+        ;   true
         ),
-        exclude(resource_dot_segment, Segments0, Segments),
-        ( Segments == []
-        -> throw(skill_fault(invalid_resource_path(Relative)))
-        ;  true
+        exclude(dot_segment, Segments0, Segments),
+        (   Segments == []
+        ->  throw(skill_fault(invalid_resource_path(Relative)))
+        ;   true
         )
     ).
 
-resource_dot_segment('.').
-resource_dot_segment('').
+dot_segment('.').
+dot_segment('').
 
-assert_no_symlink_segments(_, []).
-assert_no_symlink_segments(Base, [Segment|Segments]) :-
+reject_symlink_path(_, []).
+reject_symlink_path(Base, [Segment|Segments]) :-
     directory_file_path(Base, Segment, Path),
     (   path_is_symlink(Path)
     ->  throw(skill_fault(symlink_not_allowed(Path)))
     ;   true
     ),
-    assert_no_symlink_segments(Path, Segments).
+    reject_symlink_path(Path, Segments).
 
-/* -------------------------------------------------------------------------
- * Catalog discovery and metadata parsing
- * ---------------------------------------------------------------------- */
+/* Catalog discovery ----------------------------------------------------- */
 
 catalog_limits(Options,
-               skill_catalog_limits{max_skills:MaxSkills,
-                                    max_frontmatter_bytes:MaxFrontmatterBytes,
-                                    max_body_bytes:MaxBodyBytes,
-                                    max_resource_bytes:MaxResourceBytes}) :-
+               skill_catalog_limits{
+                   max_skills:MaxSkills,
+                   max_frontmatter_bytes:MaxFrontmatterBytes,
+                   max_body_bytes:MaxBodyBytes,
+                   max_resource_bytes:MaxResourceBytes
+               }) :-
     option(max_skills(MaxSkills), Options, 2048),
     option(max_frontmatter_bytes(MaxFrontmatterBytes), Options, 65536),
     option(max_skill_body_bytes(MaxBodyBytes), Options, 262144),
@@ -821,56 +806,61 @@ catalog_limits(Options,
 
 catalog_root(Root0, Root) :-
     text_atom(Root0, RootAtom),
+    (   path_is_symlink(RootAtom)
+    ->  throw(skill_fault(symlink_root_not_allowed(RootAtom)))
+    ;   true
+    ),
     absolute_file_name(RootAtom,
                        Root,
                        [ file_type(directory),
                          access(read),
                          solutions(first)
-                       ]),
-    (   path_is_symlink(Root)
-    ->  throw(skill_fault(symlink_root_not_allowed(Root)))
-    ;   true
-    ).
+                       ]).
 
-scan_skill_files(Root, MaxSkills, Files) :-
-    scan_directory(Root, Root, Files0),
-    sort(Files0, Files),
-    length(Files, Count),
+scan_skill_files(Root, MaxSkills, Paths) :-
+    scan_directory(Root, Root, Paths0),
+    sort(Paths0, Paths),
+    length(Paths, Count),
     (   Count =< MaxSkills
     ->  true
     ;   throw(skill_fault(skill_count_exceeded(Count, MaxSkills)))
     ).
 
-scan_directory(Root, Directory, Files) :-
+scan_directory(Root, Directory, Paths) :-
     directory_files(Directory, Entries0),
     exclude(dot_or_hidden_entry, Entries0, Entries1),
     sort(Entries1, Entries),
-    scan_entries(Entries, Root, Directory, Files).
+    scan_entries(Entries, Root, Directory, Paths).
 
 scan_entries([], _, _, []).
-scan_entries([Entry|Entries], Root, Directory, Files) :-
+scan_entries([Entry|Entries], Root, Directory, Paths) :-
     directory_file_path(Directory, Entry, Path),
-    (   path_is_symlink(Path)
-    ->  throw(skill_fault(symlink_not_allowed(Path)))
-    ;   exists_directory(Path)
-    ->  scan_directory(Root, Path, Here)
-    ;   Entry == 'SKILL.md', exists_file(Path)
-    ->  ensure_within_directory(Root, Path),
-        Here = [Path]
-    ;   Here = []
-    ),
+    scan_entry(Entry, Path, Root, Here),
     scan_entries(Entries, Root, Directory, Rest),
-    append(Here, Rest, Files).
+    append(Here, Rest, Paths).
+
+scan_entry(_, Path, _, _) :-
+    path_is_symlink(Path),
+    !,
+    throw(skill_fault(symlink_not_allowed(Path))).
+scan_entry(_, Path, Root, Paths) :-
+    exists_directory(Path),
+    !,
+    scan_directory(Root, Path, Paths).
+scan_entry('SKILL.md', Path, Root, [Path]) :-
+    exists_file(Path),
+    !,
+    ensure_within(Root, Path).
+scan_entry(_, _, _, []).
 
 dot_or_hidden_entry('.').
 dot_or_hidden_entry('..').
-dot_or_hidden_entry(Entry) :-
-    atom_chars(Entry, ['.'|_]).
+dot_or_hidden_entry(Entry) :- atom_chars(Entry, ['.'|_]).
 
 path_is_symlink(Path) :-
     catch(read_link(Path, _, _), _, fail).
 
-ensure_within_directory(Directory, Path) :-
+ensure_within(Directory, Path) :-
     directory_prefix(Directory, Prefix),
     (   Path == Directory
     ->  true
@@ -895,7 +885,7 @@ load_skill_metadata(Root, Limits, Path, Meta) :-
     normalize_skill_name(Name0, Name),
     metadata_value(Frontmatter, description, "", Description0),
     text_string(Description0, Description),
-    explicit_only_value(Frontmatter, ExplicitOnly),
+    metadata_explicit_only(Frontmatter, ExplicitOnly),
     metadata_list(Frontmatter, phrases, [], Phrases0),
     metadata_list(Frontmatter, 'trigger-phrases', Phrases0, Phrases1),
     normalize_text_list(Phrases1, Phrases),
@@ -904,22 +894,24 @@ load_skill_metadata(Root, Limits, Path, Meta) :-
     metadata_list(Frontmatter, intents, [], Intents0),
     normalize_text_list(Intents0, Intents),
     metadata_list(Frontmatter, requires, [], Requires0),
-    normalize_requested_names(Requires0, Requires),
+    normalize_skill_names(Requires0, Requires),
     metadata_value(Frontmatter, priority, 0, Priority0),
     normalize_priority(Priority0, Priority),
     relative_path(Root, Path, RelativePath),
-    Meta = skill_meta{name:Name,
-                      description:Description,
-                      explicit_only:ExplicitOnly,
-                      path:Path,
-                      directory:Directory,
-                      relative_path:RelativePath,
-                      phrases:Phrases,
-                      keywords:Keywords,
-                      intents:Intents,
-                      requires:Requires,
-                      priority:Priority,
-                      max_body_bytes:Limits.max_body_bytes}.
+    Meta = skill_meta{
+               name:Name,
+               description:Description,
+               explicit_only:ExplicitOnly,
+               path:Path,
+               directory:Directory,
+               relative_path:RelativePath,
+               phrases:Phrases,
+               keywords:Keywords,
+               intents:Intents,
+               requires:Requires,
+               priority:Priority,
+               max_body_bytes:Limits.max_body_bytes
+           }.
 
 manifest_frontmatter(Path, MaxBytes, Pairs) :-
     setup_call_cleanup(
@@ -957,13 +949,6 @@ read_frontmatter_lines(Stream, MaxBytes, Used0, Lines) :-
         )
     ).
 
-strip_cr(end_of_file, end_of_file) :- !.
-strip_cr(Line0, Line) :-
-    (   sub_string(Line0, Before, 1, 0, "\r")
-    ->  sub_string(Line0, 0, Before, _, Line)
-    ;   Line = Line0
-    ).
-
 parse_frontmatter_line(Line0, Pair) :-
     normalize_space(string(Line), Line0),
     (   Line == ""
@@ -997,11 +982,11 @@ ensure_unique_metadata_keys(_) :-
 parse_metadata_value("", "") :- !.
 parse_metadata_value("true", true) :- !.
 parse_metadata_value("false", false) :- !.
-parse_metadata_value(Text, Integer) :-
-    catch(number_string(Number, Text), _, fail),
-    integer(Number),
+parse_metadata_value(Text, Number) :-
+    catch(number_string(Number0, Text), _, fail),
+    integer(Number0),
     !,
-    Integer = Number.
+    Number = Number0.
 parse_metadata_value(Text, Values) :-
     sub_string(Text, 0, 1, _, "["),
     sub_string(Text, _, 1, 0, "]"),
@@ -1009,13 +994,14 @@ parse_metadata_value(Text, Values) :-
     string_length(Text, Length),
     InnerLength is Length-2,
     sub_string(Text, 1, InnerLength, 1, Inner),
-    (   normalize_space(string(Trimmed), Inner), Trimmed == ""
-    ->  Values = []
-    ;   split_string(Inner, ",", " ", Parts),
-        maplist(unquote_string, Parts, Values)
-    ).
-parse_metadata_value(Text, Value) :-
-    unquote_string(Text, Value).
+    normalize_space(string(Trimmed), Inner),
+    parse_inline_list(Trimmed, Values).
+parse_metadata_value(Text, Value) :- unquote_string(Text, Value).
+
+parse_inline_list("", []) :- !.
+parse_inline_list(Text, Values) :-
+    split_string(Text, ",", " ", Parts),
+    maplist(unquote_string, Parts, Values).
 
 unquote_string(Text0, Text) :-
     normalize_space(string(Trimmed), Text0),
@@ -1041,14 +1027,13 @@ metadata_list(Pairs, Key, Default, Values) :-
     ;   Values = [Raw]
     ).
 
-explicit_only_value(Pairs, ExplicitOnly) :-
-    metadata_boolean(Pairs, 'explicit-user-only', false, ExplicitUserOnly),
-    metadata_boolean(Pairs, 'disable-model-invocation', false, DisableModel),
-    metadata_boolean(Pairs, 'user-invocable-only', false, UserOnly),
-    ( ExplicitUserOnly == true ; DisableModel == true ; UserOnly == true ),
-    !,
-    ExplicitOnly = true.
-explicit_only_value(_, false).
+metadata_explicit_only(Pairs, true) :-
+    (   metadata_boolean(Pairs, 'explicit-user-only', false, true)
+    ;   metadata_boolean(Pairs, 'disable-model-invocation', false, true)
+    ;   metadata_boolean(Pairs, 'user-invocable-only', false, true)
+    ),
+    !.
+metadata_explicit_only(_, false).
 
 metadata_boolean(Pairs, Key, Default, Value) :-
     metadata_value(Pairs, Key, Default, Raw),
@@ -1064,7 +1049,10 @@ normalize_text_list(Values0, Values) :-
     maplist(text_string, Values0, Values1),
     sort(Values1, Values).
 
-sort_skills(Skills0, Skills) :- predsort(compare_skill_meta, Skills0, Skills).
+normalize_skill_names(Names0, Names) :-
+    maplist(normalize_skill_name, Names0, Names1),
+    sort(Names1, Names).
+
 compare_skill_meta(Order, A, B) :- compare(Order, A.name, B.name).
 
 ensure_unique_skill_names(Skills) :-
@@ -1090,67 +1078,55 @@ strip_frontmatter(Content, Body) :-
     split_string(Content, "\n", "", Lines),
     (   Lines = [First|Rest],
         strip_cr(First, "---")
-    ->  drop_frontmatter_lines(Rest, BodyLines),
-        atomics_to_string(BodyLines, "\n", Body0),
-        normalize_body(Body0, Body)
-    ;   normalize_body(Content, Body)
+    ->  drop_frontmatter(Rest, BodyLines),
+        atomics_to_string(BodyLines, "\n", Body)
+    ;   Body = Content
     ).
 
-drop_frontmatter_lines([], _) :- throw(skill_fault(unterminated_frontmatter)).
-drop_frontmatter_lines([Line|Lines], BodyLines) :-
+drop_frontmatter([], _) :- throw(skill_fault(unterminated_frontmatter)).
+drop_frontmatter([Line|Lines], BodyLines) :-
     strip_cr(Line, Clean),
     (   Clean == "---"
     ->  BodyLines = Lines
-    ;   drop_frontmatter_lines(Lines, BodyLines)
+    ;   drop_frontmatter(Lines, BodyLines)
     ).
 
-normalize_body(Body0, Body) :-
-    normalize_space(string(Trimmed), Body0),
-    ( Trimmed == "" -> Body = "" ; Body = Body0 ).
+strip_cr(end_of_file, end_of_file) :- !.
+strip_cr(Line0, Line) :-
+    (   sub_string(Line0, Before, 1, 0, "\r")
+    ->  sub_string(Line0, 0, Before, _, Line)
+    ;   Line = Line0
+    ).
 
-/* -------------------------------------------------------------------------
- * Fingerprints
- * ---------------------------------------------------------------------- */
+/* Fingerprints ---------------------------------------------------------- */
 
 catalog_fingerprint(Skills, Fingerprint) :-
-    findall(skill(Name,
-                  Description,
-                  ExplicitOnly,
-                  Relative,
-                  Phrases,
-                  Keywords,
-                  Intents,
-                  Requires,
-                  Priority),
-            ( member(Meta, Skills),
-              Name = Meta.name,
-              Description = Meta.description,
-              ExplicitOnly = Meta.explicit_only,
-              Relative = Meta.relative_path,
-              Phrases = Meta.phrases,
-              Keywords = Meta.keywords,
-              Intents = Meta.intents,
-              Requires = Meta.requires,
-              Priority = Meta.priority
-            ),
+    findall(skill(Meta.name,
+                  Meta.description,
+                  Meta.explicit_only,
+                  Meta.relative_path,
+                  Meta.phrases,
+                  Meta.keywords,
+                  Meta.intents,
+                  Meta.requires,
+                  Meta.priority),
+            member(Meta, Skills),
             Canonical),
     stable_hash(Canonical, Fingerprint).
 
-compile_fingerprint(Catalog,
-                    Input,
-                    ExplicitNames,
-                    Options,
-                    Selected,
-                    Rejected,
-                    PromptTokens,
-                    Fingerprint) :-
-    findall(selected(Name, BodyHash, Tokens, Reasons),
-            ( member(Selection, Selected),
-              Name = Selection.name,
-              BodyHash = Selection.body_hash,
-              Tokens = Selection.tokens,
-              Reasons = Selection.reasons
-            ),
+compilation_fingerprint(Catalog,
+                        Input,
+                        ExplicitNames,
+                        Options,
+                        Selected,
+                        Rejected,
+                        PromptTokens,
+                        Fingerprint) :-
+    findall(selected(Selection.name,
+                     Selection.body_hash,
+                     Selection.tokens,
+                     Selection.reasons),
+            member(Selection, Selected),
             SelectedCanonical),
     Canonical = skill_compile(Catalog.fingerprint,
                               Input,
@@ -1171,23 +1147,26 @@ stable_hash(Term, Hash) :-
                 ]),
     crypto_data_hash(Text, Hash, [algorithm(sha256), encoding(utf8)]).
 
-/* -------------------------------------------------------------------------
- * Validation and error normalization
- * ---------------------------------------------------------------------- */
+/* Helpers and error normalization -------------------------------------- */
 
 require_catalog(Catalog) :-
     is_dict(Catalog, skill_catalog),
-    get_dict(root, Catalog, Root), atom(Root),
-    get_dict(skills, Catalog, Skills), is_list(Skills),
-    get_dict(limits, Catalog, Limits), is_dict(Limits),
+    get_dict(root, Catalog, Root),
+    atom(Root),
+    get_dict(skills, Catalog, Skills),
+    is_list(Skills),
+    get_dict(limits, Catalog, Limits),
+    is_dict(Limits),
     get_dict(fingerprint, Catalog, _),
     !.
 require_catalog(Catalog) :- throw(skill_fault(invalid_catalog(Catalog))).
 
 require_compilation(Compilation) :-
     is_dict(Compilation, skill_compilation),
-    get_dict(selected, Compilation, Selected), is_list(Selected),
-    get_dict(rejected, Compilation, Rejected), is_list(Rejected),
+    get_dict(selected, Compilation, Selected),
+    is_list(Selected),
+    get_dict(rejected, Compilation, Rejected),
+    is_list(Rejected),
     get_dict(fingerprint, Compilation, _),
     !.
 require_compilation(Compilation) :-
@@ -1223,8 +1202,8 @@ safe_skill_name_char('_').
 safe_skill_name_char('.').
 
 skill_display_phrase(Name, Phrase) :-
-    atom_string(Name, NameText),
-    split_string(NameText, "-_", "", Parts),
+    atom_string(Name, Text),
+    split_string(Text, "-_", "", Parts),
     atomics_to_string(Parts, " ", Phrase0),
     normalize_input(Phrase0, Phrase).
 
@@ -1236,13 +1215,13 @@ normalize_input(Text0, Normalized) :-
     string_codes(Spaced, Codes),
     normalize_space(string(Normalized), Spaced).
 
-normalize_input_code(Code, 0' ) :-
+normalize_input_code(Code, 32) :-
     \+ code_type(Code, alnum),
     !.
 normalize_input_code(Code, Code).
 
-lexical_words(Text, Words) :-
-    ( Text == "" -> Words = [] ; split_string(Text, " ", " ", Words) ).
+lexical_words("", []) :- !.
+lexical_words(Text, Words) :- split_string(Text, " ", " ", Words).
 
 text_atom(Value, Atom) :- atom(Value), !, Atom = Value.
 text_atom(Value, Atom) :- string(Value), !, atom_string(Atom, Value).
@@ -1252,12 +1231,12 @@ text_string(Value, String) :- string(Value), !, String = Value.
 text_string(Value, String) :- atom(Value), !, atom_string(Value, String).
 text_string(Value, _) :- throw(skill_fault(expected_text(Value))).
 
-skill_exception(_, skill_fault(Fault), error(Error)) :-
+skill_exception(Phase, skill_fault(Fault), error(Error)) :-
     !,
-    Error = skill_error{phase:skill,
-                        kind:skill_fault,
+    Error = skill_error{phase:Phase,
+                        kind:rejected,
                         detail:Fault,
-                        message:"skill compiler rejected invalid or unsafe input"}.
+                        message:"skill compiler rejected invalid, unsafe, or unsatisfied input"}.
 skill_exception(Phase, error(existence_error(source_sink, Path), _), error(Error)) :-
     !,
     Error = skill_error{phase:Phase,
@@ -1277,12 +1256,6 @@ safe_exception(Exception, Safe) :-
                       [quoted(true), numbervars(true)]),
           _,
           Text = "unprintable_exception"),
-    sub_string(Text, 0, 512, _, Prefix),
-    !,
-    Safe = Prefix.
-safe_exception(Exception, Safe) :-
-    catch(term_string(Exception,
-                      Safe,
-                      [quoted(true), numbervars(true)]),
-          _,
-          Safe = "unprintable_exception").
+    string_length(Text, Length),
+    PrefixLength is min(512, Length),
+    sub_string(Text, 0, PrefixLength, _, Safe).
