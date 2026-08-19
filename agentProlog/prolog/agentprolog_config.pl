@@ -10,30 +10,49 @@
             agentprolog_config_save_file/4
           ]).
 
-/** <module> Prolog-first AgentProlog configuration
+/** <module> Programmable AgentProlog configuration
 
-This is the downstream AgentProlog configuration boundary tracked by #126/#127.
-It intentionally has exactly two input formats: a restricted Prolog-native
-`config.prolog` declaration file and JSON. Both normalize into one canonical
-configuration value; JSON is an input adapter, not a second settings runtime.
+AgentProlog has two configuration front doors:
 
-The Prolog reader treats configuration as data. It never consults the file and
-never executes directives, clauses, initialization hooks, term expansion or
-arbitrary callables. Trusted executable extensions are registered elsewhere;
-configuration can only select/configure closed data exposed by those trusted
-registries.
+  * trusted executable Prolog in `config.prolog`;
+  * JSON consumed by the same Prolog configuration runtime.
 
-User discovery follows XDG. Project discovery uses the AgentProlog downstream
-`.agentprolog/` convention but requires the caller to supply an explicit ground
-project identity distinct from the filesystem root. That identity can later be
-replaced directly by #75's canonical ProjectIdentity without changing this file
-format or overlay contract.
+The XDG user `config.prolog` is deliberately host code, closer to an Emacs init
+file than a static preferences document. It is loaded into a fresh generated
+module and may contain directives, helper predicates, rules, imports, and other
+ordinary Prolog. The conventional `json/1`, `include_json/1`, `config/1`,
+`section/2`, and `setting/2` predicates are queried after load to build the
+canonical ordinary-settings projection. Rules are allowed, so these values may
+be computed by arbitrary trusted Prolog.
+
+Repository-local `.agentprolog/config.prolog` is different: discovery alone is
+not execution authority. The resolver only loads it when the trusted host marks
+that explicit project identity as trusted. #75/#76 can later replace this
+temporary host boolean with durable scoped project policy without changing the
+file format.
+
+Trusted executable configuration has the privileges of the AgentProlog process.
+That is intentional. Registered runtime tools/hooks still use their canonical
+APIs when invoked, but config code itself is host extension code and must be
+treated accordingly.
+
+Config writes are trusted host operations and are not model tools. Frontends must
+mediate them through the normal AgentProlog authority boundary. Files written by
+this module are atomically replaced where the platform permits and forced to
+POSIX mode 0600.
 */
 
+:- use_module(library(apply)).
 :- use_module(library(filesex)).
 :- use_module(library(http/json)).
 :- use_module(library(lists)).
 :- use_module(library(uuid)).
+
+:- dynamic config_generation_counter/1.
+:- dynamic active_prolog_config/3.
+:- dynamic config_module_mapping/2.
+
+config_generation_counter(0).
 
 agentprolog_config_ready.
 
@@ -75,6 +94,8 @@ agentprolog_config_defaults(Config) :-
                  frontend:_{}
              }.
 
+/* Public load/normalize/resolve/write --------------------------------- */
+
 agentprolog_config_load_file(Path0, Format0, Outcome) :-
     config_outcome(load,
                    agentprolog_config_load_file_(Path0, Format0),
@@ -84,9 +105,12 @@ agentprolog_config_load_file_(Path0, Format0, Source) :-
     path_atom(Path0, Path),
     require_existing_file(Path),
     resolve_format(Path, Format0, Format),
-    load_patch(Format, Path, Patch),
+    canonical_readable_file(Path, Canonical),
+    load_patch(Format, Canonical, Patch, Module, Generation),
     Source = config_source{format:Format,
-                           path:Path,
+                           path:Canonical,
+                           module:Module,
+                           generation:Generation,
                            patch:Patch}.
 
 agentprolog_config_normalize(Config0, Outcome) :-
@@ -134,91 +158,146 @@ agentprolog_config_save_file_(Path0, Format0, Config0, Saved) :-
     make_directory_path(Directory),
     uuid(UUID, [version(4)]),
     format(atom(Temporary), '~w.~w.tmp', [Path, UUID]),
-    setup_call_cleanup(
-        open(Temporary, write, Stream, [encoding(utf8)]),
-        write_config_stream(Format, Stream, Config),
-        close(Stream)),
-    catch(rename_file(Temporary, Path),
+    catch(write_atomic_config(Temporary, Path, Format, Config),
           Exception,
           ( catch(delete_file(Temporary), _, true),
             throw(Exception)
           )),
-    Saved = config_saved{format:Format, path:Path, config:Config}.
+    Saved = config_saved{format:Format,
+                          path:Path,
+                          mode:0o600,
+                          config:Config}.
+
+write_atomic_config(Temporary, Path, Format, Config) :-
+    setup_call_cleanup(
+        open(Temporary, write, Stream, [encoding(utf8)]),
+        ( chmod(Temporary, 0o600),
+          write_config_stream(Format, Stream, Config),
+          flush_output(Stream)
+        ),
+        close(Stream)),
+    rename_file(Temporary, Path),
+    chmod(Path, 0o600).
 
 /* Loading ------------------------------------------------------------- */
 
-load_patch(json, Path, Patch) :-
+load_patch(json, Path, Patch, null, null) :-
+    load_json_patch(Path, Patch).
+load_patch(prolog, Path, Patch, Module, Generation) :-
+    load_executable_prolog(Path, Module, Generation),
+    collect_prolog_patch(Module, Path, Patch).
+
+load_json_patch(Path, Patch) :-
     setup_call_cleanup(open(Path, read, Stream, [encoding(utf8)]),
                        json_read_dict(Stream, Raw),
                        close(Stream)),
     normalize_patch(Raw, Patch).
-load_patch(prolog, Path, Patch) :-
-    setup_call_cleanup(open(Path, read, Stream, [encoding(utf8)]),
-                       read_prolog_config(Stream, Path, Patch),
-                       close(Stream)).
 
-read_prolog_config(Stream, Path, Patch) :-
+load_executable_prolog(Path, Module, Generation) :-
+    config_module_name(Path, Module),
+    next_config_generation(Generation),
+    catch(load_files(Path,
+                     [ module(Module),
+                       if(true),
+                       silent(true)
+                     ]),
+          Exception,
+          throw(config_fault(prolog_load_failed(Path, Exception)))),
+    with_mutex(agentprolog_config_registry,
+               ( retractall(active_prolog_config(Path, _, _)),
+                 assertz(active_prolog_config(Path, Module, Generation))
+               )).
+
+next_config_generation(Generation) :-
+    with_mutex(agentprolog_config_registry,
+               ( ( retract(config_generation_counter(Current))
+                 -> true
+                 ;  Current = 0
+                 ),
+                 Generation is Current + 1,
+                 assertz(config_generation_counter(Generation))
+               )).
+
+config_module_name(Path, Module) :-
+    with_mutex(agentprolog_config_registry,
+               ( config_module_mapping(Path, Existing)
+               -> Module = Existing
+               ;  uuid(UUID, [version(4)]),
+                  format(atom(Module),
+                         'agentprolog_config_~w',
+                         [UUID]),
+                  assertz(config_module_mapping(Path, Module))
+               )).
+
+collect_prolog_patch(Module, Path, Patch) :-
     empty_patch(Empty),
-    read_config_terms(Stream, Path, Empty, Patch0),
+    config_values1(Module, json, JsonIncludes),
+    config_values1(Module, include_json, MoreIncludes),
+    append(JsonIncludes, MoreIncludes, Includes),
+    foldl(include_json_overlay(Path), Includes, Empty, AfterJson),
+    config_values1(Module, config, Configs),
+    foldl(config_value_overlay, Configs, AfterJson, AfterConfig),
+    config_values2(Module, section, Sections),
+    foldl(section_value_overlay, Sections, AfterConfig, AfterSections),
+    config_values2(Module, setting, Settings),
+    foldl(setting_value_overlay, Settings, AfterSections, Patch0),
     normalize_patch(Patch0, Patch).
 
-read_config_terms(Stream, Path, Acc0, Acc) :-
-    read_term(Stream,
-              Term,
-              [ syntax_errors(error),
-                module(agentprolog_config)
-              ]),
-    (   Term == end_of_file
-    ->  Acc = Acc0
-    ;   require_ground_term(Term),
-        apply_config_term(Term, Path, Acc0, Acc1),
-        read_config_terms(Stream, Path, Acc1, Acc)
+config_values1(Module, Name, Values) :-
+    (   current_predicate(Module:Name/1)
+    ->  findall(Value,
+                ( Goal =.. [Name, Value],
+                  call(Module:Goal)
+                ),
+                Values)
+    ;   Values = []
     ).
 
-apply_config_term(config(Value), _, Acc0, Acc) :-
-    !,
+config_values2(Module, Name, Values) :-
+    (   current_predicate(Module:Name/2)
+    ->  findall(Key-Value,
+                ( Goal =.. [Name, Key, Value],
+                  call(Module:Goal)
+                ),
+                Values)
+    ;   Values = []
+    ).
+
+include_json_overlay(ConfigPath, Include0, Acc0, Acc) :-
+    include_json_patch(ConfigPath, Include0, Patch),
+    overlay_config(Acc0, Patch, Acc).
+
+config_value_overlay(Value, Acc0, Acc) :-
     normalize_patch(Value, Patch),
     overlay_config(Acc0, Patch, Acc).
-apply_config_term(setting(Key0, Value0), _, Acc0, Acc) :-
-    !,
+
+section_value_overlay(Name0-Value0, Acc0, Acc) :-
+    normalize_section(Name0, Name),
+    normalize_dict_data(Value0, Value),
+    section_dict(Acc0, Name, Existing),
+    put_dict(Value, Existing, Merged),
+    put_dict(Name, Acc0, Merged, Acc).
+
+setting_value_overlay(Key0-Value0, Acc0, Acc) :-
     normalize_key(Key0, Key),
     reject_secret_key(Key),
     normalize_data(Value0, Value),
     section_dict(Acc0, settings, Settings0),
     put_dict(Key, Settings0, Value, Settings),
     put_dict(settings, Acc0, Settings, Acc).
-apply_config_term(section(Name0, Value0), _, Acc0, Acc) :-
-    !,
-    normalize_section(Name0, Name),
-    normalize_dict_data(Value0, Value),
-    section_dict(Acc0, Name, Existing),
-    put_dict(Value, Existing, Merged),
-    put_dict(Name, Acc0, Merged, Acc).
-apply_config_term(include_json(Include0), Path, Acc0, Acc) :-
-    !,
-    include_json_patch(Path, Include0, Patch),
-    overlay_config(Acc0, Patch, Acc).
-apply_config_term(json(Include0), Path, Acc0, Acc) :-
-    !,
-    include_json_patch(Path, Include0, Patch),
-    overlay_config(Acc0, Patch, Acc).
-apply_config_term(Term, _, _, _) :-
-    throw(config_fault(unsupported_prolog_declaration(Term))).
 
 include_json_patch(ConfigPath, Include0, Patch) :-
     normalize_path_text(Include0, IncludeText),
-    file_directory_name(ConfigPath, ConfigDir0),
-    canonical_directory(ConfigDir0, ConfigDir),
+    file_directory_name(ConfigPath, ConfigDir),
     atom_string(IncludeAtom, IncludeText),
     (   is_absolute_file_name(IncludeAtom)
     ->  Candidate = IncludeAtom
     ;   directory_file_path(ConfigDir, IncludeAtom, Candidate)
     ),
     canonical_readable_file(Candidate, IncludePath),
-    require_descendant(ConfigDir, IncludePath),
-    load_patch(json, IncludePath, Patch).
+    load_json_patch(IncludePath, Patch).
 
-/* Resolution ---------------------------------------------------------- */
+/* Resolution and project trust --------------------------------------- */
 
 normalize_context(Context0, Context) :-
     (   var(Context0)
@@ -244,8 +323,11 @@ normalize_user_context(Context, User) :-
     ->  User = user_config{mode:none}
     ;   get_dict(user_path, Context, UserPath0)
     ->  path_atom(UserPath0, UserPath),
-        dict_default(Context, user_format, auto, UserFormat),
-        User = user_config{mode:explicit, path:UserPath, format:UserFormat}
+        dict_default(Context, user_format, auto, UserFormat0),
+        normalize_format_selector(UserFormat0, UserFormat),
+        User = user_config{mode:explicit,
+                           path:UserPath,
+                           format:UserFormat}
     ;   User = user_config{mode:discover}
     ).
 
@@ -261,13 +343,17 @@ normalize_project_context(Context, Project) :-
         ->  true
         ;   throw(config_fault(project_root_not_absolute(Root)))
         ),
-        Project = project_config{identity:Identity, root:Root}
+        dict_default(Project0, trusted, false, Trusted),
+        require_boolean(Trusted, project_trusted),
+        Project = project_config{identity:Identity,
+                                 root:Root,
+                                 trusted:Trusted}
     ;   Project = none
     ).
 
 allowed_project_keys(Project) :-
     dict_keys(Project, Keys),
-    subtract(Keys, [identity, root], Unknown),
+    subtract(Keys, [identity, root, trusted], Unknown),
     (   Unknown == []
     ->  true
     ;   throw(config_fault(unknown_project_keys(Unknown)))
@@ -278,53 +364,118 @@ resolve_user_source(Context, Source) :-
     (   User.mode == none
     ->  Source = none
     ;   User.mode == explicit
-    ->  load_source(user, none, User.path, User.format, [], Source)
+    ->  load_source(user,
+                    none,
+                    User.path,
+                    User.format,
+                    [],
+                    Source)
     ;   discover_user_source(Source)
     ).
 
 discover_user_source(Source) :-
     agentprolog_config_default_path(PrologPath),
     agentprolog_config_json_path(JsonPath),
-    choose_discovered_source(user, none, PrologPath, JsonPath, Source).
+    choose_discovered_source(user,
+                             none,
+                             PrologPath,
+                             JsonPath,
+                             Source).
 
 resolve_project_source(Context, Source) :-
     (   Context.project == none
     ->  Source = none
     ;   Project = Context.project,
-        agentprolog_project_config_paths(Project.root, PrologPath, JsonPath),
-        choose_discovered_source(project,
-                                 Project.identity,
-                                 PrologPath,
-                                 JsonPath,
-                                 Source)
+        agentprolog_project_config_paths(Project.root,
+                                         PrologPath,
+                                         JsonPath),
+        (   Project.trusted == true
+        ->  choose_discovered_source(project,
+                                     Project.identity,
+                                     PrologPath,
+                                     JsonPath,
+                                     Source)
+        ;   discover_blocked_project_source(Project.identity,
+                                            PrologPath,
+                                            JsonPath,
+                                            Source)
+        )
     ).
 
-choose_discovered_source(Scope, Identity, PrologPath, JsonPath, Source) :-
+discover_blocked_project_source(Identity, PrologPath, JsonPath, Source) :-
     (   exists_file(PrologPath)
     ->  ( exists_file(JsonPath) -> Shadowed = [JsonPath] ; Shadowed = [] ),
-        load_source(Scope, Identity, PrologPath, prolog, Shadowed, Source)
+        Source = config_source{scope:project,
+                               project_identity:Identity,
+                               status:blocked_untrusted,
+                               format:prolog,
+                               path:PrologPath,
+                               module:null,
+                               generation:null,
+                               shadowed:Shadowed}
     ;   exists_file(JsonPath)
-    ->  load_source(Scope, Identity, JsonPath, json, [], Source)
+    ->  Source = config_source{scope:project,
+                               project_identity:Identity,
+                               status:blocked_untrusted,
+                               format:json,
+                               path:JsonPath,
+                               module:null,
+                               generation:null,
+                               shadowed:[]}
     ;   Source = none
     ).
 
-load_source(Scope, Identity, Path, Format0, Shadowed, Source) :-
+choose_discovered_source(Scope,
+                         Identity,
+                         PrologPath,
+                         JsonPath,
+                         Source) :-
+    (   exists_file(PrologPath)
+    ->  ( exists_file(JsonPath) -> Shadowed = [JsonPath] ; Shadowed = [] ),
+        load_source(Scope,
+                    Identity,
+                    PrologPath,
+                    prolog,
+                    Shadowed,
+                    Source)
+    ;   exists_file(JsonPath)
+    ->  load_source(Scope,
+                    Identity,
+                    JsonPath,
+                    json,
+                    [],
+                    Source)
+    ;   Source = none
+    ).
+
+load_source(Scope,
+            Identity,
+            Path,
+            Format0,
+            Shadowed,
+            Source) :-
     agentprolog_config_load_file_(Path, Format0, Loaded),
     Source = config_source{scope:Scope,
                            project_identity:Identity,
+                           status:loaded,
                            format:Loaded.format,
                            path:Loaded.path,
+                           module:Loaded.module,
+                           generation:Loaded.generation,
                            shadowed:Shadowed,
                            patch:Loaded.patch}.
 
 apply_optional_source(Config, none, Config) :- !.
+apply_optional_source(Config, Source, Config) :-
+    Source.status \== loaded,
+    !.
 apply_optional_source(Config0, Source, Config) :-
     overlay_config(Config0, Source.patch, Config).
 
 source_list(User, Project, Sources) :-
     exclude(==(none), [User, Project], Sources).
 
-/* Canonical model ----------------------------------------------------- */
+/* Canonical ordinary-settings model ---------------------------------- */
 
 empty_patch(agentprolog_config{schema_version:1,
                                settings:_{},
@@ -394,7 +545,8 @@ section_dict(Config, Name, Value) :-
 
 normalize_section(Name0, Name) :-
     normalize_key(Name0, Name),
-    memberchk(Name, [settings, extensions, tools, detectors, prompt, frontend]),
+    memberchk(Name,
+              [settings, extensions, tools, detectors, prompt, frontend]),
     !.
 normalize_section(Name, _) :-
     throw(config_fault(unknown_section(Name))).
@@ -441,10 +593,12 @@ require_exact_setting(Settings, Key, Expected) :-
 
 require_boolean_setting(Settings, Key) :-
     require_dict_key(Settings, Key, Value),
-    (   memberchk(Value, [true, false])
-    ->  true
-    ;   throw(config_fault(invalid_setting(Key, Value)))
-    ).
+    require_boolean(Value, Key).
+
+require_boolean(true, _) :- !.
+require_boolean(false, _) :- !.
+require_boolean(Value, Name) :-
+    throw(config_fault(invalid_boolean(Name, Value))).
 
 reject_secret_settings(Settings) :-
     dict_keys(Settings, Keys),
@@ -470,7 +624,7 @@ secret_key(secret).
 secret_key(credentials).
 secret_key(credential).
 
-/* Closed JSON-compatible data ---------------------------------------- */
+/* Closed JSON-compatible projection values --------------------------- */
 
 normalize_dict_data(Value0, Value) :-
     require_dict(config_section, Value0),
@@ -529,7 +683,7 @@ write_config_stream(json, Stream, Config) :-
     nl(Stream).
 write_config_stream(prolog, Stream, Config) :-
     format(Stream,
-           '%% AgentProlog configuration. Loaded as closed data; this file is not consulted.~n',
+           '%% AgentProlog trusted executable configuration.~n%% This generated config/1 fact may be freely extended with Prolog code.~n',
            []),
     write_term(Stream,
                config(Config),
@@ -542,15 +696,24 @@ write_config_stream(prolog, Stream, Config) :-
 
 /* Format/path helpers ------------------------------------------------- */
 
-resolve_format(_, prolog, prolog) :- !.
-resolve_format(_, json, json) :- !.
-resolve_format(Path, auto, Format) :-
+normalize_format_selector(prolog, prolog) :- !.
+normalize_format_selector(json, json) :- !.
+normalize_format_selector(auto, auto) :- !.
+normalize_format_selector("prolog", prolog) :- !.
+normalize_format_selector("json", json) :- !.
+normalize_format_selector("auto", auto) :- !.
+normalize_format_selector(Value, _) :-
+    throw(config_fault(unsupported_config_format(Value))).
+
+resolve_format(_, Format0, Format) :-
+    normalize_format_selector(Format0, Normalized),
+    Normalized \== auto,
     !,
+    Format = Normalized.
+resolve_format(Path, _, Format) :-
     file_name_extension(_, Extension0, Path),
     downcase_atom(Extension0, Extension),
     extension_format(Extension, Format).
-resolve_format(_, Format, _) :-
-    throw(config_fault(unsupported_config_format(Format))).
 
 extension_format(prolog, prolog) :- !.
 extension_format(pl, prolog) :- !.
@@ -586,17 +749,6 @@ path_atom(Value, Atom) :-
 path_atom(Value, _) :-
     throw(config_fault(invalid_path(Value))).
 
-canonical_directory(Path, Canonical) :-
-    (   absolute_file_name(Path,
-                           Canonical,
-                           [ file_type(directory),
-                             access(read),
-                             file_errors(fail)
-                           ])
-    ->  true
-    ;   throw(config_fault(config_directory_unavailable(Path)))
-    ).
-
 canonical_readable_file(Path, Canonical) :-
     (   absolute_file_name(Path,
                            Canonical,
@@ -605,16 +757,7 @@ canonical_readable_file(Path, Canonical) :-
                              file_errors(fail)
                            ])
     ->  true
-    ;   throw(config_fault(included_json_unavailable(Path)))
-    ).
-
-require_descendant(Directory, File) :-
-    (   Directory == '/'
-    ->  true
-    ;   atom_concat(Directory, '/', Prefix),
-        sub_atom(File, 0, _, _, Prefix)
-    ->  true
-    ;   throw(config_fault(json_include_escapes_config_directory(File)))
+    ;   throw(config_fault(config_file_unavailable(Path)))
     ).
 
 config_root(Root) :-
@@ -665,12 +808,6 @@ require_exact(Value, Expected, _) :-
     !.
 require_exact(Value, _, Name) :-
     throw(config_fault(invalid_setting(Name, Value))).
-
-require_ground_term(Value) :-
-    (   ground(Value)
-    ->  true
-    ;   throw(config_fault(non_ground_prolog_declaration(Value)))
-    ).
 
 require_ground_value(_, Value) :-
     ground(Value),
