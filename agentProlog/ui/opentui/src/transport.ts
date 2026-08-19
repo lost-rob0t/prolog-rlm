@@ -31,7 +31,7 @@ export class SwiplFixtureTransport implements NdjsonTransport {
 
     this.exited = new Promise<number>((resolveExit, rejectExit) => {
       this.process.once("error", rejectExit)
-      this.process.once("exit", (code, signal) => {
+      this.process.once("close", (code, signal) => {
         resolveExit(code ?? (signal === null ? 1 : 128))
       })
     })
