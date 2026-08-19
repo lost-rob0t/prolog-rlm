@@ -63,6 +63,7 @@
 :- consult(rlm_spec_verify_test).
 :- consult(rlm_spec_lang_test).
 :- consult(rlm_spec_workflow_test).
+:- consult(rlm_project_source_test).
 :- consult(prolog_agent_ui_v1_test).
 
 main(_) :-
