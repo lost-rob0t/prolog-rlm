@@ -6,7 +6,7 @@
           ]).
 
 :- use_module(library(filesex)).
-:- use_module('../prolog/rlm_skill').
+:- use_module('../../prolog/rlm_skill').
 
 fixture_open(Root, Catalog) :-
     tmp_file_stream(text, Root, Stream),
