@@ -9,6 +9,28 @@ The official `deepseek-ai/deepseek-harness` repository is pinned at `upstream/` 
 - upstream package manager: `pnpm@11.7.0`
 - license: MIT
 
+## Developer environment
+
+The repository root declares `pnpm@11.7.0`. A `packageManager` field selects a pnpm version but does not install a `pnpm` executable by itself.
+
+On NixOS, enter the repository development shell:
+
+```sh
+nix develop
+pnpm --version
+```
+
+The checked-in `flake.nix` supplies Node 24, Corepack's pnpm shim, SWI-Prolog, git, pkg-config, and tree-sitter. Corepack reads the root `packageManager` field and resolves pnpm 11.7.0.
+
+If Node/Corepack are already installed and a persistent user-level shim is preferred, create it once in a writable directory already on `PATH`:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+corepack enable pnpm --install-directory "$HOME/.local/bin"
+hash -r
+pnpm --version
+```
+
 ## Normal development commands
 
 Run these from the `prolog-rlm` repository root:
@@ -109,4 +131,4 @@ pnpm run test:bridge
 pnpm run check
 ```
 
-The SWI suite covers settings, provider routing, sessions, persistence, cancellation, profile fencing, and provenance. The Node suite covers transport correlation, cancellation, the Prolog-backed AgentFactory, resume projection, and the real Node -> SWI boundary. CI builds through `pnpm run build`, composes both profiles, and smoke-tests the Web GUI without opening a browser.
+The SWI suite covers settings, provider routing, sessions, persistence, cancellation, profile fencing, and provenance. The Node suite covers transport correlation, cancellation, the Prolog-backed AgentFactory, resume projection, and the real Node -> SWI boundary. CI installs pnpm 11.7.0 explicitly, verifies the version before building, builds through `pnpm run build`, composes both profiles, and smoke-tests the Web GUI without opening a browser.
