@@ -6,6 +6,7 @@ The official `deepseek-ai/deepseek-harness` repository is pinned at `upstream/` 
 
 - upstream commit: `141eb6fef83422698aef7a981029e843e8161534`
 - upstream release: `dsh@0.1.0-rc.8`
+- upstream package manager: `pnpm@11.7.0`
 - license: MIT, with upstream attribution retained by the submodule
 
 ## Build it
@@ -16,16 +17,22 @@ Build/bootstrap is explicit:
 bin/build-agentProlog
 ```
 
-The build command:
+The build command deliberately follows DeepSeek Harness's own built-artifact path instead of inventing a reduced AgentProlog build graph:
 
-1. initializes the pinned DeepSeek Harness submodule;
-2. verifies the exact audited upstream SHA;
-3. installs from the upstream lockfile with DeepSeek's repository-hook installer disabled for this vendored submodule checkout;
-4. builds only the DSH host libraries needed by headless AgentProlog, not the web frontend;
-5. mounts the source-controlled `agentProlog` profile under `DSH_HOME`; and
-6. links the local Prolog-backed AgentFactory against the exact pinned DSH core packages.
+1. initialize the pinned DeepSeek Harness submodule;
+2. verify the exact audited upstream SHA;
+3. select the upstream-pinned `pnpm@11.7.0` through Corepack when available;
+4. run the upstream immutable install (`pnpm install --frozen-lockfile`);
+5. run the upstream official complete build (`pnpm run build:official`);
+6. require DeepSeek's `.dsh-build/client-build-environment.json` record to identify the pinned commit and `official` artifact profile;
+7. mount the source-controlled `agentProlog` runtime profile under `DSH_HOME`; and
+8. link the local Prolog-backed AgentFactory against the exact pinned DSH core packages.
 
-Building may download Node dependencies. Launching never does.
+DeepSeek's complete build owns the Host -> Client -> Web ordering, Typert generation, tsdown output, Vite output, and build-record digest. AgentProlog does not prune that build simply because its runtime profile is headless. Headless is a composition decision at launch time, not a fork of DeepSeek's build system.
+
+The upstream root `postinstall` configures contributor-local Git hooks. This checkout is a pinned submodule rather than a DeepSeek contributor worktree, so dependency installation sets `CI=true`, matching the upstream CI/release behavior where that hook installer intentionally no-ops. Dependency package scripts still run normally.
+
+Building may download Node dependencies and builds the same complete artifact graph used by upstream's official CI/release path. Launching never builds or installs anything.
 
 Set `AGENTPROLOG_DSH_HOME` to override the build/runtime state directory. The default is `$XDG_STATE_HOME/prolog-rlm/deepseek-harness`, falling back to `~/.local/state/prolog-rlm/deepseek-harness`.
 
@@ -37,7 +44,7 @@ After building:
 bin/agentProlog "Inspect this project."
 ```
 
-`bin/agentProlog` is intentionally a thin runtime launcher. It validates the pinned build/profile and then executes the DeepSeek Harness CLI in the `agentProlog` profile. It does not initialize git submodules, run a package manager, install dependencies, create build artifacts, or repair an incomplete build. If prerequisites are missing or stale it fails with an instruction to run `bin/build-agentProlog`.
+`bin/agentProlog` is intentionally a thin runtime launcher. It validates the pinned SHA, the upstream official build record, and the AgentProlog profile, then executes the DeepSeek Harness CLI in the `agentProlog` profile. It does not initialize git submodules, run a package manager, install dependencies, create build artifacts, or repair an incomplete build. If prerequisites are missing or stale it fails with an instruction to run `bin/build-agentProlog`.
 
 It accepts normal DSH launcher flags before the task:
 
@@ -48,7 +55,7 @@ bin/agentProlog --help
 
 ## What remains from DeepSeek Harness
 
-The runtime profile is deliberately headless. It retains only the DSH spine needed to host the Prolog-backed agent:
+The **runtime** profile is deliberately headless. It retains only the DSH spine needed to host the Prolog-backed agent:
 
 ```text
 DeepSeek Harness CLI / profile boot
@@ -75,7 +82,7 @@ Prolog-owned model / context / tools / authority / effects
 
 The stock DSH model route, tool registry, sandbox/permission stack, skills, prompt policy, compaction, pruning, persistence, title generation, subagents, workflows, web search, code runtime, stock agent loop, and stock headless runner are disabled in `profile/cordis.patch.yml`.
 
-There is no HTTP server, browser UI, or web bundle in this profile.
+The official DeepSeek build still produces its normal complete artifact set. Those browser/web artifacts are simply not mounted by the AgentProlog runtime profile. There is no HTTP server, browser UI, or web bundle in the AgentProlog composition.
 
 ## Authority boundary
 
@@ -151,6 +158,6 @@ The SWI suite covers settings, provider routing, bridge sessions, persistence ac
 
 The Node suite covers NDJSON correlation, cancellation, the Prolog-backed AgentFactory, lossless resume projection, and the real Node -> SWI process boundary.
 
-`.github/workflows/deepseek-harness.yml` checks the explicit build command, verifies that `bin/agentProlog` remains build-free, tests the exact pinned rc.8 packages and gitlink, composes the headless profile, and boots `bin/agentProlog --help`.
+`.github/workflows/deepseek-harness.yml` checks the explicit build command, verifies that `bin/agentProlog` remains build-free, requires the upstream-pinned pnpm version, runs `build:official`, validates DeepSeek's official build record, tests the exact pinned rc.8 packages and gitlink, composes the headless profile, and boots `bin/agentProlog --help`.
 
 The profile contract test reads the pinned DeepSeek base/headless bundle manifests and verifies that the profile explicitly disables every inherited row except the required DSH spine. A future Harness bump therefore fails closed if upstream adds a new runtime component without an explicit decision here.
