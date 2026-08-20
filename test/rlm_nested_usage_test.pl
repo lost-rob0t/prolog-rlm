@@ -45,6 +45,18 @@ completion_budget(MaxTokens,
                       time_limit:10.0
                   }).
 
+planner_usage(Prompt, Completion, Cost,
+              usage_summary{
+                  model_calls:1,
+                  prompt_tokens:Prompt,
+                  completion_tokens:Completion,
+                  total_tokens:Total,
+                  cost_usd:Cost,
+                  cost_known:true,
+                  tokens_known:true
+              }) :-
+    Total is Prompt+Completion.
+
 test(model_response_ledger_survives_nested_scope_and_preserves_order) :-
     model_response(r1, 7, 3, 0.001, R1),
     model_response(r2, 13, 7, 0.002, R2),
@@ -97,5 +109,62 @@ test(legacy_plan_result_without_ledger_keeps_visible_response_fallback) :-
     assertion(Usage.model_calls =:= 2),
     assertion(Usage.total_tokens =:= 30),
     assertion(abs(Usage.cost_usd-0.003) < 1.0e-12).
+
+test(completion_error_preserves_executed_model_usage) :-
+    model_response(r1, 7, 3, 0.001, R1),
+    model_response(r2, 13, 7, 0.002, R2),
+    planner_usage(2, 1, 0.0005, PlannerUsage),
+    Planner = planner_result{usage:PlannerUsage},
+    PlanError = plan_error{
+                    phase:execute,
+                    kind:tool_error,
+                    message:"tool failed after model calls",
+                    model_responses:[R1,R2]
+                },
+    completion_budget(100, Budget),
+    rlm_completion:completion_after_execution(error(PlanError),
+                                               Planner,
+                                               plan([]),
+                                               recursion_stats{},
+                                               [],
+                                               Budget,
+                                               unused_token,
+                                               error(Error)),
+    assertion(Error.phase == execute),
+    assertion(Error.kind == tool_error),
+    assertion(Error.usage.model_calls =:= 3),
+    assertion(Error.usage.prompt_tokens =:= 22),
+    assertion(Error.usage.completion_tokens =:= 11),
+    assertion(Error.usage.total_tokens =:= 33),
+    assertion(abs(Error.usage.cost_usd-0.0035) < 1.0e-12),
+    assertion(\+ get_dict(budget_violation, Error, _)).
+
+test(completion_error_reports_budget_violation_without_hiding_cause) :-
+    model_response(r1, 7, 3, 0.001, R1),
+    model_response(r2, 13, 7, 0.002, R2),
+    planner_usage(2, 1, 0.0005, PlannerUsage),
+    Planner = planner_result{usage:PlannerUsage},
+    PlanError = plan_error{
+                    phase:execute,
+                    kind:tool_error,
+                    message:"tool failed after model calls",
+                    model_responses:[R1,R2]
+                },
+    completion_budget(32, Budget),
+    rlm_completion:completion_after_execution(error(PlanError),
+                                               Planner,
+                                               plan([]),
+                                               recursion_stats{},
+                                               [],
+                                               Budget,
+                                               unused_token,
+                                               error(Error)),
+    assertion(Error.phase == execute),
+    assertion(Error.kind == tool_error),
+    assertion(Error.usage.total_tokens =:= 33),
+    assertion(Error.budget_violation.phase == budget),
+    assertion(Error.budget_violation.kind == token_budget_exceeded),
+    assertion(Error.budget_violation.used =:= 33),
+    assertion(Error.budget_violation.limit =:= 32).
 
 :- end_tests(rlm_nested_usage).
