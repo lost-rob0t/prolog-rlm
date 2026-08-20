@@ -24,19 +24,37 @@ jobs:
         with:
           node-version: 24
 
+      - name: Use pinned pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Install SWI-Prolog
         run: |
           sudo apt-get update
           sudo apt-get install --yes swi-prolog-nox
 
-      - name: Verify build and launcher shells
+      - name: Verify public package scripts and helper shells
         run: |
-          for path in bin/build-agentProlog bin/agentProlog bin/agentProlog-headless; do
+          node - <<'NODE'
+          const pkg = require('./package.json')
+          if (pkg.packageManager !== 'pnpm@11.7.0') throw new Error(`unexpected packageManager ${pkg.packageManager}`)
+          const expected = {
+            build: './bin/build-agentProlog',
+            dev: './bin/dev-agentProlog',
+            start: './bin/agentProlog',
+            headless: './bin/agentProlog-headless',
+          }
+          for (const [name, command] of Object.entries(expected)) {
+            if (pkg.scripts?.[name] !== command) throw new Error(`${name}: expected ${command}`)
+          }
+          NODE
+          for path in bin/build-agentProlog bin/dev-agentProlog bin/agentProlog bin/agentProlog-headless; do
             test -x "$path"
             bash -n "$path"
           done
-          ! grep -Eq 'pnpm|submodule update|build:official|build:lib' bin/agentProlog
-          ! grep -Eq 'pnpm|submodule update|build:official|build:lib' bin/agentProlog-headless
+          ! grep -Eq 'pnpm install|submodule update|build:official|build:lib' bin/agentProlog
+          ! grep -Eq 'pnpm install|submodule update|build:official|build:lib' bin/agentProlog-headless
+          grep -Fq 'run dev:web' bin/dev-agentProlog
+          ! grep -Fq 'build:official' bin/dev-agentProlog
 
       - name: Verify exact pinned Harness source packages
         run: |
@@ -57,16 +75,16 @@ jobs:
           if (root.packageManager !== 'pnpm@11.7.0') throw new Error(`unexpected packageManager ${root.packageManager}`)
           NODE
 
-      - name: Build pinned Harness through standalone upstream checkout
+      - name: Build AgentProlog through public pnpm command
         env:
           AGENTPROLOG_DSH_HOME: ${{ runner.temp }}/agentprolog-dsh
-        run: bin/build-agentProlog
+        run: pnpm run build
 
       - name: Test host transport and Prolog-backed factory
         run: node --test agentProlog/deepseek-harness/host/*.test.mjs
 
       - name: Test real host to Prolog composition explicitly
-        run: node --test agentProlog/deepseek-harness/host/bridge-client.integration.test.mjs
+        run: pnpm run test:bridge
 
       - name: Run deterministic Prolog suite
         env:
@@ -80,8 +98,8 @@ jobs:
           OPENROUTER_TEST_MODEL: ""
           AGENTPROLOG_DSH_HOME: ${{ runner.temp }}/agentprolog-dsh
         run: |
-          bin/agentProlog --dump-config > /tmp/agentprolog-web.yml
-          bin/agentProlog-headless --dump-config > /tmp/agentprolog-headless.yml
+          pnpm --silent run start -- --dump-config > /tmp/agentprolog-web.yml
+          pnpm --silent run headless -- --dump-config > /tmp/agentprolog-headless.yml
           grep -q "@prolog-rlm/dsh-agent-factory'" /tmp/agentprolog-web.yml
           grep -q 'id: webserver' /tmp/agentprolog-web.yml
           grep -q 'id: ui-conversation' /tmp/agentprolog-web.yml
@@ -90,14 +108,14 @@ jobs:
           grep -q "@prolog-rlm/dsh-agent-factory/headless'" /tmp/agentprolog-headless.yml
           grep -A2 'id: headless-runner' /tmp/agentprolog-headless.yml | grep -q 'disabled: true'
 
-      - name: Verify both launcher help surfaces
+      - name: Verify both public help surfaces
         env:
           OPENROUTER_API_KEY: ""
           OPENROUTER_TEST_MODEL: ""
           AGENTPROLOG_DSH_HOME: ${{ runner.temp }}/agentprolog-dsh
         run: |
-          bin/agentProlog --help
-          bin/agentProlog-headless --help
+          pnpm --silent run start -- --help
+          pnpm --silent run headless -- --help
 
       - name: Smoke the Web GUI without opening a browser
         env:
@@ -106,7 +124,7 @@ jobs:
           AGENTPROLOG_DSH_HOME: ${{ runner.temp }}/agentprolog-dsh
         run: |
           set -euo pipefail
-          bin/agentProlog --no-open --port 0 > /tmp/agentprolog-web.log 2>&1 &
+          pnpm --silent run start -- --no-open --port 0 > /tmp/agentprolog-web.log 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           for _ in $(seq 1 60); do

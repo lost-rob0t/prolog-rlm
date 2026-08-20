@@ -67,14 +67,31 @@ test(web_profile_preserves_gui_transport_and_conversation_spine) :-
                    "ui-sidebar", "ui-conversation", "ui-workspace"]),
            assertion(\+ disabled_in_profile(Patch, Id))).
 
+test(root_pnpm_interface_is_the_public_entrypoint) :-
+    read_file_to_string('../package.json', Package, []),
+    forall(member(Needle,
+                  ['"packageManager": "pnpm@11.7.0"',
+                   '"build": "./bin/build-agentProlog"',
+                   '"dev": "./bin/dev-agentProlog"',
+                   '"start": "./bin/agentProlog"',
+                   '"headless": "./bin/agentProlog-headless"']),
+           assertion(sub_string(Package, _, _, _, Needle))).
+
 test(runtime_launchers_never_install_or_build) :-
     forall(member(Path, ['../bin/agentProlog', '../bin/agentProlog-headless']),
            ( read_file_to_string(Path, Launcher, []),
-             assertion(\+ sub_string(Launcher, _, _, _, 'pnpm')),
+             assertion(\+ sub_string(Launcher, _, _, _, 'pnpm install')),
              assertion(\+ sub_string(Launcher, _, _, _, 'submodule update')),
              assertion(\+ sub_string(Launcher, _, _, _, 'build:official')),
-             assertion(sub_string(Launcher, _, _, _, 'run ./bin/build-agentProlog'))
+             assertion(sub_string(Launcher, _, _, _, 'run pnpm run build'))
            )).
+
+test(dev_uses_upstream_web_watcher_without_building) :-
+    read_file_to_string('../bin/dev-agentProlog', Dev, []),
+    assertion(sub_string(Dev, _, _, _, 'run dev:web')),
+    assertion(sub_string(Dev, _, _, _, 'run pnpm run build')),
+    assertion(\+ sub_string(Dev, _, _, _, 'build:official')),
+    assertion(\+ sub_string(Dev, _, _, _, 'submodule update')).
 
 test(builder_uses_standalone_upstream_official_build) :-
     read_file_to_string('../bin/build-agentProlog', Builder, []),
