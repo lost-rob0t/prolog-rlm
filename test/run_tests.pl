@@ -63,7 +63,9 @@
 :- consult(rlm_spec_verify_test).
 :- consult(rlm_spec_lang_test).
 :- consult(rlm_spec_workflow_test).
+:- consult(rlm_project_source_test).
 :- consult(prolog_agent_ui_v1_test).
+:- consult(prolog_agent_ui_fixture_command_codec_test).
 :- consult(deepseek_harness_bridge_test).
 :- consult(deepseek_harness_route_store_test).
 :- consult(deepseek_harness_host_bridge_test).

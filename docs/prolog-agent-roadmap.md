@@ -25,21 +25,20 @@ Already available in core and the downstream application boundary:
 - optional Spec-bound Plan execution and a bounded Verify/repair composition over `rlm_graph`;
 - a project-KB observation boundary that lets future planners and verifiers consume the same semantic project state without teaching either layer to parse source code;
 - the #94 direct generic SWI-Prolog <-> Tree-sitter C FFI, with owned native handles, generic grammar loading, and multi-grammar parsing mechanics;
-- `prolog_agent_ui_v1`, a renderer-independent application boundary with bounded snapshots, ordered semantic events, explicit correlated commands, capability negotiation, deterministic replay, reconnect semantics, NDJSON framing, a child-process fixture server, and polyglot golden fixtures;
-- the #124 parallel DeepSeek Harness path now pins the official upstream and has a Prolog-owned NDJSON authority bridge with lossless managed conversation history, persistent provider/model/session settings, and OpenRouter/DeepSeek routing without moving agent semantics into TypeScript.
+- the #95 declarative Project/File/Language and Tree-sitter grammar registry, with explicit language evidence, parser selection, versioned grammar identity/provenance, and separate trusted native activation over #94;
+- `prolog_agent_ui_v1`, a renderer-independent application boundary with bounded snapshots, ordered semantic events, explicit correlated commands, capability negotiation, deterministic replay, reconnect semantics, NDJSON framing, a child-process fixture server, and polyglot golden fixtures.
 
 Still missing for a useful coding agent:
 
-- remaining #57 effect-boundary adoption for provider, MCP request, and lifecycle/process paths tracked by #79;
+- remaining canonical #57 effect-boundary adoption after the merged #86 tool-path slice, especially provider, MCP, and process/lifecycle paths tracked by #79;
 - a standard project tool pack with search, write/edit, git, and test/process tools;
-- durable project-scoped settings and remembered bounded approvals beyond the initial #124 downstream provider/session settings seam;
-- the Prolog-side Project/File/Language/grammar registry and CST/query/semantic/freshness layers from #95-#99 that turn the landed #94 parser mechanics into the actual project parser/indexer and canonical project KB;
+- durable project-scoped settings and remembered bounded approvals;
+- the versioned CST/query/semantic/freshness layers from #96-#99 that turn the landed #94/#95 parser and registry substrate into the actual project parser/indexer and canonical project KB;
 - TaskIR/context/result-acceptance integration around the Frozen Spec substrate from #56 and #68-#71;
 - a headless coding loop that wires project inspection, edits, re-indexing, verification, and repair to those shared runtime concepts;
 - nonblocking approval/diff handling wired from the real coding workflow into the UI facade;
 - project instructions/context discovery for coding work;
-- the actual OpenTUI reference terminal client and native editor clients;
-- the DeepSeek Harness Cordis `Agent` provider/profile that replaces its stock agent loop, projects PrologAgent events into the Harness UI/session vocabulary, and keeps Harness compaction/pruning disabled for canonical Prolog-backed sessions.
+- the actual OpenTUI reference terminal client and native editor clients.
 
 A reasonable description is: **the runtime foundation is roughly three quarters built, but the end-user coding agent is closer to halfway than finished.** The remaining work is smaller than building another agent framework, but larger than writing a terminal renderer.
 
@@ -48,7 +47,7 @@ A reasonable description is: **the runtime foundation is roughly three quarters 
 Keep the layers boring and explicit:
 
 ```text
-JS TUI / CL TUI / Nim / Emacs / Lem / DeepSeek Harness host+UI
+JS TUI / CL TUI / Nim / Emacs / Lem
               |
               v
        prolog_agent_ui_v1
@@ -68,11 +67,9 @@ coding workflow + external tool pack + project parser/indexer
 
 Core must not gain ambient repository write access just because `PrologAgent` needs it. Coding tools remain separately loadable and capability-gated. A frontend never becomes a second execution engine. The project parser/indexer also remains a semantic observation producer, not a hidden executor.
 
-The DeepSeek Harness path follows the same boundary. Its official upstream is kept as a pinned downstream dependency. Harness UI/host facilities may consume PrologAgent state, but its stock `agent-loop`, compaction, tool-result pruning, permission decisions, and tool execution are not canonical for Prolog-backed sessions. The Prolog bridge owns session turns and retains the complete transcript; finite provider requests receive bounded projections plus lossless RLM access to omitted history.
-
 ## Phase 0: finish the write-safety substrate
 
-The generic durable effect substrate is already on `main` through #78, #83, and #85. PR #86 has now landed the first canonical tool-path adoption slice: effectful `rlm_tool` execution crosses the #57 prepared-ticket authority/admission boundary before mutation. Phase 0 remains incomplete until the remaining provider, effectful MCP request, and lifecycle/process paths tracked by #79 use the same boundary where applicable.
+The generic durable effect substrate is already on `main` through #78, #83, and #85, and #86 has landed the first canonical effectful-tool adoption slice. Before repository mutation is a normal feature, finish the remaining **canonical adoption** work tracked by #79.
 
 Required outcome:
 
@@ -142,7 +139,7 @@ It must not persist `allow_session`, silently promote permissions to `dangerous`
 
 Project instructions should enter the coding context with provenance. Repository instructions, current source/tests, operator requirements, and model inference are not the same kind of evidence.
 
-The direct Tree-sitter mechanics from #94 are now substrate. Implement #95-#99 behind the semantic project-state boundary established by `rlm_spec`/`rlm_verify`: register Project/File/Language/grammar relationships, project concrete syntax into versioned observations, run structural queries, normalize semantic source relations, and enforce incremental freshness. Source, build metadata, package metadata, and configuration should be parsed once into canonical project knowledge. Planner and verifier consumers query that knowledge through trusted semantic providers. Do not add a planner-only parser and a verifier-only parser.
+The direct Tree-sitter mechanics from #94 and the declarative Project/File/Language/grammar registry from #95 are now substrate. Implement #96-#99 behind the semantic project-state boundary established by `rlm_spec`/`rlm_verify`: project concrete syntax into versioned observations, run structural queries, normalize semantic source relations, and enforce incremental freshness. Source, build metadata, package metadata, and configuration should be parsed once into canonical project knowledge. Planner and verifier consumers query that knowledge through trusted semantic providers. Do not add a planner-only parser and a verifier-only parser.
 
 The project KB remains distinct from artifacts, graph checkpoints, authority, effect journals, and runtime observations. After a write, invalidate/re-index affected project state and verify the unchanged Frozen Spec against the new snapshot plus runtime evidence.
 
@@ -211,21 +208,6 @@ swipl -q -s agentProlog/bin/agent-prolog.pl -- \
 
 The command should finish only when the exact Frozen Spec's configured acceptance checks pass or the run ends with a structured blocked/failed outcome.
 
-### Parallel DeepSeek Harness host path
-
-Issue #124 adds a second frontend/host integration path without adding a second agent runtime. The pinned Harness remains replaceable through its Cordis seams, while the canonical Prolog process exposes settings/session operations and managed turns over a narrow NDJSON boundary.
-
-The first slice guarantees:
-
-- complete append-only transcript retention in `rlm_conversation`;
-- no summary replacement or compaction of canonical history;
-- bounded provider-visible projections with omitted history still reachable through the RLM context handle;
-- persisted provider/model/session-store settings with no stored API keys;
-- OpenRouter via the existing core provider and DeepSeek via the existing OpenAI-compatible provider boundary;
-- a `session/turn` path that enters `rlm_conversation:conversation_turn/4` instead of Harness `dsh-agent-loop`.
-
-The next slice must implement the Harness-side Cordis `Agent` provider/factory and event projection before any Prolog-backed Harness profile is advertised as runnable. That profile must disable the stock agent loop and compaction/pruning rows rather than silently falling back to them.
-
 ## Phase 4: OpenCode-style reference TUI and native editor clients
 
 Only after the protocol/replay boundary is stable should the first rich client be built.
@@ -233,7 +215,6 @@ Only after the protocol/replay boundary is stable should the first rich client b
 The current renderer direction is:
 
 - **JavaScript/TypeScript:** OpenTUI + SolidJS as the reference standalone TUI path;
-- **DeepSeek Harness:** parallel web/host UI path through an out-of-tree Cordis `Agent` provider backed by Prolog-RLM;
 - **Common Lisp:** a shared `prolog-agent-client`, with Tuition as the first standalone TUI spike;
 - **Nim:** a protocol client regardless of whether the final renderer is pure Illwill or an OpenTUI C ABI;
 - **Emacs:** native buffers/diffs/compilation UI over async process/socket transport, with Sweep optional for bounded direct calls;
@@ -269,7 +250,7 @@ Done. 2 files changed. Trace: run_42
 
 The UI should display structured outcomes, not translate every error into cheerful prose and hope nobody notices.
 
-If the reference JS client or DeepSeek Harness provider needs domain logic that is absent from `prolog_agent_ui_v1` or the canonical application facade, treat that as a protocol/facade defect. Do not smuggle runtime semantics into TypeScript merely because it is convenient.
+If the reference JS client needs domain logic that is absent from `prolog_agent_ui_v1`, treat that as a protocol/facade defect. Do not smuggle runtime semantics into TypeScript merely because it is convenient.
 
 ## Phase 5: coding-agent quality bar
 
@@ -301,17 +282,16 @@ The first release does not need IDE parity, a plugin marketplace, background dae
 
 Current core and product issues that materially affect the roadmap:
 
-- #79: canonical external-effect adoption still blocks normal repository mutation as a complete product capability. The #57 generic substrate and #86 tool-path Slice 1 are merged; provider, effectful MCP request, and lifecycle/process adoption remain.
+- #79: canonical external-effect adoption remains open; #86 has landed the first effectful-tool path, while provider, MCP, and process/lifecycle adoption remain.
 - #49 / #50: companion project/coding tool pack.
 - #54: async contract; core migrations are largely complete, while external process/test/network and downstream approval/TUI integration remain.
 - #56: result acceptance should build on the shared evidence/provenance/verifier substrate now used by Spec Verify; the broader result-envelope/delegation work remains open.
 - #68: verified workflow epic remains open; first-class Spec/Verify and graph composition are substrate, not the whole product workflow.
 - #69: TaskIR should reference the exact Frozen Spec and carry task/execution metadata rather than own a competing acceptance contract.
-- #70: project context should incorporate canonical project-KB snapshot references and provenance; #94 now supplies direct Tree-sitter parser mechanics, while #95-#99 still need to build the Project/file/grammar registry, versioned CST, structural query, semantic, and freshness layers.
+- #70: project context should incorporate canonical project-KB snapshot references and provenance; #94 supplies direct Tree-sitter parser mechanics and #95 supplies Project/File/Language/grammar selection, while #96-#99 still need the versioned CST, structural-query, semantic, and freshness layers.
 - #71: workflow execution/resume must remain bound to the exact Frozen Spec; the Spec-bound graph foundation now demonstrates that invariant, while full TaskIR/continuation integration remains open.
 - #74-#77: durable project state, instructions, and bounded persistent authorization.
-- #93/#95-#99: #94 is the direct Tree-sitter FFI substrate; the remaining child issues are required before the canonical project parser/indexer and project KB are complete.
-- #109: renderer-independent `prolog_agent_ui_v1` protocol/replay foundation; once merged and verified, the next renderer slice is the small OpenTUI + SolidJS reference client against its deterministic fixture.
-- #124: parallel DeepSeek Harness host/frontend path. The pinned upstream, lossless Prolog session/settings bridge, and provider routing are the first slice; the Harness Cordis `Agent` provider/event projection and no-compaction profile are next.
+- #93/#96-#99: #94/#95 are the direct parser and declarative source-registry substrate; the remaining child issues are required before the canonical project parser/indexer and project KB are complete.
+- #109: the renderer-independent `prolog_agent_ui_v1` protocol/replay foundation is landed; the next renderer slice is the small OpenTUI + SolidJS reference client against its deterministic fixture.
 
 Do not wait for every P1 research idea before starting `agentProlog/`. Build against stable public contracts, keep optional integrations optional, and let the first usable coding loop drive the remaining abstractions.
