@@ -741,6 +741,7 @@ validate_recursive_plan(Plan, ChildCapabilities, Budget, Outcome) :-
           recursive_fault(Fault, Outcome)).
 
 recursive_plan_stats(Plan, Stats) :-
+    canonical_recursive_plan(Plan, _),
     collect_recursive_plan(Plan, 0, [], Entries, Depths),
     findall(Hash,
             ( member(Entry, Entries),
@@ -759,6 +760,47 @@ recursive_plan_stats(Plan, Stats) :-
                             max_depth:MaxDepth,
                             fingerprints:Hashes}.
 
+canonical_recursive_plan(Plan, Canonical) :-
+    (   acyclic_term(Plan)
+    ->  canonical_recursive_term(Plan, Canonical)
+    ;   throw(completion_fault(recursive_cycle(cyclic_term)))
+    ).
+
+canonical_recursive_term(Term, _) :-
+    var(Term),
+    !,
+    throw(completion_fault(non_ground_recursive_plan)).
+canonical_recursive_term(Dict0, Dict) :-
+    is_dict(Dict0),
+    !,
+    dict_pairs(Dict0, Tag0, Pairs0),
+    canonical_recursive_dict_tag(Tag0, Tag),
+    maplist(canonical_recursive_pair, Pairs0, Pairs),
+    dict_pairs(Dict, Tag, Pairs).
+canonical_recursive_term(Term, Term) :-
+    atomic(Term),
+    !.
+canonical_recursive_term(Term0, Term) :-
+    Term0 =.. [Functor|Args0],
+    maplist(canonical_recursive_term, Args0, Args),
+    Term =.. [Functor|Args].
+
+canonical_recursive_dict_tag(Tag0, rlm_anonymous_dict) :-
+    var(Tag0),
+    !.
+canonical_recursive_dict_tag(Tag, Tag).
+
+canonical_recursive_pair(Key-Value0, Key-Value) :-
+    canonical_recursive_term(Value0, Value).
+
+recursive_plan_fingerprint(Plan, Hash) :-
+    canonical_recursive_plan(Plan, Canonical),
+    term_hash(Canonical, Hash),
+    (   integer(Hash)
+    ->  true
+    ;   throw(completion_fault(non_ground_recursive_plan))
+    ).
+
 collect_recursive_plan(plan(Steps), Depth, Ancestors, Entries, Depths) :-
     collect_recursive_steps(Steps,
                             Depth,
@@ -773,7 +815,7 @@ collect_recursive_steps([rlm(Child, Bind)|Steps],
                         Entries,
                         Depths) :-
     !,
-    term_hash(Child, Hash),
+    recursive_plan_fingerprint(Child, Hash),
     (   memberchk(Hash, Ancestors)
     ->  throw(completion_fault(recursive_cycle(Hash)))
     ;   true
