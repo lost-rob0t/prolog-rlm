@@ -323,8 +323,23 @@ completion_after_recursive_validation(ok(Stats),
                                Token,
                                Outcome).
 
-completion_after_execution(error(Error), _, _, _, _, _, _, error(Error)) :-
-    !.
+completion_after_execution(error(Error0),
+                           Planner,
+                           _,
+                           _,
+                           _,
+                           Budget,
+                           Token,
+                           error(Error)) :-
+    !,
+    check_cancelled(Token),
+    execution_error_usage(Error0, PlanUsage),
+    usage_add(Planner.usage, PlanUsage, TotalUsage),
+    budget_usage_check(Budget, TotalUsage, BudgetOutcome),
+    execution_error_with_accounting(Error0,
+                                    TotalUsage,
+                                    BudgetOutcome,
+                                    Error).
 completion_after_execution(ok(Result),
                            Planner,
                            Plan,
@@ -345,6 +360,36 @@ completion_after_execution(ok(Result),
                       ChildCapabilities,
                       TotalUsage,
                       Outcome).
+
+execution_error_usage(Error, Usage) :-
+    (   is_dict(Error),
+        get_dict(model_responses, Error, Responses),
+        is_list(Responses)
+    ->  model_responses_usage(Responses, Usage)
+    ;   zero_usage(Usage)
+    ).
+
+model_responses_usage(Responses, Usage) :-
+    findall(ResponseUsage,
+            ( member(Response, Responses),
+              response_usage(Response, ResponseUsage)
+            ),
+            Usages),
+    usage_sum(Usages, Usage).
+
+execution_error_with_accounting(Error0, Usage, BudgetOutcome, Error) :-
+    (   is_dict(Error0)
+    ->  put_dict(usage, Error0, Usage, Error1)
+    ;   Error1 = completion_error{phase:execute,
+                                  kind:execution_failed,
+                                  cause:Error0,
+                                  usage:Usage,
+                                  message:"plan execution failed"}
+    ),
+    (   BudgetOutcome = error(BudgetError)
+    ->  put_dict(budget_violation, Error1, BudgetError, Error)
+    ;   Error = Error1
+    ).
 
 completion_finish(error(Error), _, _, _, _, _, _, error(Error)) :- !.
 completion_finish(ok,
@@ -964,12 +1009,7 @@ plan_budget(Budget, RemainingModelCalls,
 
 plan_usage(Result, Usage) :-
     plan_model_responses(Result, Responses),
-    findall(ResponseUsage,
-            ( member(Response, Responses),
-              response_usage(Response, ResponseUsage)
-            ),
-            Usages),
-    usage_sum(Usages, Usage).
+    model_responses_usage(Responses, Usage).
 
 plan_model_responses(Result, Responses) :-
     get_dict(model_responses, Result, Recorded),
