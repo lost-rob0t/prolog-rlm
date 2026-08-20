@@ -2,6 +2,9 @@
           [ direct_planner/2,
             depth_two_planner/2,
             duplicate_recursive_planner/2,
+            anonymous_dict_grandchild_tool_planner/2,
+            nonground_recursive_planner/2,
+            cyclic_recursive_planner/2,
             child_tool_planner/2,
             invalid_planner/2,
             fake_model/2,
@@ -63,6 +66,33 @@ duplicate_recursive_planner(_, ok(Output)) :-
     Plan = plan([rlm(Child, first),
                  rlm(Child, second),
                  final(var(first))]),
+    planner_output(Plan, Output).
+
+anonymous_dict_grandchild_tool_planner(_, ok(Output)) :-
+    bump_planner,
+    Grandchild = plan([tool(secret_tool,
+                            literal(_{secret:true}),
+                            secret),
+                       final(var(secret))]),
+    Child = plan([rlm(Grandchild, grand),
+                  final(var(grand))]),
+    Plan = plan([rlm(Child, child),
+                 final(var(child))]),
+    planner_output(Plan, Output).
+
+nonground_recursive_planner(_, ok(Output)) :-
+    bump_planner,
+    Child = plan([final(literal(Unbound))]),
+    Plan = plan([rlm(Child, child),
+                 final(var(child))]),
+    planner_output(Plan, Output),
+    var(Unbound).
+
+cyclic_recursive_planner(_, ok(Output)) :-
+    bump_planner,
+    Child = plan([rlm(Child, loop)]),
+    Plan = plan([rlm(Child, child),
+                 final(var(child))]),
     planner_output(Plan, Output).
 
 child_tool_planner(_, ok(Output)) :-
