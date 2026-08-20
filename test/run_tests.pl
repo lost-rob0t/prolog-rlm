@@ -66,6 +66,10 @@
 :- consult(rlm_project_source_test).
 :- consult(prolog_agent_ui_v1_test).
 :- consult(prolog_agent_ui_fixture_command_codec_test).
+:- consult(deepseek_harness_bridge_test).
+:- consult(deepseek_harness_route_store_test).
+:- consult(deepseek_harness_host_bridge_test).
+:- consult(deepseek_harness_profile_test).
 
 main(_) :-
     (   run_tool_mcp_async_cases,

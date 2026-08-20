@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+harness_root="$repo_root/agentProlog/deepseek-harness"
+upstream_source="$harness_root/upstream"
+headless_profile="$harness_root/profile"
+web_profile="$harness_root/profile-web"
+host="$harness_root/host"
+submodule_path="agentProlog/deepseek-harness/upstream"
+expected_harness_sha="141eb6fef83422698aef7a981029e843e8161534"
+expected_pnpm_version="11.7.0"
+
+state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
+dsh_home="${AGENTPROLOG_DSH_HOME:-$state_home/prolog-rlm/deepseek-harness}"
+build_checkout="$dsh_home/upstream-build"
+build_stamp="$dsh_home/upstream-build-sha"
+build_record="$build_checkout/.dsh-build/client-build-environment.json"
+web_profile_name="agentProlog"
+headless_profile_name="agentProlog-headless"
+
+fail() {
+  printf 'build-agentProlog: %s\n' "$*" >&2
+  exit 1
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+need_command git
+need_command node
+need_command swipl
+
+node -e '
+  const [major, minor] = process.versions.node.split(".").map(Number)
+  const supported = (major === 22 && minor >= 19) || major >= 24
+  if (!supported) process.exit(1)
+' || fail "DeepSeek Harness requires Node ^22.19.0 or >=24.0.0 (found $(node --version))"
+
+# The submodule is the audited source pin. It is deliberately not the build
+# worktree: DeepSeek's postinstall configures worktree-local Git hooks and a
+# submodule's gitdir carries core.worktree in its common config, which upstream's
+# installer correctly rejects. Build from a normal standalone local clone so we
+# can run the upstream install contract unchanged.
+git -C "$repo_root" submodule update --init --recursive "$submodule_path"
+source_sha="$(git -C "$upstream_source" rev-parse HEAD)"
+[[ "$source_sha" == "$expected_harness_sha" ]] \
+  || fail "DeepSeek Harness source is $source_sha; expected pinned $expected_harness_sha"
+
+mkdir -p "$dsh_home"
+if ! git -C "$build_checkout" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  rm -rf "$build_checkout"
+  printf 'build-agentProlog: creating standalone DeepSeek Harness build checkout\n' >&2
+  git clone --local --no-hardlinks "$upstream_source" "$build_checkout"
+fi
+
+# The build checkout is disposable integration state. Keep ignored dependency
+# and build caches, but restore every tracked source file to the audited pin.
+if ! git -C "$build_checkout" cat-file -e "$expected_harness_sha^{commit}" 2>/dev/null; then
+  git -C "$build_checkout" fetch "$upstream_source" "$expected_harness_sha"
+fi
+git -C "$build_checkout" checkout --detach "$expected_harness_sha"
+git -C "$build_checkout" reset --hard "$expected_harness_sha"
+
+# Upstream pins pnpm in packageManager. Prefer Corepack so the manifest selects
+# the package manager. A standalone pnpm is accepted only at the exact pin.
+if command -v corepack >/dev/null 2>&1 \
+   && (cd "$build_checkout" && corepack pnpm --version >/dev/null 2>&1); then
+  pnpm_cmd=(corepack pnpm)
+elif command -v pnpm >/dev/null 2>&1; then
+  pnpm_cmd=(pnpm)
+else
+  fail "DeepSeek Harness requires Corepack-enabled pnpm ${expected_pnpm_version}"
+fi
+
+actual_pnpm_version="$(cd "$build_checkout" && "${pnpm_cmd[@]}" --version)"
+[[ "$actual_pnpm_version" == "$expected_pnpm_version" ]] \
+  || fail "DeepSeek Harness pins pnpm $expected_pnpm_version; found $actual_pnpm_version"
+
+printf 'build-agentProlog: upstream install with pnpm %s\n' "$actual_pnpm_version" >&2
+(
+  cd "$build_checkout"
+  "${pnpm_cmd[@]}" install --frozen-lockfile
+  "${pnpm_cmd[@]}" run build:official
+)
+
+for artifact in \
+  "$build_checkout/apps/cli/lib/bin.js" \
+  "$build_checkout/packages/core/agent/lib/index.js" \
+  "$build_checkout/packages/core/scope/lib/index.js" \
+  "$build_checkout/packages/core/session/lib/index.js" \
+  "$build_checkout/packages/bundle/headless/lib/index.js" \
+  "$build_checkout/packages/bundle/web-app/lib/index.js" \
+  "$build_checkout/apps/web/dist/index.html" \
+  "$build_record"
+do
+  [[ -f "$artifact" ]] || fail "expected official build artifact missing: $artifact"
+done
+
+node - "$build_record" "${expected_harness_sha:0:7}" <<'NODE'
+const fs = require('node:fs')
+const [recordPath, expectedCommit] = process.argv.slice(2)
+const record = JSON.parse(fs.readFileSync(recordPath, 'utf8'))
+if (record.formatVersion !== 1) throw new Error(`unexpected DSH build-record format ${record.formatVersion}`)
+if (record.environment?.DSH_CLIENT_BUILD_PROFILE !== 'official') {
+  throw new Error('DeepSeek Harness build is not the official artifact profile')
+}
+if (record.environment?.DSH_CLIENT_COMMIT_HASH !== expectedCommit) {
+  throw new Error(`DeepSeek Harness build record is for ${record.environment?.DSH_CLIENT_COMMIT_HASH}, expected ${expectedCommit}`)
+}
+if (record.environment?.DSH_CLIENT_TITLE !== 'DeepSeek Harness') {
+  throw new Error('DeepSeek Harness official client title is missing from the build record')
+}
+if (!Number.isSafeInteger(record.artifacts?.fileCount) || record.artifacts.fileCount < 1) {
+  throw new Error('DeepSeek Harness official build record contains no client artifacts')
+}
+if (!/^[0-9a-f]{64}$/.test(record.artifacts?.sha256 ?? '')) {
+  throw new Error('DeepSeek Harness official build record has an invalid artifact digest')
+}
+NODE
+
+mount_profile() {
+  local name="$1"
+  local source="$2"
+  local mount="$dsh_home/profiles/$name"
+  mkdir -p "$dsh_home/profiles"
+  rm -rf "$mount"
+  ln -s "$source" "$mount"
+
+  mkdir -p "$source/node_modules/@deepseek-ai" "$source/node_modules/@prolog-rlm"
+  for spec in \
+    "dsh-agent:$build_checkout/packages/core/agent" \
+    "dsh-scope:$build_checkout/packages/core/scope" \
+    "dsh-session:$build_checkout/packages/core/session"
+  do
+    local package_name="${spec%%:*}"
+    local package_source="${spec#*:}"
+    local target="$source/node_modules/@deepseek-ai/$package_name"
+    rm -rf "$target"
+    ln -s "$package_source" "$target"
+  done
+
+  local factory_target="$source/node_modules/@prolog-rlm/dsh-agent-factory"
+  rm -rf "$factory_target"
+  ln -s "$host" "$factory_target"
+}
+
+mount_profile "$web_profile_name" "$web_profile"
+mount_profile "$headless_profile_name" "$headless_profile"
+
+printf '%s\n' "$expected_harness_sha" > "$build_stamp"
+printf 'build-agentProlog: GUI + headless official build ready (%s)\n' "$expected_harness_sha" >&2

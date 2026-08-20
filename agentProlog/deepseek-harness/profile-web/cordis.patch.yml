@@ -1,0 +1,225 @@
+# DeepSeek Harness Web GUI for PrologAgent.
+#
+# The official Web transport and browser rendering plane remains intact. Prolog
+# replaces the AgentFactory and remains the only turn/model/tool authority.
+# DSH registry/services that the Web API structurally injects remain mounted,
+# but their stock providers, executors, model-facing tools and drivers are not.
+
+# The Web API statically requires the LLM registry and default-model service.
+# Keep the registry empty and label the transport-facing default honestly. The
+# Prolog factory does not route from these AgentOptions; provider/model choice is
+# resolved by the canonical Prolog settings/runtime.
+- id: agent-default-model
+  config:
+    provider: prolog-rlm
+    model: managed
+- id: llm-retry
+  disabled: true
+- id: llm-pi-ai
+  disabled: true
+- id: llm-deepseek
+  disabled: true
+- id: system-prompt
+  disabled: true
+- id: agent-instructions
+  disabled: true
+- id: session-title-llm
+  disabled: true
+
+# Prolog is the canonical transcript/settings authority. Keep the session-query
+# service itself because api-gateway injects it; without DSH persistence it only
+# observes live projected sessions. The ordinary fallback title service may stay
+# because it is presentation, not model execution.
+- id: session-persistence-jsonl
+  disabled: true
+- id: session-telemetry-otel
+  disabled: true
+- id: settings
+  disabled: true
+- id: credentials
+  disabled: true
+
+# Keep the attachment service because api-gateway injects it, but hide the Web
+# attachment control until Prolog owns image semantics end-to-end.
+
+# Effect, shell and filesystem execution stay in Prolog. The `tools` registry
+# remains mounted because api-gateway and the subagent registry inject it; all
+# stock model-facing tool providers are disabled.
+- id: sandbox
+  disabled: true
+- id: sandbox-policy
+  disabled: true
+- id: bash-sandbox
+  disabled: true
+- id: pwsh-sandbox
+  disabled: true
+- id: approval
+  disabled: true
+- id: permission
+  disabled: true
+- id: subprocess
+  disabled: true
+- id: shell-env
+  disabled: true
+- id: fs-observation-policy
+  disabled: true
+- id: fs-sandbox
+  disabled: true
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: tool-str-replace-editor
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: web
+  disabled: true
+- id: web-search-deepseek
+  disabled: true
+- id: code-runtime
+  disabled: true
+
+# Skills, commands, plans and goals would otherwise expose a second semantic
+# control plane. `user-questions` remains only because api-gateway injects the
+# service; the browser question control is hidden below and no stock model tool
+# can invoke it.
+- id: skill
+  disabled: true
+- id: skill-filesystem
+  disabled: true
+- id: skill-badge
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: commands
+  disabled: true
+- id: command-feedback
+  disabled: true
+- id: goal
+  disabled: true
+- id: goal-round-driver
+  disabled: true
+- id: command-goal
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: plan-mode
+  disabled: true
+- id: agent-presets
+  disabled: true
+
+# Canonical history is lossless in Prolog. DSH compaction/pruning/checkpoints
+# may not rewrite or summarize it.
+- id: token-meter
+  disabled: true
+- id: compaction-basic
+  disabled: true
+- id: command-compact
+  disabled: true
+- id: spill-local
+  disabled: true
+- id: spill-policy
+  disabled: true
+- id: session-checkpoint-policy
+  disabled: true
+- id: tool-result-pruner
+  disabled: true
+- id: repeat-tool-reminder
+  disabled: true
+
+# Keep the `subagent` registry because api-gateway injects it. No stock provider,
+# control tool or workflow backend is allowed to create or drive children.
+- id: agent-loop
+  disabled: true
+- id: subagent-spawn-in-process
+  disabled: true
+- id: subagent-fork-in-process
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-report
+  disabled: true
+- id: workflow-worker-thread
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: timeout-policy
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-ralph
+  disabled: true
+
+# Hide browser controls that currently target disabled DSH semantics. Plain chat,
+# session navigation, layout, rendering, workspace and message feedback remain.
+- id: ui-attachment
+  disabled: true
+- id: ui-cordis
+  disabled: true
+- id: ui-workflow-run
+  disabled: true
+- id: ui-deliverables
+  disabled: true
+- id: ui-input-trigger
+  disabled: true
+- id: ui-commands
+  disabled: true
+- id: ui-skill
+  disabled: true
+- id: ui-subagent
+  disabled: true
+- id: ui-reference
+  disabled: true
+- id: ui-jobs
+  disabled: true
+- id: ui-goal
+  disabled: true
+- id: ui-model-selection
+  disabled: true
+- id: ui-permission
+  disabled: true
+- id: ui-agent-preset
+  disabled: true
+- id: ui-settings
+  disabled: true
+- id: ui-settings-general
+  disabled: true
+- id: ui-settings-models
+  disabled: true
+- id: ui-settings-plugin-inventory
+  disabled: true
+- id: ui-settings-plugins
+  disabled: true
+- id: ui-plan
+  disabled: true
+- id: ui-user-questions
+  disabled: true
+- id: ui-trajectory
+  disabled: true
+
+# Required GUI host/service spine intentionally inherited:
+#   session, agent, llm, agent-default-model, tools, subagent, user-questions
+#   attachment-local, session-query-sqlite, session-projection
+#   workspace, directory-picker, web-startup, webserver, web-runtime, api-gateway
+#   modules, connection, api-remotes, client-runtime, cordis-client-runner
+#   ui-theme, locale, ui-layout, ui-renderer, ui-sidebar, ui-conversation
+#   ui-brand-official, ui-tool, ui-workspace, ui-message-feedback
+
+- insert:
+    - id: prolog-agent-factory
+      name: '@prolog-rlm/dsh-agent-factory'
+      inject: [agents, sessions]
+      config: {}

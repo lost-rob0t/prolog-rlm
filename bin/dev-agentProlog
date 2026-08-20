@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
+dsh_home="${AGENTPROLOG_DSH_HOME:-$state_home/prolog-rlm/deepseek-harness}"
+build_checkout="$dsh_home/upstream-build"
+build_stamp="$dsh_home/upstream-build-sha"
+expected_harness_sha="141eb6fef83422698aef7a981029e843e8161534"
+
+fail() {
+  printf 'agentProlog dev: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ -f "$build_stamp" ]] || fail "build missing; run pnpm run build"
+[[ "$(cat "$build_stamp")" == "$expected_harness_sha" ]] || fail "build stale; run pnpm run build"
+[[ -f "$build_checkout/package.json" ]] || fail "DeepSeek Harness build checkout missing; run pnpm run build"
+
+if command -v corepack >/dev/null 2>&1; then
+  pnpm_cmd=(corepack pnpm)
+elif command -v pnpm >/dev/null 2>&1; then
+  pnpm_cmd=(pnpm)
+else
+  fail "pnpm is required"
+fi
+
+watch_args=()
+case "${AGENTPROLOG_DEV_POLL:-}" in
+  "")
+    ;;
+  1|true|yes)
+    watch_args=(--poll)
+    ;;
+  *[!0-9]*)
+    fail "AGENTPROLOG_DEV_POLL must be empty, true, or a positive millisecond interval"
+    ;;
+  0)
+    fail "AGENTPROLOG_DEV_POLL must be greater than zero"
+    ;;
+  *)
+    watch_args=("--poll=${AGENTPROLOG_DEV_POLL}")
+    ;;
+esac
+
+cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+  if [[ -n "${watch_pid:-}" ]]; then
+    kill "$watch_pid" 2>/dev/null || true
+  fi
+  if [[ -n "${gui_pid:-}" ]]; then
+    kill "$gui_pid" 2>/dev/null || true
+  fi
+  wait "${watch_pid:-}" 2>/dev/null || true
+  wait "${gui_pid:-}" 2>/dev/null || true
+  exit "$status"
+}
+trap cleanup EXIT INT TERM
+
+(
+  cd "$build_checkout"
+  if ((${#watch_args[@]})); then
+    exec "${pnpm_cmd[@]}" run dev:web -- "${watch_args[@]}"
+  else
+    exec "${pnpm_cmd[@]}" run dev:web
+  fi
+) &
+watch_pid=$!
+
+"$repo_root/bin/agentProlog" "$@" &
+gui_pid=$!
+
+set +e
+wait -n "$watch_pid" "$gui_pid"
+status=$?
+set -e
+
+exit "$status"

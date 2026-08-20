@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+harness_root="$repo_root/agentProlog/deepseek-harness"
+profile="$harness_root/profile-web"
+profile_name="agentProlog"
+expected_harness_sha="141eb6fef83422698aef7a981029e843e8161534"
+state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
+dsh_home="${AGENTPROLOG_DSH_HOME:-$state_home/prolog-rlm/deepseek-harness}"
+build_checkout="$dsh_home/upstream-build"
+build_stamp="$dsh_home/upstream-build-sha"
+profile_mount="$dsh_home/profiles/$profile_name"
+
+fail() {
+  printf 'agentProlog: %s\n' "$*" >&2
+  exit 1
+}
+
+command -v node >/dev/null 2>&1 || fail "required command not found: node"
+command -v swipl >/dev/null 2>&1 || fail "required command not found: swipl"
+[[ -f "$build_checkout/apps/cli/lib/bin.js" ]] || fail "DeepSeek Harness is not built; run pnpm run build"
+[[ -f "$build_stamp" ]] || fail "AgentProlog build stamp is missing; run pnpm run build"
+[[ "$(cat "$build_stamp")" == "$expected_harness_sha" ]] || fail "AgentProlog build is stale; run pnpm run build"
+[[ -L "$profile_mount" ]] || fail "AgentProlog GUI profile is not mounted; run pnpm run build"
+[[ "$(readlink -f "$profile_mount")" == "$(readlink -f "$profile")" ]] || fail "AgentProlog GUI profile mount is stale; run pnpm run build"
+[[ -e "$profile/node_modules/@prolog-rlm/dsh-agent-factory" ]] || fail "Prolog AgentFactory is not linked; run pnpm run build"
+
+export DSH_HOME="$dsh_home"
+exec node "$build_checkout/apps/cli/lib/bin.js" --profile "$profile_name" "$@"

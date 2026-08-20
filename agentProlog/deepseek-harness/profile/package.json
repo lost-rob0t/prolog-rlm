@@ -1,0 +1,20 @@
+{
+  "name": "prolog-rlm-deepseek-harness-profile",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-headless"
+      ]
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-scope": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.8",
+    "@prolog-rlm/dsh-agent-factory": "file:../host"
+  }
+}
