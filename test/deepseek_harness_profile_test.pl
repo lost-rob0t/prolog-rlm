@@ -50,6 +50,20 @@ test(headless_profile_preserves_required_dsh_spine) :-
                          _, _, _,
                          "inject: [headlessStartup, agents]" )).
 
+test(runtime_launcher_never_installs_or_builds) :-
+    read_file_to_string('../bin/agentProlog', Launcher, []),
+    assertion(\+ sub_string(Launcher, _, _, _, 'pnpm')),
+    assertion(\+ sub_string(Launcher, _, _, _, 'submodule update')),
+    assertion(\+ sub_string(Launcher, _, _, _, 'build:lib')),
+    assertion(sub_string(Launcher, _, _, _, 'run ./bin/build-agentProlog')).
+
+test(builder_is_explicit_headless_bootstrap) :-
+    read_file_to_string('../bin/build-agentProlog', Builder, []),
+    assertion(sub_string(Builder, _, _, _, 'CI=true')),
+    assertion(sub_string(Builder, _, _, _, 'run build:lib:host')),
+    assertion(\+ sub_string(Builder, _, _, _, 'run build:lib:client')),
+    assertion(\+ sub_string(Builder, _, _, _, 'run build:web')).
+
 patch_ids(Text, Ids) :-
     split_string(Text, "\n", "\r", Lines),
     findall(Id,

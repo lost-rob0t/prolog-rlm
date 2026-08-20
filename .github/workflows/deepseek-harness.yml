@@ -29,10 +29,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes swi-prolog-nox
 
-      - name: Verify launcher shell
+      - name: Verify build and launcher shells
         run: |
+          test -x bin/build-agentProlog
           test -x bin/agentProlog
+          bash -n bin/build-agentProlog
           bash -n bin/agentProlog
+          ! grep -Eq 'pnpm|submodule update|build:lib|pnpm install' bin/agentProlog
 
       - name: Verify exact pinned Harness source packages
         run: |
@@ -51,6 +54,11 @@ jobs:
             }
           }
           NODE
+
+      - name: Build pinned headless Harness host
+        env:
+          AGENTPROLOG_DSH_HOME: ${{ runner.temp }}/agentprolog-dsh
+        run: bin/build-agentProlog
 
       - name: Test host transport and Prolog-backed headless factory
         run: node --test agentProlog/deepseek-harness/host/*.test.mjs

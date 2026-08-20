@@ -5,9 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 harness_root="$repo_root/agentProlog/deepseek-harness"
 upstream="$harness_root/upstream"
 profile="$harness_root/profile"
-host="$harness_root/host"
 profile_name="agentProlog"
-submodule_path="agentProlog/deepseek-harness/upstream"
 expected_harness_sha="141eb6fef83422698aef7a981029e843e8161534"
 
 state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
@@ -33,72 +31,32 @@ node -e '
   if (major < 22 || (major === 22 && minor < 19)) process.exit(1)
 ' || fail "Node >= 22.19.0 is required (found $(node --version))"
 
-if command -v pnpm >/dev/null 2>&1; then
-  pnpm_cmd=(pnpm)
-elif command -v corepack >/dev/null 2>&1; then
-  pnpm_cmd=(corepack pnpm)
-else
-  fail "pnpm is required; install pnpm or provide Node with corepack"
-fi
+[[ -f "$upstream/apps/cli/lib/bin.js" ]] \
+  || fail "DeepSeek Harness host artifacts are not built; run ./bin/build-agentProlog"
 
-# This is deliberately unconditional. `git -C <empty-submodule-dir> rev-parse`
-# can walk up into the parent repository and falsely report success, which made
-# first-run boot fail in a particularly stupid way. Git's submodule update is
-# idempotent and leaves an already-correct checkout alone.
-git -C "$repo_root" submodule update --init --recursive "$submodule_path"
+actual_harness_sha="$(git -C "$upstream" rev-parse HEAD 2>/dev/null)" \
+  || fail "DeepSeek Harness submodule is not initialized; run ./bin/build-agentProlog"
+[[ "$actual_harness_sha" == "$expected_harness_sha" ]] \
+  || fail "DeepSeek Harness checkout is $actual_harness_sha; expected $expected_harness_sha; run ./bin/build-agentProlog"
 
-actual_harness_sha="$(git -C "$upstream" rev-parse HEAD)"
-if [[ "$actual_harness_sha" != "$expected_harness_sha" ]]; then
-  fail "DeepSeek Harness checkout is $actual_harness_sha; expected pinned $expected_harness_sha. Run: git submodule update --init --recursive $submodule_path"
-fi
+[[ -f "$build_stamp" ]] \
+  || fail "AgentProlog build stamp is missing; run ./bin/build-agentProlog"
+[[ "$(cat "$build_stamp")" == "$expected_harness_sha" ]] \
+  || fail "AgentProlog build is stale; run ./bin/build-agentProlog"
 
-mkdir -p "$dsh_home"
+[[ -L "$profile_mount" ]] \
+  || fail "AgentProlog profile is not mounted; run ./bin/build-agentProlog"
+[[ "$(readlink -f "$profile_mount")" == "$(readlink -f "$profile")" ]] \
+  || fail "AgentProlog profile mount points somewhere unexpected; run ./bin/build-agentProlog"
 
-built_sha=""
-if [[ -f "$build_stamp" ]]; then
-  built_sha="$(cat "$build_stamp")"
-fi
-
-if [[ "$built_sha" != "$actual_harness_sha" \
-      || ! -f "$upstream/apps/cli/lib/bin.js" \
-      || ! -f "$upstream/packages/core/agent/lib/index.js" \
-      || ! -f "$upstream/packages/core/session/lib/index.js" \
-      || ! -f "$upstream/packages/bundle/headless/lib/index.js" ]]; then
-  printf 'agentProlog: building pinned DeepSeek Harness %s\n' "$actual_harness_sha" >&2
-  (
-    cd "$upstream"
-    "${pnpm_cmd[@]}" install --frozen-lockfile
-    "${pnpm_cmd[@]}" run build
-  )
-  printf '%s\n' "$actual_harness_sha" > "$build_stamp"
-fi
-
-# The profile is source-controlled in this repository. DSH requires profiles
-# below $DSH_HOME/profiles/<name>, so mount it there rather than copying it and
-# creating a second mutable source of truth.
-mkdir -p "$dsh_home/profiles"
-rm -rf "$profile_mount"
-ln -s "$profile" "$profile_mount"
-
-# Resolve the Prolog adapter against the exact packages built from the pinned
-# DeepSeek Harness submodule. These are runtime links only; npm is not allowed to
-# float prerelease peers behind our back.
-mkdir -p "$profile/node_modules/@deepseek-ai" "$profile/node_modules/@prolog-rlm"
-for spec in \
-  "dsh-agent:$upstream/packages/core/agent" \
-  "dsh-scope:$upstream/packages/core/scope" \
-  "dsh-session:$upstream/packages/core/session"
+for dependency in \
+  "$profile/node_modules/@deepseek-ai/dsh-agent" \
+  "$profile/node_modules/@deepseek-ai/dsh-scope" \
+  "$profile/node_modules/@deepseek-ai/dsh-session" \
+  "$profile/node_modules/@prolog-rlm/dsh-agent-factory"
 do
-  name="${spec%%:*}"
-  source="${spec#*:}"
-  target="$profile/node_modules/@deepseek-ai/$name"
-  rm -rf "$target"
-  ln -s "$source" "$target"
+  [[ -e "$dependency" ]] || fail "runtime dependency missing: $dependency; run ./bin/build-agentProlog"
 done
-
-factory_target="$profile/node_modules/@prolog-rlm/dsh-agent-factory"
-rm -rf "$factory_target"
-ln -s "$host" "$factory_target"
 
 export DSH_HOME="$dsh_home"
 exec node "$upstream/apps/cli/lib/bin.js" --profile "$profile_name" "$@"

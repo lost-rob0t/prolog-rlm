@@ -8,31 +8,43 @@ The official `deepseek-ai/deepseek-harness` repository is pinned at `upstream/` 
 - upstream release: `dsh@0.1.0-rc.8`
 - license: MIT, with upstream attribution retained by the submodule
 
+## Build it
+
+Build/bootstrap is explicit:
+
+```sh
+bin/build-agentProlog
+```
+
+The build command:
+
+1. initializes the pinned DeepSeek Harness submodule;
+2. verifies the exact audited upstream SHA;
+3. installs from the upstream lockfile with DeepSeek's repository-hook installer disabled for this vendored submodule checkout;
+4. builds only the DSH host libraries needed by headless AgentProlog, not the web frontend;
+5. mounts the source-controlled `agentProlog` profile under `DSH_HOME`; and
+6. links the local Prolog-backed AgentFactory against the exact pinned DSH core packages.
+
+Building may download Node dependencies. Launching never does.
+
+Set `AGENTPROLOG_DSH_HOME` to override the build/runtime state directory. The default is `$XDG_STATE_HOME/prolog-rlm/deepseek-harness`, falling back to `~/.local/state/prolog-rlm/deepseek-harness`.
+
 ## Run it
 
-From the repository root:
+After building:
 
 ```sh
 bin/agentProlog "Inspect this project."
 ```
 
-The launcher is intentionally the one supported entrypoint. On first run it:
+`bin/agentProlog` is intentionally a thin runtime launcher. It validates the pinned build/profile and then executes the DeepSeek Harness CLI in the `agentProlog` profile. It does not initialize git submodules, run a package manager, install dependencies, create build artifacts, or repair an incomplete build. If prerequisites are missing or stale it fails with an instruction to run `bin/build-agentProlog`.
 
-1. initializes the pinned DeepSeek Harness submodule;
-2. verifies the exact audited upstream SHA;
-3. builds that pinned Harness with its own lockfile when needed;
-4. mounts the source-controlled `agentProlog` headless profile;
-5. links the local Prolog-backed AgentFactory against the exact pinned DSH core packages; and
-6. boots the DeepSeek Harness CLI in the `agentProlog` profile.
-
-It accepts the normal launcher flags before the task, for example:
+It accepts normal DSH launcher flags before the task:
 
 ```sh
 bin/agentProlog --dump-config
 bin/agentProlog --help
 ```
-
-Set `AGENTPROLOG_DSH_HOME` to override the runtime/build state directory. The default is `$XDG_STATE_HOME/prolog-rlm/deepseek-harness`, falling back to `~/.local/state/prolog-rlm/deepseek-harness`.
 
 ## What remains from DeepSeek Harness
 
@@ -139,6 +151,6 @@ The SWI suite covers settings, provider routing, bridge sessions, persistence ac
 
 The Node suite covers NDJSON correlation, cancellation, the Prolog-backed AgentFactory, lossless resume projection, and the real Node -> SWI process boundary.
 
-`.github/workflows/deepseek-harness.yml` additionally checks the executable launcher, the exact pinned rc.8 packages and gitlink, the composed headless profile, and `bin/agentProlog --help`.
+`.github/workflows/deepseek-harness.yml` checks the explicit build command, verifies that `bin/agentProlog` remains build-free, tests the exact pinned rc.8 packages and gitlink, composes the headless profile, and boots `bin/agentProlog --help`.
 
 The profile contract test reads the pinned DeepSeek base/headless bundle manifests and verifies that the profile explicitly disables every inherited row except the required DSH spine. A future Harness bump therefore fails closed if upstream adds a new runtime component without an explicit decision here.

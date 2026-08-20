@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+harness_root="$repo_root/agentProlog/deepseek-harness"
+upstream="$harness_root/upstream"
+profile="$harness_root/profile"
+host="$harness_root/host"
+profile_name="agentProlog"
+submodule_path="agentProlog/deepseek-harness/upstream"
+expected_harness_sha="141eb6fef83422698aef7a981029e843e8161534"
+
+state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
+dsh_home="${AGENTPROLOG_DSH_HOME:-$state_home/prolog-rlm/deepseek-harness}"
+profile_mount="$dsh_home/profiles/$profile_name"
+build_stamp="$dsh_home/upstream-build-sha"
+
+fail() {
+  printf 'build-agentProlog: %s\n' "$*" >&2
+  exit 1
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+need_command git
+need_command node
+need_command swipl
+
+node -e '
+  const [major, minor] = process.versions.node.split(".").map(Number)
+  if (major < 22 || (major === 22 && minor < 19)) process.exit(1)
+' || fail "Node >= 22.19.0 is required (found $(node --version))"
+
+if command -v pnpm >/dev/null 2>&1; then
+  pnpm_cmd=(pnpm)
+elif command -v corepack >/dev/null 2>&1; then
+  pnpm_cmd=(corepack pnpm)
+else
+  fail "pnpm is required; install pnpm or provide Node with corepack"
+fi
+
+# Build/bootstrap is explicit. Runtime launch never initializes submodules,
+# installs packages, changes Git hooks, or compiles DeepSeek Harness.
+git -C "$repo_root" submodule update --init --recursive "$submodule_path"
+
+actual_harness_sha="$(git -C "$upstream" rev-parse HEAD)"
+if [[ "$actual_harness_sha" != "$expected_harness_sha" ]]; then
+  fail "DeepSeek Harness checkout is $actual_harness_sha; expected pinned $expected_harness_sha"
+fi
+
+mkdir -p "$dsh_home"
+
+printf 'build-agentProlog: installing pinned DeepSeek Harness dependencies\n' >&2
+(
+  cd "$upstream"
+  # Upstream's root postinstall installs Lefthook into the current Git repo.
+  # This checkout is a pinned submodule, not a DSH development worktree. Their
+  # installer intentionally no-ops under CI=true, while package install scripts
+  # required by runtime dependencies still run normally.
+  CI=true "${pnpm_cmd[@]}" install --frozen-lockfile
+
+  # AgentProlog is headless. Do not build the DSH web frontend or browser assets.
+  "${pnpm_cmd[@]}" run build:lib:host
+)
+
+for artifact in \
+  "$upstream/apps/cli/lib/bin.js" \
+  "$upstream/packages/core/agent/lib/index.js" \
+  "$upstream/packages/core/scope/lib/index.js" \
+  "$upstream/packages/core/session/lib/index.js" \
+  "$upstream/packages/bundle/headless/lib/index.js"
+do
+  [[ -f "$artifact" ]] || fail "expected host build artifact missing: $artifact"
+done
+
+# DSH profiles live below $DSH_HOME. Keep the profile itself source-controlled
+# and mount it rather than copying it into mutable runtime state.
+mkdir -p "$dsh_home/profiles"
+rm -rf "$profile_mount"
+ln -s "$profile" "$profile_mount"
+
+# Bind the out-of-tree Prolog adapter to the exact audited DSH packages built
+# from the pinned submodule. These links are build/bootstrap output.
+mkdir -p "$profile/node_modules/@deepseek-ai" "$profile/node_modules/@prolog-rlm"
+for spec in \
+  "dsh-agent:$upstream/packages/core/agent" \
+  "dsh-scope:$upstream/packages/core/scope" \
+  "dsh-session:$upstream/packages/core/session"
+do
+  name="${spec%%:*}"
+  source="${spec#*:}"
+  target="$profile/node_modules/@deepseek-ai/$name"
+  rm -rf "$target"
+  ln -s "$source" "$target"
+done
+
+factory_target="$profile/node_modules/@prolog-rlm/dsh-agent-factory"
+rm -rf "$factory_target"
+ln -s "$host" "$factory_target"
+
+printf '%s\n' "$actual_harness_sha" > "$build_stamp"
+printf 'build-agentProlog: ready (%s)\n' "$actual_harness_sha" >&2
