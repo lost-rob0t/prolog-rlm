@@ -24,6 +24,16 @@ expect_error(Outcome, _) :-
     throw(error(unexpected_completion_outcome(Outcome),
                 context(rlm_completion_test, expected_error))).
 
+anonymous_dict_recursive_plan(Plan, Child) :-
+    Grandchild = plan([tool(secret_tool,
+                            literal(_{secret:true}),
+                            secret),
+                       final(var(secret))]),
+    Child = plan([rlm(Grandchild, grand),
+                  final(var(grand))]),
+    Plan = plan([rlm(Child, child),
+                 final(var(child))]).
+
 test(direct_non_recursive_completion,
      [setup(completion_test_support:reset_calls)]) :-
     base_options(completion_test_support:direct_planner, Options),
@@ -60,6 +70,19 @@ test(duplicate_recursive_call_rejected,
     assertion(Error.phase == validate),
     assertion(Error.kind == recursive_plan_rejected),
     assertion(Error.detail == duplicate_recursive_call).
+
+test(anonymous_dict_child_is_representation_nonground) :-
+    anonymous_dict_recursive_plan(_, Child),
+    assertion(\+ ground(Child)),
+    term_hash(Child, Hash),
+    assertion(var(Hash)).
+
+test(recursive_stats_accept_anonymous_dict_tag_without_false_cycle) :-
+    anonymous_dict_recursive_plan(Plan, _),
+    rlm_completion:recursive_plan_stats(Plan, Stats),
+    assertion(Stats.recursive_calls =:= 2),
+    assertion(Stats.max_depth =:= 2),
+    assertion(maplist(integer, Stats.fingerprints)).
 
 test(anonymous_dict_tag_does_not_false_cycle,
      [setup(completion_test_support:reset_calls)]) :-
