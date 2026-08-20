@@ -17,6 +17,7 @@
 :- dynamic duplicate_manifest_enabled/0.
 :- dynamic conflict_enabled/0.
 :- dynamic conflict_calls/1.
+:- dynamic lifecycle_race_gate/2.
 
 /* Backward-compatible manifestless pack -------------------------------- */
 
@@ -110,6 +111,19 @@ rlm_tool_loader:tool_pack_manifest(
                                           effect:write}]}) :-
     conflict_enabled.
 
+rlm_tool_loader:tool_pack(
+    lifecycle_race_pack,
+    plunit_rlm_tool_loader:load_lifecycle_race_pack) :-
+    lifecycle_race_gate(_, _).
+rlm_tool_loader:tool_pack_manifest(
+    lifecycle_race_pack,
+    tool_pack_manifest{library:lifecycle_race_fixture,
+                       category:lifecycle_race,
+                       tools:[tool_export{name:lifecycle_race_echo,
+                                          capability:tool(lifecycle_race_echo),
+                                          effect:read}]}) :-
+    lifecycle_race_gate(_, _).
+
 noop_loader(_, ok(noop)).
 
 reset_conflict_calls :-
@@ -126,6 +140,37 @@ conflict_alpha_loader(_, ok(unreachable)) :-
 
 conflict_beta_loader(_, ok(unreachable)) :-
     bump_conflict_calls.
+
+lifecycle_race_schema(
+    tool_schema{
+        name:lifecycle_race_echo,
+        description:"registry destroy race fixture",
+        capability:tool(lifecycle_race_echo),
+        effect:read,
+        arguments:_{type:object,
+                    required:[],
+                    additional_properties:false,
+                    properties:_{}},
+        result:_{type:integer},
+        limits:_{time_limit:1.0, max_output_bytes:1024}
+    }).
+
+lifecycle_race_handler(_, 1).
+
+load_lifecycle_race_pack(Registry, Outcome) :-
+    lifecycle_race_schema(Schema),
+    tool_register(Registry,
+                  Schema,
+                  plunit_rlm_tool_loader:lifecycle_race_handler,
+                  RegisterOutcome),
+    (   RegisterOutcome = ok(_)
+    ->  lifecycle_race_gate(Entered, Release),
+        thread_send_message(Entered, registered),
+        thread_get_message(Release, release),
+        Outcome = ok(tool_pack{pack:lifecycle_race_pack,
+                               registered:[lifecycle_race_echo]})
+    ;   Outcome = RegisterOutcome
+    ).
 
 /* Inert MCP declaration used by the MCP category tests ----------------- */
 
@@ -147,8 +192,7 @@ unused_mcp_transport(_, _, _) :-
 with_registry(Goal) :-
     setup_call_cleanup(tool_registry_create(Registry),
                        call(Goal, Registry),
-                       ( rlm_tool_loader_forget_registry(Registry),
-                         tool_registry_destroy(Registry) )).
+                       tool_registry_destroy(Registry)).
 
 catalog_has_callable(Catalog) :-
     sub_term(Sub, Catalog),
@@ -159,6 +203,99 @@ pack_status(Pack, Packs, Status) :-
     member(Entry, Packs),
     Entry.pack == Pack,
     Status = Entry.status.
+
+loader_state_count(Count) :-
+    findall(Registry-Pack,
+            rlm_tool_loader:loaded_tool_pack(Registry, Pack, _, _),
+            Rows),
+    length(Rows, Count).
+
+load_then_destroy_registry :-
+    setup_call_cleanup(
+        tool_registry_create(Registry),
+        rlm_load_tools(Registry, filesystem, ok(_)),
+        tool_registry_destroy(Registry)).
+
+setup_lifecycle_race(Entered, Release) :-
+    message_queue_create(Entered),
+    message_queue_create(Release),
+    assertz(lifecycle_race_gate(Entered, Release)).
+
+cleanup_lifecycle_race(Entered, Release) :-
+    retractall(lifecycle_race_gate(_, _)),
+    catch(message_queue_destroy(Entered), _, true),
+    catch(message_queue_destroy(Release), _, true).
+
+/* Registry lifecycle --------------------------------------------------- */
+
+test(destroy_reclaims_loader_idempotency_state_automatically) :-
+    loader_state_count(Before),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( rlm_load_tools(Registry, filesystem, ok(_)),
+          assertion(rlm_tool_loader:loaded_tool_pack(Registry,
+                                                     alpha_filesystem,
+                                                     _, _)),
+          tool_registry_destroy(Registry),
+          assertion(\+ rlm_tool_loader:loaded_tool_pack(Registry, _, _, _)),
+          loader_state_count(After),
+          assertion(After =:= Before)
+        ),
+        ( rlm_tool_loader_forget_registry(Registry),
+          tool_registry_destroy(Registry)
+        )).
+
+test(destroy_cleanup_is_scoped_to_the_destroyed_registry) :-
+    tool_registry_create(RegistryA),
+    tool_registry_create(RegistryB),
+    setup_call_cleanup(
+        true,
+        ( rlm_load_tools(RegistryA, filesystem, ok(_)),
+          rlm_load_tools(RegistryB, filesystem, ok(_)),
+          tool_registry_destroy(RegistryA),
+          assertion(\+ rlm_tool_loader:loaded_tool_pack(RegistryA, _, _, _)),
+          assertion(rlm_tool_loader:loaded_tool_pack(RegistryB,
+                                                     alpha_filesystem,
+                                                     _, _))
+        ),
+        ( rlm_tool_loader_forget_registry(RegistryA),
+          rlm_tool_loader_forget_registry(RegistryB),
+          tool_registry_destroy(RegistryA),
+          tool_registry_destroy(RegistryB)
+        )).
+
+test(repeated_registry_churn_does_not_retain_loader_state) :-
+    loader_state_count(Before),
+    forall(between(1, 32, _), load_then_destroy_registry),
+    loader_state_count(After),
+    assertion(After =:= Before).
+
+test(destroying_registry_that_never_used_loader_remains_valid) :-
+    tool_registry_create(Registry),
+    tool_registry_destroy(Registry),
+    tool_registry_destroy(Registry).
+
+test(destroy_during_loader_return_cannot_resurrect_loader_state,
+     [ setup(setup_lifecycle_race(Entered, Release)),
+       cleanup(cleanup_lifecycle_race(Entered, Release))
+     ]) :-
+    tool_registry_create(Registry),
+    thread_create(rlm_load_tools(Registry, lifecycle_race, _), Thread, []),
+    setup_call_cleanup(
+        true,
+        ( thread_get_message(Entered, registered),
+          tool_registry_destroy(Registry),
+          thread_send_message(Release, release),
+          thread_join(Thread, Status),
+          assertion(Status == true),
+          assertion(\+ rlm_tool_loader:loaded_tool_pack(Registry, _, _, _))
+        ),
+        ( catch(thread_send_message(Release, release), _, true),
+          catch(thread_join(Thread, _), _, true),
+          rlm_tool_loader_forget_registry(Registry),
+          tool_registry_destroy(Registry)
+        )).
 
 /* Discovery ------------------------------------------------------------- */
 
