@@ -30,7 +30,7 @@
             ];
 
             shellHook = ''
-              export COREPACK_HOME="${XDG_CACHE_HOME:-$HOME/.cache}/corepack"
+              export COREPACK_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/corepack"
             '';
           };
         });
