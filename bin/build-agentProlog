@@ -9,11 +9,13 @@ host="$harness_root/host"
 profile_name="agentProlog"
 submodule_path="agentProlog/deepseek-harness/upstream"
 expected_harness_sha="141eb6fef83422698aef7a981029e843e8161534"
+expected_pnpm_version="11.7.0"
 
 state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
 dsh_home="${AGENTPROLOG_DSH_HOME:-$state_home/prolog-rlm/deepseek-harness}"
 profile_mount="$dsh_home/profiles/$profile_name"
 build_stamp="$dsh_home/upstream-build-sha"
+build_record="$upstream/.dsh-build/client-build-environment.json"
 
 fail() {
   printf 'build-agentProlog: %s\n' "$*" >&2
@@ -26,23 +28,14 @@ need_command() {
 
 need_command git
 need_command node
-need_command swipl
 
 node -e '
   const [major, minor] = process.versions.node.split(".").map(Number)
-  if (major < 22 || (major === 22 && minor < 19)) process.exit(1)
-' || fail "Node >= 22.19.0 is required (found $(node --version))"
+  const supported = (major === 22 && minor >= 19) || major >= 24
+  if (!supported) process.exit(1)
+' || fail "DeepSeek Harness requires Node ^22.19.0 or >=24.0.0 (found $(node --version))"
 
-if command -v pnpm >/dev/null 2>&1; then
-  pnpm_cmd=(pnpm)
-elif command -v corepack >/dev/null 2>&1; then
-  pnpm_cmd=(corepack pnpm)
-else
-  fail "pnpm is required; install pnpm or provide Node with corepack"
-fi
-
-# Build/bootstrap is explicit. Runtime launch never initializes submodules,
-# installs packages, changes Git hooks, or compiles DeepSeek Harness.
+# Bootstrap the exact audited source first. Runtime launch never performs this.
 git -C "$repo_root" submodule update --init --recursive "$submodule_path"
 
 actual_harness_sha="$(git -C "$upstream" rev-parse HEAD)"
@@ -50,39 +43,85 @@ if [[ "$actual_harness_sha" != "$expected_harness_sha" ]]; then
   fail "DeepSeek Harness checkout is $actual_harness_sha; expected pinned $expected_harness_sha"
 fi
 
+# Upstream pins pnpm in packageManager. Prefer Corepack so package-manager
+# selection follows that manifest exactly; accept a standalone pnpm only when it
+# is the same pinned version.
+if command -v corepack >/dev/null 2>&1 \
+   && (cd "$upstream" && corepack pnpm --version >/dev/null 2>&1); then
+  pnpm_cmd=(corepack pnpm)
+elif command -v pnpm >/dev/null 2>&1; then
+  pnpm_cmd=(pnpm)
+else
+  fail "DeepSeek Harness requires Corepack-enabled pnpm ${expected_pnpm_version}"
+fi
+
+actual_pnpm_version="$(cd "$upstream" && "${pnpm_cmd[@]}" --version)"
+if [[ "$actual_pnpm_version" != "$expected_pnpm_version" ]]; then
+  fail "DeepSeek Harness pins pnpm $expected_pnpm_version; found $actual_pnpm_version"
+fi
+
 mkdir -p "$dsh_home"
 
-printf 'build-agentProlog: installing pinned DeepSeek Harness dependencies\n' >&2
+printf 'build-agentProlog: installing DeepSeek Harness with pnpm %s\n' "$actual_pnpm_version" >&2
 (
   cd "$upstream"
-  # Upstream's root postinstall installs Lefthook into the current Git repo.
-  # This checkout is a pinned submodule, not a DSH development worktree. Their
-  # installer intentionally no-ops under CI=true, while package install scripts
-  # required by runtime dependencies still run normally.
+
+  # DeepSeek's release/CI artifact lane uses immutable install followed by the
+  # official complete build. Their postinstall configures contributor Git hooks;
+  # a pinned submodule is not a contributor worktree, so mirror their CI behavior
+  # and suppress only that repository-local hook installation.
   CI=true "${pnpm_cmd[@]}" install --frozen-lockfile
 
-  # AgentProlog is headless. Do not build the DSH web frontend or browser assets.
-  "${pnpm_cmd[@]}" run build:lib:host
+  # Do not invent a reduced AgentProlog build graph. Upstream's official build
+  # owns Host -> Client -> Web ordering, Typert generation, tsdown output, and
+  # the build-environment artifact record. Headless is a runtime profile choice.
+  "${pnpm_cmd[@]}" run build:official
 )
 
+# The official build is considered complete only when both Host artifacts and
+# DeepSeek's own client-build record exist and describe this exact source SHA.
 for artifact in \
   "$upstream/apps/cli/lib/bin.js" \
   "$upstream/packages/core/agent/lib/index.js" \
   "$upstream/packages/core/scope/lib/index.js" \
   "$upstream/packages/core/session/lib/index.js" \
-  "$upstream/packages/bundle/headless/lib/index.js"
+  "$upstream/packages/bundle/headless/lib/index.js" \
+  "$build_record"
 do
-  [[ -f "$artifact" ]] || fail "expected host build artifact missing: $artifact"
+  [[ -f "$artifact" ]] || fail "expected official build artifact missing: $artifact"
 done
 
-# DSH profiles live below $DSH_HOME. Keep the profile itself source-controlled
-# and mount it rather than copying it into mutable runtime state.
+node - "$build_record" "${expected_harness_sha:0:7}" <<'NODE'
+const fs = require('node:fs')
+const [recordPath, expectedCommit] = process.argv.slice(2)
+const record = JSON.parse(fs.readFileSync(recordPath, 'utf8'))
+if (record.formatVersion !== 1) throw new Error(`unexpected DSH build-record format ${record.formatVersion}`)
+if (record.environment?.DSH_CLIENT_BUILD_PROFILE !== 'official') {
+  throw new Error('DeepSeek Harness build is not the official artifact profile')
+}
+if (record.environment?.DSH_CLIENT_COMMIT_HASH !== expectedCommit) {
+  throw new Error(`DeepSeek Harness build record is for ${record.environment?.DSH_CLIENT_COMMIT_HASH}, expected ${expectedCommit}`)
+}
+if (record.environment?.DSH_CLIENT_TITLE !== 'DeepSeek Harness') {
+  throw new Error('DeepSeek Harness official client title is missing from the build record')
+}
+if (!Number.isSafeInteger(record.artifacts?.fileCount) || record.artifacts.fileCount < 1) {
+  throw new Error('DeepSeek Harness official build record contains no client artifacts')
+}
+if (!/^[0-9a-f]{64}$/.test(record.artifacts?.sha256 ?? '')) {
+  throw new Error('DeepSeek Harness official build record has an invalid artifact digest')
+}
+NODE
+
+# DSH profiles live below $DSH_HOME. Keep our profile source-controlled and
+# mount it rather than copying it into mutable runtime state.
 mkdir -p "$dsh_home/profiles"
 rm -rf "$profile_mount"
 ln -s "$profile" "$profile_mount"
 
-# Bind the out-of-tree Prolog adapter to the exact audited DSH packages built
-# from the pinned submodule. These links are build/bootstrap output.
+# Bind the out-of-tree Prolog adapter to the exact packages produced from the
+# pinned upstream tree. This is AgentProlog integration output, separate from
+# DeepSeek's own build graph.
 mkdir -p "$profile/node_modules/@deepseek-ai" "$profile/node_modules/@prolog-rlm"
 for spec in \
   "dsh-agent:$upstream/packages/core/agent" \
@@ -101,4 +140,4 @@ rm -rf "$factory_target"
 ln -s "$host" "$factory_target"
 
 printf '%s\n' "$actual_harness_sha" > "$build_stamp"
-printf 'build-agentProlog: ready (%s)\n' "$actual_harness_sha" >&2
+printf 'build-agentProlog: official DeepSeek Harness build ready (%s)\n' "$actual_harness_sha" >&2
