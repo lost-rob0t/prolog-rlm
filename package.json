@@ -1,0 +1,18 @@
+{
+  "name": "prolog-rlm",
+  "private": true,
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "./bin/build-agentProlog",
+    "dev": "./bin/dev-agentProlog",
+    "start": "./bin/agentProlog",
+    "headless": "./bin/agentProlog-headless",
+    "dev:headless": "./bin/agentProlog-headless",
+    "test": "node --test agentProlog/deepseek-harness/host/*.test.mjs && swipl -q -s test/run_tests.pl",
+    "test:bridge": "node --test agentProlog/deepseek-harness/host/bridge-client.integration.test.mjs",
+    "check": "pnpm run test && git diff --check"
+  }
+}
