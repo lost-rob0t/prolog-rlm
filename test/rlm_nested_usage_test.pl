@@ -130,13 +130,14 @@ test(completion_error_preserves_executed_model_usage) :-
                                                Budget,
                                                unused_token,
                                                error(Error)),
-    assertion(Error.phase == execute),
-    assertion(Error.kind == tool_error),
-    assertion(Error.usage.model_calls =:= 3),
-    assertion(Error.usage.prompt_tokens =:= 22),
-    assertion(Error.usage.completion_tokens =:= 11),
-    assertion(Error.usage.total_tokens =:= 33),
-    assertion(abs(Error.usage.cost_usd-0.0035) < 1.0e-12),
+    assertion(get_dict(phase, Error, execute)),
+    assertion(get_dict(kind, Error, tool_error)),
+    assertion(get_dict(usage, Error, Usage)),
+    assertion(Usage.model_calls =:= 3),
+    assertion(Usage.prompt_tokens =:= 22),
+    assertion(Usage.completion_tokens =:= 11),
+    assertion(Usage.total_tokens =:= 33),
+    assertion(abs(Usage.cost_usd-0.0035) < 1.0e-12),
     assertion(\+ get_dict(budget_violation, Error, _)).
 
 test(completion_error_reports_budget_violation_without_hiding_cause) :-
@@ -159,12 +160,14 @@ test(completion_error_reports_budget_violation_without_hiding_cause) :-
                                                Budget,
                                                unused_token,
                                                error(Error)),
-    assertion(Error.phase == execute),
-    assertion(Error.kind == tool_error),
-    assertion(Error.usage.total_tokens =:= 33),
-    assertion(Error.budget_violation.phase == budget),
-    assertion(Error.budget_violation.kind == token_budget_exceeded),
-    assertion(Error.budget_violation.used =:= 33),
-    assertion(Error.budget_violation.limit =:= 32).
+    assertion(get_dict(phase, Error, execute)),
+    assertion(get_dict(kind, Error, tool_error)),
+    assertion(get_dict(usage, Error, Usage)),
+    assertion(Usage.total_tokens =:= 33),
+    assertion(get_dict(budget_violation, Error, BudgetViolation)),
+    assertion(BudgetViolation.phase == budget),
+    assertion(BudgetViolation.kind == token_budget_exceeded),
+    assertion(BudgetViolation.used =:= 33),
+    assertion(BudgetViolation.limit =:= 32).
 
 :- end_tests(rlm_nested_usage).
