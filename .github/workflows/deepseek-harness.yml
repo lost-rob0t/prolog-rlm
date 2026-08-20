@@ -19,13 +19,25 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      # Install the package manager before setup-node enables pnpm-store caching.
+      # Do not rely on an ambient runner pnpm or implicit Corepack state.
+      - name: Use pinned pnpm 11.7.0
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
       - name: Use DeepSeek Harness Node runtime
         uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: pnpm
+          cache-dependency-path: agentProlog/deepseek-harness/upstream/pnpm-lock.yaml
 
-      - name: Use pinned pnpm
-        uses: pnpm/action-setup@v4
+      - name: Verify pinned pnpm is callable
+        run: |
+          test "$(pnpm --version)" = "11.7.0"
+          command -v pnpm
 
       - name: Install SWI-Prolog
         run: |
