@@ -2,67 +2,77 @@
 
 :- use_module(library(readutil)).
 
-test(profile_uses_only_base_and_headless_deepseek_bundles) :-
-    read_file_to_string('../agentProlog/deepseek-harness/profile/package.json',
-                        Package,
-                        []),
+test(headless_profile_uses_base_and_headless_bundles) :-
+    read_file_to_string('../agentProlog/deepseek-harness/profile/package.json', Package, []),
     assertion(sub_string(Package, _, _, _, '"@deepseek-ai/dsh-base"')),
     assertion(sub_string(Package, _, _, _, '"@deepseek-ai/dsh-headless"')),
     assertion(\+ sub_string(Package, _, _, _, '"@deepseek-ai/dsh-web-app"')).
 
-test(base_bundle_keeps_only_agent_and_session_services) :-
-    read_file_to_string('../agentProlog/deepseek-harness/upstream/packages/bundle/base/cordis.patch.yml',
-                        Base,
-                        []),
-    read_file_to_string('../agentProlog/deepseek-harness/profile/cordis.patch.yml',
-                        Profile,
-                        []),
+test(web_profile_uses_base_and_web_bundle) :-
+    read_file_to_string('../agentProlog/deepseek-harness/profile-web/package.json', Package, []),
+    assertion(sub_string(Package, _, _, _, '"@deepseek-ai/dsh-base"')),
+    assertion(sub_string(Package, _, _, _, '"@deepseek-ai/dsh-web-app"')),
+    assertion(\+ sub_string(Package, _, _, _, '"@deepseek-ai/dsh-headless"')).
+
+test(base_bundle_keeps_only_agent_and_session_services_in_headless) :-
+    read_file_to_string('../agentProlog/deepseek-harness/upstream/packages/bundle/base/cordis.patch.yml', Base, []),
+    read_file_to_string('../agentProlog/deepseek-harness/profile/cordis.patch.yml', Profile, []),
     patch_ids(Base, Ids),
-    forall(( member(Id, Ids),
-             \+ memberchk(Id, ["agent", "session"]) ),
+    forall(( member(Id, Ids), \+ memberchk(Id, ["agent", "session"]) ),
            assertion(disabled_in_profile(Profile, Id))).
 
 test(headless_bundle_keeps_only_argv_startup) :-
-    read_file_to_string('../agentProlog/deepseek-harness/upstream/packages/bundle/headless/cordis.patch.yml',
-                        Headless,
-                        []),
-    read_file_to_string('../agentProlog/deepseek-harness/profile/cordis.patch.yml',
-                        Profile,
-                        []),
+    read_file_to_string('../agentProlog/deepseek-harness/upstream/packages/bundle/headless/cordis.patch.yml', Headless, []),
+    read_file_to_string('../agentProlog/deepseek-harness/profile/cordis.patch.yml', Profile, []),
     patch_ids(Headless, Ids),
-    forall(( member(Id, Ids),
-             Id \== "headless-startup" ),
+    forall(( member(Id, Ids), Id \== "headless-startup" ),
            assertion(disabled_in_profile(Profile, Id))).
 
 test(headless_profile_preserves_required_dsh_spine) :-
-    read_file_to_string('../agentProlog/deepseek-harness/profile/cordis.patch.yml',
-                        Patch,
-                        []),
+    read_file_to_string('../agentProlog/deepseek-harness/profile/cordis.patch.yml', Patch, []),
     forall(member(Id, ["session", "agent", "headless-startup"]),
            assertion(\+ disabled_in_profile(Patch, Id))),
-    assertion(sub_string(Patch,
-                         _, _, _,
-                         "- id: prolog-agent-factory\n      name: '@prolog-rlm/dsh-agent-factory'")),
-    assertion(sub_string(Patch,
-                         _, _, _,
-                         "- id: prolog-headless-runner\n      name: '@prolog-rlm/dsh-agent-factory/headless'")),
-    assertion(sub_string(Patch,
-                         _, _, _,
-                         "inject: [headlessStartup, agents]" )).
+    assertion(sub_string(Patch, _, _, _, "- id: prolog-agent-factory\n      name: '@prolog-rlm/dsh-agent-factory'")),
+    assertion(sub_string(Patch, _, _, _, "- id: prolog-headless-runner\n      name: '@prolog-rlm/dsh-agent-factory/headless'")),
+    assertion(sub_string(Patch, _, _, _, "inject: [headlessStartup, agents]" )).
 
-test(runtime_launcher_never_installs_or_builds) :-
-    read_file_to_string('../bin/agentProlog', Launcher, []),
-    assertion(\+ sub_string(Launcher, _, _, _, 'pnpm')),
-    assertion(\+ sub_string(Launcher, _, _, _, 'submodule update')),
-    assertion(\+ sub_string(Launcher, _, _, _, 'build:lib')),
-    assertion(sub_string(Launcher, _, _, _, 'run ./bin/build-agentProlog')).
+test(web_profile_fences_stock_semantic_plane) :-
+    read_file_to_string('../agentProlog/deepseek-harness/profile-web/cordis.patch.yml', Patch, []),
+    forall(member(Id,
+                  ["llm", "agent-default-model", "tools", "agent-loop",
+                   "agent-presets", "compaction-basic", "command-compact",
+                   "tool-result-pruner", "subagent", "workflow-worker-thread",
+                   "llm-deepseek", "tool-web"]),
+           assertion(disabled_in_profile(Patch, Id))),
+    assertion(sub_string(Patch, _, _, _, "- id: prolog-agent-factory\n      name: '@prolog-rlm/dsh-agent-factory'" )).
 
-test(builder_is_explicit_headless_bootstrap) :-
+test(web_profile_preserves_gui_transport_and_conversation_spine) :-
+    read_file_to_string('../agentProlog/deepseek-harness/profile-web/cordis.patch.yml', Patch, []),
+    forall(member(Id,
+                  ["session", "agent", "session-projection", "web-startup",
+                   "webserver", "web-runtime", "api-gateway", "modules",
+                   "connection", "api-remotes", "client-runtime",
+                   "cordis-client-runner", "ui-layout", "ui-renderer",
+                   "ui-sidebar", "ui-conversation", "ui-workspace"]),
+           assertion(\+ disabled_in_profile(Patch, Id))).
+
+test(runtime_launchers_never_install_or_build) :-
+    forall(member(Path, ['../bin/agentProlog', '../bin/agentProlog-headless']),
+           ( read_file_to_string(Path, Launcher, []),
+             assertion(\+ sub_string(Launcher, _, _, _, 'pnpm')),
+             assertion(\+ sub_string(Launcher, _, _, _, 'submodule update')),
+             assertion(\+ sub_string(Launcher, _, _, _, 'build:official')),
+             assertion(sub_string(Launcher, _, _, _, 'run ./bin/build-agentProlog'))
+           )).
+
+test(builder_uses_standalone_upstream_official_build) :-
     read_file_to_string('../bin/build-agentProlog', Builder, []),
-    assertion(sub_string(Builder, _, _, _, 'CI=true')),
-    assertion(sub_string(Builder, _, _, _, 'run build:lib:host')),
-    assertion(\+ sub_string(Builder, _, _, _, 'run build:lib:client')),
-    assertion(\+ sub_string(Builder, _, _, _, 'run build:web')).
+    assertion(sub_string(Builder, _, _, _, 'git clone --local --no-hardlinks')),
+    assertion(sub_string(Builder, _, _, _, 'install --frozen-lockfile')),
+    assertion(sub_string(Builder, _, _, _, 'run build:official')),
+    assertion(\+ sub_string(Builder, _, _, _, 'CI=true')),
+    assertion(sub_string(Builder, _, _, _, 'profile-web')),
+    assertion(sub_string(Builder, _, _, _, 'agentProlog-headless')).
 
 patch_ids(Text, Ids) :-
     split_string(Text, "\n", "\r", Lines),
@@ -75,9 +85,7 @@ patch_ids(Text, Ids) :-
     sort(Ids0, Ids).
 
 disabled_in_profile(Profile, Id) :-
-    format(string(Needle),
-           '- id: ~s\n  disabled: true',
-           [Id]),
+    format(string(Needle), '- id: ~s\n  disabled: true', [Id]),
     sub_string(Profile, _, _, _, Needle).
 
 :- end_tests(deepseek_harness_profile).

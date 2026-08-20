@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   host-bridge:
-    name: Headless AgentProlog and real SWI bridge
+    name: AgentProlog GUI, headless, and real SWI bridge
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository and pinned Harness
@@ -22,7 +22,7 @@ jobs:
       - name: Use DeepSeek Harness Node runtime
         uses: actions/setup-node@v6
         with:
-          node-version: 22.19.0
+          node-version: 24
 
       - name: Install SWI-Prolog
         run: |
@@ -31,59 +31,38 @@ jobs:
 
       - name: Verify build and launcher shells
         run: |
-          test -x bin/build-agentProlog
-          test -x bin/agentProlog
-          bash -n bin/build-agentProlog
-          bash -n bin/agentProlog
-          ! grep -Eq 'pnpm|submodule update|pnpm install|run build' bin/agentProlog
-          grep -Fq 'run build:official' bin/build-agentProlog
-          ! grep -Fq 'run build:lib:host' bin/build-agentProlog
+          for path in bin/build-agentProlog bin/agentProlog bin/agentProlog-headless; do
+            test -x "$path"
+            bash -n "$path"
+          done
+          ! grep -Eq 'pnpm|submodule update|build:official|build:lib' bin/agentProlog
+          ! grep -Eq 'pnpm|submodule update|build:official|build:lib' bin/agentProlog-headless
 
       - name: Verify exact pinned Harness source packages
         run: |
           node - <<'NODE'
           const fs = require('node:fs')
-          const root = JSON.parse(fs.readFileSync('agentProlog/deepseek-harness/upstream/package.json', 'utf8'))
-          if (root.packageManager !== 'pnpm@11.7.0') {
-            throw new Error(`expected upstream pnpm@11.7.0, got ${root.packageManager}`)
-          }
           for (const path of [
             'agentProlog/deepseek-harness/upstream/apps/cli/package.json',
             'agentProlog/deepseek-harness/upstream/packages/core/agent/package.json',
             'agentProlog/deepseek-harness/upstream/packages/core/scope/package.json',
             'agentProlog/deepseek-harness/upstream/packages/core/session/package.json',
             'agentProlog/deepseek-harness/upstream/packages/bundle/headless/package.json',
+            'agentProlog/deepseek-harness/upstream/packages/bundle/web-app/package.json',
           ]) {
             const pkg = JSON.parse(fs.readFileSync(path, 'utf8'))
-            if (pkg.version !== '0.1.0-rc.8') {
-              throw new Error(`${path}: expected 0.1.0-rc.8, got ${pkg.version}`)
-            }
+            if (pkg.version !== '0.1.0-rc.8') throw new Error(`${path}: expected rc.8, got ${pkg.version}`)
           }
+          const root = JSON.parse(fs.readFileSync('agentProlog/deepseek-harness/upstream/package.json', 'utf8'))
+          if (root.packageManager !== 'pnpm@11.7.0') throw new Error(`unexpected packageManager ${root.packageManager}`)
           NODE
 
-      - name: Build pinned Harness through upstream official pipeline
+      - name: Build pinned Harness through standalone upstream checkout
         env:
           AGENTPROLOG_DSH_HOME: ${{ runner.temp }}/agentprolog-dsh
         run: bin/build-agentProlog
 
-      - name: Verify upstream official build record
-        run: |
-          node - <<'NODE'
-          const fs = require('node:fs')
-          const record = JSON.parse(fs.readFileSync(
-            'agentProlog/deepseek-harness/upstream/.dsh-build/client-build-environment.json',
-            'utf8',
-          ))
-          if (record.formatVersion !== 1) throw new Error('unexpected build-record format')
-          if (record.environment?.DSH_CLIENT_BUILD_PROFILE !== 'official') throw new Error('not an official DSH build')
-          if (record.environment?.DSH_CLIENT_COMMIT_HASH !== '141eb6f') throw new Error('wrong DSH source commit')
-          if (record.environment?.DSH_CLIENT_TITLE !== 'DeepSeek Harness') throw new Error('wrong official DSH title')
-          if (!Number.isSafeInteger(record.artifacts?.fileCount) || record.artifacts.fileCount < 1) {
-            throw new Error('official build record has no artifacts')
-          }
-          NODE
-
-      - name: Test host transport and Prolog-backed headless factory
+      - name: Test host transport and Prolog-backed factory
         run: node --test agentProlog/deepseek-harness/host/*.test.mjs
 
       - name: Test real host to Prolog composition explicitly
@@ -95,29 +74,58 @@ jobs:
           OPENROUTER_TEST_MODEL: ""
         run: swipl -q -s test/run_tests.pl
 
-      - name: Compose the real headless AgentProlog profile
+      - name: Compose GUI and headless profiles
         env:
           OPENROUTER_API_KEY: ""
           OPENROUTER_TEST_MODEL: ""
           AGENTPROLOG_DSH_HOME: ${{ runner.temp }}/agentprolog-dsh
         run: |
-          bin/agentProlog --dump-config > /tmp/agentprolog-config.yml
-          grep -q "@prolog-rlm/dsh-agent-factory'" /tmp/agentprolog-config.yml
-          grep -q "@prolog-rlm/dsh-agent-factory/headless'" /tmp/agentprolog-config.yml
-          grep -q 'id: headless-runner' /tmp/agentprolog-config.yml
-          grep -q 'disabled: true' /tmp/agentprolog-config.yml
+          bin/agentProlog --dump-config > /tmp/agentprolog-web.yml
+          bin/agentProlog-headless --dump-config > /tmp/agentprolog-headless.yml
+          grep -q "@prolog-rlm/dsh-agent-factory'" /tmp/agentprolog-web.yml
+          grep -q 'id: webserver' /tmp/agentprolog-web.yml
+          grep -q 'id: ui-conversation' /tmp/agentprolog-web.yml
+          grep -q 'id: agent-loop' /tmp/agentprolog-web.yml
+          grep -q "@prolog-rlm/dsh-agent-factory/headless'" /tmp/agentprolog-headless.yml
+          grep -q 'id: headless-runner' /tmp/agentprolog-headless.yml
 
-      - name: Verify headless CLI help boots without a provider call
+      - name: Verify both launcher help surfaces
         env:
           OPENROUTER_API_KEY: ""
           OPENROUTER_TEST_MODEL: ""
           AGENTPROLOG_DSH_HOME: ${{ runner.temp }}/agentprolog-dsh
-        run: bin/agentProlog --help
+        run: |
+          bin/agentProlog --help
+          bin/agentProlog-headless --help
 
-      - name: Verify pinned DeepSeek Harness gitlink
-        shell: bash
+      - name: Smoke the Web GUI without opening a browser
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENROUTER_TEST_MODEL: ""
+          AGENTPROLOG_DSH_HOME: ${{ runner.temp }}/agentprolog-dsh
         run: |
           set -euo pipefail
+          bin/agentProlog --no-open --port 0 > /tmp/agentprolog-web.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            if grep -q 'dsh web: http://127.0.0.1:' /tmp/agentprolog-web.log; then
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" || true
+              trap - EXIT
+              exit 0
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat /tmp/agentprolog-web.log
+              wait "$pid"
+            fi
+            sleep 0.5
+          done
+          cat /tmp/agentprolog-web.log
+          exit 1
+
+      - name: Verify pinned DeepSeek Harness gitlink
+        run: |
           expected='141eb6fef83422698aef7a981029e843e8161534'
           actual="$(git ls-tree HEAD agentProlog/deepseek-harness/upstream | awk '{print $3}')"
           test "$actual" = "$expected"
