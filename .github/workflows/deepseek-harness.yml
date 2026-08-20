@@ -85,9 +85,10 @@ jobs:
           grep -q "@prolog-rlm/dsh-agent-factory'" /tmp/agentprolog-web.yml
           grep -q 'id: webserver' /tmp/agentprolog-web.yml
           grep -q 'id: ui-conversation' /tmp/agentprolog-web.yml
-          grep -q 'id: agent-loop' /tmp/agentprolog-web.yml
+          grep -A2 'id: agent-loop' /tmp/agentprolog-web.yml | grep -q 'disabled: true'
+          grep -A3 'id: agent-default-model' /tmp/agentprolog-web.yml | grep -q 'provider: prolog-rlm'
           grep -q "@prolog-rlm/dsh-agent-factory/headless'" /tmp/agentprolog-headless.yml
-          grep -q 'id: headless-runner' /tmp/agentprolog-headless.yml
+          grep -A2 'id: headless-runner' /tmp/agentprolog-headless.yml | grep -q 'disabled: true'
 
       - name: Verify both launcher help surfaces
         env:

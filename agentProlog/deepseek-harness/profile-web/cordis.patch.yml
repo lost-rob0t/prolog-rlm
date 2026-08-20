@@ -1,20 +1,23 @@
 # DeepSeek Harness Web GUI for PrologAgent.
 #
-# Keep the official DSH Web transport and browser rendering plane, but replace
-# the agent execution plane with the Prolog-backed AgentFactory. Rows below are
-# disabled when they would execute model/tool/policy/history semantics outside
-# Prolog-RLM. Presentation and transport rows remain inherited from dsh-web-app.
+# The official Web transport and browser rendering plane remains intact. Prolog
+# replaces the AgentFactory and remains the only turn/model/tool authority.
+# DSH registry/services that the Web API structurally injects remain mounted,
+# but their stock providers, executors, model-facing tools and drivers are not.
 
-# Model routing and model-side policy are Prolog-owned.
-- id: llm
-  disabled: true
+# The Web API statically requires the LLM registry and default-model service.
+# Keep the registry empty and label the transport-facing default honestly. The
+# Prolog factory does not route from these AgentOptions; provider/model choice is
+# resolved by the canonical Prolog settings/runtime.
+- id: agent-default-model
+  config:
+    provider: prolog-rlm
+    model: managed
 - id: llm-retry
   disabled: true
 - id: llm-pi-ai
   disabled: true
 - id: llm-deepseek
-  disabled: true
-- id: agent-default-model
   disabled: true
 - id: system-prompt
   disabled: true
@@ -23,17 +26,25 @@
 - id: session-title-llm
   disabled: true
 
-# DSH must not become a second durable transcript or canonical settings source.
+# Prolog is the canonical transcript/settings authority. Keep the session-query
+# service itself because api-gateway injects it; without DSH persistence it only
+# observes live projected sessions. The ordinary fallback title service may stay
+# because it is presentation, not model execution.
 - id: session-persistence-jsonl
   disabled: true
-- id: session-query-sqlite
-  disabled: true
 - id: session-telemetry-otel
+  disabled: true
+- id: settings
   disabled: true
 - id: credentials
   disabled: true
 
-# Effect, shell, filesystem and model-facing tool execution stay in Prolog.
+# Keep the attachment service because api-gateway injects it, but hide the Web
+# attachment control until Prolog owns image semantics end-to-end.
+
+# Effect, shell and filesystem execution stay in Prolog. The `tools` registry
+# remains mounted because api-gateway and the subagent registry inject it; all
+# stock model-facing tool providers are disabled.
 - id: sandbox
   disabled: true
 - id: sandbox-policy
@@ -53,8 +64,6 @@
 - id: fs-observation-policy
   disabled: true
 - id: fs-sandbox
-  disabled: true
-- id: tools
   disabled: true
 - id: tool-bash
   disabled: true
@@ -77,8 +86,10 @@
 - id: code-runtime
   disabled: true
 
-# Skills, commands, plans, goals and agent presets would otherwise expose a
-# second semantic control plane in the browser.
+# Skills, commands, plans and goals would otherwise expose a second semantic
+# control plane. `user-questions` remains only because api-gateway injects the
+# service; the browser question control is hidden below and no stock model tool
+# can invoke it.
 - id: skill
   disabled: true
 - id: skill-filesystem
@@ -101,13 +112,11 @@
   disabled: true
 - id: plan-mode
   disabled: true
-- id: user-questions
-  disabled: true
 - id: agent-presets
   disabled: true
 
 # Canonical history is lossless in Prolog. DSH compaction/pruning/checkpoints
-# are not allowed to rewrite or summarize it.
+# may not rewrite or summarize it.
 - id: token-meter
   disabled: true
 - id: compaction-basic
@@ -125,10 +134,9 @@
 - id: repeat-tool-reminder
   disabled: true
 
-# No stock DSH driver, subagent runtime or workflow runtime.
+# Keep the `subagent` registry because api-gateway injects it. No stock provider,
+# control tool or workflow backend is allowed to create or drive children.
 - id: agent-loop
-  disabled: true
-- id: subagent
   disabled: true
 - id: subagent-spawn-in-process
   disabled: true
@@ -155,8 +163,8 @@
 - id: tool-ralph
   disabled: true
 
-# Hide browser controls that currently target the disabled DSH semantic plane.
-# The conversation/sidebar/layout/renderer/workspace surfaces stay enabled.
+# Hide browser controls that currently target disabled DSH semantics. Plain chat,
+# session navigation, layout, rendering, workspace and message feedback remain.
 - id: ui-attachment
   disabled: true
 - id: ui-cordis
@@ -185,7 +193,13 @@
   disabled: true
 - id: ui-agent-preset
   disabled: true
+- id: ui-settings
+  disabled: true
+- id: ui-settings-general
+  disabled: true
 - id: ui-settings-models
+  disabled: true
+- id: ui-settings-plugin-inventory
   disabled: true
 - id: ui-settings-plugins
   disabled: true
@@ -196,12 +210,13 @@
 - id: ui-trajectory
   disabled: true
 
-# Required GUI spine inherited and intentionally left enabled:
-#   session, agent, session-projection
-#   web-startup, webserver, web-runtime, api-gateway
+# Required GUI host/service spine intentionally inherited:
+#   session, agent, llm, agent-default-model, tools, subagent, user-questions
+#   attachment-local, session-query-sqlite, session-projection
+#   workspace, directory-picker, web-startup, webserver, web-runtime, api-gateway
 #   modules, connection, api-remotes, client-runtime, cordis-client-runner
 #   ui-theme, locale, ui-layout, ui-renderer, ui-sidebar, ui-conversation
-#   ui-brand-official, ui-workspace
+#   ui-brand-official, ui-tool, ui-workspace, ui-message-feedback
 
 - insert:
     - id: prolog-agent-factory
