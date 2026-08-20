@@ -1,3 +1,4 @@
+:- set_prolog_flag(on_error, status).
 :- initialization(main, main).
 
 :- use_module('../prolog/rlm').
@@ -43,6 +44,6 @@ main(_) :-
         prolog_agent_ui_v1:ui_v1_ready,
         prolog_agent_ui_facade:ui_facade_ready,
         prolog_agent_ui_fixture:ui_fixture_ready
-    ->  halt(0)
+    ->  halt
     ;   halt(1)
     ).
