@@ -12,6 +12,7 @@ state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
 dsh_home="${AGENTPROLOG_DSH_HOME:-$state_home/prolog-rlm/deepseek-harness}"
 profile_mount="$dsh_home/profiles/$profile_name"
 build_stamp="$dsh_home/upstream-build-sha"
+build_record="$upstream/.dsh-build/client-build-environment.json"
 
 fail() {
   printf 'agentProlog: %s\n' "$*" >&2
@@ -28,11 +29,14 @@ need_command swipl
 
 node -e '
   const [major, minor] = process.versions.node.split(".").map(Number)
-  if (major < 22 || (major === 22 && minor < 19)) process.exit(1)
-' || fail "Node >= 22.19.0 is required (found $(node --version))"
+  const supported = (major === 22 && minor >= 19) || major >= 24
+  if (!supported) process.exit(1)
+' || fail "DeepSeek Harness requires Node ^22.19.0 or >=24.0.0 (found $(node --version))"
 
 [[ -f "$upstream/apps/cli/lib/bin.js" ]] \
-  || fail "DeepSeek Harness host artifacts are not built; run ./bin/build-agentProlog"
+  || fail "DeepSeek Harness is not built; run ./bin/build-agentProlog"
+[[ -f "$build_record" ]] \
+  || fail "DeepSeek Harness official build record is missing; run ./bin/build-agentProlog"
 
 actual_harness_sha="$(git -C "$upstream" rev-parse HEAD 2>/dev/null)" \
   || fail "DeepSeek Harness submodule is not initialized; run ./bin/build-agentProlog"
@@ -43,6 +47,19 @@ actual_harness_sha="$(git -C "$upstream" rev-parse HEAD 2>/dev/null)" \
   || fail "AgentProlog build stamp is missing; run ./bin/build-agentProlog"
 [[ "$(cat "$build_stamp")" == "$expected_harness_sha" ]] \
   || fail "AgentProlog build is stale; run ./bin/build-agentProlog"
+
+node - "$build_record" "${expected_harness_sha:0:7}" <<'NODE' \
+  || fail "DeepSeek Harness artifacts are not an official build for the pinned source; run ./bin/build-agentProlog"
+const fs = require('node:fs')
+const [recordPath, expectedCommit] = process.argv.slice(2)
+const record = JSON.parse(fs.readFileSync(recordPath, 'utf8'))
+if (record.formatVersion !== 1) process.exit(1)
+if (record.environment?.DSH_CLIENT_BUILD_PROFILE !== 'official') process.exit(1)
+if (record.environment?.DSH_CLIENT_COMMIT_HASH !== expectedCommit) process.exit(1)
+if (record.environment?.DSH_CLIENT_TITLE !== 'DeepSeek Harness') process.exit(1)
+if (!Number.isSafeInteger(record.artifacts?.fileCount) || record.artifacts.fileCount < 1) process.exit(1)
+if (!/^[0-9a-f]{64}$/.test(record.artifacts?.sha256 ?? '')) process.exit(1)
+NODE
 
 [[ -L "$profile_mount" ]] \
   || fail "AgentProlog profile is not mounted; run ./bin/build-agentProlog"
