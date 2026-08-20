@@ -35,12 +35,18 @@ jobs:
           test -x bin/agentProlog
           bash -n bin/build-agentProlog
           bash -n bin/agentProlog
-          ! grep -Eq 'pnpm|submodule update|build:lib|pnpm install' bin/agentProlog
+          ! grep -Eq 'pnpm|submodule update|pnpm install|run build' bin/agentProlog
+          grep -Fq 'run build:official' bin/build-agentProlog
+          ! grep -Fq 'run build:lib:host' bin/build-agentProlog
 
       - name: Verify exact pinned Harness source packages
         run: |
           node - <<'NODE'
           const fs = require('node:fs')
+          const root = JSON.parse(fs.readFileSync('agentProlog/deepseek-harness/upstream/package.json', 'utf8'))
+          if (root.packageManager !== 'pnpm@11.7.0') {
+            throw new Error(`expected upstream pnpm@11.7.0, got ${root.packageManager}`)
+          }
           for (const path of [
             'agentProlog/deepseek-harness/upstream/apps/cli/package.json',
             'agentProlog/deepseek-harness/upstream/packages/core/agent/package.json',
@@ -55,10 +61,27 @@ jobs:
           }
           NODE
 
-      - name: Build pinned headless Harness host
+      - name: Build pinned Harness through upstream official pipeline
         env:
           AGENTPROLOG_DSH_HOME: ${{ runner.temp }}/agentprolog-dsh
         run: bin/build-agentProlog
+
+      - name: Verify upstream official build record
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs')
+          const record = JSON.parse(fs.readFileSync(
+            'agentProlog/deepseek-harness/upstream/.dsh-build/client-build-environment.json',
+            'utf8',
+          ))
+          if (record.formatVersion !== 1) throw new Error('unexpected build-record format')
+          if (record.environment?.DSH_CLIENT_BUILD_PROFILE !== 'official') throw new Error('not an official DSH build')
+          if (record.environment?.DSH_CLIENT_COMMIT_HASH !== '141eb6f') throw new Error('wrong DSH source commit')
+          if (record.environment?.DSH_CLIENT_TITLE !== 'DeepSeek Harness') throw new Error('wrong official DSH title')
+          if (!Number.isSafeInteger(record.artifacts?.fileCount) || record.artifacts.fileCount < 1) {
+            throw new Error('official build record has no artifacts')
+          }
+          NODE
 
       - name: Test host transport and Prolog-backed headless factory
         run: node --test agentProlog/deepseek-harness/host/*.test.mjs
