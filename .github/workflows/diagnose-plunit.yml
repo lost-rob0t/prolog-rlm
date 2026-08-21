@@ -1,0 +1,28 @@
+name: Diagnose PlUnit aggregate
+
+on:
+  push:
+    branches:
+      - fix/151-plunit-main-ownership
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes swi-prolog-nox
+
+      - name: Locate first failing or hanging PlUnit unit
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 12m swipl -q -s test/run_tests_diagnostic.pl 2>&1 | tee /tmp/plunit-diagnostic.log
