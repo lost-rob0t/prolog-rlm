@@ -46,7 +46,7 @@ Ordinary `context_register/3` still accepts only ordinary bounded context source
 
 Adapter capabilities explicitly declare allowed context operations, and a live adapter-backed handle prevents the adapter definition from being removed underneath it.
 
-Adapter metadata is model-visible, so registration applies the validated `max_bytes` option to the complete serialized metadata dict before any handle is published. The default ceiling is 16 KiB, matching the ordinary context byte limit. Oversized metadata is rejected with `adapter_metadata_too_large`; it is never truncated into a misleading partial descriptor.
+Adapter metadata is model-visible, so registration applies the validated `max_bytes` option to the complete serialized `context_metadata{...}` descriptor before any handle is published. The default ceiling is 16 KiB, matching the ordinary context byte limit. Oversized metadata is rejected rather than truncated as `adapter_metadata_too_large`, with `bytes` and `max_bytes` fields reporting the measured descriptor size and enforced ceiling.
 
 ## Enforcement stays in `rlm_context`
 
