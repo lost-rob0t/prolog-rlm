@@ -323,8 +323,23 @@ completion_after_recursive_validation(ok(Stats),
                                Token,
                                Outcome).
 
-completion_after_execution(error(Error), _, _, _, _, _, _, error(Error)) :-
-    !.
+completion_after_execution(error(Error0),
+                           Planner,
+                           _,
+                           _,
+                           _,
+                           Budget,
+                           Token,
+                           error(Error)) :-
+    !,
+    check_cancelled(Token),
+    execution_error_usage(Error0, PlanUsage),
+    usage_add(Planner.usage, PlanUsage, TotalUsage),
+    budget_usage_check(Budget, TotalUsage, BudgetOutcome),
+    execution_error_with_accounting(Error0,
+                                    TotalUsage,
+                                    BudgetOutcome,
+                                    Error).
 completion_after_execution(ok(Result),
                            Planner,
                            Plan,
@@ -345,6 +360,36 @@ completion_after_execution(ok(Result),
                       ChildCapabilities,
                       TotalUsage,
                       Outcome).
+
+execution_error_usage(Error, Usage) :-
+    (   is_dict(Error),
+        get_dict(model_responses, Error, Responses),
+        is_list(Responses)
+    ->  model_responses_usage(Responses, Usage)
+    ;   zero_usage(Usage)
+    ).
+
+model_responses_usage(Responses, Usage) :-
+    findall(ResponseUsage,
+            ( member(Response, Responses),
+              response_usage(Response, ResponseUsage)
+            ),
+            Usages),
+    usage_sum(Usages, Usage).
+
+execution_error_with_accounting(Error0, Usage, BudgetOutcome, Error) :-
+    (   is_dict(Error0)
+    ->  put_dict(usage, Error0, Usage, Error1)
+    ;   Error1 = completion_error{phase:execute,
+                                  kind:execution_failed,
+                                  cause:Error0,
+                                  usage:Usage,
+                                  message:"plan execution failed"}
+    ),
+    (   BudgetOutcome = error(BudgetError)
+    ->  put_dict(budget_violation, Error1, BudgetError, Error)
+    ;   Error = Error1
+    ).
 
 completion_finish(error(Error), _, _, _, _, _, _, error(Error)) :- !.
 completion_finish(ok,
@@ -696,6 +741,7 @@ validate_recursive_plan(Plan, ChildCapabilities, Budget, Outcome) :-
           recursive_fault(Fault, Outcome)).
 
 recursive_plan_stats(Plan, Stats) :-
+    canonical_recursive_plan(Plan, _),
     collect_recursive_plan(Plan, 0, [], Entries, Depths),
     findall(Hash,
             ( member(Entry, Entries),
@@ -714,6 +760,47 @@ recursive_plan_stats(Plan, Stats) :-
                             max_depth:MaxDepth,
                             fingerprints:Hashes}.
 
+canonical_recursive_plan(Plan, Canonical) :-
+    (   acyclic_term(Plan)
+    ->  canonical_recursive_term(Plan, Canonical)
+    ;   throw(completion_fault(recursive_cycle(cyclic_term)))
+    ).
+
+canonical_recursive_term(Term, _) :-
+    var(Term),
+    !,
+    throw(completion_fault(non_ground_recursive_plan)).
+canonical_recursive_term(Dict0, Dict) :-
+    is_dict(Dict0),
+    !,
+    dict_pairs(Dict0, Tag0, Pairs0),
+    canonical_recursive_dict_tag(Tag0, Tag),
+    maplist(canonical_recursive_pair, Pairs0, Pairs),
+    dict_pairs(Dict, Tag, Pairs).
+canonical_recursive_term(Term, Term) :-
+    atomic(Term),
+    !.
+canonical_recursive_term(Term0, Term) :-
+    Term0 =.. [Functor|Args0],
+    maplist(canonical_recursive_term, Args0, Args),
+    Term =.. [Functor|Args].
+
+canonical_recursive_dict_tag(Tag0, rlm_anonymous_dict) :-
+    var(Tag0),
+    !.
+canonical_recursive_dict_tag(Tag, Tag).
+
+canonical_recursive_pair(Key-Value0, Key-Value) :-
+    canonical_recursive_term(Value0, Value).
+
+recursive_plan_fingerprint(Plan, Hash) :-
+    canonical_recursive_plan(Plan, Canonical),
+    term_hash(Canonical, Hash),
+    (   integer(Hash)
+    ->  true
+    ;   throw(completion_fault(non_ground_recursive_plan))
+    ).
+
 collect_recursive_plan(plan(Steps), Depth, Ancestors, Entries, Depths) :-
     collect_recursive_steps(Steps,
                             Depth,
@@ -728,7 +815,7 @@ collect_recursive_steps([rlm(Child, Bind)|Steps],
                         Entries,
                         Depths) :-
     !,
-    term_hash(Child, Hash),
+    recursive_plan_fingerprint(Child, Hash),
     (   memberchk(Hash, Ancestors)
     ->  throw(completion_fault(recursive_cycle(Hash)))
     ;   true
@@ -964,12 +1051,7 @@ plan_budget(Budget, RemainingModelCalls,
 
 plan_usage(Result, Usage) :-
     plan_model_responses(Result, Responses),
-    findall(ResponseUsage,
-            ( member(Response, Responses),
-              response_usage(Response, ResponseUsage)
-            ),
-            Usages),
-    usage_sum(Usages, Usage).
+    model_responses_usage(Responses, Usage).
 
 plan_model_responses(Result, Responses) :-
     get_dict(model_responses, Result, Recorded),

@@ -2,6 +2,7 @@
 
 :- use_module(library(plunit)).
 :- consult(bootstrap_test).
+:- consult(load_error_status_test).
 :- consult(rlm_chain_test).
 :- consult(rlm_chain_runtime_test).
 :- consult(rlm_chain_message_metadata_test).
@@ -64,7 +65,9 @@
 :- consult(rlm_spec_verify_test).
 :- consult(rlm_spec_lang_test).
 :- consult(rlm_spec_workflow_test).
+:- consult(rlm_project_source_test).
 :- consult(prolog_agent_ui_v1_test).
+:- consult(prolog_agent_ui_fixture_command_codec_test).
 
 main(_) :-
     (   run_tool_mcp_async_cases,

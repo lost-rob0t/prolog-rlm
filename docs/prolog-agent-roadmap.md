@@ -25,14 +25,15 @@ Already available in core and the downstream application boundary:
 - optional Spec-bound Plan execution and a bounded Verify/repair composition over `rlm_graph`;
 - a project-KB observation boundary that lets future planners and verifiers consume the same semantic project state without teaching either layer to parse source code;
 - the #94 direct generic SWI-Prolog <-> Tree-sitter C FFI, with owned native handles, generic grammar loading, and multi-grammar parsing mechanics;
+- the #95 declarative Project/File/Language and Tree-sitter grammar registry, with explicit language evidence, parser selection, versioned grammar identity/provenance, and separate trusted native activation over #94;
 - `prolog_agent_ui_v1`, a renderer-independent application boundary with bounded snapshots, ordered semantic events, explicit correlated commands, capability negotiation, deterministic replay, reconnect semantics, NDJSON framing, a child-process fixture server, and polyglot golden fixtures.
 
 Still missing for a useful coding agent:
 
-- canonical #57 effect-boundary adoption across the effectful paths tracked by #79;
+- remaining canonical #57 effect-boundary adoption after the merged #86 tool-path slice, especially provider, MCP, and process/lifecycle paths tracked by #79;
 - a standard project tool pack with search, write/edit, git, and test/process tools;
 - durable project-scoped settings and remembered bounded approvals;
-- the Prolog-side Project/File/Language/grammar registry and CST/query/semantic/freshness layers from #95-#99 that turn the landed #94 parser mechanics into the actual project parser/indexer and canonical project KB;
+- the versioned CST/query/semantic/freshness layers from #96-#99 that turn the landed #94/#95 parser and registry substrate into the actual project parser/indexer and canonical project KB;
 - TaskIR/context/result-acceptance integration around the Frozen Spec substrate from #56 and #68-#71;
 - a headless coding loop that wires project inspection, edits, re-indexing, verification, and repair to those shared runtime concepts;
 - nonblocking approval/diff handling wired from the real coding workflow into the UI facade;
@@ -68,7 +69,7 @@ Core must not gain ambient repository write access just because `PrologAgent` ne
 
 ## Phase 0: finish the write-safety substrate
 
-The generic durable effect substrate is already on `main` through #78, #83, and #85. Before repository mutation is a normal feature, finish the **canonical adoption** work tracked by #79. Open PR #86 is the first tool-path slice, but it is not merged evidence and does not make the phase complete.
+The generic durable effect substrate is already on `main` through #78, #83, and #85, and #86 has landed the first canonical effectful-tool adoption slice. Before repository mutation is a normal feature, finish the remaining **canonical adoption** work tracked by #79.
 
 Required outcome:
 
@@ -138,7 +139,7 @@ It must not persist `allow_session`, silently promote permissions to `dangerous`
 
 Project instructions should enter the coding context with provenance. Repository instructions, current source/tests, operator requirements, and model inference are not the same kind of evidence.
 
-The direct Tree-sitter mechanics from #94 are now substrate. Implement #95-#99 behind the semantic project-state boundary established by `rlm_spec`/`rlm_verify`: register Project/File/Language/grammar relationships, project concrete syntax into versioned observations, run structural queries, normalize semantic source relations, and enforce incremental freshness. Source, build metadata, package metadata, and configuration should be parsed once into canonical project knowledge. Planner and verifier consumers query that knowledge through trusted semantic providers. Do not add a planner-only parser and a verifier-only parser.
+The direct Tree-sitter mechanics from #94 and the declarative Project/File/Language/grammar registry from #95 are now substrate. Implement #96-#99 behind the semantic project-state boundary established by `rlm_spec`/`rlm_verify`: project concrete syntax into versioned observations, run structural queries, normalize semantic source relations, and enforce incremental freshness. Source, build metadata, package metadata, and configuration should be parsed once into canonical project knowledge. Planner and verifier consumers query that knowledge through trusted semantic providers. Do not add a planner-only parser and a verifier-only parser.
 
 The project KB remains distinct from artifacts, graph checkpoints, authority, effect journals, and runtime observations. After a write, invalidate/re-index affected project state and verify the unchanged Frozen Spec against the new snapshot plus runtime evidence.
 
@@ -281,16 +282,16 @@ The first release does not need IDE parity, a plugin marketplace, background dae
 
 Current core and product issues that materially affect the roadmap:
 
-- #79: canonical external-effect adoption; blocks normal repository mutation. The #57 generic substrate is merged, but adoption is not.
+- #79: canonical external-effect adoption remains open; #86 has landed the first effectful-tool path, while provider, MCP, and process/lifecycle adoption remain.
 - #49 / #50: companion project/coding tool pack.
 - #54: async contract; core migrations are largely complete, while external process/test/network and downstream approval/TUI integration remain.
 - #56: result acceptance should build on the shared evidence/provenance/verifier substrate now used by Spec Verify; the broader result-envelope/delegation work remains open.
 - #68: verified workflow epic remains open; first-class Spec/Verify and graph composition are substrate, not the whole product workflow.
 - #69: TaskIR should reference the exact Frozen Spec and carry task/execution metadata rather than own a competing acceptance contract.
-- #70: project context should incorporate canonical project-KB snapshot references and provenance; #94 now supplies direct Tree-sitter parser mechanics, while #95-#99 still need to build the Project/file/grammar registry, versioned CST, structural query, semantic, and freshness layers.
+- #70: project context should incorporate canonical project-KB snapshot references and provenance; #94 supplies direct Tree-sitter parser mechanics and #95 supplies Project/File/Language/grammar selection, while #96-#99 still need the versioned CST, structural-query, semantic, and freshness layers.
 - #71: workflow execution/resume must remain bound to the exact Frozen Spec; the Spec-bound graph foundation now demonstrates that invariant, while full TaskIR/continuation integration remains open.
 - #74-#77: durable project state, instructions, and bounded persistent authorization.
-- #93/#95-#99: #94 is the direct Tree-sitter FFI substrate; the remaining child issues are required before the canonical project parser/indexer and project KB are complete.
-- #109: renderer-independent `prolog_agent_ui_v1` protocol/replay foundation; once merged and verified, the next renderer slice is the small OpenTUI + SolidJS reference client against its deterministic fixture.
+- #93/#96-#99: #94/#95 are the direct parser and declarative source-registry substrate; the remaining child issues are required before the canonical project parser/indexer and project KB are complete.
+- #109: the renderer-independent `prolog_agent_ui_v1` protocol/replay foundation is landed; the next renderer slice is the small OpenTUI + SolidJS reference client against its deterministic fixture.
 
 Do not wait for every P1 research idea before starting `agentProlog/`. Build against stable public contracts, keep optional integrations optional, and let the first usable coding loop drive the remaining abstractions.

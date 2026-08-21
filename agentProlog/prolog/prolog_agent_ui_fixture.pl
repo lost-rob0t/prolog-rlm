@@ -119,13 +119,23 @@ negotiate_frames(Frame, [Result, Snapshot|Resume]) :-
     intersection(Optional, Supported, AcceptedOptional),
     list_default(Payload, required_capabilities, [], Required),
     ui_fixture_session_id(SessionId),
-    ui_v1_result_frame(SessionId, Frame.request_id, "ok",
-                       _{protocol:"prolog_agent_ui_v1",
-                         required_capabilities:Required,
-                         accepted_optional_capabilities:AcceptedOptional},
-                       Result),
+    must_fixture_stage(
+        negotiate_result,
+        ui_v1_result_frame(SessionId, Frame.request_id, "ok",
+                           _{protocol:"prolog_agent_ui_v1",
+                             required_capabilities:Required,
+                             accepted_optional_capabilities:AcceptedOptional},
+                           Result)),
     dict_default(Payload, resume_from, 0, LastSeen),
-    ui_fixture_reconnect(LastSeen, Snapshot, Resume).
+    must_fixture_stage(
+        reconnect,
+        ui_fixture_reconnect(LastSeen, Snapshot, Resume)).
+
+must_fixture_stage(Stage, Goal) :-
+    (   call(Goal)
+    ->  true
+    ;   throw(error(ui_fixture_stage_failed(Stage), _))
+    ).
 
 fixture_command(Frame, NextSeq0, Frames, NextSeq) :-
     Command = Frame.command,
@@ -170,10 +180,53 @@ server_loop(In, Out, NextSeq0) :-
     (   Line == end_of_file
     ->  true
     ;   ui_v1_decode_frame(Line, Decoded),
-        handle_decoded(Decoded, NextSeq0, Frames, NextSeq),
+        dispatch_decoded(Decoded, NextSeq0, Frames, NextSeq),
         write_frames(Out, Frames),
         server_loop(In, Out, NextSeq)
     ).
+
+dispatch_decoded(Decoded, NextSeq0, Frames, NextSeq) :-
+    catch((   handle_decoded(Decoded, NextSeq0, Frames0, NextSeq1)
+          ->  Frames = Frames0,
+              NextSeq = NextSeq1
+          ;   decoded_failure_details(Decoded, NextSeq0, Details),
+              decoded_error_frame(Decoded,
+                                  "fixture_handler_failed",
+                                  "Fixture request handler failed",
+                                  Details,
+                                  ErrorFrame),
+              Frames = [ErrorFrame],
+              NextSeq = NextSeq0
+          ),
+          Exception,
+          ( term_string(Exception, ExceptionText,
+                        [quoted(true), numbervars(true)]),
+            decoded_error_frame(Decoded,
+                                "fixture_handler_exception",
+                                "Fixture request handler raised an exception",
+                                _{exception:ExceptionText},
+                                ErrorFrame),
+            Frames = [ErrorFrame],
+            NextSeq = NextSeq0
+          )).
+
+decoded_failure_details(ok(Frame), NextSeq,
+                        _{kind:Kind, frame:Frame, next_seq:NextSeq}) :-
+    !,
+    ( get_dict(kind, Frame, Kind0) -> Kind = Kind0 ; Kind = "unknown" ).
+decoded_failure_details(Decoded, NextSeq,
+                        _{decoded:Text, next_seq:NextSeq}) :-
+    term_string(Decoded, Text, [quoted(true), numbervars(true)]).
+
+decoded_error_frame(ok(Frame), Code, Message, Details, ErrorFrame) :- !,
+    frame_session(Frame, SessionId),
+    frame_request(Frame, RequestId),
+    ui_v1_error_frame(SessionId, RequestId, Code, Message, Base),
+    put_dict(details, Base, Details, ErrorFrame).
+decoded_error_frame(_, Code, Message, Details, ErrorFrame) :-
+    ui_fixture_session_id(SessionId),
+    ui_v1_error_frame(SessionId, none, Code, Message, Base),
+    put_dict(details, Base, Details, ErrorFrame).
 
 handle_decoded(error(Error), Next, [Frame], Next) :- !,
     ui_fixture_session_id(SessionId),
@@ -193,10 +246,15 @@ handle_decoded(ok(Frame), NextSeq0, Frames, NextSeq) :-
 
 write_frames(_, []).
 write_frames(Out, [Frame|Rest]) :-
-    ui_v1_encode_frame(Frame, ok(Line)),
+    ui_v1_encode_frame(Frame, Encoded),
+    fixture_encoded_line(Encoded, Line),
     format(Out, '~s~n', [Line]),
     flush_output(Out),
     write_frames(Out, Rest).
+
+fixture_encoded_line(ok(Line), Line) :- !.
+fixture_encoded_line(error(Error), _) :-
+    throw(error(ui_fixture_encode_failed(Error), _)).
 
 last_event_next_seq([], 1).
 last_event_next_seq(Events, Next) :-

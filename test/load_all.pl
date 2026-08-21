@@ -1,3 +1,4 @@
+:- set_prolog_flag(on_error, status).
 :- initialization(main, main).
 
 :- use_module('../prolog/rlm').
@@ -23,6 +24,7 @@
 :- use_module('../prolog/rlm_spec_lang', []).
 :- use_module('../prolog/rlm_verify', []).
 :- use_module('../prolog/rlm_spec_workflow', []).
+:- use_module('../prolog/rlm_project_source', []).
 :- use_module('../agentProlog/prolog/prolog_agent_ui_v1', []).
 :- use_module('../agentProlog/prolog/prolog_agent_ui_facade', []).
 :- use_module('../agentProlog/prolog/prolog_agent_ui_fixture', []).
@@ -40,9 +42,10 @@ main(_) :-
         rlm_spec_lang:rlm_spec_lang_ready,
         rlm_verify:rlm_verify_ready,
         rlm_spec_workflow:rlm_spec_workflow_ready,
+        rlm_project_source:rlm_project_source_ready,
         prolog_agent_ui_v1:ui_v1_ready,
         prolog_agent_ui_facade:ui_facade_ready,
         prolog_agent_ui_fixture:ui_fixture_ready
-    ->  halt(0)
+    ->  halt
     ;   halt(1)
     ).

@@ -53,11 +53,16 @@ load for the same registry and never call the trusted loader twice.
 
 :- use_module(library(lists)).
 :- use_module(rlm_authority, []).
+:- use_module(rlm_tool, []).
 
 :- multifile tool_pack/2.
 :- multifile tool_pack_manifest/2.
 
 :- dynamic loaded_tool_pack/4.
+
+:- prolog_listen(rlm_tool:tool_registry_alive/1,
+                 registry_lifecycle_event,
+                 [name(rlm_tool_loader_registry_cleanup)]).
 
 rlm_tool_packs(Packs) :-
     findall(Name, tool_pack(Name, _), Names0),
@@ -316,13 +321,27 @@ call_pack_loader(Loader, Registry, Info, Outcome) :-
     ).
 
 remember_successful_load(error(Error), _, _, error(Error)) :- !.
-remember_successful_load(ok(Value), Registry, Info,
-                         ok(tool_pack_load{pack:Info.pack,
-                                           library:Info.library,
-                                           category:Info.category,
-                                           status:loaded,
-                                           result:Value})) :-
-    assertz(loaded_tool_pack(Registry, Info.pack, Info, Value)).
+remember_successful_load(ok(Value), Registry, Info, Outcome) :-
+    assertz(loaded_tool_pack(Registry, Info.pack, Info, Value)),
+    finalize_successful_load(Registry, Info, Value, Outcome).
+
+finalize_successful_load(Registry, Info, Value, Outcome) :-
+    (   registry_still_alive(Registry)
+    ->  Outcome = ok(tool_pack_load{pack:Info.pack,
+                                    library:Info.library,
+                                    category:Info.category,
+                                    status:loaded,
+                                    result:Value})
+    ;   rlm_tool_loader_forget_registry(Registry),
+        Outcome = error(tool_loader_error{
+                            kind:registry_destroyed,
+                            pack:Info.pack,
+                            message:"tool registry was destroyed while pack was loading"
+                        })
+    ).
+
+registry_still_alive(tool_registry(Id)) :-
+    rlm_tool:tool_registry_alive(Id).
 
 normalize_loader_outcome(ok(Value), _, ok(Value)) :- !.
 normalize_loader_outcome(error(Error), _, error(Error)) :- !.
@@ -520,6 +539,24 @@ require_pack_loader(Loader) :-
     !.
 require_pack_loader(Loader) :-
     throw(tool_loader_fault(invalid_pack_loader(Loader))).
+
+registry_lifecycle_event(retractall, end(Head)) :-
+    registry_alive_head(Head, IdPattern),
+    !,
+    forget_registry_pattern(IdPattern).
+registry_lifecycle_event(_, _).
+
+registry_alive_head(rlm_tool:tool_registry_alive(Id), Id) :- !.
+registry_alive_head(tool_registry_alive(Id), Id).
+
+forget_registry_pattern(IdPattern) :-
+    findall(tool_registry(Id),
+            ( loaded_tool_pack(tool_registry(Id), _, _, _),
+              Id = IdPattern
+            ),
+            Registries0),
+    sort(Registries0, Registries),
+    maplist(rlm_tool_loader_forget_registry, Registries).
 
 rlm_tool_loader_forget_registry(Registry) :-
     retractall(loaded_tool_pack(Registry, _, _, _)).
