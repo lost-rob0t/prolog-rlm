@@ -23,6 +23,11 @@ Prolog layers (#95 through #99).
 
 ## Build
 
+Tree-sitter is an **optional host-loaded native parser boundary**, not a
+prerequisite for installing or loading the core `prolog_rlm` SWI pack. The
+repository's default `make` target therefore leaves native parser support
+unbuilt. Hosts that select Tree-sitter must build it explicitly.
+
 The native module requires SWI-Prolog development headers, a C compiler,
 `pkg-config`, and Tree-sitter development files.
 
@@ -40,7 +45,9 @@ make tree-sitter-ffi
 ```
 
 The result is written to the repository-local `foreign/` directory using
-SWI-Prolog's configured shared-object extension.
+SWI-Prolog's configured shared-object extension. Loading `rlm_tree_sitter`
+without that library is expected to fail; the host must opt into the native
+build before selecting that parser backend.
 
 The deterministic grammar fixtures use generated parser sources already
 packaged by Ubuntu. They do not require a language-specific runtime or grammar
@@ -239,19 +246,8 @@ fail logically; an invalid child index is a domain error.
 
 This module is mechanics only. The follow-up dependency chain remains:
 
-```text
-#94 direct FFI
-  -> #95 Project/file/language/grammar registry
-  -> #96 versioned CST facts
-  -> #97 Tree-sitter query/capture API
-  -> #98 normalized symbol/reference/source relations
-  -> #99 incremental reparsing and freshness
-```
-
-In particular, this slice does not put language-specific tree walkers in C.
-Tree-sitter query packs and Prolog normalization remain the intended semantic
-layer.
-
-The initial dynamic loader is POSIX (`dlopen`/`dlsym`) because Linux is the
-canonical repository CI/runtime target today. A non-POSIX loader can be added
-behind the same Prolog contract without changing the parser or semantic model.
+- #95: declarative Project/source/language/grammar registry;
+- #96: canonical syntax/symbol fact extraction;
+- #97: project-KB/index materialization;
+- #98: context/search integration;
+- #99: verified workflow adoption.
