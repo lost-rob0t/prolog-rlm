@@ -5,7 +5,7 @@
 
 :- initialization(diagnostic_main, main).
 
-diagnostic_main(_) :-
+diagnostic_main :-
     findall(Unit, plunit:current_test_unit(Unit, _), Units0),
     sort(Units0, Units),
     length(Units, UnitCount),
