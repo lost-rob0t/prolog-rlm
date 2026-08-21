@@ -54,6 +54,16 @@ test(normalization_is_deterministic_for_dict_key_order) :-
     rlm_effect_normalize(RequestB, NormalB),
     assertion(NormalA == NormalB).
 
+test(normalization_canonicalizes_nested_anonymous_dict_tags) :-
+    RequestA = request{provider:fake, payload:_{b:2, a:_{c:3}}},
+    RequestB = request{payload:_{a:_{c:3}, b:2}, provider:fake},
+    rlm_effect_normalize(RequestA, NormalA),
+    rlm_effect_normalize(RequestB, NormalB),
+    assertion(ground(NormalA)),
+    assertion(NormalA == NormalB),
+    assertion(is_dict(NormalA.payload, rlm_anonymous_dict)),
+    assertion(is_dict(NormalA.payload.a, rlm_anonymous_dict)).
+
 test(metadata_does_not_change_executable_fingerprint) :-
     with_effect_store(
         ( Request = request{provider:fake, payload:payload{x:1}},
@@ -358,7 +368,6 @@ create_parallel_queues(Start, Done, Results) :-
     message_queue_create(Start),
     message_queue_create(Done),
     message_queue_create(Results).
-
 destroy_parallel_queues(Start, Done, Results) :-
     message_queue_destroy(Start),
     message_queue_destroy(Done),
