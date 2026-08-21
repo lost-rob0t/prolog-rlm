@@ -2,18 +2,29 @@
           [ evolution_candidate_validate/3,
             evolution_mutate/5,
             evolution_crossover/6,
-            evolution_select/4
+            evolution_select/4,
+            evolution_evaluator_register/2,
+            evolution_evaluator_unregister/1,
+            evolution_evaluate_async/5,
+            evolution_evaluate/5
           ]).
 
-/** <module> Pure generic configuration-space evolution
+/** <module> Generic configuration-space evolution
 
-Candidates and operators are closed data. The kernel deliberately contains no
-scheduler, provider, authority, effect, product, or arbitrary meta-call path.
+Candidates and operators are closed data. Latency-bearing evaluation composes
+with the existing bounded Future runtime. Evaluators are trusted, code-owned
+registrations selected by a closed evaluator id; candidate/model data never
+becomes a callable or a second scheduler.
 */
 
 :- use_module(library(crypto)).
 :- use_module(library(lists)).
 :- use_module(library(pairs)).
+:- use_module(rlm_async).
+
+:- dynamic evolution_evaluator/2.
+
+:- meta_predicate evolution_evaluator_register(+, 3).
 
 evolution_candidate_validate(Candidate, Constraints, Outcome) :-
     ( valid_candidate_shape(Candidate), valid_constraints(Constraints)
@@ -116,3 +127,87 @@ not_worse(A, B, objective(Key,max)) :- get_dict(Key,A,AV), get_dict(Key,B,BV), A
 not_worse(A, B, objective(Key,min)) :- get_dict(Key,A,AV), get_dict(Key,B,BV), AV =< BV.
 strictly_better(A, B, objective(Key,max)) :- get_dict(Key,A,AV), get_dict(Key,B,BV), AV > BV.
 strictly_better(A, B, objective(Key,min)) :- get_dict(Key,A,AV), get_dict(Key,B,BV), AV < BV.
+
+/* Evaluator integration -------------------------------------------------- */
+
+%% evolution_evaluator_register(+Id, :Evaluator) is det.
+%
+% Trusted host/library registration. Evaluator is called as
+% call(Evaluator, Candidate, Context, RawOutcome). The callable is retained only
+% in the trusted registry; candidates and contexts can select Id but can never
+% supply executable terms.
+evolution_evaluator_register(Id, Evaluator) :-
+    must_be(atom, Id),
+    must_be(callable, Evaluator),
+    with_mutex(rlm_evolution_evaluators,
+               register_evaluator_locked(Id, Evaluator)).
+
+register_evaluator_locked(Id, Evaluator) :-
+    retractall(evolution_evaluator(Id, _)),
+    assertz(evolution_evaluator(Id, Evaluator)).
+
+evolution_evaluator_unregister(Id) :-
+    must_be(atom, Id),
+    with_mutex(rlm_evolution_evaluators,
+               retractall(evolution_evaluator(Id, _))).
+
+%% evolution_evaluate_async(+Candidate,+Constraints,+EvaluatorId,+Context,-FutureOrError) is det.
+%
+% Validate before admission, resolve only a trusted code-owned evaluator id,
+% then submit one canonical evaluation operation to rlm_async. Cancellation,
+% bounded worker/backlog semantics, parent Future lineage and cleanup therefore
+% remain owned by the existing runtime.
+evolution_evaluate_async(Candidate, Constraints, EvaluatorId, Context, Result) :-
+    evolution_candidate_validate(Candidate, Constraints, Validation),
+    evaluate_validated_async(Validation, Candidate, EvaluatorId, Context, Result).
+
+evaluate_validated_async(error(E), _, _, _, error(E)) :- !.
+evaluate_validated_async(ok(_), Candidate, EvaluatorId, Context, Result) :-
+    ( atom(EvaluatorId), evolution_evaluator(EvaluatorId, Evaluator)
+    -> Metadata = async_metadata{operation:evolution_evaluate,
+                                 candidate:Candidate.id,
+                                 evaluator:EvaluatorId},
+       rlm_async_submit(run_evaluator(EvaluatorId, Evaluator, Candidate, Context),
+                        Metadata,
+                        Result)
+    ; Result = error(evolution_error{reason:unknown_evaluator,evaluator:EvaluatorId})
+    ).
+
+%% evolution_evaluate(+Candidate,+Constraints,+EvaluatorId,+Context,-Outcome) is det.
+%
+% Synchronous convenience facade over the exact async operation.
+evolution_evaluate(Candidate, Constraints, EvaluatorId, Context, Outcome) :-
+    evolution_evaluate_async(Candidate, Constraints, EvaluatorId, Context, Submitted),
+    ( Submitted = rlm_future(_)
+    -> rlm_future_await(Submitted, Outcome)
+    ; Outcome = Submitted
+    ).
+
+run_evaluator(EvaluatorId, Evaluator, Candidate, Context, Outcome) :-
+    catch(call(Evaluator, Candidate, Context, Raw),
+          Exception,
+          Raw = evaluator_exception(Exception)),
+    normalize_evaluation(EvaluatorId, Candidate, Raw, Outcome).
+
+normalize_evaluation(EvaluatorId, Candidate, evaluator_exception(Exception), Outcome) :-
+    !,
+    Outcome = evaluation_result{status:error,
+                                candidate:Candidate.id,
+                                evaluator:EvaluatorId,
+                                reason:evaluator_exception(Exception)}.
+normalize_evaluation(EvaluatorId, Candidate, Raw, Outcome) :-
+    ( is_dict(Raw, evaluation),
+      get_dict(objectives, Raw, Objectives), is_dict(Objectives), ground(Objectives),
+      get_dict(evidence, Raw, Evidence), ground(Evidence),
+      get_dict(usage, Raw, Usage), ground(Usage)
+    -> Outcome = evaluation_result{status:passed,
+                                   candidate:Candidate.id,
+                                   evaluator:EvaluatorId,
+                                   objectives:Objectives,
+                                   evidence:Evidence,
+                                   usage:Usage}
+    ; Outcome = evaluation_result{status:error,
+                                  candidate:Candidate.id,
+                                  evaluator:EvaluatorId,
+                                  reason:invalid_evaluator_outcome}
+    ).
