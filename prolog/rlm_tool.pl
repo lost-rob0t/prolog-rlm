@@ -55,6 +55,7 @@ continuation.
 :- use_module(rlm_effect_authority, []).
 
 :- multifile rlm_effect_executor:effect_adapter_submit/4.
+:- multifile tool_registry_destroy_hook/1.
 
 :- dynamic tool_registry_alive/1.
 :- dynamic tool_registry_entry/4.
@@ -165,7 +166,12 @@ tool_registry_destroy(tool_registry(Id)) :-
     with_mutex(rlm_tool_registry,
                ( retractall(tool_registry_entry(Id, _, _, _)),
                  retractall(tool_registry_alive(Id))
-               )).
+               )),
+    run_tool_registry_destroy_hooks(Context).
+
+run_tool_registry_destroy_hooks(Registry) :-
+    forall(clause(tool_registry_destroy_hook(Registry), Body),
+           catch(call(Body), _, true)).
 
 tool_register(Registry, Schema0, Handler0, Outcome) :-
     catch(tool_register_(Registry, Schema0, Handler0, Outcome),
@@ -1479,7 +1485,8 @@ metadata_context(Current, agent(Runtime, Agent)) :-
     get_dict(agent_id, Current, Agent),
     Runtime \== none,
     Agent \== none,
-    !.
+    !,
+    Context = agent(Runtime, Agent).
 metadata_context(Current, graph(Runtime, Graph, Run)) :-
     is_dict(Current),
     get_dict(runtime_id, Current, Runtime),
@@ -1488,7 +1495,8 @@ metadata_context(Current, graph(Runtime, Graph, Run)) :-
     Runtime \== none,
     Graph \== none,
     Run \== none,
-    !.
+    !,
+    Context = graph(Runtime, Graph, Run).
 metadata_context(Current, runtime(Runtime)) :-
     is_dict(Current),
     get_dict(runtime_id, Current, Runtime),
