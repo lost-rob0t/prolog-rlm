@@ -19,7 +19,11 @@ TREE_SITTER_SOURCES := \
 
 .PHONY: all tree-sitter-ffi tree-sitter-test-grammars tree-sitter-test clean
 
-all: tree-sitter-ffi
+# The core SWI pack has no mandatory native build. Tree-sitter is an optional,
+# host-loaded parser boundary with explicit development dependencies; building
+# it remains opt-in through the dedicated target below.
+all:
+	@true
 
 tree-sitter-ffi: $(TREE_SITTER_FOREIGN)
 
