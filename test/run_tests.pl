@@ -51,6 +51,7 @@
 :- consult(rlm_artifact_test).
 :- consult(rlm_agent_test).
 :- consult(rlm_subagent_test).
+:- consult(rlm_evolution_test).
 :- consult(rlm_agent_authority_test).
 :- consult(rlm_graph_test).
 :- consult(rlm_graph_authority_test).
