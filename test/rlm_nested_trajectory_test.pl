@@ -89,6 +89,28 @@ test(execution_ledger_records_true_nested_depth_and_parent) :-
     assertion(Result.model_responses ==
               [RootResponse,ChildResponse,GrandchildResponse]).
 
+test(retry_scope_preserves_each_model_event_across_restore) :-
+    model_response(first_attempt, 2, 1, R1),
+    model_response(second_attempt, 3, 1, R2),
+    empty_exec_state(S0),
+    rlm_plan:trace_context(S0, ParentTrace),
+    rlm_plan:child_trace_state(retry_model, S0, Attempt1),
+    rlm_plan:record_model_response(R1, fake, Attempt1, S1),
+    rlm_plan:restore_scope(S1, vars{}, ParentTrace, RetryBase),
+    rlm_plan:child_trace_state(retry_model, RetryBase, Attempt2),
+    rlm_plan:record_model_response(R2, fake, Attempt2, S2),
+    rlm_plan:finalize_execution(final(done, S2), ok(Result)),
+    Result.model_events = [E1,E2],
+    assertion(E1.sequence =:= 1),
+    assertion(E2.sequence =:= 2),
+    assertion(E1.reason == retry_model),
+    assertion(E2.reason == retry_model),
+    assertion(E1.depth =:= 1),
+    assertion(E2.depth =:= 1),
+    assertion(E1.parent == root_planner),
+    assertion(E2.parent == root_planner),
+    assertion(Result.model_responses == [R1,R2]).
+
 test(completion_uses_authoritative_nested_event_ledger) :-
     model_response(r1, 2, 1, R1),
     model_response(r2, 3, 1, R2),
