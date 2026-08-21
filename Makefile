@@ -17,12 +17,16 @@ TREE_SITTER_SOURCES := \
 	c/rlm_tree_sitter_parser.c \
 	c/rlm_tree_sitter_node.c
 
-.PHONY: all tree-sitter-ffi tree-sitter-test-grammars tree-sitter-test clean
+.PHONY: all install tree-sitter-ffi tree-sitter-test-grammars tree-sitter-test clean
 
-# The core SWI pack has no mandatory native build. Tree-sitter is an optional,
-# host-loaded parser boundary with explicit development dependencies; building
-# it remains opt-in through the dedicated target below.
+# SWI's pack installer invokes both the default build and `make install` when a
+# Makefile is present. The core Prolog pack has no mandatory generated/native
+# artifacts, so both phases intentionally succeed without compiling optional
+# parser support.
 all:
+	@true
+
+install: all
 	@true
 
 tree-sitter-ffi: $(TREE_SITTER_FOREIGN)
