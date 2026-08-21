@@ -222,30 +222,23 @@ context_register_adapter_(Name0, SourceRef, Options, Outcome) :-
     ->  adapter_source_metadata(Name,
                                 MetadataHandler,
                                 SourceRef,
-                                Limits,
                                 AdapterMetadata),
         register_adapter_source(Name,
                                 Capabilities,
                                 SourceRef,
                                 AdapterMetadata,
+                                Limits,
                                 Outcome)
     ;   throw(context_fault(adapter_not_registered(Name)))
     ).
 
-adapter_source_metadata(Name, MetadataHandler, SourceRef, Limits, Metadata) :-
+adapter_source_metadata(Name, MetadataHandler, SourceRef, Metadata) :-
     (   call(MetadataHandler, SourceRef, RawMetadata)
     ->  true
     ;   throw(context_fault(adapter_metadata_failed(Name)))
     ),
     (   is_dict(RawMetadata), ground(RawMetadata)
-    ->  get_dict(max_bytes, Limits, MaxBytes),
-        term_utf8_size(RawMetadata, Bytes),
-        (   Bytes =< MaxBytes
-        ->  Metadata = RawMetadata
-        ;   throw(context_fault(adapter_metadata_too_large(Name,
-                                                          Bytes,
-                                                          MaxBytes)))
-        )
+    ->  Metadata = RawMetadata
     ;   throw(context_fault(invalid_adapter_metadata(Name, RawMetadata)))
     ).
 
@@ -253,6 +246,7 @@ register_adapter_source(Name,
                         Capabilities,
                         SourceRef,
                         AdapterMetadata,
+                        Limits,
                         ok(Ref)) :-
     uuid(Id, [version(4)]),
     Version = 1,
@@ -269,6 +263,7 @@ register_adapter_source(Name,
                                 adapter:Name,
                                 adapter_capabilities:Capabilities,
                                 source:AdapterMetadata},
+    ensure_adapter_metadata_within_limit(Name, Metadata, Limits),
     Payload = adapter_payload{name:Name, source_ref:SourceRef},
     register_context_record(Id,
                             Version,
@@ -277,6 +272,16 @@ register_adapter_source(Name,
                             Metadata,
                             CreatedAt,
                             Ref).
+
+ensure_adapter_metadata_within_limit(Name, Metadata, Limits) :-
+    get_dict(max_bytes, Limits, MaxBytes),
+    term_utf8_size(Metadata, Bytes),
+    (   Bytes =< MaxBytes
+    ->  true
+    ;   throw(context_fault(adapter_metadata_too_large(Name,
+                                                      Bytes,
+                                                      MaxBytes)))
+    ).
 
 register_context_record(Id,
                         Version,
