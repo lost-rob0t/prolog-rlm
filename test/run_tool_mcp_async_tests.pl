@@ -1,4 +1,6 @@
+:- if(prolog_load_context(script, true)).
 :- initialization(focused_main, main).
+:- endif.
 
 :- use_module(library(plunit)).
 :- use_module(library(time)).

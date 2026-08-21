@@ -1,0 +1,51 @@
+name: Runner integrity
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  runner-integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes swi-prolog-nox
+
+      - name: Prove consulted focused runner cannot replace main
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(swipl -q -s test/runner_main_ownership_probe.pl)"
+          printf '%s\n' "$output"
+          grep -qx 'aggregate_main_owner=probe' <<<"$output"
+
+      - name: Prove aggregate suite actually reaches PlUnit
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENROUTER_TEST_MODEL: ""
+        run: |
+          set +e
+          timeout 60s swipl -q -s test/run_tests.pl > /tmp/prolog-rlm-runner-integrity.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/prolog-rlm-runner-integrity.log
+
+          grep -Eq 'PL-Unit:|ERROR: .*test/|\.\.+|All [0-9]+ tests passed' /tmp/prolog-rlm-runner-integrity.log || {
+            echo "aggregate runner produced no PlUnit evidence (exit=$status)" >&2
+            exit 1
+          }
+
+          # This job proves entrypoint integrity only. The deterministic CI job owns
+          # the full corpus result. A timeout or a real test failure is acceptable
+          # here once aggregate PlUnit execution has been observed.
+          echo "aggregate PlUnit execution observed (exit=$status)"
