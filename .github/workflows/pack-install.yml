@@ -1,0 +1,39 @@
+name: Clean SWI pack install
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack-install:
+    name: Install and load copied pack
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes swi-prolog-nox
+
+      - name: Install current checkout as a copied pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_root="${RUNNER_TEMP}/packs"
+          swipl -q -s test/pack_install_smoke.pl -- "${GITHUB_WORKSPACE}" "${pack_root}"
+          test -d "${pack_root}/prolog_rlm"
+          test ! -L "${pack_root}/prolog_rlm"
+
+      - name: Load installed pack from outside the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_root="${RUNNER_TEMP}/packs"
+          cd "${RUNNER_TEMP}"
+          swipl -q -s "${GITHUB_WORKSPACE}/test/pack_load_smoke.pl" -- "${pack_root}"
