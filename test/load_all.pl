@@ -8,6 +8,7 @@
 :- use_module('../prolog/rlm_conversation_runtime', []).
 :- use_module('../prolog/rlm_prompt_compiler', []).
 :- use_module('../prolog/rlm_prompt_command', []).
+:- use_module('../prolog/rlm_subagent', []).
 :- use_module('../prolog/rlm_effect', []).
 :- use_module('../prolog/rlm_effect_authority', []).
 :- use_module('../prolog/rlm_effect_executor', []).
