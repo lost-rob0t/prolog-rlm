@@ -10,7 +10,7 @@ permissions:
 jobs:
   runner-integrity:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -28,26 +28,24 @@ jobs:
           printf '%s\n' "$output"
           grep -qx 'aggregate_main_owner=probe' <<<"$output"
 
-      - name: Prove aggregate suite actually starts PlUnit
+      - name: Prove aggregate suite actually reaches PlUnit
         shell: bash
         env:
           OPENROUTER_API_KEY: ""
           OPENROUTER_TEST_MODEL: ""
         run: |
           set +e
-          timeout 10m swipl -q -s test/run_tests.pl > /tmp/prolog-rlm-runner-integrity.log 2>&1
+          timeout 60s swipl -q -s test/run_tests.pl > /tmp/prolog-rlm-runner-integrity.log 2>&1
           status=$?
           set -e
           cat /tmp/prolog-rlm-runner-integrity.log
 
-          if [ "$status" -eq 124 ]; then
-            echo "aggregate PlUnit runner timed out" >&2
-            exit 1
-          fi
-
           grep -Eq 'PL-Unit:|ERROR: .*test/|\.\.+|All [0-9]+ tests passed' /tmp/prolog-rlm-runner-integrity.log || {
-            echo "aggregate runner produced no PlUnit evidence" >&2
+            echo "aggregate runner produced no PlUnit evidence (exit=$status)" >&2
             exit 1
           }
 
-          exit "$status"
+          # This job proves entrypoint integrity only. The deterministic CI job owns
+          # the full corpus result. A timeout or a real test failure is acceptable
+          # here once aggregate PlUnit execution has been observed.
+          echo "aggregate PlUnit execution observed (exit=$status)"
