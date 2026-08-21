@@ -10,13 +10,12 @@ main([Source0, PackRoot0]) :-
                        [ file_type(directory),
                          access(read)
                        ]),
+    make_directory_path(PackRoot0),
     absolute_file_name(PackRoot0,
                        PackRoot,
                        [ file_type(directory),
-                         solutions(first),
-                         file_errors(fail)
+                         access(write)
                        ]),
-    make_directory_path(PackRoot),
     atom_concat('file://', Source, SourceUrl),
     pack_install(SourceUrl,
                  [ pack_directory(PackRoot),
