@@ -46,6 +46,7 @@ user:message_hook(Message, error, Lines) :-
 % test-shaped file belongs to another executable gate.
 corpus_entry('bootstrap_test.pl', include(bootstrap)).
 corpus_entry('load_error_status_test.pl', include(load_error_status)).
+corpus_entry('rlm_closed_data_test.pl', include(rlm_closed_data)).
 corpus_entry('rlm_chain_test.pl', include(rlm_chain)).
 corpus_entry('rlm_chain_runtime_test.pl', include(rlm_chain_runtime)).
 corpus_entry('rlm_chain_message_metadata_test.pl',
