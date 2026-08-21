@@ -8,7 +8,9 @@
 diagnostic_main(_) :-
     findall(Unit, plunit:current_test_unit(Unit, _), Units0),
     sort(Units0, Units),
-    format(user_error, 'diagnostic_unit_count=~d~n', [len(Units)]),
+    length(Units, UnitCount),
+    format(user_error, 'diagnostic_unit_count=~d~n', [UnitCount]),
+    flush_output(user_error),
     (   forall(member(Unit, Units), run_unit_bounded(Unit))
     ->  halt(0)
     ;   halt(1)
@@ -33,6 +35,3 @@ diagnostic_exception(Unit, Exception) :-
            [Unit, Exception]),
     flush_output(user_error),
     fail.
-
-len(List, Length) :-
-    length(List, Length).
