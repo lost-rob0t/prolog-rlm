@@ -57,12 +57,12 @@ load for the same registry and never call the trusted loader twice.
 
 :- multifile tool_pack/2.
 :- multifile tool_pack_manifest/2.
+:- multifile rlm_tool:tool_registry_destroy_hook/1.
 
 :- dynamic loaded_tool_pack/4.
 
-:- prolog_listen(rlm_tool:tool_registry_alive/1,
-                 registry_lifecycle_event,
-                 [name(rlm_tool_loader_registry_cleanup)]).
+rlm_tool:tool_registry_destroy_hook(Registry) :-
+    rlm_tool_loader:rlm_tool_loader_forget_registry(Registry).
 
 rlm_tool_packs(Packs) :-
     findall(Name, tool_pack(Name, _), Names0),
@@ -539,24 +539,6 @@ require_pack_loader(Loader) :-
     !.
 require_pack_loader(Loader) :-
     throw(tool_loader_fault(invalid_pack_loader(Loader))).
-
-registry_lifecycle_event(retractall, end(Head)) :-
-    registry_alive_head(Head, IdPattern),
-    !,
-    forget_registry_pattern(IdPattern).
-registry_lifecycle_event(_, _).
-
-registry_alive_head(rlm_tool:tool_registry_alive(Id), Id) :- !.
-registry_alive_head(tool_registry_alive(Id), Id).
-
-forget_registry_pattern(IdPattern) :-
-    findall(tool_registry(Id),
-            ( loaded_tool_pack(tool_registry(Id), _, _, _),
-              Id = IdPattern
-            ),
-            Registries0),
-    sort(Registries0, Registries),
-    maplist(rlm_tool_loader_forget_registry, Registries).
 
 rlm_tool_loader_forget_registry(Registry) :-
     retractall(loaded_tool_pack(Registry, _, _, _)).
