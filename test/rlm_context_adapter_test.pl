@@ -21,6 +21,24 @@ adapter_rebound_case :-
     assertion(Result.value == [_{id:1, text:"needle one"}]),
     context_delete(Ref.handle, ok(_)).
 
+test(oversized_adapter_metadata_is_rejected_before_handle_exposure) :-
+    setup_call_cleanup(
+        register_fake_adapter,
+        oversized_adapter_metadata_case,
+        cleanup_fake_adapter).
+
+oversized_adapter_metadata_case :-
+    context_register_adapter(fake_external,
+                             oversized_source,
+                             [max_bytes(64)],
+                             error(Error)),
+    assertion(Error.kind == adapter_metadata_too_large),
+    assertion(Error.max_bytes == 64),
+    assertion(Error.bytes > Error.max_bytes),
+    context_adapter_unregister(fake_external,
+                               ok(unregistered(fake_external))),
+    register_fake_adapter.
+
 test(live_handle_prevents_adapter_unregistration) :-
     setup_call_cleanup(
         register_fake_adapter,
@@ -75,6 +93,14 @@ fake_metadata(fake_source,
                 bytes:unknown,
                 items:3,
                 source_id:test}).
+fake_metadata(oversized_source, Metadata) :-
+    length(Chars, 512),
+    maplist(=('x'), Chars),
+    string_chars(Payload, Chars),
+    Metadata = _{kind:fake_external,
+                 bytes:unknown,
+                 items:1,
+                 source_payload:Payload}.
 
 fake_operation(search(_),
                fake_source,
