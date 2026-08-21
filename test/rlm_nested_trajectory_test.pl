@@ -1,6 +1,7 @@
 :- begin_tests(rlm_nested_trajectory).
 
 :- use_module('../prolog/rlm_completion').
+:- use_module('../prolog/rlm_plan', []).
 
 model_response(Id, Prompt, Completion,
                model_response{
@@ -31,6 +32,58 @@ planner_result(
                             cost_known:true,
                             tokens_known:true}
     }).
+
+empty_exec_state(
+    exec_state{
+        vars:vars{},
+        model_responses:[],
+        model_events:[],
+        model_event_sequence:0,
+        trace_depth:0,
+        trace_parent:root_planner,
+        trace_reason:direct_plan_model,
+        trace_last_model:none,
+        transitions:[],
+        sequence:0,
+        checkpoints:[],
+        remaining:runtime_budget{
+            steps:20,
+            model_calls:20,
+            tool_calls:20,
+            context_ops:20,
+            output_bytes:65536
+        }
+    }).
+
+test(execution_ledger_records_true_nested_depth_and_parent) :-
+    model_response(root, 2, 1, RootResponse),
+    model_response(child, 3, 1, ChildResponse),
+    model_response(grandchild, 5, 2, GrandchildResponse),
+    empty_exec_state(S0),
+    rlm_plan:record_model_response(RootResponse, fake, S0, S1),
+    rlm_plan:child_trace_state(nested_rlm_model, S1, ChildStart),
+    rlm_plan:record_model_response(ChildResponse, fake, ChildStart, S2),
+    rlm_plan:child_trace_state(nested_rlm_model, S2, GrandchildStart),
+    rlm_plan:record_model_response(GrandchildResponse,
+                                   fake,
+                                   GrandchildStart,
+                                   S3),
+    rlm_plan:finalize_execution(final(done, S3), ok(Result)),
+    Result.model_events = [RootEvent,ChildEvent,GrandchildEvent],
+    assertion(RootEvent.sequence =:= 1),
+    assertion(RootEvent.id == plan_model_1),
+    assertion(RootEvent.parent == root_planner),
+    assertion(RootEvent.depth =:= 0),
+    assertion(ChildEvent.sequence =:= 2),
+    assertion(ChildEvent.id == plan_model_2),
+    assertion(ChildEvent.parent == plan_model_1),
+    assertion(ChildEvent.depth =:= 1),
+    assertion(GrandchildEvent.sequence =:= 3),
+    assertion(GrandchildEvent.id == plan_model_3),
+    assertion(GrandchildEvent.parent == plan_model_2),
+    assertion(GrandchildEvent.depth =:= 2),
+    assertion(Result.model_responses ==
+              [RootResponse,ChildResponse,GrandchildResponse]).
 
 test(completion_uses_authoritative_nested_event_ledger) :-
     model_response(r1, 2, 1, R1),
