@@ -401,7 +401,7 @@ completion_finish(ok,
                   TotalUsage,
                   ok(Completion)) :-
     planner_event(Planner, RootEvent),
-    plan_model_events(Plan, Result.vars, 0, ModelEvents),
+    completion_model_events(Plan, Result, ModelEvents),
     Completion = completion_result{
                      value:Result.value,
                      plan:Plan,
@@ -1208,6 +1208,29 @@ planner_event(Planner,
                           http_status:Planner.provider_summary.http_status,
                           usage:Planner.usage}).
 
+completion_model_events(_, Result, Events) :-
+    get_dict(model_events, Result, Recorded),
+    is_list(Recorded),
+    !,
+    maplist(recorded_model_event, Recorded, Events).
+completion_model_events(Plan, Result, Events) :-
+    plan_model_events(Plan, Result.vars, 0, Events).
+
+recorded_model_event(Recorded, Event) :-
+    get_dict(id, Recorded, Id),
+    get_dict(parent, Recorded, Parent),
+    get_dict(depth, Recorded, Depth),
+    get_dict(reason, Recorded, Reason),
+    get_dict(provider, Recorded, Provider),
+    get_dict(response, Recorded, Response),
+    response_event_with_identity(Response,
+                                 Id,
+                                 Parent,
+                                 Depth,
+                                 Reason,
+                                 Provider,
+                                 Event).
+
 plan_model_events(plan(Steps), Vars, Depth, Events) :-
     findall(Event,
             plan_model_event(Steps, Vars, Depth, Event),
@@ -1229,19 +1252,33 @@ plan_model_event(Steps, Vars, Depth, Event) :-
                    unknown,
                    Event).
 
-response_event(Response, Depth, Reason, ProviderFallback,
-               model_event{id:Id,
-                           parent:root_planner,
-                           depth:Depth,
-                           reason:Reason,
-                           provider:Provider,
-                           selected_model:Selected,
-                           http_status:Status,
-                           usage:Usage}) :-
+response_event(Response, Depth, Reason, ProviderFallback, Event) :-
     term_string(Response, StableText,
                 [quoted(true), numbervars(true)]),
     term_hash(StableText, Hash),
     format(atom(Id), 'model_~d', [Hash]),
+    response_event_with_identity(Response,
+                                 Id,
+                                 root_planner,
+                                 Depth,
+                                 Reason,
+                                 ProviderFallback,
+                                 Event).
+
+response_event_with_identity(Response,
+                             Id,
+                             Parent,
+                             Depth,
+                             Reason,
+                             ProviderFallback,
+                             model_event{id:Id,
+                                         parent:Parent,
+                                         depth:Depth,
+                                         reason:Reason,
+                                         provider:Provider,
+                                         selected_model:Selected,
+                                         http_status:Status,
+                                         usage:Usage}) :-
     dict_default(provider, Response, ProviderFallback, Provider),
     dict_default(selected_model, Response, unknown, Selected),
     (   get_dict(metadata, Response, Metadata), is_dict(Metadata)

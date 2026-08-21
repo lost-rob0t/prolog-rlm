@@ -813,6 +813,12 @@ preflight_runtime_with(Runtime, Plan) :-
 initial_execution_state(Budget,
                         exec_state{vars:_{},
                                    model_responses:[],
+                                   model_events:[],
+                                   model_event_sequence:0,
+                                   trace_depth:0,
+                                   trace_parent:root_planner,
+                                   trace_reason:direct_plan_model,
+                                   trace_last_model:none,
                                    transitions:[],
                                    sequence:0,
                                    checkpoints:[],
@@ -913,8 +919,15 @@ execute_step(model(ProviderName, PromptExpr, RequestOptions, Bind), Runtime,
 execute_step(rlm(Plan, Bind), Runtime, Inputs, State0, Outcome) :-
     !,
     parent_vars(State0, ParentVars),
-    execute_plan(Plan, Runtime, Inputs, State0, NestedOutcome),
-    nested_result(rlm, NestedOutcome, ParentVars, Bind, Outcome).
+    trace_context(State0, ParentTrace),
+    child_trace_state(nested_rlm_model, State0, NestedStart),
+    execute_plan(Plan, Runtime, Inputs, NestedStart, NestedOutcome),
+    nested_result(rlm,
+                  NestedOutcome,
+                  ParentVars,
+                  ParentTrace,
+                  Bind,
+                  Outcome).
 execute_step(tool(Name, ArgsExpr, Bind), Runtime, Inputs, State0, Outcome) :-
     !,
     resolve_expr(ArgsExpr, Inputs, State0, ArgsOutcome),
@@ -930,24 +943,38 @@ execute_step(tool(Name, ArgsExpr, Bind), Runtime, Inputs, State0, Outcome) :-
 execute_step(parallel(Plans, Bind), Runtime, Inputs, State0, Outcome) :-
     !,
     parent_vars(State0, ParentVars),
-    execute_branches(Plans, Runtime, Inputs, ParentVars, State0, [],
+    trace_context(State0, ParentTrace),
+    execute_branches(Plans,
+                     Runtime,
+                     Inputs,
+                     ParentVars,
+                     ParentTrace,
+                     State0,
+                     [],
                      BranchOutcome),
     (   BranchOutcome = error(Error, State)
     ->  Outcome = error(Error, State)
     ;   BranchOutcome = ok(Values, State1),
-        restore_vars(State1, ParentVars, Restored),
+        restore_scope(State1, ParentVars, ParentTrace, Restored),
         bind_value(Bind, Values, Restored, BindOutcome),
         transition_result(BindOutcome, parallel, Bind, Outcome)
     ).
 execute_step(retry(Attempts, Plan, Bind), Runtime, Inputs, State0, Outcome) :-
     !,
     parent_vars(State0, ParentVars),
-    execute_retry(Attempts, Plan, Runtime, Inputs, ParentVars, State0,
+    trace_context(State0, ParentTrace),
+    execute_retry(Attempts,
+                  Plan,
+                  Runtime,
+                  Inputs,
+                  ParentVars,
+                  ParentTrace,
+                  State0,
                   RetryOutcome),
     (   RetryOutcome = error(Error, State)
     ->  Outcome = error(Error, State)
     ;   RetryOutcome = ok(Value, State1),
-        restore_vars(State1, ParentVars, Restored),
+        restore_scope(State1, ParentVars, ParentTrace, Restored),
         bind_value(Bind, Value, Restored, BindOutcome),
         transition_result(BindOutcome, retry, Bind, Outcome)
     ).
@@ -1013,13 +1040,35 @@ handle_model_result(error(ModelError), Provider, _, State,
                                      message:"model operation failed"},
                           State)) :- !.
 handle_model_result(ok(Response), Provider, Bind, State0, Outcome) :-
-    record_model_response(Response, State0, State1),
+    record_model_response(Response, Provider, State0, State1),
     bind_value(Bind, Response, State1, BindOutcome),
     transition_result(BindOutcome, model(Provider), Bind, Outcome).
 
 record_model_response(Response, State0, State) :-
-    get_dict(model_responses, State0, Responses0),
-    put_dict(model_responses, State0, [Response|Responses0], State).
+    record_model_response(Response, unknown, State0, State).
+
+record_model_response(Response, Provider, State0, State) :-
+    state_value(model_responses, State0, [], Responses0),
+    state_value(model_events, State0, [], Events0),
+    state_value(model_event_sequence, State0, 0, Sequence0),
+    state_value(trace_depth, State0, 0, Depth),
+    state_value(trace_parent, State0, root_planner, Parent),
+    state_value(trace_reason, State0, direct_plan_model, Reason),
+    Sequence is Sequence0+1,
+    format(atom(Id), 'plan_model_~d', [Sequence]),
+    Event = plan_model_event{sequence:Sequence,
+                             id:Id,
+                             parent:Parent,
+                             depth:Depth,
+                             reason:Reason,
+                             provider:Provider,
+                             response:Response},
+    put_dict(_{model_responses:[Response|Responses0],
+               model_events:[Event|Events0],
+               model_event_sequence:Sequence,
+               trace_last_model:Id},
+             State0,
+             State).
 
 trusted_tool_exception(time_limit_exceeded, _) :-
     !,
@@ -1091,47 +1140,128 @@ add_transition(Operation, Bind, State0, State) :-
              State0,
              State).
 
-execute_branches([], _, _, _, State, Values, ok(Results, State)) :-
+execute_branches([], _, _, _, _, State, Values, ok(Results, State)) :-
     reverse(Values, Results).
-execute_branches([Plan|Plans], Runtime, Inputs, ParentVars, State0, Values0,
+execute_branches([Plan|Plans],
+                 Runtime,
+                 Inputs,
+                 ParentVars,
+                 ParentTrace,
+                 State0,
+                 Values0,
                  Outcome) :-
-    restore_vars(State0, ParentVars, BranchStart),
+    restore_scope(State0, ParentVars, ParentTrace, ParentStart),
+    child_trace_state(parallel_model, ParentStart, BranchStart),
     execute_plan(Plan, Runtime, Inputs, BranchStart, BranchOutcome),
-    (   BranchOutcome = final(Value, BranchState)
-    ->  execute_branches(Plans, Runtime, Inputs, ParentVars, BranchState,
-                         [Value|Values0], Outcome)
-    ;   BranchOutcome = error(Error, BranchState),
+    (   BranchOutcome = final(Value, BranchState0)
+    ->  restore_scope(BranchState0,
+                       ParentVars,
+                       ParentTrace,
+                       BranchState),
+        execute_branches(Plans,
+                         Runtime,
+                         Inputs,
+                         ParentVars,
+                         ParentTrace,
+                         BranchState,
+                         [Value|Values0],
+                         Outcome)
+    ;   BranchOutcome = error(Error, BranchState0),
+        restore_scope(BranchState0,
+                       ParentVars,
+                       ParentTrace,
+                       BranchState),
         Outcome = error(Error, BranchState)
     ).
 
-execute_retry(Attempts, Plan, Runtime, Inputs, ParentVars, State0, Outcome) :-
+execute_retry(Attempts,
+              Plan,
+              Runtime,
+              Inputs,
+              ParentVars,
+              ParentTrace,
+              State0,
+              Outcome) :-
     Attempts > 0,
-    restore_vars(State0, ParentVars, AttemptState),
+    restore_scope(State0, ParentVars, ParentTrace, ParentStart),
+    child_trace_state(retry_model, ParentStart, AttemptState),
     execute_plan(Plan, Runtime, Inputs, AttemptState, AttemptOutcome),
     (   AttemptOutcome = final(Value, State1)
     ->  Outcome = ok(Value, State1)
     ;   AttemptOutcome = error(Error, State1),
+        restore_scope(State1, ParentVars, ParentTrace, RetryState),
         Attempts1 is Attempts-1,
         (   Attempts1 > 0
-        ->  execute_retry(Attempts1, Plan, Runtime, Inputs, ParentVars,
-                          State1, Outcome)
-        ;   Outcome = error(Error, State1)
+        ->  execute_retry(Attempts1,
+                          Plan,
+                          Runtime,
+                          Inputs,
+                          ParentVars,
+                          ParentTrace,
+                          RetryState,
+                          Outcome)
+        ;   Outcome = error(Error, RetryState)
         )
     ).
 
-nested_result(_, error(Error, NestedState), _, _,
-              error(Error, NestedState)) :- !.
-nested_result(Operation, final(Value, NestedState), ParentVars, Bind,
+nested_result(_, error(Error, NestedState), ParentVars, ParentTrace, _,
+              error(Error, Restored)) :-
+    !,
+    restore_scope(NestedState, ParentVars, ParentTrace, Restored).
+nested_result(Operation,
+              final(Value, NestedState),
+              ParentVars,
+              ParentTrace,
+              Bind,
               Outcome) :-
-    restore_vars(NestedState, ParentVars, Restored),
+    restore_scope(NestedState, ParentVars, ParentTrace, Restored),
     bind_value(Bind, Value, Restored, BindOutcome),
     transition_result(BindOutcome, Operation, Bind, Outcome).
 
 parent_vars(State, Vars) :-
     get_dict(vars, State, Vars).
 
+trace_context(State,
+              trace_context{depth:Depth,
+                            parent:Parent,
+                            reason:Reason,
+                            last_model:LastModel}) :-
+    state_value(trace_depth, State, 0, Depth),
+    state_value(trace_parent, State, root_planner, Parent),
+    state_value(trace_reason, State, direct_plan_model, Reason),
+    state_value(trace_last_model, State, none, LastModel).
+
+child_trace_state(Reason, State0, State) :-
+    trace_context(State0, Trace),
+    ChildDepth is Trace.depth+1,
+    (   Trace.last_model == none
+    ->  ChildParent = Trace.parent
+    ;   ChildParent = Trace.last_model
+    ),
+    put_dict(_{trace_depth:ChildDepth,
+               trace_parent:ChildParent,
+               trace_reason:Reason,
+               trace_last_model:none},
+             State0,
+             State).
+
+restore_scope(State0, Vars, Trace, State) :-
+    put_dict(_{vars:Vars,
+               trace_depth:Trace.depth,
+               trace_parent:Trace.parent,
+               trace_reason:Trace.reason,
+               trace_last_model:Trace.last_model},
+             State0,
+             State).
+
 restore_vars(State0, Vars, State) :-
     put_dict(vars, State0, Vars, State).
+
+state_value(Key, State, Default, Value) :-
+    (   get_dict(Key, State, Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
 
 resolve_expr(literal(Value), _, _, ok(Value)) :- !.
 resolve_expr(input(Name), Inputs, _, Outcome) :-
@@ -1231,10 +1361,13 @@ finalize_execution(final(Value, State), ok(Result)) :-
     get_dict(vars, State, Vars),
     get_dict(model_responses, State, RevModelResponses),
     reverse(RevModelResponses, ModelResponses),
+    state_value(model_events, State, [], RevModelEvents),
+    reverse(RevModelEvents, ModelEvents),
     get_dict(remaining, State, Remaining),
     Result = plan_result{value:Value,
                          vars:Vars,
                          model_responses:ModelResponses,
+                         model_events:ModelEvents,
                          transitions:Transitions,
                          checkpoints:Checkpoints,
                          budget_remaining:Remaining}.
@@ -1244,9 +1377,12 @@ finalize_execution(error(Error0, State), error(Error)) :-
     reverse(RevTransitions, Transitions),
     get_dict(model_responses, State, RevModelResponses),
     reverse(RevModelResponses, ModelResponses),
+    state_value(model_events, State, [], RevModelEvents),
+    reverse(RevModelEvents, ModelEvents),
     get_dict(remaining, State, Remaining),
     put_dict(_{transitions:Transitions,
                model_responses:ModelResponses,
+               model_events:ModelEvents,
                budget_remaining:Remaining},
              Error0,
              Error).
