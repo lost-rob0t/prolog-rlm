@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/151-plunit-main-ownership
+  pull_request:
 
 permissions:
   contents: read
