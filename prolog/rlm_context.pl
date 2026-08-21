@@ -214,13 +214,15 @@ context_register_adapter_(Name0, SourceRef, Options, Outcome) :-
     validate_limits(Options, LimitsOutcome),
     (   LimitsOutcome = error(Error)
     ->  Outcome = error(Error)
-    ;   context_adapter_definition(Name,
+    ;   LimitsOutcome = ok(Limits),
+        context_adapter_definition(Name,
                                    Capabilities,
                                    MetadataHandler,
                                    _)
     ->  adapter_source_metadata(Name,
                                 MetadataHandler,
                                 SourceRef,
+                                Limits,
                                 AdapterMetadata),
         register_adapter_source(Name,
                                 Capabilities,
@@ -230,13 +232,20 @@ context_register_adapter_(Name0, SourceRef, Options, Outcome) :-
     ;   throw(context_fault(adapter_not_registered(Name)))
     ).
 
-adapter_source_metadata(Name, MetadataHandler, SourceRef, Metadata) :-
+adapter_source_metadata(Name, MetadataHandler, SourceRef, Limits, Metadata) :-
     (   call(MetadataHandler, SourceRef, RawMetadata)
     ->  true
     ;   throw(context_fault(adapter_metadata_failed(Name)))
     ),
     (   is_dict(RawMetadata), ground(RawMetadata)
-    ->  Metadata = RawMetadata
+    ->  get_dict(max_bytes, Limits, MaxBytes),
+        term_utf8_size(RawMetadata, Bytes),
+        (   Bytes =< MaxBytes
+        ->  Metadata = RawMetadata
+        ;   throw(context_fault(adapter_metadata_too_large(Name,
+                                                          Bytes,
+                                                          MaxBytes)))
+        )
     ;   throw(context_fault(invalid_adapter_metadata(Name, RawMetadata)))
     ).
 
@@ -1225,6 +1234,13 @@ fault_error(Operation, invalid_adapter_metadata(Name, Value),
                           value_shape:Shape,
                           message:"adapter metadata callback must return a ground dict"}) :-
     source_shape(Value, Shape).
+fault_error(Operation, adapter_metadata_too_large(Name, Bytes, MaxBytes),
+            context_error{operation:Operation,
+                          kind:adapter_metadata_too_large,
+                          adapter:Name,
+                          bytes:Bytes,
+                          max_bytes:MaxBytes,
+                          message:"adapter metadata exceeds the model-visible byte ceiling"}).
 fault_error(Operation, adapter_operation_denied(Name, Requested),
             context_error{operation:Operation,
                           kind:capability_denied,
