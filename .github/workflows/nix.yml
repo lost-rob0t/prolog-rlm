@@ -1,0 +1,40 @@
+name: Nix flake
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flake:
+    name: Flake package and clean runtime load
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v20
+      - name: Check flake outputs
+        run: nix flake check --print-build-logs
+      - name: Build default package
+        run: nix build --print-build-logs .#
+      - name: Load packaged library outside checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$(nix build --no-link --print-out-paths .#packages.x86_64-linux.default)"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          cd "$tmp"
+          SWIPL_PACK_PATH="$package/share/swi-prolog/pack" \
+            nix shell nixpkgs#swiProlog -c swipl -q -g "use_module(library(rlm)),halt"
+      - name: Run packaged wrapper outside checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$(nix build --no-link --print-out-paths .#packages.x86_64-linux.default)"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          cd "$tmp"
+          "$package/bin/prolog-rlm-swipl" -q -g "use_module(library(rlm)),halt"
