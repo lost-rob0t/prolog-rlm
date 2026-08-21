@@ -28,7 +28,7 @@ jobs:
           trap 'rm -rf "$tmp"' EXIT
           cd "$tmp"
           SWIPL_PACK_PATH="$package/share/swi-prolog/pack" \
-            nix shell nixpkgs#swiProlog -c swipl -q -g "use_module(library(rlm)),halt"
+            nix shell '.#devShells.x86_64-linux.default' -c swipl -q -g "use_module(library(rlm)),halt"
       - name: Run packaged wrapper outside checkout
         shell: bash
         run: |
