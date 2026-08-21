@@ -1,16 +1,16 @@
 name: Apply context closed-data repair
 
 on:
-  push:
-    branches:
-      - fix/160-context-adapter-closed-data
   pull_request:
+    branches:
+      - fix/158-prompt-compiler-closed-dicts
 
 permissions:
   contents: write
 
 jobs:
   apply:
+    if: github.head_ref == 'fix/160-context-adapter-closed-data'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -32,30 +32,25 @@ jobs:
 
           path = Path("prolog/rlm_context.pl")
           text = path.read_text()
-
-          text = replace_once(
-              text,
+          text = replace_once(text,
               ":- use_module(library(lists)).\n",
               ":- use_module(library(lists)).\n:- use_module(rlm_closed_data, []).\n",
-              "closed-data import",
-          )
+              "closed-data import")
 
-          old = '''context_register_adapter_(Name0, SourceRef, Options, Outcome) :-
+          text = replace_once(text, '''context_register_adapter_(Name0, SourceRef, Options, Outcome) :-
               normalize_adapter_name(Name0, Name),
               (   ground(SourceRef)
               ->  true
               ;   throw(context_fault(non_ground_adapter_source(Name)))
               ),
-              validate_limits(Options, LimitsOutcome),'''
-          new = '''context_register_adapter_(Name0, SourceRef0, Options, Outcome) :-
+              validate_limits(Options, LimitsOutcome),''', '''context_register_adapter_(Name0, SourceRef0, Options, Outcome) :-
               normalize_adapter_name(Name0, Name),
               closed_context_data(SourceRef0,
                                   non_ground_adapter_source(Name),
                                   SourceRef),
-              validate_limits(Options, LimitsOutcome),'''
-          text = replace_once(text, old, new, "adapter source normalization")
+              validate_limits(Options, LimitsOutcome),''', "adapter source normalization")
 
-          old = '''adapter_source_metadata(Name, MetadataHandler, SourceRef, Metadata) :-
+          text = replace_once(text, '''adapter_source_metadata(Name, MetadataHandler, SourceRef, Metadata) :-
               (   call(MetadataHandler, SourceRef, RawMetadata)
               ->  true
               ;   throw(context_fault(adapter_metadata_failed(Name)))
@@ -63,8 +58,7 @@ jobs:
               (   is_dict(RawMetadata), ground(RawMetadata)
               ->  Metadata = RawMetadata
               ;   throw(context_fault(invalid_adapter_metadata(Name, RawMetadata)))
-              ).'''
-          new = '''adapter_source_metadata(Name, MetadataHandler, SourceRef, Metadata) :-
+              ).''', '''adapter_source_metadata(Name, MetadataHandler, SourceRef, Metadata) :-
               (   call(MetadataHandler, SourceRef, RawMetadata)
               ->  true
               ;   throw(context_fault(adapter_metadata_failed(Name)))
@@ -74,10 +68,9 @@ jobs:
                                       invalid_adapter_metadata(Name, RawMetadata),
                                       Metadata)
               ;   throw(context_fault(invalid_adapter_metadata(Name, RawMetadata)))
-              ).'''
-          text = replace_once(text, old, new, "adapter metadata normalization")
+              ).''', "adapter metadata normalization")
 
-          old = '''validate_adapter_work(Name, Raw, Work) :-
+          text = replace_once(text, '''validate_adapter_work(Name, Raw, Work) :-
               (   is_dict(Raw),
                   get_dict(value, Raw, Value),
                   get_dict(bytes_inspected, Raw, Bytes),
@@ -92,8 +85,7 @@ jobs:
                               items_inspected:Items,
                               truncated:Truncated}
               ;   throw(context_fault(invalid_adapter_work(Name, Raw)))
-              ).'''
-          new = '''validate_adapter_work(Name, Raw, Work) :-
+              ).''', '''validate_adapter_work(Name, Raw, Work) :-
               (   is_dict(Raw),
                   get_dict(value, Raw, Value0),
                   get_dict(bytes_inspected, Raw, Bytes),
@@ -110,53 +102,46 @@ jobs:
                               items_inspected:Items,
                               truncated:Truncated}
               ;   throw(context_fault(invalid_adapter_work(Name, Raw)))
-              ).'''
-          text = replace_once(text, old, new, "adapter work normalization")
+              ).''', "adapter work normalization")
 
-          anchor = '''normalize_adapter_name(Name, _) :-
+          text = replace_once(text, '''normalize_adapter_name(Name, _) :-
               throw(context_fault(invalid_adapter_name(Name))).
-'''
-          insertion = '''normalize_adapter_name(Name, _) :-
+''', '''normalize_adapter_name(Name, _) :-
               throw(context_fault(invalid_adapter_name(Name))).
 
           closed_context_data(Value0, Fault, Value) :-
               catch(rlm_closed_data:closed_data_normalize(Value0, Value),
                     rlm_closed_data_fault(_),
                     throw(context_fault(Fault))).
-'''
-          text = replace_once(text, anchor, insertion, "closed context helper")
-
+''', "closed context helper")
           path.write_text(text)
 
           test_path = Path("test/rlm_context_adapter_test.pl")
           test = test_path.read_text()
-          old = '''    assertion(Result.truncated == true),
+          test = replace_once(test, '''    assertion(Result.truncated == true),
               assertion(Result.value == [_{id:1, text:"needle one"}]),
-              context_delete(Ref.handle, ok(_)).'''
-          new = '''    assertion(Result.truncated == true),
+              context_delete(Ref.handle, ok(_)).''', '''    assertion(Result.truncated == true),
               assertion(ground(Result.value)),
               Result.value = [First],
               assertion(is_dict(First, rlm_anonymous_dict)),
               assertion(First.id =:= 1),
               assertion(First.text == "needle one"),
-              context_delete(Ref.handle, ok(_)).'''
-          test = replace_once(test, old, new, "canonical adapter result assertion")
+              context_delete(Ref.handle, ok(_)).''', "canonical adapter result assertion")
           test_path.write_text(test)
           PY
 
           git diff --check
-          git diff -- prolog/rlm_context.pl test/rlm_context_adapter_test.pl
 
       - name: Commit repair
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- prolog/rlm_context.pl test/rlm_context_adapter_test.pl; then
-            echo "repair already applied"
-            exit 0
-          fi
           git config user.name "prolog-rlm remediation"
           git config user.email "actions@users.noreply.github.com"
           git add prolog/rlm_context.pl test/rlm_context_adapter_test.pl
+          if git diff --cached --quiet; then
+            echo "repair already applied"
+            exit 0
+          fi
           git commit -m "Canonicalize context adapter closed data"
           git push origin HEAD:fix/160-context-adapter-closed-data
