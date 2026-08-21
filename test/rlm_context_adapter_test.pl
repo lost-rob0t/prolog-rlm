@@ -33,8 +33,10 @@ oversized_adapter_metadata_case :-
                              [max_bytes(64)],
                              error(Error)),
     assertion(Error.kind == adapter_metadata_too_large),
-    assertion(Error.max_bytes == 64),
-    assertion(Error.bytes > Error.max_bytes),
+    get_dict(bytes, Error, Bytes),
+    get_dict(max_bytes, Error, MaxBytes),
+    assertion(MaxBytes == 64),
+    assertion(Bytes > MaxBytes),
     context_adapter_unregister(fake_external,
                                ok(unregistered(fake_external))),
     register_fake_adapter.
