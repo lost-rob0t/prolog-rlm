@@ -227,7 +227,8 @@ canonical_value(Value, _) :-
 canonical_value(Value, Canonical) :-
     is_dict(Value),
     !,
-    dict_pairs(Value, Tag, Pairs0),
+    dict_pairs(Value, Tag0, Pairs0),
+    canonical_dict_tag(Tag0, Tag),
     keysort(Pairs0, Sorted),
     maplist(canonical_pair, Sorted, Pairs),
     dict_pairs(Canonical, Tag, Pairs).
@@ -244,6 +245,15 @@ canonical_value(Value, Canonical) :-
 canonical_value(Value, Value) :- atomic(Value), !.
 canonical_value(Value, _) :-
     throw(authority_fault(invalid_authority_value(Value))).
+
+canonical_dict_tag(Tag0, rlm_anonymous_dict) :-
+    var(Tag0),
+    !.
+canonical_dict_tag(Tag, Tag) :-
+    atom(Tag),
+    !.
+canonical_dict_tag(Tag, _) :-
+    throw(authority_fault(invalid_dict_tag(Tag))).
 
 canonical_pair(Key-Value0, Key-Value) :- canonical_value(Value0, Value).
 
@@ -962,7 +972,7 @@ cancel_transition_locked(ApprovalId, Reason,
                    reason:Reason,
                    after_execution_claim:true}).
 cancel_transition_locked(ApprovalId, _, already(State)) :-
-    authority_pending(ApprovalId, _, Record),
+    authority_pending(ApprovalId, Context, Record),
     !,
     State = Record.state.
 cancel_transition_locked(ApprovalId, _, missing(ApprovalId)).
