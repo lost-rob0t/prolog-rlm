@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/160-context-adapter-closed-data
+  pull_request:
 
 permissions:
   contents: write
