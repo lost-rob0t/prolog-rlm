@@ -7,7 +7,7 @@
 /** <module> Closed short-prompt command bindings
 
 Compiles inert KB prompt records into a small allow-listed loop-command
-vocabulary.  Records are data: no prompt action is meta-called and compilation
+vocabulary. Records are data: no prompt action is meta-called and compilation
 never mutates authority, capabilities, Spec state, or runtime state.
 */
 
@@ -68,12 +68,14 @@ prompt_command_compile_ref_(Records, Id, Outcome) :-
 
 compile_binding(Id, Text0, Trigger, Action, Outcome) :-
     ( text_string(Text0, Text), ground(Trigger)
-    -> true
+    -> compile_valid_binding(Id, Text, Trigger, Action, Outcome)
     ;  Outcome = error(prompt_command_error{phase:validate,
                                              kind:invalid_prompt,
                                              prompt_id:Id,
-                                             message:"prompt text and trigger must be closed data"}), !
-    ),
+                                             message:"prompt text and trigger must be closed data"})
+    ).
+
+compile_valid_binding(Id, Text, Trigger, Action, Outcome) :-
     ( prompt_command_action(Action, Command)
     -> Binding = prompt_command{prompt_id:Id,
                                 text:Text,
