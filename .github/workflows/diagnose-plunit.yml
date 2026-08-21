@@ -12,7 +12,7 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -22,8 +22,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes swi-prolog-nox
 
-      - name: Locate first failing or hanging PlUnit unit
+      - name: Run every PlUnit unit in its own bounded process
         shell: bash
         run: |
-          set -o pipefail
-          timeout 12m swipl -q -s test/run_tests_diagnostic.pl 2>&1 | tee /tmp/plunit-diagnostic.log
+          set -euo pipefail
+          mapfile -t units < <(
+            swipl -q -l test/run_tests.pl \
+              -g "forall(plunit:current_test_unit(Unit,_), format('~q~n',[Unit])), halt"
+          )
+          echo "diagnostic_unit_count=${#units[@]}"
+
+          failures=0
+          for unit in "${units[@]}"; do
+            echo "diagnostic_unit_start=${unit}"
+            set +e
+            timeout 25s swipl -q -l test/run_tests.pl \
+              -g "(run_tests(${unit})->halt(0);halt(1))"
+            status=$?
+            set -e
+
+            if [ "$status" -eq 0 ]; then
+              echo "diagnostic_unit_done=${unit}"
+            elif [ "$status" -eq 124 ]; then
+              echo "diagnostic_unit_timeout=${unit}"
+              failures=1
+            else
+              echo "diagnostic_unit_failed=${unit} status=${status}"
+              failures=1
+            fi
+          done
+
+          exit "$failures"
