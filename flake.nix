@@ -10,6 +10,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
+        swiProlog = pkgs."swi-prolog";
         packRoot = "$out/share/swi-prolog/pack";
         prologRlm = pkgs.stdenvNoCC.mkDerivation {
           pname = "prolog-rlm";
@@ -29,7 +30,7 @@
             }
             addEnvHooks "$targetOffset" addPrologRlmPackPath
             EOF
-            makeWrapper ${pkgs.swiProlog}/bin/swipl "$out/bin/prolog-rlm-swipl" \
+            makeWrapper ${swiProlog}/bin/swipl "$out/bin/prolog-rlm-swipl" \
               --prefix SWIPL_PACK_PATH : "${packRoot}"
             runHook postInstall
           '';
@@ -45,11 +46,11 @@
         apps.default = self.apps.${system}.swipl;
 
         devShells.default = pkgs.mkShell {
-          packages = [ pkgs.swiProlog prologRlm ];
+          packages = [ swiProlog prologRlm ];
         };
 
         checks.packaged-library-load = pkgs.runCommand "prolog-rlm-packaged-library-load" {
-          nativeBuildInputs = [ pkgs.swiProlog prologRlm ];
+          nativeBuildInputs = [ swiProlog prologRlm ];
         } ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME" "$TMPDIR/outside-source"
