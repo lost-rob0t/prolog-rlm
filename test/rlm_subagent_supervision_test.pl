@@ -27,14 +27,17 @@ successful_child_worker_result_reaches_parent_case(Runtime) :-
     pump_until_message(Runtime, Child, 20),
     pump_until_message(Runtime, Parent, 20),
     agent_status(Runtime, Parent, ok(ParentStatus)),
-    ParentStatus.last_result = child_result{child:Child,
-                                            result:ok(evidence)},
+    assertion(ParentStatus.last_result ==
+              child_result{child:Child, result:ok(evidence)}),
     agent_trace(Runtime, Trace),
-    member(Event, Trace),
+    include(child_result_event_for(Parent, Child), Trace, ChildResultEvents),
+    assertion(ChildResultEvents = [_]).
+
+child_result_event_for(Parent, Child, Event) :-
     Event.type == child_result,
-    Event.data.parent == ParentStatus.agent,
-    Event.data.child == Child,
-    !.
+    Event.parent == Parent,
+    Event.child == Child,
+    Event.result == ok(evidence).
 
 pump_until_message(_, _, Attempts) :-
     Attempts =< 0,
