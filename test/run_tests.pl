@@ -66,6 +66,7 @@
 :- consult(rlm_demo_test).
 :- consult(rlm_cli_test).
 :- consult(rlm_async_test).
+:- consult(rlm_async_control_test).
 :- consult(rlm_async_canonical_test).
 :- consult(rlm_spec_verify_test).
 :- consult(rlm_spec_lang_test).
