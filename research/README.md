@@ -26,6 +26,7 @@ Each record should contain:
 - `RLM-RESEARCH-008-adaptive-recursion.org` — depth/cost evidence and adaptive recursion policy.
 - `RLM-RESEARCH-009-durable-artifact-context.org` — fresh reasoning roots, blackboards and durable task state.
 - `RLM-RESEARCH-010-symbolic-prompt-compiler.org` — progressive disclosure, symbolic capability routing, dependency closure, bounded context compilation, and explainable selection.
+- `RLM-RESEARCH-011-managed-context-tool-discovery.org` — managed rolling-context integration, one shared token solver, contextual activation/deactivation, bounded model discovery, MCP metadata, and child-agent scope narrowing.
 - `RLM-RESEARCH-020-prolog-agent-ui-contract.org` — OpenCode black-box functionality, layout, frontend protocol and cross-client UI semantics.
 - `RLM-RESEARCH-021-javascript-ui.org` — TypeScript/OpenTUI/Solid reference TUI and Ink comparison.
 - `RLM-RESEARCH-022-common-lisp-ui.org` — Common Lisp standalone TUI research, preferring Tuition with Old Norse as a lower-level alternative.
@@ -33,7 +34,7 @@ Each record should contain:
 - `RLM-RESEARCH-024-emacs-ui.org` — full Emacs chat/coding UI, asynchronous process transport, optional Sweep bindings and native diff/editor integration.
 - `RLM-RESEARCH-025-lem-ui.org` — Lem editor UI and a reusable Common Lisp PrologAgent client shared with the standalone CL frontend.
 
-The gap between `010` and `020` is deliberate. New records must not reuse an ID already present in an open branch or PR merely because it is absent from canonical `main`.
+The gaps are deliberate. New records must not reuse an ID already present in an open branch or PR merely because it is absent from canonical `main`.
 
 ## Rule
 
