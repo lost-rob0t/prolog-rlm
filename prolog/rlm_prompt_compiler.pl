@@ -36,6 +36,7 @@ compiler material can share one hard provider-visible budget.
 :- use_module(library(option)).
 :- use_module(library(uuid)).
 :- use_module(rlm_context_budget, []).
+:- use_module(rlm_closed_data, []).
 :- use_module(rlm_tool, []).
 
 :- dynamic prompt_catalog_state/2.
@@ -1454,16 +1455,16 @@ sanitize_tool_schema(Schema0, Schema) :-
         get_dict(description, Schema0, Description0),
         get_dict(capability, Schema0, Capability),
         get_dict(effect, Schema0, Effect),
-        get_dict(arguments, Schema0, Arguments),
-        get_dict(result, Schema0, Result),
-        get_dict(limits, Schema0, Limits)
+        get_dict(arguments, Schema0, Arguments0),
+        get_dict(result, Schema0, Result0),
+        get_dict(limits, Schema0, Limits0)
     ->  normalize_name(Name0, Name),
         bounded_description(Description0, Description),
         require_ground(Capability, schema_capability),
         require_ground(Effect, schema_effect),
-        require_ground(Arguments, schema_arguments),
-        require_ground(Result, schema_result),
-        require_ground(Limits, schema_limits),
+        closed_schema_value(Arguments0, schema_arguments, Arguments),
+        closed_schema_value(Result0, schema_result, Result),
+        closed_schema_value(Limits0, schema_limits, Limits),
         Schema = tool_schema{name:Name,
                              description:Description,
                              capability:Capability,
@@ -1473,6 +1474,11 @@ sanitize_tool_schema(Schema0, Schema) :-
                              limits:Limits}
     ;   throw(prompt_compiler_fault(invalid_tool_schema(Schema0)))
     ).
+
+closed_schema_value(Value0, Field, Value) :-
+    catch(rlm_closed_data:closed_data_normalize(Value0, Value),
+          rlm_closed_data_fault(Reason),
+          throw(prompt_compiler_fault(closed_data(Field, Reason)))).
 
 normalize_optional_content(none, none) :- !.
 normalize_optional_content(Content0, Content) :-
