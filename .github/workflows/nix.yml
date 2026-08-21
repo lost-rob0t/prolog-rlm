@@ -23,12 +23,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          repo="$PWD"
           package="$(nix build --no-link --print-out-paths .#packages.x86_64-linux.default)"
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           cd "$tmp"
           SWIPL_PACK_PATH="$package/share/swi-prolog/pack" \
-            nix shell '.#devShells.x86_64-linux.default' -c swipl -q -g "use_module(library(rlm)),halt"
+            nix shell "$repo#devShells.x86_64-linux.default" -c swipl -q -g "use_module(library(rlm)),halt"
       - name: Run packaged wrapper outside checkout
         shell: bash
         run: |
