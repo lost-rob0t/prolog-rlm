@@ -19,11 +19,15 @@ diagnostic_main(_) :-
 run_unit_bounded(Unit) :-
     format(user_error, 'diagnostic_unit_start=~w~n', [Unit]),
     flush_output(user_error),
-    catch(call_with_time_limit(20, run_tests(Unit)),
-          Exception,
-          diagnostic_exception(Unit, Exception)),
-    format(user_error, 'diagnostic_unit_done=~w~n', [Unit]),
-    flush_output(user_error).
+    (   catch(call_with_time_limit(20, run_tests(Unit)),
+              Exception,
+              diagnostic_exception(Unit, Exception))
+    ->  format(user_error, 'diagnostic_unit_done=~w~n', [Unit]),
+        flush_output(user_error)
+    ;   format(user_error, 'diagnostic_unit_failed=~w~n', [Unit]),
+        flush_output(user_error),
+        fail
+    ).
 
 diagnostic_exception(Unit, time_limit_exceeded) :-
     format(user_error, 'diagnostic_unit_timeout=~w~n', [Unit]),
