@@ -74,14 +74,18 @@ test(execution_ledger_records_true_nested_depth_and_parent) :-
     assertion(RootEvent.id == plan_model_1),
     assertion(RootEvent.parent == root_planner),
     assertion(RootEvent.depth =:= 0),
+    assertion(RootEvent.reason == direct_plan_model),
+    assertion(RootEvent.provider == fake),
     assertion(ChildEvent.sequence =:= 2),
     assertion(ChildEvent.id == plan_model_2),
     assertion(ChildEvent.parent == plan_model_1),
     assertion(ChildEvent.depth =:= 1),
+    assertion(ChildEvent.reason == nested_rlm_model),
     assertion(GrandchildEvent.sequence =:= 3),
     assertion(GrandchildEvent.id == plan_model_3),
     assertion(GrandchildEvent.parent == plan_model_2),
     assertion(GrandchildEvent.depth =:= 2),
+    assertion(GrandchildEvent.reason == nested_rlm_model),
     assertion(Result.model_responses ==
               [RootResponse,ChildResponse,GrandchildResponse]).
 
