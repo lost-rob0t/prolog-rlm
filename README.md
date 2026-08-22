@@ -47,6 +47,10 @@ Run deterministic tests with:
 swipl -q -s test/run_tests.pl
 ```
 
+The aggregate runner reports its discovered and executed PlUnit counts and
+fails closed for an empty, partial, failing, or blocked suite. The CI gate
+also bounds the process and fails if it times out.
+
 ### CLI quickstart
 
 A fresh checkout can run a real deterministic runtime walkthrough with **no credentials**:

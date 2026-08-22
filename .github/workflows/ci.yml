@@ -41,6 +41,14 @@ jobs:
           swipl -q -g halt -s test/live_repair_openrouter_test.pl
           swipl -q -g halt -s benchmark/rlm_live_deep_experiment.pl
 
+      - name: Verify aggregate PlUnit main ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(swipl -q -s test/runner_main_ownership_probe.pl)"
+          printf '%s\n' "$output"
+          grep -qx 'aggregate_main_owner=probe' <<<"$output"
+
       - name: Run deterministic PlUnit suite
         shell: bash
         env:
@@ -48,9 +56,17 @@ jobs:
           OPENROUTER_TEST_MODEL: ""
         run: |
           set +e
-          swipl -q -s test/run_tests.pl > /tmp/prolog-rlm-plunit.log 2>&1
+          timeout 15m swipl -q -s test/run_tests.pl > /tmp/prolog-rlm-plunit.log 2>&1
           status=$?
+          set -e
           cat /tmp/prolog-rlm-plunit.log
+
+          if [ "$status" -eq 0 ]; then
+            grep -Eq '^aggregate_plunit_discovered suites=[1-9][0-9]* tests=[1-9][0-9]*$' /tmp/prolog-rlm-plunit.log || status=1
+            grep -Eq '^aggregate_plunit_summary suites=[1-9][0-9]* discovered=[1-9][0-9]* executed=[1-9][0-9]* passed=[1-9][0-9]* failed=0 timeout=0 blocked=0$' /tmp/prolog-rlm-plunit.log || status=1
+            grep -Eq '^aggregate_plunit_complete suites=[1-9][0-9]* tests=[1-9][0-9]*$' /tmp/prolog-rlm-plunit.log || status=1
+          fi
+
           if [ "$status" -ne 0 ]; then
             message="$(tail -n 60 /tmp/prolog-rlm-plunit.log | tr '\n' ' ')"
             message="${message//'%'/'%25'}"

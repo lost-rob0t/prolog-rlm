@@ -157,6 +157,10 @@ complete PlUnit suite
 standalone benchmark/run.pl deterministic suite
 ```
 
-The second gate is intentional: it verifies the CLI, report serialization, budget application, and exit status independently of PlUnit.
+The PlUnit runner emits positive discovery and completion sentinels, checks
+that every registered suite is in the aggregate selection, and compares the
+executed, passed, failed, timeout, and blocked counts. The second gate is
+intentional: it verifies the CLI, report serialization, budget application,
+and exit status independently of PlUnit.
 
 The REAL OpenRouter job runs the existing core and structured-repair suites plus `benchmark/run.pl integration`. With credentials available, CI therefore gates a machine-readable real-provider benchmark report containing latency, token usage, provider-reported cost, selected-model evidence, provider/runtime health, and instruction-quality evidence.
