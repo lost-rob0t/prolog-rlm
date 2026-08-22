@@ -47,9 +47,14 @@ Run deterministic tests with:
 swipl -q -s test/run_tests.pl
 ```
 
-The aggregate runner reports its discovered and executed PlUnit counts and
-fails closed for an empty, partial, failing, or blocked suite. The CI gate
-also bounds the process and fails if it times out.
+The aggregate runner reports its discovered, planned, completed, and outcome
+counts and fails closed for an empty, partial, failing, blocked, or skipped
+suite. Each test runs under a 20-second watchdog and the runner has a
+best-effort 45-second internal failsafe; CI additionally enforces a hard
+50-second process bound, so a hung or stalled suite fails the gate within
+roughly a minute instead of blocking it. The internal failsafe cannot
+interrupt a test stuck inside uninterruptible code, so the process bound is
+the hard guarantee.
 
 ### CLI quickstart
 

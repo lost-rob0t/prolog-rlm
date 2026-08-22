@@ -49,22 +49,47 @@ jobs:
           printf '%s\n' "$output"
           grep -qx 'aggregate_main_owner=probe' <<<"$output"
 
+      - name: Verify aggregate runner rejects hostile inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          swipl -q -s test/run_runner_integrity_tests.pl
+
       - name: Run deterministic PlUnit suite
         shell: bash
         env:
           OPENROUTER_API_KEY: ""
           OPENROUTER_TEST_MODEL: ""
         run: |
+          report="${RUNNER_TEMP}/prolog-rlm-plunit.json"
+          rm -f "$report"
           set +e
-          timeout 15m swipl -q -s test/run_tests.pl > /tmp/prolog-rlm-plunit.log 2>&1
+          timeout 50s env PLUNIT_GATE_REPORT="$report" \
+            swipl --on-error=status -q -s test/run_tests.pl \
+            > /tmp/prolog-rlm-plunit.log 2>&1
           status=$?
           set -e
           cat /tmp/prolog-rlm-plunit.log
 
           if [ "$status" -eq 0 ]; then
-            grep -Eq '^aggregate_plunit_discovered suites=[1-9][0-9]* tests=[1-9][0-9]*$' /tmp/prolog-rlm-plunit.log || status=1
-            grep -Eq '^aggregate_plunit_summary suites=[1-9][0-9]* discovered=[1-9][0-9]* executed=[1-9][0-9]* passed=[1-9][0-9]* failed=0 timeout=0 blocked=0$' /tmp/prolog-rlm-plunit.log || status=1
-            grep -Eq '^aggregate_plunit_complete suites=[1-9][0-9]* tests=[1-9][0-9]*$' /tmp/prolog-rlm-plunit.log || status=1
+            test -s "$report" || status=1
+            if [ "$status" -eq 0 ]; then
+              jq -e -s '
+                length == 1 and
+                .[0].schema == "prolog-rlm.plunit.v1" and
+                .[0].phase == "complete" and
+                .[0].status == "pass" and
+                (.[0].suites | type) == "number" and .[0].suites > 0 and
+                (.[0].discovered | type) == "number" and .[0].discovered > 0 and
+                .[0].planned == .[0].discovered and
+                .[0].completed == .[0].planned and
+                .[0].passed == .[0].discovered and
+                .[0].failed == 0 and
+                .[0].timeout == 0 and
+                .[0].blocked == 0 and
+                .[0].fixme == 0
+              ' "$report" >/dev/null || status=1
+            fi
           fi
 
           if [ "$status" -ne 0 ]; then
