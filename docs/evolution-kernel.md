@@ -4,9 +4,9 @@ Issue: #142
 
 ## Decision
 
-**GO** for a small, pure, domain-neutral configuration-space evolution kernel. **HOLD** latency-bearing evaluator/Future integration until the pure data contract is executable and stable. **HOLD** model-weight/parameter-space ES. **REJECT** DeepSeek Harness, Cordis, coding-agent, frontend, or product genotype types in core.
+**GO** for a small, domain-neutral configuration-space evolution library. The pure candidate kernel is stable, and latency-bearing evaluation now composes with the existing bounded Future runtime. **HOLD** model-weight/parameter-space ES. **REJECT** DeepSeek Harness, Cordis, coding-agent, frontend, or product genotype types in core.
 
-The first slice is deliberately provider-free. It gives downstream callers a stable typed candidate, lineage, fitness, and deterministic selection contract without creating another scheduler, authority system, effect ledger, verifier, or executable generated-code path.
+The library remains provider-free. It gives downstream callers a stable typed candidate, lineage, fitness, deterministic selection, and trusted evaluator contract without creating another scheduler, authority system, effect ledger, verifier, or executable generated-code path.
 
 ## Boundary
 
@@ -18,6 +18,10 @@ Core owns generic data and deterministic transforms:
 - lineage/provenance records;
 - vector fitness records;
 - deterministic Pareto/non-dominated selection with an explicit tie policy.
+
+Core also owns the bounded evaluator bridge: trusted code registers an evaluator
+behind an atom ID, validated closed candidate/context data selects only that ID,
+and evaluation runs through `rlm_async`.
 
 Downstream callers own their product schema and benchmark composition. A downstream genotype may reference prompt, skill, model-policy, tool-policy, loop, verifier, context, topology, or budget profiles, but core treats those as validated data. Generated candidate data is never passed to unrestricted `call/1`.
 
@@ -62,8 +66,26 @@ It preserves the full vector instead of collapsing correctness, verification, co
 
 ## Lineage and evidence
 
-Every transform returns lineage data containing parent IDs, operator ID, and resulting candidate fingerprint. Evaluator integration will later attach benchmark identity, trace/result/evidence references, and usage to fitness records through existing RLM Future/outcome contracts.
+Every transform returns lineage data containing parent IDs, operator ID, and resulting candidate fingerprint. Evaluator results retain the trusted evaluator ID, canonical candidate ID, objective vector, evidence, and usage. Benchmark identity and persistent trace/evidence references remain caller-owned inputs to later fitness/lifecycle records.
 
-## Next slice
+## Evaluator integration
 
-After this pure kernel is green, add `evolution_evaluate_async` by composing the existing `rlm_async`/Future execution direction. Do not add a second scheduler. Effectful evaluators must cross existing authority/effect boundaries. #144/#147 subagent results may become one evaluator input, not a new evolution scheduler.
+`evolution_evaluate_async/5` validates and canonicalizes the candidate,
+constraints, and context before scheduler admission. It resolves only a trusted
+`evolution_evaluator_register/2` registration, submits one operation to
+`rlm_async`, and records candidate/evaluator correlation in Future metadata.
+Evaluator output must be closed `evaluation{candidate,objectives,evidence,usage}`
+data for the same candidate. Cyclic, non-ground, malformed, or mismatched output
+fails closed. Ordinary evaluator exceptions become ground structured failures;
+cancellation and other control exceptions retain the canonical Future semantics.
+
+`evolution_evaluate/5` is the synchronous facade over that exact Future and
+destroys it with cleanup protection. Effectful evaluator internals must still
+cross the existing authority/effect boundaries. Subagent results may be one
+evaluator input, not a new evolution scheduler.
+
+## Remaining work
+
+Persistence, benchmark composition, promotion/rollback, and skill-experiment
+orchestration remain separate follow-up layers. Model-weight evolution remains
+outside this library.

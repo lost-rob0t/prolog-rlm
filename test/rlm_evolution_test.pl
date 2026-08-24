@@ -16,6 +16,46 @@ evaluator_ok(Candidate, Context, Outcome) :-
 evaluator_throw(_, _, _) :-
     throw(error(evaluator_boom, _)).
 
+evaluator_fail(_, _, _) :-
+    fail.
+
+evaluator_closed_inputs(Candidate, Context, Outcome) :-
+    dict_pairs(Candidate.genes, CandidateTag, _),
+    dict_pairs(Context, ContextTag, _),
+    Outcome = evaluation{candidate:Candidate.id,
+                         objectives:_{candidate_tag:CandidateTag,
+                                      context_tag:ContextTag},
+                         evidence:[fixture],
+                         usage:usage{tokens:0}}.
+
+evaluator_cyclic(Candidate, _, Outcome) :-
+    Cycle = cycle(Cycle),
+    Outcome = evaluation{candidate:Candidate.id,
+                         objectives:_{score:1},
+                         evidence:Cycle,
+                         usage:usage{tokens:0}}.
+
+evaluator_mismatch(_, _,
+                   evaluation{candidate:other,
+                              objectives:_{score:1},
+                              evidence:[fixture],
+                              usage:usage{tokens:0}}).
+
+evaluator_current_future(Candidate, _, Outcome) :-
+    rlm_async_current_metadata(Metadata),
+    Outcome = evaluation{candidate:Candidate.id,
+                         objectives:_{score:1},
+                         evidence:[future(Metadata.id)],
+                         usage:usage{tokens:0}}.
+
+evaluator_cancel(_, _, _) :-
+    throw(rlm_cancelled(evolution_test)).
+
+future_destroyed(Future) :-
+    catch(rlm_future_status(Future, _), Error, true),
+    nonvar(Error),
+    Error = error(existence_error(rlm_future, Future), _).
+
 test(valid_candidate_canonicalizes_anonymous_genes) :-
     constraints(C), candidate(a, p1, direct, A),
     evolution_candidate_validate(A, C, ok(Validated)),
@@ -105,22 +145,25 @@ test(pareto_tie_is_deterministic) :-
     assertion(Selected == [a,b]).
 
 test(async_evaluator_uses_existing_future_runtime,
-     [ setup(evolution_evaluator_register(fixture_ok, rlm_evolution_test:evaluator_ok)),
+     [ setup(evolution_evaluator_register(fixture_ok, evaluator_ok)),
        cleanup(evolution_evaluator_unregister(fixture_ok))
      ]) :-
     constraints(C), candidate(a, p1, direct, A),
     evolution_evaluate_async(A, C, fixture_ok, _{score:0.75}, Future),
-    rlm_future_metadata(Future, Metadata),
-    assertion(Metadata.operation == evolution_evaluate),
-    assertion(Metadata.candidate == a),
-    rlm_future_await(Future, Outcome),
-    assertion(Outcome.status == passed),
-    assertion(Outcome.candidate == a),
-    assertion(Outcome.objectives.score =:= 0.75),
-    assertion(Outcome.evaluator == fixture_ok).
+    setup_call_cleanup(
+        true,
+        ( rlm_future_metadata(Future, Metadata),
+          assertion(Metadata.operation == evolution_evaluate),
+          assertion(Metadata.candidate == a),
+          rlm_future_await(Future, Outcome),
+          assertion(Outcome.status == passed),
+          assertion(Outcome.candidate == a),
+          assertion(Outcome.objectives.score =:= 0.75),
+          assertion(Outcome.evaluator == fixture_ok) ),
+        rlm_future_destroy(Future)).
 
 test(sync_evaluator_awaits_same_async_path,
-     [ setup(evolution_evaluator_register(fixture_ok, rlm_evolution_test:evaluator_ok)),
+     [ setup(evolution_evaluator_register(fixture_ok, evaluator_ok)),
        cleanup(evolution_evaluator_unregister(fixture_ok))
      ]) :-
     constraints(C), candidate(a, p1, direct, A),
@@ -131,31 +174,127 @@ test(sync_evaluator_awaits_same_async_path,
 test(unknown_evaluator_fails_without_future) :-
     constraints(C), candidate(a, p1, direct, A),
     evolution_evaluate_async(A, C, missing, _{}, Outcome),
-    assertion(Outcome = error(Error)),
+    Outcome = error(Error),
     assertion(Error.reason == unknown_evaluator).
 
 test(invalid_candidate_never_reaches_evaluator,
-     [ setup(evolution_evaluator_register(fixture_ok, rlm_evolution_test:evaluator_ok)),
+     [ setup(evolution_evaluator_register(fixture_ok, evaluator_ok)),
        cleanup(evolution_evaluator_unregister(fixture_ok))
      ]) :-
     constraints(C),
     Bad = candidate{id:a, genes:_{prompt:p1, loop:ambient_shell}},
     evolution_evaluate_async(Bad, C, fixture_ok, _{score:1}, Outcome),
-    assertion(Outcome = error(Error)),
+    Outcome = error(Error),
     assertion(Error.reason == invalid_gene_value).
 
 test(evaluator_exception_is_structured_failure,
-     [ setup(evolution_evaluator_register(fixture_throw, rlm_evolution_test:evaluator_throw)),
+     [ setup(evolution_evaluator_register(fixture_throw, evaluator_throw)),
        cleanup(evolution_evaluator_unregister(fixture_throw))
      ]) :-
     constraints(C), candidate(a, p1, direct, A),
     evolution_evaluate_async(A, C, fixture_throw, _{}, Future),
-    rlm_future_await(Future, Outcome),
-    assertion(Outcome.status == error),
-    assertion(Outcome.reason = evaluator_exception(_)).
+    setup_call_cleanup(
+        true,
+        ( rlm_future_await(Future, Outcome),
+          assertion(ground(Outcome)),
+          assertion(Outcome.status == error),
+          assertion(Outcome.reason = evaluator_exception(_)) ),
+        rlm_future_destroy(Future)).
+
+test(evaluator_failure_is_structured_failure,
+     [ setup(evolution_evaluator_register(fixture_fail, evaluator_fail)),
+       cleanup(evolution_evaluator_unregister(fixture_fail))
+     ]) :-
+    constraints(C), candidate(a, p1, direct, A),
+    evolution_evaluate_async(A, C, fixture_fail, _{}, Future),
+    setup_call_cleanup(
+        true,
+        ( rlm_future_await(Future, Outcome),
+          assertion(ground(Outcome)),
+          assertion(Outcome.status == error),
+          assertion(Outcome.reason == invalid_evaluator_outcome) ),
+        rlm_future_destroy(Future)).
+
+test(candidate_and_context_are_closed_before_evaluation,
+     [ setup(evolution_evaluator_register(fixture_closed, evaluator_closed_inputs)),
+       cleanup(evolution_evaluator_unregister(fixture_closed))
+     ]) :-
+    constraints(C), candidate(a, p1, direct, A),
+    evolution_evaluate_async(A, C, fixture_closed, _{score:1}, Future),
+    setup_call_cleanup(
+        true,
+        ( rlm_future_await(Future, Outcome),
+          assertion(Outcome.status == passed),
+          assertion(Outcome.objectives.candidate_tag == rlm_anonymous_dict),
+          assertion(Outcome.objectives.context_tag == rlm_anonymous_dict) ),
+        rlm_future_destroy(Future)).
+
+test(non_closed_context_fails_before_async_admission,
+     [ setup(evolution_evaluator_register(fixture_ok, evaluator_ok)),
+       cleanup(evolution_evaluator_unregister(fixture_ok))
+     ]) :-
+    constraints(C), candidate(a, p1, direct, A),
+    evolution_evaluate_async(A, C, fixture_ok, _{score:_}, Outcome),
+    Outcome = error(Error),
+    assertion(Error.reason == invalid_context).
+
+test(cyclic_evaluator_output_fails_closed,
+     [ setup(evolution_evaluator_register(fixture_cyclic, evaluator_cyclic)),
+       cleanup(evolution_evaluator_unregister(fixture_cyclic))
+     ]) :-
+    constraints(C), candidate(a, p1, direct, A),
+    evolution_evaluate_async(A, C, fixture_cyclic, _{}, Future),
+    setup_call_cleanup(
+        true,
+        ( rlm_future_await(Future, Outcome),
+          assertion(ground(Outcome)),
+          assertion(Outcome.status == error),
+          assertion(Outcome.reason == invalid_evaluator_outcome) ),
+        rlm_future_destroy(Future)).
+
+test(evaluator_candidate_mismatch_fails_closed,
+     [ setup(evolution_evaluator_register(fixture_mismatch, evaluator_mismatch)),
+       cleanup(evolution_evaluator_unregister(fixture_mismatch))
+     ]) :-
+    constraints(C), candidate(a, p1, direct, A),
+    evolution_evaluate_async(A, C, fixture_mismatch, _{}, Future),
+    setup_call_cleanup(
+        true,
+        ( rlm_future_await(Future, Outcome),
+          assertion(Outcome.status == error),
+          assertion(Outcome.reason == invalid_evaluator_outcome) ),
+        rlm_future_destroy(Future)).
+
+test(sync_evaluator_destroys_awaited_future,
+     [ setup(evolution_evaluator_register(fixture_current_future,
+                                          evaluator_current_future)),
+       cleanup(evolution_evaluator_unregister(fixture_current_future))
+     ]) :-
+    constraints(C), candidate(a, p1, direct, A),
+    evolution_evaluate(A, C, fixture_current_future, _{}, Outcome),
+    memberchk(future(Id), Outcome.evidence),
+    assertion(future_destroyed(rlm_future(Id))).
+
+test(evaluator_control_exception_crosses_future_boundary,
+     [ setup(evolution_evaluator_register(fixture_cancel, evaluator_cancel)),
+       cleanup(evolution_evaluator_unregister(fixture_cancel)),
+       throws(rlm_cancelled(evolution_test))
+     ]) :-
+    constraints(C), candidate(a, p1, direct, A),
+    evolution_evaluate_async(A, C, fixture_cancel, _{}, Future),
+    setup_call_cleanup(true,
+                       rlm_future_await(Future, _),
+                       rlm_future_destroy(Future)).
+
+test(non_ground_evaluator_id_fails_closed) :-
+    constraints(C), candidate(a, p1, direct, A),
+    evolution_evaluate_async(A, C, _, _{}, Outcome),
+    Outcome = error(Error),
+    assertion(ground(Outcome)),
+    assertion(Error.reason == invalid_evaluator_id).
 
 test(registry_rejects_non_ground_evaluator_id,
      [throws(error(instantiation_error,_))]) :-
-    evolution_evaluator_register(_, rlm_evolution_test:evaluator_ok).
+    evolution_evaluator_register(_, evaluator_ok).
 
 :- end_tests(rlm_evolution).
