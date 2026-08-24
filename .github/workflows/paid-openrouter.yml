@@ -1,0 +1,50 @@
+name: Paid OpenRouter
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paid-openrouter:
+    name: Pinned paid OpenRouter integration
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'push' && github.repository == 'lost-rob0t/prolog-rlm')
+    runs-on: ubuntu-latest
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_TEST_MODEL: ${{ vars.OPENROUTER_TEST_MODEL }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Install SWI-Prolog
+        run: sudo apt-get update && sudo apt-get install --yes swi-prolog-nox
+      - name: Require explicit paid OpenRouter model
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${OPENROUTER_API_KEY:-}" || { echo "OPENROUTER_API_KEY is required" >&2; exit 1; }
+          test -n "${OPENROUTER_TEST_MODEL:-}" || { echo "OPENROUTER_TEST_MODEL must be explicitly pinned; refusing openrouter/free fallback" >&2; exit 1; }
+          case "$OPENROUTER_TEST_MODEL" in openrouter/free|*:free) echo "OPENROUTER_TEST_MODEL must be paid, got: $OPENROUTER_TEST_MODEL" >&2; exit 1;; esac
+      - name: Run REAL OpenRouter core suite
+        run: swipl -q -s test/run_live_openrouter.pl
+      - name: Run REAL OpenRouter structured repair suite
+        run: swipl -q -s test/run_live_repair_openrouter.pl
+      - name: Run REAL OpenRouter benchmark suite
+        run: swipl -q -s benchmark/run.pl -- integration "${RUNNER_TEMP}/prolog-rlm-openrouter-benchmark.json"
+      - name: Run REAL depth 0/1/2 recursion experiment
+        run: swipl -q -s benchmark/run.pl -- deep-integration "${RUNNER_TEMP}/prolog-rlm-openrouter-deep.json"
+      - name: Run one-command REAL RLM CLI smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          swipl -q -s bin/prolog-rlm.pl -- rlm "Return the token CLI_RLM_OK using the external context." --context "The required token is CLI_RLM_OK." --max-tokens 96 --time-limit 60 --json > /tmp/prolog-rlm-live-cli.json
+          grep -q '"schema":"prolog-rlm.trace.v1"' /tmp/prolog-rlm-live-cli.json
+          grep -q '"max_depth":1' /tmp/prolog-rlm-live-cli.json
+          grep -q '"model_calls":' /tmp/prolog-rlm-live-cli.json
