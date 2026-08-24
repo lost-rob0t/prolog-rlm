@@ -108,6 +108,8 @@ corpus_entry('rlm_outcome_test.pl', include(rlm_outcome)).
 corpus_entry('rlm_artifact_test.pl', include(rlm_artifact)).
 corpus_entry('rlm_agent_test.pl', include(rlm_agent)).
 corpus_entry('rlm_subagent_test.pl', include(rlm_subagent)).
+corpus_entry('rlm_subagent_supervision_test.pl',
+             include(rlm_subagent_supervision)).
 corpus_entry('rlm_evolution_test.pl', include(rlm_evolution)).
 corpus_entry('rlm_agent_authority_test.pl', include(rlm_agent_authority)).
 corpus_entry('rlm_graph_test.pl', include(rlm_graph)).

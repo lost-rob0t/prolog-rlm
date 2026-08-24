@@ -4,6 +4,7 @@
 :- use_module('../prolog/rlm_async').
 :- use_module('../prolog/rlm_agent').
 :- use_module('../prolog/rlm_agent_async', []).
+:- use_module('../prolog/rlm_subagent', []).
 :- use_module('../prolog/rlm_graph').
 :- use_module('../prolog/rlm_graph_async', []).
 
@@ -247,6 +248,9 @@ test(agent_async_surfaces_submit_execute_predicates) :-
                                agent_pump_async/4,
                                agent_pump_execute/4)),
     assertion(canonical_submit(rlm_agent,
+                               agent_supervised_call_async/6,
+                               agent_supervised_call_execute/6)),
+    assertion(canonical_submit(rlm_agent,
                                agent_cancel_async/4,
                                agent_cancel_execute/4)).
 
@@ -254,6 +258,9 @@ test(agent_sync_surfaces_start_async_surfaces) :-
     assertion(sync_calls_async(rlm_agent, agent_spawn/5, agent_spawn_async/5)),
     assertion(sync_calls_async(rlm_agent, agent_send/5, agent_send_async/5)),
     assertion(sync_calls_async(rlm_agent, agent_pump/4, agent_pump_async/4)),
+    assertion(sync_calls_async(rlm_agent,
+                               agent_supervised_call/6,
+                               agent_supervised_call_async/6)),
     assertion(sync_calls_async(rlm_agent, agent_cancel/4, agent_cancel_async/4)).
 
 test(agent_compatibility_facade_never_calls_sync_public_wrappers) :-
@@ -280,7 +287,16 @@ test(agent_internal_composition_uses_execute_abi) :-
     functor(CancelHead, cancel_children, 3),
     clause(rlm_agent:CancelHead, CancelBody),
     body_contains_local(CancelBody, agent_cancel_execute, 4),
-    assertion(\+ body_contains_local(CancelBody, agent_cancel, 4)).
+    assertion(\+ body_contains_local(CancelBody, agent_cancel, 4)),
+    SubagentHead = subagent_after_spawn(ok(_), _, _, _, _, _, _),
+    clause(rlm_subagent:SubagentHead, SubagentBody),
+    assertion(body_contains_qualified(SubagentBody,
+                                      rlm_agent,
+                                      agent_supervised_call_execute,
+                                      6)),
+    assertion(\+ body_contains_local(SubagentBody,
+                                     agent_supervised_call,
+                                     6)).
 
 test(sync_agent_spawn_mutates_once) :-
     with_runtime([], sync_agent_spawn_once_case).

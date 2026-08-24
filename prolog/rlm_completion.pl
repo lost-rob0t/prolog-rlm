@@ -686,6 +686,9 @@ normalize_handler_outcome(Value, ok(Value)).
 handler_exception(_, error(rlm_cancelled(Token), Context), _) :-
     !,
     throw(error(rlm_cancelled(Token), Context)).
+handler_exception(_, rlm_cancelled(Token), _) :-
+    !,
+    throw(rlm_cancelled(Token)).
 handler_exception(_, time_limit_exceeded, _) :-
     !,
     throw(time_limit_exceeded).
@@ -1564,6 +1567,9 @@ completion_exception(time_limit_exceeded(_),
                                             kind:timeout,
                                             message:"completion exceeded wall-time budget"})) :-
     !.
+completion_exception(rlm_cancelled(Token), _) :-
+    !,
+    throw(rlm_cancelled(Token)).
 completion_exception(error(rlm_cancelled(Token), _),
                      error(completion_error{phase:runtime,
                                             kind:cancelled,
