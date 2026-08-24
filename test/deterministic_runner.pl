@@ -308,10 +308,16 @@ expected_result_counts(Expected,
     length(FixmeRecords, Fixme).
 
 expected_records(Expected, Kind, Records) :-
-    findall(Unit-Test-Line,
-            expected_result(Expected, Kind, Unit, Test, Line),
+    findall(Unit-Identity-Line,
+            ( expected_result(Expected, Kind, Unit, Test, Line),
+              result_test_identity(Test, Identity)
+            ),
             Raw),
     sort(Raw, Records).
+
+result_test_identity(@(Test, _), Test) :-
+    !.
+result_test_identity(Test, Test).
 
 expected_result(Expected, passed, Unit, Test, Line) :-
     member(Unit, Expected),
