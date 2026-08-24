@@ -33,6 +33,38 @@ run(Suites, Options) :-
           run_aborted(Suites, SuiteCount, Discovered, Exception)).
 
 run_bounded(Expected, SuiteCount, Discovered, TestTimeout) :-
+    plunit_run(Expected,
+               TestTimeout,
+               Discovered,
+               Planned,
+               Completed,
+               Passed,
+               Failed,
+               Timeout,
+               Blocked,
+               Fixme),
+    finish_run(SuiteCount,
+               Discovered,
+               Planned,
+               Completed,
+               Passed,
+               Failed,
+               Timeout,
+               Blocked,
+               Fixme).
+
+plunit_run(Expected,
+           TestTimeout,
+           _,
+           Planned,
+           Completed,
+           Passed,
+           Failed,
+           Timeout,
+           Blocked,
+           Fixme) :-
+    current_predicate(plunit:run_tests/2),
+    !,
     run_tests(Expected,
               [ summary(Summary),
                 timeout(TestTimeout),
@@ -45,7 +77,70 @@ run_bounded(Expected, SuiteCount, Discovered, TestTimeout) :-
                            Failed,
                            Timeout,
                            Blocked,
+                           Fixme).
+plunit_run(Expected,
+           TestTimeout,
+           Discovered,
+           Discovered,
+           Completed,
+           Passed,
+           Failed,
+           Timeout,
+           Blocked,
+           Fixme) :-
+    set_test_options([cleanup(false)]),
+    legacy_run_suites(Expected,
+                      TestTimeout,
+                      counts(0, 0, 0, 0, 0, 0),
+                      counts(Completed,
+                             Passed,
+                             Failed,
+                             Timeout,
+                             Blocked,
+                             Fixme)).
+
+legacy_run_suites([], _, Counts, Counts).
+legacy_run_suites([Suite|Suites], TestTimeout, Counts0, Counts) :-
+    legacy_run_suite(Suite, TestTimeout),
+    expected_result_counts([Suite],
+                           Completed,
+                           Passed,
+                           Failed,
+                           Timeout,
+                           Blocked,
                            Fixme),
+    Counts0 = counts(C0, P0, F0, T0, B0, X0),
+    Counts1 = counts(C1, P1, F1, T1, B1, X1),
+    C1 is C0+Completed,
+    P1 is P0+Passed,
+    F1 is F0+Failed,
+    T1 is T0+Timeout,
+    B1 is B0+Blocked,
+    X1 is X0+Fixme,
+    legacy_run_suites(Suites, TestTimeout, Counts1, Counts).
+
+legacy_run_suite(Suite, TestTimeout) :-
+    Limit is float(TestTimeout),
+    catch(call_with_time_limit(Limit,
+                               ignore(run_tests([Suite]))),
+          Exception,
+          legacy_run_exception(Exception, Limit)).
+
+legacy_run_exception(time_limit_exceeded, Limit) :-
+    !,
+    throw(time_limit_exceeded(Limit)).
+legacy_run_exception(Exception, _) :-
+    throw(Exception).
+
+finish_run(SuiteCount,
+           Discovered,
+           Planned,
+           Completed,
+           Passed,
+           Failed,
+           Timeout,
+           Blocked,
+           Fixme) :-
     format('aggregate_plunit_summary suites=~d discovered=~d planned=~d completed=~d passed=~d failed=~d timeout=~d blocked=~d fixme=~d~n',
            [SuiteCount, Discovered, Planned, Completed, Passed, Failed,
             Timeout, Blocked, Fixme]),
@@ -223,12 +318,12 @@ expected_result(Expected, passed, Unit, Test, Line) :-
     plunit:passed(Unit, Test, Line, _, _).
 expected_result(Expected, failed, Unit, Test, Line) :-
     member(Unit, Expected),
-    plunit:failed(Unit, Test, Line, Reason, _),
+    plunit_failed(Unit, Test, Line, Reason),
     \+ timeout_reason(Reason).
 expected_result(Expected, timeout, Unit, Test, Line) :-
     member(Unit, Expected),
-    (   plunit:timeout(Unit, Test, Line, _, _)
-    ;   plunit:failed(Unit, Test, Line, Reason, _),
+    (   plunit_timeout(Unit, Test, Line)
+    ;   plunit_failed(Unit, Test, Line, Reason),
         timeout_reason(Reason)
     ).
 expected_result(Expected, blocked, Unit, Test, Line) :-
@@ -237,6 +332,16 @@ expected_result(Expected, blocked, Unit, Test, Line) :-
 expected_result(Expected, fixme, Unit, Test, Line) :-
     member(Unit, Expected),
     plunit:fixme(Unit, Test, Line, _, _).
+
+plunit_failed(Unit, Test, Line, Reason) :-
+    (   current_predicate(plunit:failed/5)
+    ->  plunit:failed(Unit, Test, Line, Reason, _)
+    ;   plunit:failed(Unit, Test, Line, Reason)
+    ).
+
+plunit_timeout(Unit, Test, Line) :-
+    current_predicate(plunit:timeout/5),
+    plunit:timeout(Unit, Test, Line, _, _).
 
 timeout_reason(throw(time_limit_exceeded(_))).
 timeout_reason(time_limit_exceeded(_)).
