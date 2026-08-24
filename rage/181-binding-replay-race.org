@@ -50,3 +50,11 @@
 - Benchmarks and smoke :: Deterministic 16/16; deep experiment 15/15; JSON demo passed.
 - Packaging and hygiene :: All three Nix flake checks passed; =git diff --check= passed.
 - Runtime conclusion :: The deterministic gated interleaving did not expose a production authority/effect/async violation, so no production boundary was changed.
+
+** Current-main reconciliation
+- Conflict evidence :: After the exact-head gate passed, =main= independently added =.github/workflows/paid-openrouter.yml= at =329cdc690c77d14ab4959f104837b546c22dca02=. The PR branch contained a parallel, shorter copy at =9bd3d29a45f113da82afc376d6984ad3ee609610=, producing an add/add conflict without touching the replay fix.
+- Resolution :: Rebase onto current =origin/main=, drop the PR branch's duplicated 60-line workflow commit, and retain the canonical 76-line workflow from =main=. Preserve the run log and both replay-test files.
+- Required revalidation :: Rerun the complete local gate and require exact-head GitHub Actions after the reconciliation rebase before merging PR #182.
+- Reconciled focused evidence :: Effect suite 14/14; runner integrity 19/19; runtime and static load checks passed.
+- Reconciled aggregate evidence :: 75 suites, 783/783 completed and passed; deterministic benchmark 16/16; deep experiment 15/15; JSON demo passed.
+- Reconciled package evidence :: Nix flake evaluation checked both packages, both apps, the dev shell, and both derivation checks successfully; =git diff --check= passed.
