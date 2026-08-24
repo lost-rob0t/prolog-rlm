@@ -37,7 +37,7 @@ context_adapter_unregister(+Name, -Outcome).
 context_adapter_info(+Name, -Outcome).
 
 context_register_adapter(+Name,
-                         +GroundSourceRef,
+                         +ClosedSourceRef,
                          +Options,
                          -Outcome).
 ```
@@ -45,6 +45,8 @@ context_register_adapter(+Name,
 Ordinary `context_register/3` still accepts only ordinary bounded context sources. Model-authored source data cannot install executable adapter callbacks.
 
 Adapter capabilities explicitly declare allowed context operations, and a live adapter-backed handle prevents the adapter definition from being removed underneath it.
+
+Capabilities, source references, metadata, and returned work values cross the shared closed-data boundary before storage or output. Anonymous SWI-Prolog dict tags are recursively canonicalized to `rlm_anonymous_dict`; named tags are preserved, while genuine variables and cyclic terms are rejected. Trusted metadata and operation handlers remain executable registry entries and are not treated as inert closed data.
 
 Adapter metadata is model-visible, so registration applies the validated `max_bytes` option to the complete serialized `context_metadata{...}` descriptor before any handle is published. The default ceiling is 16 KiB, matching the ordinary context byte limit. Oversized metadata is rejected rather than truncated as `adapter_metadata_too_large`, with `bytes` and `max_bytes` fields reporting the measured descriptor size and enforced ceiling.
 

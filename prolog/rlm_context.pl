@@ -33,6 +33,7 @@ boundaries for every adapter operation.
 :- use_module(library(uuid)).
 :- use_module(library(time)).
 :- use_module(library(lists)).
+:- use_module(rlm_closed_data, []).
 
 :- dynamic context_record/6.
 :- dynamic context_tombstone/2.
@@ -53,11 +54,12 @@ context_backend(adapter(Name), Capabilities) :-
  * ---------------------------------------------------------------------- */
 
 context_adapter_register(Name0,
-                         Capabilities,
+                         Capabilities0,
                          MetadataHandler,
                          OperationHandler,
                          Outcome) :-
     catch(( normalize_adapter_name(Name0, Name),
+            normalize_adapter_capabilities(Capabilities0, Capabilities),
             validate_adapter_definition(Capabilities,
                                         MetadataHandler,
                                         OperationHandler),
@@ -124,11 +126,14 @@ context_adapter_info(Name0, Outcome) :-
           Exception,
           structured_context_exception(adapter_info, Exception, Outcome)).
 
-validate_adapter_definition(Capabilities, MetadataHandler, OperationHandler) :-
-    (   is_dict(Capabilities), ground(Capabilities)
+normalize_adapter_capabilities(Capabilities0, Capabilities) :-
+    (   is_dict(Capabilities0),
+        closed_adapter_data(Capabilities0, Capabilities)
     ->  true
-    ;   throw(context_fault(invalid_adapter_capabilities(Capabilities)))
-    ),
+    ;   throw(context_fault(invalid_adapter_capabilities(Capabilities0)))
+    ).
+
+validate_adapter_definition(Capabilities, MetadataHandler, OperationHandler) :-
     (   get_dict(operations, Capabilities, Operations),
         is_list(Operations),
         Operations \== [],
@@ -198,19 +203,16 @@ register_source(ok(source_stats{bytes:Bytes, items:Items}), Kind, Payload,
                             CreatedAt,
                             Ref).
 
-context_register_adapter(Name0, SourceRef, Options, Outcome) :-
-    catch(context_register_adapter_(Name0, SourceRef, Options, Outcome),
+context_register_adapter(Name0, SourceRef0, Options, Outcome) :-
+    catch(context_register_adapter_(Name0, SourceRef0, Options, Outcome),
           Exception,
           structured_context_exception(adapter_register_source,
                                        Exception,
                                        Outcome)).
 
-context_register_adapter_(Name0, SourceRef, Options, Outcome) :-
+context_register_adapter_(Name0, SourceRef0, Options, Outcome) :-
     normalize_adapter_name(Name0, Name),
-    (   ground(SourceRef)
-    ->  true
-    ;   throw(context_fault(non_ground_adapter_source(Name)))
-    ),
+    normalize_adapter_source(Name, SourceRef0, SourceRef),
     validate_limits(Options, LimitsOutcome),
     (   LimitsOutcome = error(Error)
     ->  Outcome = error(Error)
@@ -237,10 +239,22 @@ adapter_source_metadata(Name, MetadataHandler, SourceRef, Metadata) :-
     ->  true
     ;   throw(context_fault(adapter_metadata_failed(Name)))
     ),
-    (   is_dict(RawMetadata), ground(RawMetadata)
-    ->  Metadata = RawMetadata
+    (   is_dict(RawMetadata),
+        closed_adapter_data(RawMetadata, Metadata)
+    ->  true
     ;   throw(context_fault(invalid_adapter_metadata(Name, RawMetadata)))
     ).
+
+normalize_adapter_source(Name, SourceRef0, SourceRef) :-
+    (   closed_adapter_data(SourceRef0, SourceRef)
+    ->  true
+    ;   throw(context_fault(non_ground_adapter_source(Name)))
+    ).
+
+closed_adapter_data(Value0, Value) :-
+    catch(rlm_closed_data:closed_data_normalize(Value0, Value),
+          rlm_closed_data_fault(_),
+          fail).
 
 register_adapter_source(Name,
                         Capabilities,
@@ -479,11 +493,11 @@ adapter_operation_name(Operation, _) :-
 
 validate_adapter_work(Name, Raw, Work) :-
     (   is_dict(Raw),
-        get_dict(value, Raw, Value),
+        get_dict(value, Raw, Value0),
+        closed_adapter_data(Value0, Value),
         get_dict(bytes_inspected, Raw, Bytes),
         get_dict(items_inspected, Raw, Items),
         get_dict(truncated, Raw, Truncated),
-        ground(Value),
         integer(Bytes), Bytes >= 0,
         integer(Items), Items >= 0,
         memberchk(Truncated, [true, false])
@@ -1204,8 +1218,9 @@ fault_error(Operation, invalid_adapter_name(Name),
 fault_error(Operation, invalid_adapter_capabilities(Value),
             context_error{operation:Operation,
                           kind:invalid_adapter,
-                          value:Value,
-                          message:"adapter capabilities must be a ground dict"}).
+                          value_shape:Shape,
+                          message:"adapter capabilities must be a closed-data dict"}) :-
+    source_shape(Value, Shape).
 fault_error(Operation, invalid_adapter_operations(Value),
             context_error{operation:Operation,
                           kind:invalid_adapter,
@@ -1227,7 +1242,7 @@ fault_error(Operation, non_ground_adapter_source(Name),
             context_error{operation:Operation,
                           kind:invalid_adapter_source,
                           adapter:Name,
-                          message:"adapter source ref must be ground"}).
+                          message:"adapter source ref must be closed data"}).
 fault_error(Operation, adapter_metadata_failed(Name),
             context_error{operation:Operation,
                           kind:adapter_metadata_failed,
@@ -1238,7 +1253,7 @@ fault_error(Operation, invalid_adapter_metadata(Name, Value),
                           kind:invalid_adapter_metadata,
                           adapter:Name,
                           value_shape:Shape,
-                          message:"adapter metadata callback must return a ground dict"}) :-
+                          message:"adapter metadata callback must return a closed-data dict"}) :-
     source_shape(Value, Shape).
 fault_error(Operation, adapter_metadata_too_large(Name, Bytes, MaxBytes),
             context_error{operation:Operation,
