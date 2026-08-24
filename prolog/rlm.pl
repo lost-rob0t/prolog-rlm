@@ -328,7 +328,7 @@ latency is represented by a deferred pending-operation Future; no shared
                 agent_trace/2,
                 agent_tool_handler/4
               ]).
-:- use_module(rlm_agent_zero_adapter,
+:- use_module('./adaptors/rlm_agent_zero_adapter',
               [ rlm_agent_zero_adapter_ready/0,
                 agent_zero_context_compile/2,
                 agent_zero_tool_pack_manifest/3,

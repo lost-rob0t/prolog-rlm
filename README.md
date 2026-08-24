@@ -133,7 +133,7 @@ Production namespaces live under `prolog/`:
 - `rlm_chain` — provider/model abstraction;
 - `rlm_context` — bounded opaque external-context operations;
 - `rlm_tool` — capability-gated local tool execution;
-- `rlm_agent_zero_adapter` — Agent Zero DOX/skill/context compilation and
+- `adaptors/rlm_agent_zero_adapter` — Agent Zero DOX/skill/context compilation and
   trusted external tool-pack adaptation;
 - `rlm_completion` — model-to-plan-to-execution RLM loop;
 - `rlm_recursion_policy` / `rlm_recursion_runtime` — bounded adaptive recursion selection and execution;

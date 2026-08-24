@@ -1,6 +1,7 @@
 # Agent Zero adapter
 
-`rlm_agent_zero_adapter` is the public Prolog-owned adaptation boundary for
+`prolog/adaptors/rlm_agent_zero_adapter.pl` is the public Prolog-owned
+adaptation boundary for
 Agent Zero. The host sends bounded inert declarations; Prolog-RLM owns their
 normalization, activation evidence, permanent visibility, context packing,
 native-schema projection, rejection reasons, token ledger and fingerprint.
