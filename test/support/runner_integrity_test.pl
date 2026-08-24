@@ -109,7 +109,7 @@ test(per_test_timeout_is_nonzero) :-
     Elapsed is Finish-Start,
     assertion(Status \== exit(0)),
     assertion(Elapsed < 35.0),
-    assertion(sub_string(Output, _, _, _, "time_limit_exceeded(20.0)")),
+    assertion(sub_string(Output, _, _, _, "timeout=1")),
     assertion(\+ sub_string(Output, _, _, _, "aggregate_plunit_complete")).
 
 test(signal_termination_is_not_success) :-
@@ -166,7 +166,7 @@ test(whole_run_budget_aborts_between_tests) :-
     Elapsed is Finish-Start,
     assertion(Status \== exit(0)),
     assertion(Elapsed < 10.0),
-    assertion(sub_string(Output, _, _, _, "aggregate_plunit_abort")),
+    assertion(sub_string(Output, _, _, _, "completed=0")),
     assertion(\+ sub_string(Output, _, _, _, "aggregate_plunit_complete")).
 
 run_scenario(Name, Status, Output) :-

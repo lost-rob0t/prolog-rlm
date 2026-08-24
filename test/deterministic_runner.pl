@@ -345,6 +345,7 @@ plunit_timeout(Unit, Test, Line) :-
 
 timeout_reason(throw(time_limit_exceeded(_))).
 timeout_reason(time_limit_exceeded(_)).
+timeout_reason(time_limit_exceeded).
 
 report(SuiteCount,
        Discovered,
