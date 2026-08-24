@@ -238,20 +238,41 @@ evolution_evaluator_unregister(Id) :-
 % then submit one canonical evaluation operation to rlm_async. Cancellation,
 % bounded worker/backlog semantics, parent Future lineage and cleanup therefore
 % remain owned by the existing runtime.
-evolution_evaluate_async(Candidate, Constraints, EvaluatorId, Context, Result) :-
-    evolution_candidate_validate(Candidate, Constraints, Validation),
-    evaluate_validated_async(Validation, Candidate, EvaluatorId, Context, Result).
+evolution_evaluate_async(Candidate0, Constraints, EvaluatorId, Context0, Result) :-
+    evolution_candidate_validate(Candidate0, Constraints, CandidateValidation),
+    context_validation(Context0, ContextValidation),
+    evaluate_validated_async(CandidateValidation,
+                             ContextValidation,
+                             EvaluatorId,
+                             Result).
 
-evaluate_validated_async(error(E), _, _, _, error(E)) :- !.
-evaluate_validated_async(ok(_), Candidate, EvaluatorId, Context, Result) :-
-    ( atom(EvaluatorId), evolution_evaluator(EvaluatorId, Evaluator)
+context_validation(Context0, Validation) :-
+    ( catch(rlm_closed_data:closed_data_normalize(Context0, Context),
+            rlm_closed_data_fault(_),
+            fail)
+    -> Validation = ok(Context)
+    ;  Validation = error(evolution_error{reason:invalid_context,
+                                          message:"evaluation context must be closed data"})
+    ).
+
+evaluate_validated_async(error(E), _, _, error(E)) :- !.
+evaluate_validated_async(_, error(E), _, error(E)) :- !.
+evaluate_validated_async(ok(Candidate), ok(Context), EvaluatorId, Result) :-
+    ( atom(EvaluatorId)
+    -> submit_registered_evaluator(EvaluatorId, Candidate, Context, Result)
+    ;  Result = error(evolution_error{reason:invalid_evaluator_id})
+    ).
+
+submit_registered_evaluator(EvaluatorId, Candidate, Context, Result) :-
+    ( evolution_evaluator(EvaluatorId, Evaluator)
     -> Metadata = async_metadata{operation:evolution_evaluate,
                                  candidate:Candidate.id,
                                  evaluator:EvaluatorId},
        rlm_async_submit(run_evaluator(EvaluatorId, Evaluator, Candidate, Context),
                         Metadata,
                         Result)
-    ; Result = error(evolution_error{reason:unknown_evaluator,evaluator:EvaluatorId})
+    ;  Result = error(evolution_error{reason:unknown_evaluator,
+                                      evaluator:EvaluatorId})
     ).
 
 %% evolution_evaluate(+Candidate,+Constraints,+EvaluatorId,+Context,-Outcome) is det.
@@ -260,27 +281,64 @@ evaluate_validated_async(ok(_), Candidate, EvaluatorId, Context, Result) :-
 evolution_evaluate(Candidate, Constraints, EvaluatorId, Context, Outcome) :-
     evolution_evaluate_async(Candidate, Constraints, EvaluatorId, Context, Submitted),
     ( Submitted = rlm_future(_)
-    -> rlm_future_await(Submitted, Outcome)
+    -> setup_call_cleanup(true,
+                          rlm_future_await(Submitted, Outcome),
+                          rlm_future_destroy(Submitted))
     ; Outcome = Submitted
     ).
 
 run_evaluator(EvaluatorId, Evaluator, Candidate, Context, Outcome) :-
-    catch(call(Evaluator, Candidate, Context, Raw),
-          Exception,
-          Raw = evaluator_exception(Exception)),
+    ( catch(call(Evaluator, Candidate, Context, Raw0),
+            Exception,
+            evaluator_exception(Exception, Raw0))
+    -> Raw = Raw0
+    ;  Raw = evaluator_failed
+    ),
     normalize_evaluation(EvaluatorId, Candidate, Raw, Outcome).
 
-normalize_evaluation(EvaluatorId, Candidate, evaluator_exception(Exception), Outcome) :-
+evaluator_exception(Exception, _) :-
+    evaluator_control_exception(Exception),
+    !,
+    throw(Exception).
+evaluator_exception(Exception, evaluator_exception(Safe)) :-
+    safe_exception(Exception, Safe).
+
+evaluator_control_exception(time_limit_exceeded).
+evaluator_control_exception(time_limit_exceeded(_)).
+evaluator_control_exception('$aborted').
+evaluator_control_exception(abort).
+evaluator_control_exception(cancelled(_)).
+evaluator_control_exception(rlm_cancelled(_)).
+evaluator_control_exception(chain_cancelled(_)).
+evaluator_control_exception(graph_cancelled(_)).
+evaluator_control_exception(error(Exception, _)) :-
+    evaluator_control_exception(Exception).
+
+safe_exception(Exception, Safe) :-
+    catch(term_string(Exception,
+                      Safe,
+                      [quoted(true), numbervars(true), max_depth(6)]),
+          _,
+          Safe = "unavailable").
+
+normalize_evaluation(EvaluatorId, Candidate, evaluator_exception(Safe), Outcome) :-
     !,
     Outcome = evaluation_result{status:error,
                                 candidate:Candidate.id,
                                 evaluator:EvaluatorId,
-                                reason:evaluator_exception(Exception)}.
-normalize_evaluation(EvaluatorId, Candidate, Raw, Outcome) :-
-    ( is_dict(Raw, evaluation),
-      get_dict(objectives, Raw, Objectives), is_dict(Objectives), ground(Objectives),
-      get_dict(evidence, Raw, Evidence), ground(Evidence),
-      get_dict(usage, Raw, Usage), ground(Usage)
+                                reason:evaluator_exception(Safe)}.
+normalize_evaluation(EvaluatorId, Candidate, Raw0, Outcome) :-
+    ( catch(rlm_closed_data:closed_data_normalize(Raw0, Raw),
+            rlm_closed_data_fault(_),
+            fail),
+      is_dict(Raw, evaluation),
+      get_dict(candidate, Raw, CandidateId),
+      CandidateId == Candidate.id,
+      get_dict(objectives, Raw, Objectives),
+      is_dict(Objectives),
+      get_dict(evidence, Raw, Evidence),
+      get_dict(usage, Raw, Usage),
+      is_dict(Usage)
     -> Outcome = evaluation_result{status:passed,
                                    candidate:Candidate.id,
                                    evaluator:EvaluatorId,
