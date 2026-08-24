@@ -13,7 +13,8 @@ Already available in core and the downstream application boundary:
 - real OpenAI-compatible providers and streaming;
 - typed model-selected plans;
 - capability-gated tools and a confined `project_read` tool;
-- supervised logical agents and recursive subagents;
+- supervised logical agents and recursive subagents, including child-owned
+  bounded completion, typed parent result propagation, and cancellation;
 - bounded async Futures, cancellation, and worker pools;
 - durable graphs, checkpoints, interrupts, and traces;
 - MCP client/server integration;
@@ -285,7 +286,7 @@ Current core and product issues that materially affect the roadmap:
 - #79: canonical external-effect adoption remains open; #86 has landed the first effectful-tool path, while provider, MCP, and process/lifecycle adoption remain.
 - #49 / #50: companion project/coding tool pack.
 - #54: async contract; core migrations are largely complete, while external process/test/network and downstream approval/TUI integration remain.
-- #56: result acceptance should build on the shared evidence/provenance/verifier substrate now used by Spec Verify; the broader result-envelope/delegation work remains open.
+- #56: result acceptance should build on the shared evidence/provenance/verifier substrate now used by Spec Verify; #144 now supplies child-owned bounded subagent completion, typed parent result propagation, and closed KB command selection, while broader evidence/result acceptance remains open.
 - #68: verified workflow epic remains open; first-class Spec/Verify and graph composition are substrate, not the whole product workflow.
 - #69: TaskIR should reference the exact Frozen Spec and carry task/execution metadata rather than own a competing acceptance contract.
 - #70: project context should incorporate canonical project-KB snapshot references and provenance; #94 supplies direct Tree-sitter parser mechanics and #95 supplies Project/File/Language/grammar selection, while #96-#99 still need the versioned CST, structural-query, semantic, and freshness layers.

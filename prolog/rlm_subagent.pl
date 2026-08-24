@@ -59,10 +59,40 @@ subagent_after_spawn(error(Error), Runtime, Parent, _, _, _, Envelope) :-
                                error:Error}.
 subagent_after_spawn(ok(Child), Runtime, Parent, Context, Options, Query,
                      Envelope) :-
-    rlm_completion(Query, Context, Options, CompletionOutcome),
+    Handler = rlm_subagent:subagent_completion_worker(Runtime,
+                                                      Parent,
+                                                      Child,
+                                                      Context,
+                                                      Options),
+    rlm_agent:agent_supervised_call_execute(Runtime,
+                                            Child,
+                                            Handler,
+                                            Query,
+                                            [timeout(30.0)],
+                                            CallOutcome),
+    subagent_after_call(CallOutcome, Runtime, Parent, Child, Envelope).
+
+subagent_completion_worker(Runtime, Parent, Child, Context, Options, Query,
+                           Envelope) :-
+    rlm_completion:rlm_completion_execute(Query,
+                                          Context,
+                                          Options,
+                                          CompletionOutcome),
     agent_trace(Runtime, Trace),
     subagent_completion_envelope(CompletionOutcome, Parent, Child, Trace,
                                  Envelope).
+
+subagent_after_call(ok(Envelope), _, _, _, Envelope) :- !.
+subagent_after_call(error(Error), Runtime, Parent, Child, Envelope) :-
+    agent_trace(Runtime, Trace),
+    Envelope = subagent_result{status:failed,
+                               value:null,
+                               evidence:[],
+                               usage:usage{model_calls:0,total_tokens:0},
+                               correlation:subagent_correlation{parent:Parent,
+                                                                child:Child},
+                               trace:Trace,
+                               error:Error}.
 
 subagent_completion_envelope(ok(Result), Parent, Child, Trace, Envelope) :-
     Envelope = subagent_result{status:completed,
