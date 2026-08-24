@@ -56,3 +56,19 @@ Do not expose raw engine/thread handles to the model. The model interacts throug
 - demonstrate mailbox backpressure;
 - parent cancellation terminates child work;
 - structured run trace records spawn/request/result/cancel events.
+
+* Implementation Closure: Bounded RLM Subagents (#144)
+
+The canonical =rlm_subagent= tool now composes this runtime rather than adding
+another scheduler. Its completion executes as child-owned worker activity,
+successful and failed results return through the supervised mailbox path, and
+parent cancellation signals the admitted worker.
+
+Possession follows the spawned logical child: completion capabilities are
+replaced with the child's normalized ceiling and registry-backed tool calls use
+the child's narrowed authority context. Registration rejects a child ceiling
+that contains =tool(rlm_subagent)= because the current handler is parent-bound
+and lacks a trustworthy recursive depth identity. Recursive =rlm(...)= plans
+remain available under the completion depth/parallel/model/token/time budgets;
+recursive subagent-tool binding must add an explicit depth-aware contract before
+it can be enabled.

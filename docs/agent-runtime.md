@@ -196,6 +196,26 @@ still compiles only to inert `tool(rlm_subagent)` data; ordinary tool
 capability/authority checks run before child creation, and the parent receives
 the same typed subagent result envelope that the tool returns.
 
+The spawned logical child is authoritative for possession. Registration-time
+completion options cannot substitute a broader `capabilities(...)` set or a
+registry/session authority context: the handler replaces both with the
+normalized spawned-child ceiling and `agent(RuntimeId, ChildId)` context before
+calling completion. It likewise replaces `runtime_id` and `agent_id` lineage
+metadata with the spawned identities. Inner registered tools therefore recheck
+exactly the child's capability set, use its narrowed authority tier, and cannot
+attribute work to caller-supplied agent identities.
+
+Child completion still supports bounded recursive `rlm(...)` plans. A child
+ceiling containing `tool(rlm_subagent)` is rejected at registration because the
+current handler is parent-bound and has no trustworthy recursive depth
+identity; this prevents implicit sibling recursion from using only the global
+agent limit as a de facto depth bound. A future recursive subagent binding must
+carry an explicit depth/concurrency contract rather than weakening this check.
+
+Focused conformance covers child capability and authority possession,
+agent-count admission, recursive depth, parallel width, token and wall-time
+budgets, cancellation, parent delivery, and mailbox/worker backpressure.
+
 ## Failure supervision
 
 When child work fails, the child enters a failed state and its supervisor gets
