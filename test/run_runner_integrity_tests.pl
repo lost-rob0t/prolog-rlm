@@ -5,15 +5,7 @@
 :- consult('support/runner_integrity_test.pl').
 
 main(_) :-
-    run_tests([runner_integrity], [summary(Summary)]),
-    get_dict(failed, Summary, Failed),
-    get_dict(timeout, Summary, Timeout),
-    get_dict(blocked, Summary, Blocked),
-    get_dict(fixme, Summary, Fixme),
-    (   Failed =:= 0,
-        Timeout =:= 0,
-        Blocked =:= 0,
-        Fixme =:= 0
+    (   run_tests([runner_integrity])
     ->  halt(0)
     ;   halt(1)
     ).

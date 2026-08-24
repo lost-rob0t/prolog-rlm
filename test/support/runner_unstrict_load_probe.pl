@@ -6,6 +6,7 @@
 
 main(_) :-
     (   run_tests([runner_load_error_suite])
-    ->  halt(0)
+    ->  writeln(runner_unstrict_registered_suite_passed),
+        halt(0)
     ;   halt(1)
     ).

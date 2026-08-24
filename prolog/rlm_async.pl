@@ -229,29 +229,34 @@ mark_backpressure(Id) :-
 /* Workers ---------------------------------------------------------------- */
 
 async_worker_loop(Queue) :-
-    catch(async_worker_step(Queue, Continue),
+    catch(async_worker_run(Queue),
           Exception,
-          async_worker_step_exception(Exception, Continue)),
-    (   Continue == stop
-    ->  true
-    ;   async_worker_loop(Queue)
-    ).
+          async_worker_recover(Queue, Exception)).
 
-async_worker_step(Queue, Continue) :-
+async_worker_run(Queue) :-
     thread_get_message(Queue, Message),
     (   Message == stop
-    ->  Continue = stop
+    ->  true
     ;   Message = async_task(Id, Goal)
     ->  async_execute_task(Id, Goal),
-        Continue = continue
-    ;   Continue = continue
+        async_worker_run(Queue)
+    ;   async_worker_run(Queue)
     ).
 
-async_worker_step_exception(rlm_async_cancelled(_), continue) :- !.
-async_worker_step_exception('$aborted', stop) :- !.
-async_worker_step_exception(abort, stop) :- !.
-async_worker_step_exception(Exception, continue) :-
-    print_message(error, Exception).
+async_worker_recover(Queue, rlm_async_cancelled(Id)) :-
+    !,
+    release_cancelled_worker(Id),
+    async_worker_loop(Queue).
+async_worker_recover(_, '$aborted') :- !.
+async_worker_recover(_, abort) :- !.
+async_worker_recover(Queue, Exception) :-
+    print_message(error, Exception),
+    async_worker_loop(Queue).
+
+release_cancelled_worker(Id) :-
+    thread_self(Thread),
+    with_mutex(rlm_async,
+               retractall(async_future_thread(Id, Thread))).
 
 async_execute_task(Id, Goal) :-
     thread_self(Thread),
@@ -612,7 +617,16 @@ apply_cancel_transition(Id, cancel, Thread, Callbacks, Children, ok(cancelled)) 
 
 signal_async_cancel(_, none) :- !.
 signal_async_cancel(Id, Thread) :-
-    catch(thread_signal(Thread, throw(rlm_async_cancelled(Id))), _, true).
+    catch(thread_signal(Thread,
+                        rlm_async:raise_cancel_if_current(Id)),
+          _,
+          true).
+
+raise_cancel_if_current(Id) :-
+    async_current_future(Id),
+    !,
+    throw(rlm_async_cancelled(Id)).
+raise_cancel_if_current(_).
 
 cancel_children([]).
 cancel_children([Child|Children]) :-
