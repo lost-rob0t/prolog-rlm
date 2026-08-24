@@ -1,81 +1,21 @@
+:- set_prolog_flag(on_error, status).
 :- initialization(main, main).
 
-:- use_module(library(plunit)).
-:- consult(bootstrap_test).
-:- consult(load_error_status_test).
-:- consult(rlm_chain_test).
-:- consult(rlm_chain_runtime_test).
-:- consult(rlm_chain_message_metadata_test).
-:- consult(rlm_chain_control_test).
-:- consult(rlm_stream_canonical_test).
-:- consult(rlm_mcp_model_test).
-:- consult(rlm_mcp_2025_test).
-:- consult(rlm_mcp_2026_test).
-:- consult(rlm_mcp_2026_matrix_test).
-:- consult(rlm_mcp_runtime_test).
-:- consult(rlm_mcp_dual_test).
-:- consult(rlm_mcp_boundary_test).
-:- consult(rlm_mcp_declaration_security_test).
-:- consult(rlm_context_test).
-:- consult(rlm_context_adapter_test).
-:- consult(rlm_context_budget_test).
-:- consult(rlm_conversation_test).
-:- consult(rlm_conversation_warm_test).
-:- consult(rlm_conversation_runtime_test).
-:- consult(rlm_conversation_cold_test).
-:- consult(rlm_plan_test).
-:- consult(rlm_tool_test).
-:- consult(rlm_tool_effect_test).
-:- consult(rlm_tool_loader_test).
-:- consult(rlm_tool_loader_security_test).
-:- consult(rlm_prompt_compiler_test).
-:- consult(rlm_prompt_command_test).
-:- consult(rlm_authority_test).
-:- consult(rlm_authority_hardening_test).
-:- consult(rlm_authority_lifecycle_test).
-:- consult(rlm_effect_test).
-:- consult(rlm_effect_authority_test).
-:- consult(rlm_effect_executor_test).
-:- consult(rlm_effect_restart_test).
-:- consult(rlm_effect_hardening_test).
-:- consult(rlm_effect_adversarial_test).
-:- consult(rlm_effect_migration_test).
-:- consult(rlm_effect_migration_restart_test).
-:- consult(run_tool_mcp_async_tests).
-:- consult(rlm_tool_mcp_scheduler_test).
-:- consult(rlm_completion_test).
-:- consult(rlm_completion_hardening_test).
-:- consult(rlm_nested_usage_test).
-:- consult(rlm_nested_trajectory_test).
-:- consult(rlm_outcome_test).
-:- consult(rlm_artifact_test).
-:- consult(rlm_agent_test).
-:- consult(rlm_subagent_test).
-:- consult(rlm_evolution_test).
-:- consult(rlm_agent_authority_test).
-:- consult(rlm_graph_test).
-:- consult(rlm_graph_authority_test).
-:- consult(rlm_agent_graph_async_test).
-:- consult(rlm_recursion_policy_test).
-:- consult(rlm_recursion_runtime_test).
-:- consult(rlm_benchmark_test).
-:- consult(rlm_conformance_test).
-:- consult(rlm_deep_experiment_test).
-:- consult(rlm_trace_test).
-:- consult(rlm_demo_test).
-:- consult(rlm_cli_test).
-:- consult(rlm_async_test).
-:- consult(rlm_async_canonical_test).
-:- consult(rlm_spec_verify_test).
-:- consult(rlm_spec_lang_test).
-:- consult(rlm_spec_workflow_test).
-:- consult(rlm_project_source_test).
-:- consult(prolog_agent_ui_v1_test).
-:- consult(prolog_agent_ui_fixture_command_codec_test).
+:- use_module('deterministic_corpus.pl',
+              [ aggregate_load_succeeded/0,
+                aggregate_suites/1,
+                load_aggregate_files/0,
+                validate_inventory/0
+              ]).
+:- use_module('deterministic_runner.pl', [run/1]).
+
+:- load_aggregate_files.
 
 main(_) :-
-    (   run_tool_mcp_async_cases,
-        run_tests
+    (   aggregate_load_succeeded,
+        validate_inventory,
+        aggregate_suites(Suites),
+        deterministic_runner:run(Suites)
     ->  halt(0)
     ;   halt(1)
     ).

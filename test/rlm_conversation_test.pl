@@ -1,5 +1,7 @@
 :- begin_tests(rlm_conversation).
 
+:- meta_predicate with_memory_conversation(1).
+
 :- use_module('../prolog/rlm_conversation').
 
 with_memory_conversation(Goal) :-
@@ -44,10 +46,10 @@ test(store_lists_reopenable_conversations) :-
 
 conversation_list_case(Store) :-
     conversation_create(Store,
-                        [id(alpha), metadata(_{project:"one"})],
+                        [id(alpha), metadata(json{project:"one"})],
                         ok(_)),
     conversation_create(Store,
-                        [id(beta), metadata(_{project:"two"})],
+                        [id(beta), metadata(json{project:"two"})],
                         ok(_)),
     conversation_list(Store, [order(asc)], ok(Ascending)),
     findall(Id,

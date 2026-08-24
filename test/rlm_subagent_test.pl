@@ -1,5 +1,7 @@
 :- begin_tests(rlm_subagent).
 
+:- meta_predicate with_subagent(3).
+
 :- use_module('../prolog/rlm_agent').
 :- use_module('../prolog/rlm_subagent').
 :- use_module('../prolog/rlm_tool').

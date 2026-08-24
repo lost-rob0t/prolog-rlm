@@ -83,11 +83,18 @@ reverse_between(Low, High, Value) :-
     Value is High-Offset.
 
 plan_normalize(Input, Outcome) :-
-    catch(( normalize_plan(Input, Plan),
+    catch(( require_acyclic_plan(Input),
+            normalize_plan(Input, Plan),
             Outcome = ok(Plan)
           ),
           Exception,
           normalize_exception(normalize, Exception, Outcome)).
+
+require_acyclic_plan(Input) :-
+    (   acyclic_term(Input)
+    ->  true
+    ;   throw(plan_fault(cyclic_plan))
+    ).
 
 normalize_plan(plan(Steps0), plan(Steps)) :-
     !,
@@ -811,7 +818,7 @@ preflight_runtime_with(Runtime, Plan) :-
     preflight_runtime(Plan, Runtime).
 
 initial_execution_state(Budget,
-                        exec_state{vars:_{},
+                        exec_state{vars:bindings{},
                                    model_responses:[],
                                    model_events:[],
                                    model_event_sequence:0,

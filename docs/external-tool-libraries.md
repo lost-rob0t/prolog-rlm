@@ -99,6 +99,32 @@ rlm_load_all_tools(Registry, Outcome).
 
 Load-all resolves every declared pack deterministically and performs conflict preflight before executing trusted loaders. It does **not** grant any capability and does **not** change authority.
 
+## Loading a trusted host-scoped pack instance
+
+Framework adapters such as Agent Zero may have a tool catalog that is known
+only after plugin, project and profile activation. Trusted host code can load
+that exact catalog without installing global multifile declarations:
+
+```prolog
+rlm_load_tool_pack_instance(Registry,
+                            PackName,
+                            SanitizedManifest,
+                            TrustedLoader,
+                            Outcome).
+```
+
+The manifest uses the same closed `tool_pack_manifest` structure and passes the
+same conflict preflight as installed packs. `TrustedLoader` retains the normal
+`Loader(+Registry,-Outcome)` ABI, must be a ground code-owned callable, and is
+never returned through discovery. Reusing the same name and manifest is
+idempotent. Attempting to change an already-loaded instance manifest fails
+closed. This API grants no capability and changes no authority.
+
+`rlm_agent_zero_adapter` converts Agent Zero DOX, skill and tool declarations
+into prompt-compiler units, creates sanitized pack manifests, and imports only
+trusted host bindings. Permanent visibility is explicit inert metadata; it
+does not register, authorize or execute a tool.
+
 ## Idempotency
 
 Successful pack loads are recorded per live registry.

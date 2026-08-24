@@ -106,7 +106,7 @@ snapshot(Revision,
 test(spec_plus_supplied_plan_binds_without_execution) :-
     reset_workflow_state,
     freeze_workflow_spec(foo/1, 1, Frozen),
-    Plan = plan([final(ok)]),
+    Plan = plan([final(literal(ok))]),
     snapshot(r1, Snapshot),
     spec_plan_bind(Frozen, Plan, Snapshot, ok(SpecPlan)),
     assertion(SpecPlan.spec_ref == Frozen.ref),
@@ -115,7 +115,7 @@ test(spec_plus_supplied_plan_binds_without_execution) :-
 
 test(spec_plus_supplied_plan_executes_through_existing_plan_runtime) :-
     freeze_workflow_spec(foo/1, 1, Frozen),
-    Plan = plan([final(ok)]),
+    Plan = plan([final(literal(ok))]),
     spec_plan_bind(Frozen, Plan, none, ok(SpecPlan)),
     spec_plan_execute(SpecPlan, [], [], _{}, ok(Execution)),
     assertion(Execution.spec_ref == Frozen.ref),
@@ -123,8 +123,8 @@ test(spec_plus_supplied_plan_executes_through_existing_plan_runtime) :-
 
 test(changed_plan_preserves_frozen_spec_identity) :-
     freeze_workflow_spec(foo/1, 1, Frozen),
-    spec_plan_bind(Frozen, plan([final(first)]), none, ok(First)),
-    spec_plan_bind(Frozen, plan([final(second)]), none, ok(Second)),
+    spec_plan_bind(Frozen, plan([final(literal(first))]), none, ok(First)),
+    spec_plan_bind(Frozen, plan([final(literal(second))]), none, ok(Second)),
     assertion(First.spec_ref == Second.spec_ref),
     assertion(First.plan \== Second.plan).
 
@@ -141,7 +141,7 @@ test(full_success_refreshes_project_snapshot_then_verifies) :-
     workflow_registry(Registry),
     freeze_workflow_spec(foo/1, 1, Frozen),
     snapshot(r1, K1),
-    Config = _{ plan:plan([final(applied)]),
+    Config = _{ plan:plan([final(literal(applied))]),
                 executor:plunit_rlm_spec_workflow:counting_executor,
                 observation_sources:[project_kb(K1,[])],
                 source_refresher:plunit_rlm_spec_workflow:refresh_to_exporting_snapshot,
@@ -159,7 +159,7 @@ test(verify_failure_replans_executes_and_then_passes_same_spec) :-
     workflow_registry(Registry),
     freeze_workflow_spec(foo/1, 1, Frozen),
     snapshot(r1, K1),
-    Config = _{ plan:plan([final(first_attempt)]),
+    Config = _{ plan:plan([final(literal(first_attempt))]),
                 executor:plunit_rlm_spec_workflow:counting_executor,
                 observation_sources:[project_kb(K1,[])],
                 source_refresher:plunit_rlm_spec_workflow:refresh_after_second_execution,
@@ -191,7 +191,9 @@ test(planner_and_verifier_consume_same_project_state_abstraction) :-
     assertion(Result.state.status == passed),
     workflow_planner_snapshot(Snapshot),
     Result.state.observations = [Observation],
-    assertion(Observation.snapshot == Snapshot).
+    assertion(Observation.snapshot.project == Snapshot.project),
+    assertion(Observation.snapshot.revision == Snapshot.revision),
+    assertion(Observation.snapshot.source_digest == Snapshot.source_digest).
 
 test(restart_cannot_resume_checkpoint_with_different_frozen_spec) :-
     reset_workflow_state,
@@ -199,10 +201,10 @@ test(restart_cannot_resume_checkpoint_with_different_frozen_spec) :-
     freeze_workflow_spec(foo/1, 1, Frozen1),
     freeze_workflow_spec(bar/1, 2, Frozen2),
     snapshot(r1, Snapshot),
-    Config1 = _{plan:plan([final(done)]),
+    Config1 = _{plan:plan([final(literal(done))]),
                 observation_sources:[project_kb(Snapshot,[exports(foo,foo/1)])],
                 max_repairs:0},
-    Config2 = _{plan:plan([final(done)]),
+    Config2 = _{plan:plan([final(literal(done))]),
                 observation_sources:[project_kb(Snapshot,[exports(foo,foo/1),
                                                          exports(foo,bar/1)])],
                 max_repairs:0},
@@ -252,12 +254,12 @@ refresh_after_second_execution(_, _, _, Sources0, Sources) :-
 repair_plan(Frozen, Report, _, OldSpecPlan, _, NewPlan) :-
     Frozen.ref == OldSpecPlan.spec_ref,
     Report.status == rejected,
-    NewPlan = plan([final(repaired)]).
+    NewPlan = plan([final(literal(repaired))]).
 
 planner_from_project_kb(_, ProjectState, Plan, ProjectState) :-
     ProjectState = project_kb(Snapshot, Facts),
     assertz(workflow_planner_snapshot(Snapshot)),
     memberchk(exports(foo,foo/1), Facts),
-    Plan = plan([final(already_satisfied)]).
+    Plan = plan([final(literal(already_satisfied))]).
 
 :- end_tests(rlm_spec_workflow).

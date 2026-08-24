@@ -206,14 +206,15 @@ test(handler_error_is_preserved,
     assertion(Error == route_error(expected_failure)).
 
 test(time_limit_control_exception_propagates,
-     [setup(setup_calls), cleanup(setup_calls), throws(time_limit_exceeded)]) :-
+     [setup(setup_calls), cleanup(setup_calls)]) :-
     Request = _{subject:timeout,
                 direct_continuation:plunit_rlm_recursion_runtime:timeout_handler},
     budgeted(_{task_complexity:0.05,
                context_chars:10,
                uncertainty:0.0},
              Signals),
-    recursion_execute(Signals, Request, [], _).
+    catch(recursion_execute(Signals, Request, [], _), Exception, true),
+    assertion(Exception == time_limit_exceeded).
 
 direct_handler(_, Subject, direct(Subject)) :-
     assertz(route_call(direct_continuation, Subject)).

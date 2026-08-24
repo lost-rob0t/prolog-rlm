@@ -1,5 +1,7 @@
 :- begin_tests(rlm_artifact).
 
+:- meta_predicate with_memory_store(1).
+
 :- use_module('../prolog/rlm_artifact').
 :- use_module('../prolog/rlm_artifact_agent').
 :- use_module('../prolog/rlm_artifact_graph').

@@ -47,6 +47,15 @@ Run deterministic tests with:
 swipl -q -s test/run_tests.pl
 ```
 
+The aggregate runner reports its discovered, planned, completed, and outcome
+counts and fails closed for an empty, partial, failing, blocked, or skipped
+suite. Each test runs under a 20-second watchdog and the runner has a
+best-effort 45-second internal failsafe; CI additionally enforces a hard
+50-second process bound, so a hung or stalled suite fails the gate within
+roughly a minute instead of blocking it. The internal failsafe cannot
+interrupt a test stuck inside uninterruptible code, so the process bound is
+the hard guarantee.
+
 ### CLI quickstart
 
 A fresh checkout can run a real deterministic runtime walkthrough with **no credentials**:
@@ -124,6 +133,8 @@ Production namespaces live under `prolog/`:
 - `rlm_chain` — provider/model abstraction;
 - `rlm_context` — bounded opaque external-context operations;
 - `rlm_tool` — capability-gated local tool execution;
+- `rlm_agent_zero_adapter` — Agent Zero DOX/skill/context compilation and
+  trusted external tool-pack adaptation;
 - `rlm_completion` — model-to-plan-to-execution RLM loop;
 - `rlm_recursion_policy` / `rlm_recursion_runtime` — bounded adaptive recursion selection and execution;
 - `rlm_deep_experiment` — explicit depth 0/1/2 comparison, alternative recursive harnesses, and promotion evidence;

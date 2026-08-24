@@ -39,11 +39,15 @@ provider(openrouter,
          [endpoint('https://openrouter.ai/api/v1/chat/completions'),
           credential(env('OPENROUTER_API_KEY')),
           model('openrouter/free'),
-          timeout(30)])
+          timeout(30),
+          address_family(inet)])
 ```
 
 Credentials remain environment references in provider configuration. They are
 resolved only inside the transport and are redacted from transport errors.
+The optional address family is `auto`, `inet`, or `inet6`; OpenRouter defaults
+to `inet` so an unusable first IPv6 route cannot stall before SWI-Prolog starts
+the configured stream timeout.
 
 `chain_invoke/4` and `chain_stream/5` also accept:
 

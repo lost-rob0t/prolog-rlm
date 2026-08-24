@@ -12,7 +12,7 @@ test(decoded_approval_command_produces_encodable_frames) :-
     ui_v1_encode_frame(Command0, ok(Line)),
     ui_v1_decode_frame(Line, ok(Command)),
     ui_fixture_handle(Command, Frames),
-    assertion(Frames = [Result, Event]),
+    Frames = [Result, Event],
     assertion(Result.kind == "result"),
     assertion(Result.status == "ok"),
     assertion(Event.kind == "event"),
@@ -38,7 +38,7 @@ test(full_capability_negotiate_produces_result_snapshot_and_resume) :-
                "optional_extensions"]),
     assertion(Snapshot.kind == "snapshot"),
     assertion(Snapshot.at_seq =:= 10),
-    assertion(Resume = [First|_]),
+    Resume = [First|_],
     assertion(First.seq =:= 11).
 
 test(persistent_stream_handles_negotiate_then_approval_command) :-

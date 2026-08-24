@@ -5,6 +5,8 @@
 :- use_module('../prolog/rlm_conversation', []).
 :- use_module('../prolog/rlm_conversation_warm', []).
 
+:- meta_predicate with_runtime(2).
+
 with_runtime(Goal) :-
     setup_call_cleanup(
         ( rlm:conversation_store_open(memory, ok(ConversationStore)),
@@ -31,7 +33,7 @@ warm_pack_case(Conversation, ArtifactStore) :-
         [ policy(Policy),
           token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)]),
           warm_store(ArtifactStore),
-          warm_options([policy(_{max_candidates:8})]),
+          warm_options([policy(json{max_candidates:8})]),
           cold_history_boundary(false)
         ],
         ok(Pack)),
@@ -66,7 +68,7 @@ warm_turn_case(Conversation, ArtifactStore) :-
               policy(Policy),
               token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)]),
               warm_store(ArtifactStore),
-              warm_options([policy(_{max_candidates:8})]),
+              warm_options([policy(json{max_candidates:8})]),
               cold_history_boundary(false)
           ]),
           completion_options([
@@ -99,10 +101,13 @@ no_warm_store_case(Conversation, ArtifactStore) :-
           cold_history_boundary(false)
         ],
         ok(Pack)),
-    assertion(Pack.warm.configured == false),
-    assertion(Pack.warm.loaded_units =:= 0),
-    assertion(\+ (member(Selection, Pack.selected),
-                   Selection.section == warm)).
+    get_dict(warm, Pack, Warm),
+    get_dict(configured, Warm, false),
+    get_dict(loaded_units, Warm, LoadedUnits),
+    assertion(LoadedUnits =:= 0),
+    get_dict(selected, Pack, Selected),
+    assertion(\+ ( member(Selection, Selected),
+                    get_dict(section, Selection, warm) )).
 
 test(context_pack_adds_token_accounted_cold_history_boundary) :-
     with_runtime(cold_boundary_pack_case).
@@ -182,10 +187,12 @@ boundary_disabled_case(Conversation, _ArtifactStore) :-
           cold_history_boundary(false)
         ],
         ok(Pack)),
-    assertion(Pack.cold_history_boundary.configured == false),
-    assertion(Pack.cold_history_boundary.active == false),
-    assertion(\+ (member(Selection, Pack.selected),
-                   Selection.id == managed_cold_history_boundary)).
+    get_dict(cold_history_boundary, Pack, Boundary),
+    get_dict(configured, Boundary, false),
+    get_dict(active, Boundary, false),
+    get_dict(selected, Pack, Selected),
+    assertion(\+ ( member(Selection, Selected),
+                    get_dict(id, Selection, managed_cold_history_boundary) )).
 
 publish_old_warm_context(Conversation, ArtifactStore) :-
     long_text(a, 150, OldA),
@@ -209,7 +216,7 @@ warm_loaded_planner(Request, ok(Output)) :-
     Plan = plan([final(literal("WARM_OK"))]),
     Output = planner_output{
                  plan:Plan,
-                 usage:_{prompt_tokens:1,
+                 usage:json{prompt_tokens:1,
                          completion_tokens:1,
                          total_tokens:2,
                          cost:0.0}
@@ -229,14 +236,14 @@ cold_boundary_planner(Request, ok(Output)) :-
     Plan = plan([final(literal("BOUNDARY_OK"))]),
     Output = planner_output{
                  plan:Plan,
-                 usage:_{prompt_tokens:1,
+                 usage:json{prompt_tokens:1,
                          completion_tokens:1,
                          total_tokens:2,
                          cost:0.0}
              }.
 
 warm_generator(_Source, _Options,
-               _{summary:"compact useful summary",
+               json{summary:"compact useful summary",
                  decisions:["decision alpha alpha alpha alpha",
                             "decision beta beta beta beta",
                             "decision gamma gamma gamma gamma"],

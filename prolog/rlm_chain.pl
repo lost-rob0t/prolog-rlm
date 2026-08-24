@@ -98,7 +98,8 @@ openrouter_provider(Model0,
                              [ endpoint('https://openrouter.ai/api/v1/chat/completions'),
                                credential(env('OPENROUTER_API_KEY')),
                                model(Model),
-                               timeout(30)
+                               timeout(30),
+                               address_family(inet)
                              ])) :-
     (   var(Model0)
     ->  default_openrouter_model(Model)

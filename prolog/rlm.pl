@@ -115,6 +115,9 @@
             agent_cancel_async/4,
             agent_trace/2,
             agent_tool_handler/4,
+            agent_zero_context_compile/2,
+            agent_zero_tool_pack_manifest/3,
+            agent_zero_tool_registry_import/4,
             default_graph_options/1,
             graph_compile/4,
             graph_backend_open/2,
@@ -325,6 +328,12 @@ latency is represented by a deferred pending-operation Future; no shared
                 agent_trace/2,
                 agent_tool_handler/4
               ]).
+:- use_module(rlm_agent_zero_adapter,
+              [ rlm_agent_zero_adapter_ready/0,
+                agent_zero_context_compile/2,
+                agent_zero_tool_pack_manifest/3,
+                agent_zero_tool_registry_import/4
+              ]).
 :- use_module(rlm_graph,
               [ rlm_graph_ready/0,
                 default_graph_options/1,
@@ -401,6 +410,7 @@ rlm_ready :-
     rlm_artifact_agent:rlm_artifact_agent_ready,
     rlm_artifact_graph:rlm_artifact_graph_ready,
     rlm_agent:rlm_agent_ready,
+    rlm_agent_zero_adapter:rlm_agent_zero_adapter_ready,
     rlm_graph:rlm_graph_ready,
     rlm_benchmark:rlm_benchmark_ready,
     rlm_demo:rlm_demo_ready,

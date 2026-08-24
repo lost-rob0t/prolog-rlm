@@ -229,14 +229,29 @@ mark_backpressure(Id) :-
 /* Workers ---------------------------------------------------------------- */
 
 async_worker_loop(Queue) :-
-    catch(thread_get_message(Queue, Message), _, Message = stop),
-    (   Message == stop
+    catch(async_worker_step(Queue, Continue),
+          Exception,
+          async_worker_step_exception(Exception, Continue)),
+    (   Continue == stop
     ->  true
-    ;   Message = async_task(Id, Goal)
-    ->  async_execute_task(Id, Goal),
-        async_worker_loop(Queue)
     ;   async_worker_loop(Queue)
     ).
+
+async_worker_step(Queue, Continue) :-
+    thread_get_message(Queue, Message),
+    (   Message == stop
+    ->  Continue = stop
+    ;   Message = async_task(Id, Goal)
+    ->  async_execute_task(Id, Goal),
+        Continue = continue
+    ;   Continue = continue
+    ).
+
+async_worker_step_exception(rlm_async_cancelled(_), continue) :- !.
+async_worker_step_exception('$aborted', stop) :- !.
+async_worker_step_exception(abort, stop) :- !.
+async_worker_step_exception(Exception, continue) :-
+    print_message(error, Exception).
 
 async_execute_task(Id, Goal) :-
     thread_self(Thread),
@@ -279,11 +294,33 @@ async_exception_outcome(Id, rlm_async_cancelled(Id),
     !.
 async_exception_outcome(_, Exception,
                         error(async_error{
+                                  kind:control_exception,
+                                  exception:Safe,
+                                  exception_term:Exception,
+                                  message:"asynchronous control exception crossed the Future boundary"
+                              })) :-
+    ground(Exception),
+    async_control_exception(Exception),
+    !,
+    safe_exception(Exception, Safe).
+async_exception_outcome(_, Exception,
+                        error(async_error{
                                   kind:exception,
                                   exception:Safe,
                                   message:"asynchronous operation raised an exception"
                               })) :-
     safe_exception(Exception, Safe).
+
+async_control_exception(time_limit_exceeded).
+async_control_exception(time_limit_exceeded(_)).
+async_control_exception('$aborted').
+async_control_exception(abort).
+async_control_exception(cancelled(_)).
+async_control_exception(rlm_cancelled(_)).
+async_control_exception(chain_cancelled(_)).
+async_control_exception(graph_cancelled(_)).
+async_control_exception(error(Exception, _)) :-
+    async_control_exception(Exception).
 
 async_store_completion(Id, Outcome) :-
     with_mutex(rlm_async,
@@ -395,6 +432,12 @@ await_loop(Id, Start, Timeout, Outcome) :-
                future_state_snapshot(Id, State)),
     await_state(State, Id, Start, Timeout, Outcome).
 
+await_state(completed(error(Error)), _, _, _, _) :-
+    is_dict(Error, async_error),
+    get_dict(kind, Error, control_exception),
+    get_dict(exception_term, Error, Exception),
+    !,
+    throw(Exception).
 await_state(completed(StoredOutcome), _, _, _, Outcome) :-
     !,
     Outcome = StoredOutcome.
