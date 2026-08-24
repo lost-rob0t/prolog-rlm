@@ -1,16 +1,30 @@
 :- begin_tests(rlm_authority_hardening).
 
 :- use_module('../prolog/rlm_authority').
+:- use_module('../prolog/rlm_mcp_policy').
 :- use_module('../prolog/rlm_mcp_server').
 
 :- multifile rlm_mcp_server:mcp_server/2.
+:- multifile rlm_mcp_policy:mcp_installer_profile/2.
+
+rlm_mcp_policy:mcp_installer_profile(
+    authority_once_installer,
+    mcp_process_profile{executable:path(true),
+                        argv_prefix:[],
+                        argv_suffix:[],
+                        package_format:plain,
+                        cwd_roots:['/tmp'],
+                        timeout:2.0,
+                        max_output_bytes:4096}).
 
 rlm_mcp_server:mcp_server(
     authority_once_fixture,
     mcp_server_spec{
         transport:fixture(stdio,
                           plunit_rlm_authority_hardening:unused_fixture),
-        install:process(true, [], []),
+        install:package(authority_once_installer,
+                        authority_once_fixture,
+                        "1.0.0"),
         version:test,
         capabilities:[],
         options:[]
@@ -59,7 +73,8 @@ test(mcp_allow_once_completes_and_replays_exact_operation,
     Options = [authority_context(Context)],
     rlm_install_mcp_server(authority_once_fixture, Options, First),
     First = ok(FirstResult),
-    assertion(FirstResult.status == installed),
+    get_dict(status, FirstResult, FirstStatus),
+    assertion(FirstStatus == installed),
     rlm_authority(Context, approve_diff),
     rlm_install_mcp_server(authority_once_fixture, Options, Second),
     assertion(Second == First).

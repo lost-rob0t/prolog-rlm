@@ -13,7 +13,7 @@ test(reported_load_error_exits_nonzero) :-
                      stderr(null)
                    ]),
     process_wait(Pid, Status),
-    assertion(Status = exit(Code)),
+    Status = exit(Code),
     assertion(Code =\= 0).
 
 :- end_tests(load_error_status).

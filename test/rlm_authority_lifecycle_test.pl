@@ -2,9 +2,11 @@
 
 :- use_module('../prolog/rlm_async').
 :- use_module('../prolog/rlm_authority').
+:- use_module('../prolog/rlm_effect').
 :- use_module('../prolog/rlm_tool').
 
 :- dynamic lifecycle_mutations/1.
+:- dynamic lifecycle_effect_store/1.
 
 reset_lifecycle_mutations :-
     retractall(lifecycle_mutations(_)),
@@ -40,6 +42,9 @@ lifecycle_schema(
                 limits:_{time_limit:1.0, max_output_bytes:4096}}).
 
 setup_lifecycle_registry(Registry) :-
+    tmp_file(rlm_authority_lifecycle, Store),
+    rlm_effect_store_open(Store),
+    assertz(lifecycle_effect_store(Store)),
     tool_registry_create(Registry),
     lifecycle_schema(Schema),
     tool_register(Registry,
@@ -50,7 +55,10 @@ setup_lifecycle_registry(Registry) :-
 
 cleanup_lifecycle(Registry, Context) :-
     catch(rlm_authority_clear(Context), _, true),
-    catch(tool_registry_destroy(Registry), _, true).
+    catch(tool_registry_destroy(Registry), _, true),
+    catch(rlm_effect_store_close, _, true),
+    forall(retract(lifecycle_effect_store(Store)),
+           catch(delete_file(Store), _, true)).
 
 invoke_lifecycle_pending(Registry, Context, Value, Pending) :-
     tool_invoke(Registry,
@@ -203,22 +211,27 @@ test(cancel_queued_approved_execution_never_mutates_after_workers_release,
         spawn_scheduler_blockers(BlockGate, 8, Blockers),
         ( wait_for_running(8),
           invoke_lifecycle_pending(Registry, Context, 1, Pending),
-          rlm_pending_resolution_async(Pending.id, ResolutionFuture),
-          rlm_approve(Pending.id, ok(_)),
-          rlm_pending_approval(Context, Pending.id, Scheduled),
-          assertion(Scheduled.state == scheduled),
+          get_dict(id, Pending, ApprovalId),
+          rlm_pending_resolution_async(ApprovalId, ResolutionFuture),
+          rlm_approve(ApprovalId, ok(_)),
+          rlm_pending_approval(Context, ApprovalId, Scheduled),
+          get_dict(state, Scheduled, ScheduledState),
+          assertion(ScheduledState == scheduled),
           rlm_pending_cancel_owner(Context, scheduler_saturated_cancel),
           rlm_future_await(ResolutionFuture, 2.0, Resolution),
           Resolution = error(Cancelled),
-          assertion(Cancelled.kind == cancelled),
-          assertion(Cancelled.before_execution_claim == true),
+          get_dict(kind, Cancelled, CancelledKind),
+          get_dict(before_execution_claim, Cancelled, BeforeClaim),
+          assertion(CancelledKind == cancelled),
+          assertion(BeforeClaim == true),
           release_blockers(BlockGate, 8),
           maplist(await_blocker, Blockers),
           sleep(0.02),
           lifecycle_mutation_count(Mutations),
           assertion(Mutations =:= 0),
-          rlm_pending_approval(Context, Pending.id, Terminal),
-          assertion(Terminal.state == cancelled) ),
+          rlm_pending_approval(Context, ApprovalId, Terminal),
+          get_dict(state, Terminal, TerminalState),
+          assertion(TerminalState == cancelled) ),
         ( release_blockers(BlockGate, 8),
           maplist(catch_destroy_future, Blockers),
           catch(message_queue_destroy(BlockGate), _, true),

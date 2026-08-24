@@ -54,7 +54,7 @@ test(mutation_is_closed_and_records_lineage) :-
 test(mutation_rejects_unregistered_callable) :-
     constraints(C), candidate(a, p1, direct, A),
     evolution_mutate(A, call(writeln, owned), C, Outcome, Lineage),
-    assertion(Outcome = error(Error)),
+    Outcome = error(Error),
     assertion(Error.reason == unknown_operator),
     assertion(Lineage == none).
 

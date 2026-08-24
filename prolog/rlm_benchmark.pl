@@ -1,3 +1,5 @@
+:- encoding(utf8).
+
 :- module(rlm_benchmark,
           [ rlm_benchmark_ready/0,
             benchmark_case/7,

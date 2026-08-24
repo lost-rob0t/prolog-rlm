@@ -4,6 +4,8 @@
 :- use_module('../prolog/rlm_effect_executor').
 :- use_module('../prolog/rlm_async').
 
+:- meta_predicate with_store(0).
+
 :- dynamic adversarial_count/2.
 :- dynamic adversarial_gate/2.
 

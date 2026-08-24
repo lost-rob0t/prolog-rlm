@@ -12,12 +12,12 @@ throw_ordinary(_) :-
     throw(error(async_control_boom,
                 context(rlm_async_control_test, ordinary))).
 
-test(time_limit_survives_future_boundary,
-     [throws(time_limit_exceeded)]) :-
+test(time_limit_survives_future_boundary) :-
     setup_call_cleanup(
         rlm_async_submit(plunit_rlm_async_control:throw_time_limit, Future),
-        rlm_future_await(Future, _),
-        rlm_future_destroy(Future)).
+        catch(rlm_future_await(Future, _), Exception, true),
+        rlm_future_destroy(Future)),
+    assertion(Exception == time_limit_exceeded).
 
 test(rlm_cancellation_survives_future_boundary,
      [throws(rlm_cancelled(async_control_token))]) :-

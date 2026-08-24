@@ -4,6 +4,8 @@
 :- use_module('../prolog/rlm_conversation').
 :- use_module('../prolog/rlm_conversation_warm').
 
+:- meta_predicate with_warm_runtime(2).
+
 with_warm_runtime(Goal) :-
     setup_call_cleanup(
         ( conversation_store_open(memory, ok(ConversationStore)),
@@ -109,7 +111,7 @@ compact_pack_case(Conversation, ArtifactStore) :-
     conversation_warm_context_units(Conversation,
                                     ArtifactStore,
                                     [],
-                                    [policy(_{max_candidates:8})],
+                                    [policy(json{max_candidates:8})],
                                     ok(WarmUnits)),
     Policy = context_policy{max_context_tokens:150,
                             provider_context_tokens:1000000,
@@ -159,7 +161,7 @@ reference_ranking_case(Conversation, ArtifactStore) :-
         Conversation,
         ArtifactStore,
         Signals,
-        [policy(_{max_candidates:1})],
+        [policy(json{max_candidates:1})],
         ok([Unit])),
     assertion(Unit.id == range_1_1).
 
@@ -176,7 +178,7 @@ malformed_generator_case(Conversation, _ArtifactStore) :-
     assertion(Error.phase == derive).
 
 fake_generator(_Source, _Options,
-               _{summary:"architecture summary",
+               json{summary:"architecture summary",
                  decisions:["keep transcript immutable"],
                  facts:["warm context is derived"],
                  unresolved:["wire cold retrieval"],
@@ -186,7 +188,7 @@ fake_generator(_Source, _Options,
                  symbols:[]}).
 
 verbose_generator(_Source, _Options,
-                  _{summary:"compact useful summary",
+                  json{summary:"compact useful summary",
                     decisions:["decision alpha alpha alpha alpha",
                                "decision beta beta beta beta",
                                "decision gamma gamma gamma gamma"],
@@ -199,7 +201,7 @@ verbose_generator(_Source, _Options,
                     files:["one/very/long/file/path.pl", "two/very/long/file/path.pl"],
                     symbols:["symbol_alpha", "symbol_beta"]}).
 
-bad_generator(_Source, _Options, _{summary:"missing required fields"}).
+bad_generator(_Source, _Options, json{summary:"missing required fields"}).
 
 char_counter(Text, Tokens) :-
     string_length(Text, Tokens).

@@ -567,7 +567,7 @@ test(project_kb_data_cannot_register_a_trusted_verifier) :-
     freeze(Input, Registry, api, 1, Frozen),
     project_snapshot(r1, Snapshot),
     Sources = [project_kb(Snapshot,
-                          [assertion_provider(module_exports,1,halt,halt,halt,_{} )])],
+                          [assertion_provider(module_exports,1,halt,halt,halt,json{})])],
     spec_observe(Frozen, Sources, Registry, [], ok(Observations)),
     spec_verify(Frozen, Observations, Registry, ok(Report)),
     assertion(Report.status == rejected),

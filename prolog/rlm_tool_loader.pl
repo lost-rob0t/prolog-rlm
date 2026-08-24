@@ -7,6 +7,7 @@
             rlm_tool_catalog/1,
             rlm_load_tools/3,
             rlm_load_all_tools/2,
+            rlm_load_tool_pack_instance/5,
             rlm_tool_loader_forget_registry/1
           ]).
 
@@ -237,6 +238,54 @@ rlm_load_all_tools_(Registry, Outcome) :-
     rlm_tool_packs(Packs),
     collect_all_infos(Packs, [], Infos0, CollectOutcome),
     load_all_infos_after_collect(CollectOutcome, Infos0, Registry, Outcome).
+
+/* Trusted host-scoped pack instances ---------------------------------- */
+
+rlm_load_tool_pack_instance(Registry, Pack, Manifest, Loader, Outcome) :-
+    catch(rlm_load_tool_pack_instance_(Registry,
+                                       Pack,
+                                       Manifest,
+                                       Loader,
+                                       Outcome),
+          Exception,
+          loader_exception(Pack, Exception, Outcome)).
+
+rlm_load_tool_pack_instance_(Registry, Pack, Manifest, Loader, Outcome) :-
+    require_selector_name(Pack),
+    require_pack_loader(Loader),
+    normalize_manifest(Pack, Manifest, Info),
+    instance_existing_load(Registry, Info, Existing),
+    load_instance_after_existing(Existing, Registry, Info, Loader, Outcome).
+
+instance_existing_load(Registry, Info, reused(Result)) :-
+    loaded_tool_pack(Registry, Info.pack, StoredInfo, Result),
+    StoredInfo == Info,
+    !.
+instance_existing_load(Registry, Info, changed(StoredInfo)) :-
+    loaded_tool_pack(Registry, Info.pack, StoredInfo, _),
+    !.
+instance_existing_load(_, _, new).
+
+load_instance_after_existing(reused(Result), _, Info, _,
+                             ok(tool_pack_load{pack:Info.pack,
+                                               library:Info.library,
+                                               category:Info.category,
+                                               status:reused,
+                                               result:Result})) :- !.
+load_instance_after_existing(changed(StoredInfo), _, Info, _, error(Error)) :-
+    !,
+    Error = tool_loader_error{
+                kind:tool_pack_manifest_changed,
+                pack:Info.pack,
+                previous:StoredInfo,
+                requested:Info,
+                message:"loaded tool-pack instance cannot change its manifest"
+            }.
+load_instance_after_existing(new, Registry, Info, Loader, Outcome) :-
+    preflight_infos(Registry, [Info], Preflight),
+    ( Preflight = error(Error) -> Outcome = error(Error)
+    ; call_pack_loader(Loader, Registry, Info, Outcome)
+    ).
 
 collect_all_infos([], Infos, Infos, ok) :- !.
 collect_all_infos([Pack|Packs], Infos0, Infos, Outcome) :-

@@ -2,6 +2,8 @@
 
 :- use_module('../prolog/rlm_project_source').
 
+:- meta_predicate with_registry(1).
+
 with_registry(Goal) :-
     setup_call_cleanup(project_source_registry_create(Registry),
                        call(Goal, Registry),

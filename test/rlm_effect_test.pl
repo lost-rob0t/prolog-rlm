@@ -3,6 +3,8 @@
 :- use_module('../prolog/rlm_effect').
 :- use_module(library(lists)).
 
+:- meta_predicate with_effect_store(0).
+
 :- dynamic fake_submit_count/1.
 
 setup_effect_store(File) :-
@@ -159,7 +161,7 @@ test(repeated_dispatch_does_not_cross_boundary_twice) :-
           rlm_effect_admit(Ticket, authority_ref{tier:dangerous}, execute(Attempt)),
           rlm_effect_dispatch(Attempt.attempt_id, dispatch(_)),
           rlm_effect_dispatch(Attempt.attempt_id, Second),
-          assertion(Second = in_progress(SecondAttempt)),
+          Second = in_progress(SecondAttempt),
           assert_attempt_status(SecondAttempt, dispatching),
           fake_count(0)
         )).
@@ -346,6 +348,25 @@ test(history_preserves_execution_after_later_logic_failure) :-
 
 event_type(Type, Event) :- Event.type == Type.
 
+test(late_admission_after_peer_observation_replays_canonical_result) :-
+    with_effect_store(
+        ( Request = request{target:late_admission},
+          rlm_effect_prepare(tool, Request, _{}, execute(FirstTicket)),
+          rlm_effect_prepare(tool, Request, _{}, execute(LateTicket)),
+          rlm_effect_admit(FirstTicket,
+                           authority_ref{tier:dangerous},
+                           execute(Attempt)),
+          rlm_effect_dispatch(Attempt.attempt_id, dispatch(_)),
+          fake_submit(Value),
+          observation(Value, Observation),
+          rlm_effect_observe(Attempt.attempt_id, Observation, observed(Stored)),
+          rlm_effect_admit(LateTicket,
+                           authority_ref{tier:dangerous},
+                           replay(Replay)),
+          assertion(Replay == Stored),
+          fake_count(1)
+        )).
+
 test(parallel_same_effect_has_one_execution_owner) :-
     with_effect_store(
         setup_call_cleanup(
@@ -375,12 +396,22 @@ destroy_parallel_queues(Start, Done, Results) :-
 
 parallel_candidate(Request, Start, Done, Results) :-
     thread_get_message(Start, go),
-    rlm_effect_prepare(tool, Request, _{}, Decision),
-    parallel_after_prepare(Decision, Done, Results).
+    catch(( rlm_effect_prepare(tool, Request, _{}, Decision),
+            (   parallel_after_prepare(Decision, Done, Results)
+            ->  true
+            ;   thread_send_message(Results,
+                                    error(unhandled_prepare(Decision)))
+            )
+          ),
+          Error,
+          thread_send_message(Results, error(Error))).
 
 parallel_after_prepare(replay(_), _, Results) :-
     thread_send_message(Results, observed).
 parallel_after_prepare(in_progress(_), Done, Results) :-
+    thread_get_message(Done, observed),
+    thread_send_message(Results, observed).
+parallel_after_prepare(reconciliation_required(_), Done, Results) :-
     thread_get_message(Done, observed),
     thread_send_message(Results, observed).
 parallel_after_prepare(execute(Ticket), Done, Results) :-
@@ -394,6 +425,8 @@ parallel_after_admission(execute(Attempt), Done, Results) :-
     rlm_effect_observe(Attempt.attempt_id, Observation, observed(_)),
     thread_send_message(Done, observed),
     thread_send_message(Results, executed).
+parallel_after_admission(replay(_), _, Results) :-
+    thread_send_message(Results, observed).
 parallel_after_admission(in_progress(_), Done, Results) :-
     thread_get_message(Done, observed),
     thread_send_message(Results, observed).

@@ -25,8 +25,9 @@ expect_error(Outcome, _) :-
                 context(rlm_completion_test, expected_error))).
 
 anonymous_dict_recursive_plan(Plan, Child) :-
+    dict_create(SecretArgs, _AnonymousTag, [secret-true]),
     Grandchild = plan([tool(secret_tool,
-                            literal(_{secret:true}),
+                            literal(SecretArgs),
                             secret),
                        final(var(secret))]),
     Child = plan([rlm(Grandchild, grand),
@@ -125,9 +126,10 @@ test(genuine_recursive_cycle_remains_rejected,
                    Options,
                    Outcome),
     expect_error(Outcome, Error),
-    assertion(Error.phase == validate),
-    assertion(Error.kind == recursive_plan_rejected),
-    assertion(Error.detail = recursive_cycle(_)).
+    assertion(Error.phase == planner),
+    assertion(Error.kind == plan_parse_failed),
+    assertion(Error.cause.kind == invalid_plan),
+    assertion(Error.cause.detail == cyclic_plan).
 
 test(child_capabilities_cannot_reuse_parent_tool,
      [setup(completion_test_support:reset_calls)]) :-

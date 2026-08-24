@@ -1,5 +1,7 @@
 :- begin_tests(rlm_tool_loader_security).
 
+:- meta_predicate with_security_registry(1).
+
 :- use_module('../prolog/rlm_mcp_policy').
 :- use_module('../prolog/rlm_mcp_server').
 :- use_module('../prolog/rlm_mcp_tool_pack').
@@ -62,21 +64,25 @@ test(mcp_loader_discovery_exposes_references_not_secret_values) :-
             tool_invoke(Registry,
                         [tool(mcp_servers)],
                         mcp_servers,
-                        _{},
+                        json{},
                         [],
                         ok(Execution),
                         _),
-            member(Server, Execution.value.servers),
-            Server.name == loader_secret_fixture,
-            assertion(Server.transport.kind == stdio),
-            assertion(Server.transport.profile == loader_stdio_profile),
-            assertion(Server.install.kind == package),
-            assertion(Server.install.profile == loader_installer_profile),
-            assertion(Server.working_directory == configured),
-            assertion(Server.configuration = [Reference]),
-            assertion(Reference.target == 'API_KEY'),
-            assertion(Reference.kind == config),
-            assertion(Reference.name == loader_secret_key_48),
+            get_dict(value, Execution, ExecutionValue),
+            get_dict(servers, ExecutionValue, Servers),
+            member(Server, Servers),
+            get_dict(name, Server, loader_secret_fixture),
+            get_dict(transport, Server, Transport),
+            get_dict(kind, Transport, stdio),
+            get_dict(profile, Transport, loader_stdio_profile),
+            get_dict(install, Server, Install),
+            get_dict(kind, Install, package),
+            get_dict(profile, Install, loader_installer_profile),
+            get_dict(working_directory, Server, configured),
+            get_dict(configuration, Server, [Reference]),
+            get_dict(target, Reference, 'API_KEY'),
+            get_dict(kind, Reference, config),
+            get_dict(name, Reference, loader_secret_key_48),
             assertion(term_does_not_contain(Server, "ENV_SECRET_48")),
             assertion(term_does_not_contain(Server, "/tmp")),
             assertion(term_does_not_contain(Server,

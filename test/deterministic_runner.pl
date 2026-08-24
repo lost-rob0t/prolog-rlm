@@ -30,7 +30,7 @@ run(Suites, Options) :-
                                            Discovered,
                                            TestTimeout)),
           Exception,
-          run_aborted(SuiteCount, Discovered, Exception)).
+          run_aborted(Suites, SuiteCount, Discovered, Exception)).
 
 run_bounded(Expected, SuiteCount, Discovered, TestTimeout) :-
     run_tests(Expected,
@@ -38,15 +38,14 @@ run_bounded(Expected, SuiteCount, Discovered, TestTimeout) :-
                 timeout(TestTimeout),
                 cleanup(false)
               ]),
-    summary_counts(Summary,
-                   Planned,
-                   Passed,
-                   Failed,
-                   _PlunitTimeout,
-                   Blocked,
-                   Fixme),
-    timeout_count(Timeout),
-    completed_test_count(Completed),
+    get_dict(total, Summary, Planned),
+    expected_result_counts(Expected,
+                           Completed,
+                           Passed,
+                           Failed,
+                           Timeout,
+                           Blocked,
+                           Fixme),
     format('aggregate_plunit_summary suites=~d discovered=~d planned=~d completed=~d passed=~d failed=~d timeout=~d blocked=~d fixme=~d~n',
            [SuiteCount, Discovered, Planned, Completed, Passed, Failed,
             Timeout, Blocked, Fixme]),
@@ -76,9 +75,14 @@ run_bounded(Expected, SuiteCount, Discovered, TestTimeout) :-
     ;   fail
     ).
 
-run_aborted(SuiteCount, Discovered, Exception) :-
-    completed_test_count(Completed),
-    completed_result_counts(Passed, Failed, Timeout, Blocked, Fixme),
+run_aborted(Expected, SuiteCount, Discovered, Exception) :-
+    expected_result_counts(Expected,
+                           Completed,
+                           Passed,
+                           Failed,
+                           Timeout,
+                           Blocked,
+                           Fixme),
     format('aggregate_plunit_abort suites=~d discovered=~d completed=~d reason=~q~n',
            [SuiteCount, Discovered, Completed, Exception]),
     report(SuiteCount,
@@ -187,44 +191,52 @@ aggregate_test_counts([Suite|Suites], [Count|Counts], Total) :-
 positive_count(Count) :-
     Count > 0.
 
-summary_counts(Summary, Planned, Passed, Failed, Timeout, Blocked, Fixme) :-
-    get_dict(total, Summary, Planned),
-    get_dict(passed, Summary, Passed),
-    get_dict(failed, Summary, Failed),
-    get_dict(timeout, Summary, Timeout),
-    get_dict(blocked, Summary, Blocked),
-    get_dict(fixme, Summary, Fixme).
+expected_result_counts(Expected,
+                       Completed,
+                       Passed,
+                       Failed,
+                       Timeout,
+                       Blocked,
+                       Fixme) :-
+    expected_records(Expected, passed, PassedRecords),
+    expected_records(Expected, failed, FailedRecords),
+    expected_records(Expected, timeout, TimeoutRecords),
+    expected_records(Expected, blocked, BlockedRecords),
+    expected_records(Expected, fixme, FixmeRecords),
+    append([PassedRecords, FailedRecords, TimeoutRecords], CompletedRaw),
+    sort(CompletedRaw, CompletedRecords),
+    length(CompletedRecords, Completed),
+    length(PassedRecords, Passed),
+    length(FailedRecords, Failed),
+    length(TimeoutRecords, Timeout),
+    length(BlockedRecords, Blocked),
+    length(FixmeRecords, Fixme).
 
-completed_test_count(Count) :-
+expected_records(Expected, Kind, Records) :-
     findall(Unit-Test-Line,
-            (   plunit:passed(Unit, Test, Line, _, _)
-            ;   plunit:failed(Unit, Test, Line, _, _)
-            ;   plunit:timeout(Unit, Test, Line, _, _)
-            ),
+            expected_result(Expected, Kind, Unit, Test, Line),
             Raw),
-    sort(Raw, Records),
-    length(Records, Count).
+    sort(Raw, Records).
 
-completed_result_counts(Passed, Failed, Timeout, Blocked, Fixme) :-
-    findall(Unit-Test-Line, plunit:passed(Unit, Test, Line, _, _), PassedTests),
-    findall(Unit-Test-Line, plunit:failed(Unit, Test, Line, _, _), FailedTests),
-    findall(Unit-Test-Line, plunit:blocked(Unit, Test, Line, _), BlockedTests),
-    findall(Unit-Test-Line, plunit:fixme(Unit, Test, Line, _, _), FixmeTests),
-    length(PassedTests, Passed),
-    length(FailedTests, Failed),
-    timeout_count(Timeout),
-    length(BlockedTests, Blocked),
-    length(FixmeTests, Fixme).
-
-timeout_count(Count) :-
-    findall(Unit-Test-Line,
-            (   plunit:timeout(Unit, Test, Line, _, _)
-            ;   plunit:failed(Unit, Test, Line, Reason, _),
-                timeout_reason(Reason)
-            ),
-            Raw),
-    sort(Raw, Records),
-    length(Records, Count).
+expected_result(Expected, passed, Unit, Test, Line) :-
+    member(Unit, Expected),
+    plunit:passed(Unit, Test, Line, _, _).
+expected_result(Expected, failed, Unit, Test, Line) :-
+    member(Unit, Expected),
+    plunit:failed(Unit, Test, Line, Reason, _),
+    \+ timeout_reason(Reason).
+expected_result(Expected, timeout, Unit, Test, Line) :-
+    member(Unit, Expected),
+    (   plunit:timeout(Unit, Test, Line, _, _)
+    ;   plunit:failed(Unit, Test, Line, Reason, _),
+        timeout_reason(Reason)
+    ).
+expected_result(Expected, blocked, Unit, Test, Line) :-
+    member(Unit, Expected),
+    plunit:blocked(Unit, Test, Line, _).
+expected_result(Expected, fixme, Unit, Test, Line) :-
+    member(Unit, Expected),
+    plunit:fixme(Unit, Test, Line, _, _).
 
 timeout_reason(throw(time_limit_exceeded(_))).
 timeout_reason(time_limit_exceeded(_)).

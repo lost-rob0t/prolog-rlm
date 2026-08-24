@@ -36,19 +36,19 @@ rlm_conversation_warm_ready :-
 
 default_warm_policy(
     warm_policy{max_candidates:32,
-                fidelity:_{verbatim:100,
-                           detailed_summary:90,
-                           compact_summary:70,
-                           facts_only:60},
-                weights:_{pinned:100000,
-                          direct_reference:1000,
-                          active_task:600,
-                          unresolved:400,
-                          dependency:300,
-                          entity:200,
-                          topic:120,
-                          retrieval:100,
-                          recency:1}}).
+                fidelity:warm_fidelity{verbatim:100,
+                                       detailed_summary:90,
+                                       compact_summary:70,
+                                       facts_only:60},
+                weights:warm_weights{pinned:100000,
+                                     direct_reference:1000,
+                                     active_task:600,
+                                     unresolved:400,
+                                     dependency:300,
+                                     entity:200,
+                                     topic:120,
+                                     retrieval:100,
+                                     recency:1}}).
 
 warm_context_schema(
     object([ field(summary, string, required),
@@ -78,7 +78,8 @@ conversation_warm_derive_(Conversation, Range0, Options, Warm) :-
     source_messages(Conversation, Range, Messages),
     source_refs(Messages, Refs),
     render_messages(Messages, SourceText),
-    Source = warm_source{conversation_id:Conversation.id,
+    get_dict(id, Conversation, ConversationId),
+    Source = warm_source{conversation_id:ConversationId,
                          range:Range,
                          refs:Refs,
                          messages:Messages,
@@ -92,7 +93,7 @@ conversation_warm_derive_(Conversation, Range0, Options, Warm) :-
                    TokenOptions,
                    Variants),
     get_time(CreatedAt),
-    Warm = warm_context{conversation_id:Conversation.id,
+    Warm = warm_context{conversation_id:ConversationId,
                         source_range:Range,
                         source_refs:Refs,
                         generated:Data,
@@ -119,12 +120,17 @@ conversation_warm_publish_(Conversation,
                            Published) :-
     conversation_warm_derive_(Conversation, Range, Options, Warm),
     warm_namespace(Conversation, Namespace),
-    warm_key(Warm.source_range, Key),
+    get_dict(source_range, Warm, SourceRange),
+    get_dict(source_refs, Warm, SourceRefs),
+    get_dict(generation, Warm, Generation),
+    get_dict(kind, Generation, GeneratorKind),
+    get_dict(id, Conversation, ConversationId),
+    warm_key(SourceRange, Key),
     Provenance = warm_provenance{producer_type:conversation_compaction,
-                                 conversation_id:Conversation.id,
-                                 source_range:Warm.source_range,
-                                 source_refs:Warm.source_refs,
-                                 generator:Warm.generation.kind},
+                                 conversation_id:ConversationId,
+                                 source_range:SourceRange,
+                                 source_refs:SourceRefs,
+                                 generator:GeneratorKind},
     artifact_put(ArtifactStore,
                  Namespace,
                  Key,
@@ -189,7 +195,8 @@ conversation_warm_context_units_(Conversation,
                             [history(false)],
                             Artifacts),
     rank_candidates(Artifacts, Signals, Policy, Ranked),
-    take_first(Policy.max_candidates, Ranked, Selected),
+    get_dict(max_candidates, Policy, MaxCandidates),
+    take_first(MaxCandidates, Ranked, Selected),
     maplist(warm_artifact_unit(Signals, Policy), Selected, Units).
 
 warm_policy(Options, Policy) :-
@@ -199,9 +206,12 @@ warm_policy(Options, Policy) :-
     ->  put_dict(Policy0, Default, Candidate)
     ;   throw(warm_fault(invalid_policy(Policy0)))
     ),
-    require_positive_integer(Candidate.max_candidates, max_candidates),
-    validate_score_dict(Candidate.fidelity, fidelity),
-    validate_score_dict(Candidate.weights, weights),
+    get_dict(max_candidates, Candidate, MaxCandidates),
+    get_dict(fidelity, Candidate, Fidelity),
+    get_dict(weights, Candidate, Weights),
+    require_positive_integer(MaxCandidates, max_candidates),
+    validate_score_dict(Fidelity, fidelity),
+    validate_score_dict(Weights, weights),
     Policy = Candidate.
 
 rank_candidates(Artifacts, Signals, Policy, Ranked) :-
@@ -215,25 +225,28 @@ rank_candidates(Artifacts, Signals, Policy, Ranked) :-
 
 candidate_score(Artifact, Signals, Policy, Score) :-
     artifact_warm(Artifact, Warm),
-    Range = Warm.source_range,
+    get_dict(source_range, Warm, Range),
     range_end(Range, End),
     weight(Policy, recency, RecencyWeight),
     RecencyScore is End*RecencyWeight,
-    signal_score(Artifact.key, Signals, Policy, SignalScore, _),
+    get_dict(key, Artifact, Key),
+    signal_score(Key, Signals, Policy, SignalScore, _),
     Score is RecencyScore+SignalScore.
 
 warm_artifact_unit(Signals, Policy, Artifact, Unit) :-
     artifact_warm(Artifact, Warm),
-    signal_score(Artifact.key, Signals, Policy, SignalScore, Reasons),
-    pinned_signal(Artifact.key, Signals, Mandatory),
+    get_dict(key, Artifact, Key),
+    get_dict(variants, Warm, WarmVariants),
+    signal_score(Key, Signals, Policy, SignalScore, Reasons),
+    pinned_signal(Key, Signals, Mandatory),
     maplist(warm_variant_context(Artifact,
                                  Warm,
                                  Policy,
                                  SignalScore,
                                  Reasons),
-            Warm.variants,
+            WarmVariants,
             Variants),
-    Unit = context_unit{id:Artifact.key,
+    Unit = context_unit{id:Key,
                         section:warm,
                         mandatory:Mandatory,
                         variants:Variants}.
@@ -245,21 +258,28 @@ warm_variant_context(Artifact,
                      Reasons,
                      WarmVariant,
                      Variant) :-
-    fidelity_score(Policy, WarmVariant.kind, Fidelity),
+    get_dict(kind, WarmVariant, Kind),
+    get_dict(tokens, WarmVariant, Tokens),
+    get_dict(text, WarmVariant, Text),
+    get_dict(ref, Artifact, ArtifactRef),
+    get_dict(source_range, Warm, SourceRange),
+    get_dict(source_refs, Warm, SourceRefs),
+    fidelity_score(Policy, Kind, Fidelity),
     Utility is Fidelity+SignalScore,
-    Value = warm_context_value{artifact_ref:Artifact.ref,
-                               source_range:Warm.source_range,
-                               source_refs:Warm.source_refs,
-                               kind:WarmVariant.kind,
-                               text:WarmVariant.text,
+    Value = warm_context_value{artifact_ref:ArtifactRef,
+                               source_range:SourceRange,
+                               source_refs:SourceRefs,
+                               kind:Kind,
+                               text:Text,
                                reasons:Reasons},
-    Variant = context_variant{kind:WarmVariant.kind,
-                              tokens:WarmVariant.tokens,
+    Variant = context_variant{kind:Kind,
+                              tokens:Tokens,
                               utility:Utility,
                               value:Value}.
 
 fidelity_score(Policy, Kind, Score) :-
-    (   get_dict(Kind, Policy.fidelity, Score),
+    get_dict(fidelity, Policy, Fidelity),
+    (   get_dict(Kind, Fidelity, Score),
         integer(Score),
         Score >= 0
     ->  true
@@ -282,7 +302,8 @@ signal_score(Key, Signals, Policy, Score, Reasons) :-
             Reasons).
 
 weight(Policy, Kind, Weight) :-
-    (   get_dict(Kind, Policy.weights, Weight),
+    get_dict(weights, Policy, Weights),
+    (   get_dict(Kind, Weights, Weight),
         integer(Weight),
         Weight >= 0
     ->  true
@@ -334,16 +355,20 @@ rlm_generate(Source, Options, Data, Generation) :-
     option(completion_options(CompletionOptions), Options, []),
     require_options(CompletionOptions),
     warm_prompt(Prompt),
-    source_payloads(Source.messages, Payloads),
+    get_dict(messages, Source, Messages),
+    source_payloads(Messages, Payloads),
     rlm_completion:rlm_completion(Prompt,
                                   terms(Payloads),
                                   CompletionOptions,
                                   CompletionOutcome),
     (   CompletionOutcome = ok(Completion)
-    ->  completion_structured_value(Completion.value, Data),
+    ->  get_dict(value, Completion, CompletionValue),
+        get_dict(usage, Completion, Usage),
+        get_dict(recursion, Completion, Recursion),
+        completion_structured_value(CompletionValue, Data),
         Generation = warm_generation{kind:rlm,
-                                     usage:Completion.usage,
-                                     recursion:Completion.recursion}
+                                     usage:Usage,
+                                     recursion:Recursion}
     ;   CompletionOutcome = error(Error)
     ->  throw(warm_fault(rlm_generation_failed(Error)))
     ;   throw(warm_fault(invalid_completion_outcome(CompletionOutcome)))
@@ -352,8 +377,9 @@ rlm_generate(Source, Options, Data, Generation) :-
 warm_prompt("Derive warm context for the supplied conversation range. Return ONLY one JSON object with exactly these fields: summary (string), decisions (array of strings), facts (array of strings), unresolved (array of strings), entities (array of strings), topics (array of strings), files (array of strings), symbols (array of strings). Preserve concrete decisions and unresolved work; do not invent facts. The supplied opaque context is the authoritative source.").
 
 source_payloads(Messages, Payloads) :-
-    findall(Message.message,
-            member(Message, Messages),
+    findall(Payload,
+            ( member(Message, Messages),
+              get_dict(message, Message, Payload) ),
             Payloads).
 
 completion_structured_value(Value, Data) :-
@@ -402,22 +428,31 @@ build_variants(SourceText, Data, TokenOptions, Variants) :-
 variant(Kind, Text, TokenOptions, Variant) :-
     token_count_text(Text, TokenOptions, TokenOutcome),
     require_budget_outcome(TokenOutcome, Count),
+    get_dict(tokens, Count, Tokens),
     Variant = warm_variant{kind:Kind,
                            text:Text,
-                           tokens:Count.tokens,
+                           tokens:Tokens,
                            token_count:Count}.
 
 detailed_text(Data, Text) :-
-    format_lines("Decisions", Data.decisions, Decisions),
-    format_lines("Facts", Data.facts, Facts),
-    format_lines("Unresolved", Data.unresolved, Unresolved),
-    format_lines("Entities", Data.entities, Entities),
-    format_lines("Topics", Data.topics, Topics),
-    format_lines("Files", Data.files, Files),
-    format_lines("Symbols", Data.symbols, Symbols),
+    get_dict(summary, Data, Summary),
+    get_dict(decisions, Data, DecisionValues),
+    get_dict(facts, Data, FactValues),
+    get_dict(unresolved, Data, UnresolvedValues),
+    get_dict(entities, Data, EntityValues),
+    get_dict(topics, Data, TopicValues),
+    get_dict(files, Data, FileValues),
+    get_dict(symbols, Data, SymbolValues),
+    format_lines("Decisions", DecisionValues, Decisions),
+    format_lines("Facts", FactValues, Facts),
+    format_lines("Unresolved", UnresolvedValues, Unresolved),
+    format_lines("Entities", EntityValues, Entities),
+    format_lines("Topics", TopicValues, Topics),
+    format_lines("Files", FileValues, Files),
+    format_lines("Symbols", SymbolValues, Symbols),
     format(string(Text),
            "Summary: ~s\n~s~s~s~s~s~s~s",
-           [Data.summary,
+           [Summary,
             Decisions,
             Facts,
             Unresolved,
@@ -427,11 +462,15 @@ detailed_text(Data, Text) :-
             Symbols]).
 
 compact_text(Data, Text) :-
-    format_lines("Unresolved", Data.unresolved, Unresolved),
-    format(string(Text), "Summary: ~s\n~s", [Data.summary, Unresolved]).
+    get_dict(summary, Data, Summary),
+    get_dict(unresolved, Data, UnresolvedValues),
+    format_lines("Unresolved", UnresolvedValues, Unresolved),
+    format(string(Text), "Summary: ~s\n~s", [Summary, Unresolved]).
 
 facts_text(Data, Text) :-
-    append(Data.decisions, Data.facts, Facts0),
+    get_dict(decisions, Data, Decisions),
+    get_dict(facts, Data, Facts),
+    append(Decisions, Facts, Facts0),
     format_lines("Facts and decisions", Facts0, Text).
 
 format_lines(_, [], "") :- !.
@@ -459,16 +498,22 @@ source_messages(Conversation, Range, Messages) :-
     ).
 
 source_refs(Messages, Refs) :-
-    findall(Message.ref, member(Message, Messages), Refs).
+    findall(Ref,
+            ( member(Message, Messages),
+              get_dict(ref, Message, Ref) ),
+            Refs).
 
 render_messages(Messages, Text) :-
     maplist(render_message, Messages, Rendered),
     atomics_to_string(Rendered, "\n", Text).
 
 render_message(Message, Text) :-
-    content_text(Message.content, Content),
+    get_dict(content, Message, RawContent),
+    get_dict(sequence, Message, Sequence),
+    get_dict(role, Message, Role),
+    content_text(RawContent, Content),
     format(string(Text), '[~d] ~w: ~s',
-           [Message.sequence, Message.role, Content]).
+           [Sequence, Role, Content]).
 
 content_text(Content, Content) :- string(Content), !.
 content_text(Content, Text) :- atom(Content), !, atom_string(Content, Text).
@@ -478,16 +523,17 @@ content_text(Content, Text) :-
                               [quoted(true), portray(false), max_depth(12)])).
 
 warm_namespace(Conversation, [conversation, ConversationId, warm]) :-
-    ConversationId = Conversation.id.
+    get_dict(id, Conversation, ConversationId).
 
 warm_key(range(Start, End), Key) :-
     format(atom(Key), 'range_~d_~d', [Start, End]).
 
 artifact_warm(Artifact, Warm) :-
     (   is_dict(Artifact),
-        Artifact.kind == warm_context,
-        is_dict(Artifact.value)
-    ->  Warm = Artifact.value
+        get_dict(kind, Artifact, warm_context),
+        get_dict(value, Artifact, Value),
+        is_dict(Value)
+    ->  Warm = Value
     ;   throw(warm_fault(invalid_warm_artifact(Artifact)))
     ).
 

@@ -3,6 +3,8 @@
 :- use_module('../prolog/rlm_agent').
 :- use_module('../prolog/rlm_plan').
 
+:- meta_predicate with_runtime(+, 1).
+
 worker_handler(work(echo, Value), Value).
 worker_handler(work(block, Seconds), done) :-
     sleep(Seconds).

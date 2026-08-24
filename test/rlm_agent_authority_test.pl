@@ -51,7 +51,7 @@ test(model_facing_agent_tool_cannot_raise_authority) :-
                 Exception,
                 true),
           assertion(nonvar(Exception)),
-          assertion(Exception = error(agent_spawn_failed(Error), _)),
+          Exception = error(agent_spawn_failed(Error), _),
           assertion(Error.kind == authority_widening_denied),
           agent_runtime_status(Runtime, Status),
           assertion(Status.agent_count =:= 0) ),

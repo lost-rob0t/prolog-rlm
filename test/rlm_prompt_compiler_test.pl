@@ -4,6 +4,8 @@
 :- use_module('../prolog/rlm_tool').
 :- use_module('support/tool_test_support').
 
+:- meta_predicate with_catalog(1).
+
 with_catalog(Goal) :-
     setup_call_cleanup(prompt_catalog_create(Catalog),
                        call(Goal, Catalog),
@@ -298,7 +300,7 @@ context_deactivation_body(Registry) :-
           prompt_compile(Catalog, "weather tomorrow", [capabilities(Caps)], ok(B)),
           assertion(\+ selected_unit(B, tool(git_diff))),
           tool_discover(Registry, StillRegistered),
-          assertion(StillRegistered = [Registered]),
+          StillRegistered = [Registered],
           assertion(Registered.name == git_diff),
           prompt_compile(Catalog, "git diff review", [capabilities(Caps)], ok(C)),
           assertion(selected_unit(C, tool(git_diff)))
@@ -399,7 +401,7 @@ test_needs_recompile(Catalog) :-
     register_unit(Catalog, Spec),
     Caps = [tool(project_search)],
     prompt_compile(Catalog,
-                   "inspect the project",
+                   "inspect it",
                    [capabilities(Caps)],
                    ok(Before)),
     assertion(\+ selected_unit(Before, tool(project_search))),
@@ -454,7 +456,11 @@ test_mcp_closure(Catalog) :-
                    ok(Compiled)),
     assertion(selected_unit(Compiled, mcp_tool(github, repo_search))),
     assertion(selected_unit(Compiled, mcp_server(github))),
-    assertion(Compiled.context_units \== []).
+    assertion(Compiled.context_units \== []),
+    assertion(memberchk(mcp_tool(github, repo_search),
+                        Compiled.active_units)),
+    Compiled.tool_schemas = [VisibleSchema],
+    assertion(VisibleSchema.name == repo_search).
 
 /* -------------------------------------------------------------------------
  * Shared token-budget contract
@@ -566,5 +572,39 @@ register_synthetic(Catalog, Index) :-
                        mandatory_context:false,
                        provenance:scale_fixture},
     register_unit(Catalog, Spec).
+
+test(pack_false_still_renders_selected_projection) :-
+    with_catalog(test_pack_false_render).
+
+test_pack_false_render(Catalog) :-
+    git_schema(Schema),
+    base_tool_spec(Schema, [trigger(keyword(review), 50)], Spec),
+    register_unit(Catalog, Spec),
+    prompt_compile(Catalog,
+                   "review",
+                   [capabilities([tool(git_diff)]), pack(false)],
+                   ok(Compiled)),
+    prompt_render(Compiled, openrouter, ok(Rendered)),
+    assertion(Rendered.text \== ""),
+    assertion(Rendered.active_units == [tool(git_diff)]),
+    Rendered.tool_schemas = [Visible],
+    assertion(Visible.name == git_diff).
+
+test(optional_tool_packed_out_is_absent_from_native_schemas) :-
+    with_catalog(test_packed_schema_subset).
+
+test_packed_schema_subset(Catalog) :-
+    git_schema(Schema),
+    base_tool_spec(Schema, [trigger(keyword(review), 50)], Spec0),
+    put_dict(mandatory_context, Spec0, false, Spec),
+    register_unit(Catalog, Spec),
+    compiler_policy(1, Policy),
+    prompt_compile(Catalog,
+                   "review",
+                   [capabilities([tool(git_diff)]), policy(Policy)],
+                   ok(Compiled)),
+    assertion(selected_unit(Compiled, tool(git_diff))),
+    assertion(Compiled.active_units == []),
+    assertion(Compiled.tool_schemas == []).
 
 :- end_tests(rlm_prompt_compiler).

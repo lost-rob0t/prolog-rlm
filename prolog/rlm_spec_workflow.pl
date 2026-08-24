@@ -72,9 +72,9 @@ spec_workflow_compile(Frozen0, AssertionRegistry, Config0, Options, Outcome) :-
             normalize_workflow_config(Config0, Config),
             validate_workflow_plan_source(Config),
             assertion_registry_validate(AssertionRegistry, RegistryOutcome),
-            require_assertion_registry_outcome(RegistryOutcome, NormalizedRegistry),
+            require_assertion_registry_outcome(RegistryOutcome, _),
             workflow_graph(Frozen,
-                           NormalizedRegistry,
+                           AssertionRegistry,
                            Config,
                            GraphSpec,
                            GraphRegistry),
@@ -93,11 +93,11 @@ spec_workflow_compile(Frozen0, AssertionRegistry, Config0, Options, Outcome) :-
 
 spec_workflow_run_async(Workflow0, Options, Future) :-
     normalize_compiled_workflow(Workflow0, Workflow),
-    rlm_graph:graph_run_async(Workflow.graph, _{}, Options, Future).
+    rlm_graph:graph_run_async(Workflow.graph, workflow_input{}, Options, Future).
 
 spec_workflow_run(Workflow0, Options, Outcome) :-
     normalize_compiled_workflow(Workflow0, Workflow),
-    rlm_graph:graph_run(Workflow.graph, _{}, Options, Outcome).
+    rlm_graph:graph_run(Workflow.graph, workflow_input{}, Options, Outcome).
 
 spec_workflow_resume_async(Workflow0, Backend, RunId, Resume, Options, Future) :-
     normalize_compiled_workflow(Workflow0, Workflow),
@@ -337,7 +337,7 @@ normalize_workflow_config(Input, Config) :-
     canonical_workflow_data(Capabilities0, Capabilities),
     dict_default(Input, plan_options, [], PlanOptions),
     require_options(PlanOptions),
-    dict_default(Input, inputs, _{}, Inputs0),
+    dict_default(Input, inputs, workflow_input{}, Inputs0),
     canonical_workflow_data(Inputs0, Inputs),
     dict_default(Input, observation_sources, [], Sources0),
     canonical_workflow_data(Sources0, Sources),
@@ -444,9 +444,10 @@ canonical_workflow_data(Value0, _) :-
 canonical_workflow_data(Value0, Value) :-
     is_dict(Value0),
     !,
-    dict_pairs(Value0, _, Pairs0),
+    dict_pairs(Value0, Tag0, Pairs0),
     maplist(canonical_workflow_pair, Pairs0, Pairs),
-    dict_pairs(Value, workflow_data, Pairs).
+    canonical_workflow_tag(Tag0, Tag),
+    dict_pairs(Value, Tag, Pairs).
 canonical_workflow_data(Values0, Values) :-
     is_list(Values0),
     !,
@@ -469,6 +470,11 @@ canonical_workflow_pair(Key-Value0, Key-Value) :-
     canonical_workflow_data(Value0, Value).
 canonical_workflow_pair(Key-_, _) :-
     throw(workflow_fault(invalid_workflow_dict_key(Key))).
+
+canonical_workflow_tag(Tag, Tag) :-
+    atom(Tag),
+    !.
+canonical_workflow_tag(_, workflow_data).
 
 /* Helpers -------------------------------------------------------------- */
 

@@ -247,7 +247,7 @@ register_adapter_source(Name,
                         SourceRef,
                         AdapterMetadata,
                         Limits,
-                        ok(Ref)) :-
+                        Outcome) :-
     uuid(Id, [version(4)]),
     Version = 1,
     get_time(CreatedAt),
@@ -271,7 +271,8 @@ register_adapter_source(Name,
                             Payload,
                             Metadata,
                             CreatedAt,
-                            Ref).
+                            Ref),
+    Outcome = ok(Ref).
 
 ensure_adapter_metadata_within_limit(Name, Metadata, Limits) :-
     get_dict(max_bytes, Limits, MaxBytes),

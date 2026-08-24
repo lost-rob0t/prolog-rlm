@@ -423,12 +423,24 @@ maybe_pack_projection(Projection, Options, Compiled) :-
                                         PackOutcome),
         require_budget_outcome(PackOutcome, ContextPack),
         active_units_from_pack(ContextPack, ActiveUnits),
+        active_tool_schemas(Projection.tool_schemas,
+                            ActiveUnits,
+                            ActiveToolSchemas),
         put_dict(_{token_ledger:ContextPack.ledger,
                    context_pack:ContextPack,
-                   active_units:ActiveUnits},
+                   active_units:ActiveUnits,
+                   tool_schemas:ActiveToolSchemas},
                  Projection,
                  Compiled)
     ).
+
+active_tool_schemas(Schemas, ActiveUnits, ActiveSchemas) :-
+    include(schema_unit_active(ActiveUnits), Schemas, ActiveSchemas).
+
+schema_unit_active(ActiveUnits, Schema) :-
+    memberchk(tool(Schema.name), ActiveUnits).
+schema_unit_active(ActiveUnits, Schema) :-
+    memberchk(mcp_tool(_, Schema.name), ActiveUnits).
 
 prompt_recompile(Compiled0, Event, Options, Outcome) :-
     catch(( require_compiled_context(Compiled0),
@@ -1009,9 +1021,10 @@ apply_supersession(Entries, Specs, Selected, Rejected) :-
             ( member(Entry, Entries),
               \+ entry_superseded(Entry, Entries, Specs, _) ),
             Selected),
-    findall(rejected_unit{unit:Entry.unit,
+    findall(rejected_unit{unit:Unit,
                           reasons:[superseded_by(Superseder)]},
             ( member(Entry, Entries),
+              Unit = Entry.unit,
               entry_superseded(Entry, Entries, Specs, Superseder) ),
             Rejected).
 
@@ -1218,9 +1231,26 @@ prompt_render(Compiled, Provider, Outcome) :-
 
 compiled_render_selections(Compiled, Selections) :-
     (   Compiled.context_pack == none
-    ->  Selections = []
+    ->  maplist(context_unit_default_selection,
+                Compiled.context_units,
+                Selections)
     ;   Selections = Compiled.context_pack.selected
     ).
+
+context_unit_default_selection(Unit, Selection) :-
+    get_dict(id, Unit, Id),
+    get_dict(section, Unit, Section),
+    get_dict(variants, Unit, [Variant|_]),
+    get_dict(kind, Variant, Kind),
+    get_dict(tokens, Variant, Tokens),
+    get_dict(utility, Variant, Utility),
+    get_dict(value, Variant, Value),
+    Selection = context_selection{id:Id,
+                                  section:Section,
+                                  kind:Kind,
+                                  tokens:Tokens,
+                                  utility:Utility,
+                                  value:Value}.
 
 selection_text(Selection, Text) :-
     (   is_dict(Selection.value),
@@ -1285,8 +1315,8 @@ compilation_reasons(Selected, Rejected, Reasons) :-
             SelectedReasons),
     findall(rejected(Unit, because(Why)),
             ( member(Entry, Rejected),
-              Unit = Rejected.unit,
-              Why = Rejected.reasons ),
+              Unit = Entry.unit,
+              Why = Entry.reasons ),
             RejectedReasons),
     append(SelectedReasons, RejectedReasons, Reasons).
 

@@ -490,29 +490,30 @@ apply_approve_transition(schedule, ApprovalId, Context, Record,
               rlm_authority:pending_execution(
                                 ApprovalId, Context, Gate, Continuation),
               Metadata, ExecutionFuture),
-          Exception,
-          approval_schedule_failed(ApprovalId, Context, ResolutionFuture,
-                                   Gate, none, Exception, Outcome)),
-    (   var(Outcome)
-    ->  catch(rlm_async:rlm_future_on_complete(
+          SubmitException,
+          SubmitError = SubmitException),
+    (   nonvar(SubmitError)
+    ->  approval_schedule_failed(ApprovalId, Context, ResolutionFuture,
+                                 Gate, none, SubmitError, Outcome)
+    ;   catch(rlm_async:rlm_future_on_complete(
                   ExecutionFuture,
                   rlm_authority:pending_execution_complete(
                                     ApprovalId, Context, ResolutionFuture,
                                     ExecutionFuture, Gate)),
               CallbackException,
-              approval_schedule_failed(ApprovalId, Context,
-                                       ResolutionFuture, Gate,
-                                       ExecutionFuture, CallbackException,
-                                       Outcome))
-    ;   true
-    ),
-    (   var(Outcome)
-    ->  with_mutex(rlm_authority,
-                   arm_execution_locked(ApprovalId, Context, ExecutionFuture,
-                                        Arm)),
-        apply_arm_execution(Arm, ApprovalId, Context, Record,
-                            ResolutionFuture, ExecutionFuture, Gate, Outcome)
-    ;   true
+              CallbackError = CallbackException),
+        (   nonvar(CallbackError)
+        ->  approval_schedule_failed(ApprovalId, Context,
+                                     ResolutionFuture, Gate,
+                                     ExecutionFuture, CallbackError,
+                                     Outcome)
+        ;   with_mutex(rlm_authority,
+                       arm_execution_locked(ApprovalId, Context,
+                                            ExecutionFuture, Arm)),
+            apply_arm_execution(Arm, ApprovalId, Context, Record,
+                                ResolutionFuture, ExecutionFuture, Gate,
+                                Outcome)
+        )
     ).
 
 arm_execution_locked(ApprovalId, Context, Future, armed(Scheduled)) :-
@@ -972,7 +973,7 @@ cancel_transition_locked(ApprovalId, Reason,
                    reason:Reason,
                    after_execution_claim:true}).
 cancel_transition_locked(ApprovalId, _, already(State)) :-
-    authority_pending(ApprovalId, Context, Record),
+    authority_pending(ApprovalId, _Context, Record),
     !,
     State = Record.state.
 cancel_transition_locked(ApprovalId, _, missing(ApprovalId)).
@@ -981,7 +982,7 @@ apply_cancel_owned_transition(
     preclaim(_, Record, ResolutionFuture, ExecutionFuture, Gate,
              PrunedFutures),
     ApprovalId, Reason) :-
-    safe_signal_gate(Gate, cancel),
+    ( safe_signal_gate(Gate, cancel) -> true ; true ),
     maybe_cancel_future(ExecutionFuture),
     catch(rlm_async:rlm_future_resolve(
               ResolutionFuture,

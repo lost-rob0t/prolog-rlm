@@ -83,53 +83,58 @@ ui_v1_event_frame(SessionId, Seq, EventId, EventType, Payload0, CausedBy,
                   Frame) :-
     normalize_payload(Payload0, Payload),
     ui_v1_protocol(Protocol),
-    Base = _{protocol:Protocol,
-             kind:"event",
-             session_id:SessionId,
-             seq:Seq,
-             event_id:EventId,
-             event_type:EventType,
-             payload:Payload},
-    put_optional_correlation(CausedBy, Base, Frame).
+    Base = ui_frame{protocol:Protocol,
+                    kind:"event",
+                    session_id:SessionId,
+                    seq:Seq,
+                    event_id:EventId,
+                    event_type:EventType,
+                    payload:Payload},
+    put_optional_correlation(CausedBy, Base, Frame0),
+    canonical_ui_data(Frame0, Frame).
 
 ui_v1_snapshot_frame(SessionId, SnapshotId, AtSeq, State, Frame) :-
     ui_v1_protocol(Protocol),
-    Frame = _{protocol:Protocol,
-              kind:"snapshot",
-              session_id:SessionId,
-              snapshot_id:SnapshotId,
-              at_seq:AtSeq,
-              state:State}.
+    Frame0 = ui_frame{protocol:Protocol,
+                      kind:"snapshot",
+                      session_id:SessionId,
+                      snapshot_id:SnapshotId,
+                      at_seq:AtSeq,
+                      state:State},
+    canonical_ui_data(Frame0, Frame).
 
 ui_v1_command_frame(SessionId, RequestId, Command, Payload0, Frame) :-
     normalize_payload(Payload0, Payload),
     ui_v1_protocol(Protocol),
-    Frame = _{protocol:Protocol,
-              kind:"command",
-              session_id:SessionId,
-              request_id:RequestId,
-              command:Command,
-              payload:Payload}.
+    Frame0 = ui_frame{protocol:Protocol,
+                      kind:"command",
+                      session_id:SessionId,
+                      request_id:RequestId,
+                      command:Command,
+                      payload:Payload},
+    canonical_ui_data(Frame0, Frame).
 
 ui_v1_result_frame(SessionId, RequestId, Status, Payload0, Frame) :-
     normalize_payload(Payload0, Payload),
     ui_v1_protocol(Protocol),
-    Frame = _{protocol:Protocol,
-              kind:"result",
-              session_id:SessionId,
-              request_id:RequestId,
-              status:Status,
-              payload:Payload}.
+    Frame0 = ui_frame{protocol:Protocol,
+                      kind:"result",
+                      session_id:SessionId,
+                      request_id:RequestId,
+                      status:Status,
+                      payload:Payload},
+    canonical_ui_data(Frame0, Frame).
 
 ui_v1_error_frame(SessionId, RequestId, Code, Message, Frame) :-
     ui_v1_protocol(Protocol),
-    Base = _{protocol:Protocol,
-             kind:"error",
-             session_id:SessionId,
-             code:Code,
-             message:Message,
-             details:_{}},
-    put_optional_request(RequestId, Base, Frame).
+    Base = ui_frame{protocol:Protocol,
+                    kind:"error",
+                    session_id:SessionId,
+                    code:Code,
+                    message:Message,
+                    details:ui_data{}},
+    put_optional_request(RequestId, Base, Frame0),
+    canonical_ui_data(Frame0, Frame).
 
 /* Validation and codec ------------------------------------------------ */
 
@@ -141,23 +146,23 @@ ui_v1_validate_frame(Frame, Outcome) :-
 ui_v1_encode_frame(Frame, Outcome) :-
     ui_v1_validate_frame(Frame, Validation),
     (   Validation = ok(_)
-    ->  catch(with_output_to(string(Line),
-                             json_write_dict(current_output,
-                                             Frame,
-                                             [width(0)])),
+    ->  catch(( with_output_to(string(Line),
+                               json_write_dict(current_output,
+                                               Frame,
+                                               [width(0)])),
+                Encoded = ok(Line)
+              ),
               Error,
-              codec_outcome(encode, Error, Outcome)),
-        (   var(Outcome)
-        ->  Outcome = ok(Line)
-        ;   true
-        )
+              codec_outcome(encode, Error, Encoded)),
+        Outcome = Encoded
     ;   Outcome = Validation
     ).
 
 ui_v1_decode_frame(Line0, Outcome) :-
     catch(( normalize_line(Line0, Line),
             atom_string(Atom, Line),
-            atom_json_dict(Atom, Frame, []),
+            atom_json_dict(Atom, RawFrame, []),
+            canonical_ui_data(RawFrame, Frame),
             ui_v1_validate_frame(Frame, Outcome)
           ),
           Error,
@@ -300,18 +305,34 @@ ui_v1_initial_view(SessionId,
                            extensions:[]}).
 
 ui_v1_snapshot_state(View, State) :-
-    State = _{status:View.status,
-              run:View.run,
-              messages:View.messages,
-              tools:View.tools,
-              approvals:View.approvals,
-              questions:View.questions,
-              subagents:View.subagents,
-              verification:View.verification,
-              usage:View.usage,
-              traces:View.traces,
-              indeterminate_effects:View.indeterminate_effects,
-              extensions:View.extensions}.
+    Raw = ui_snapshot_state{status:View.status,
+                            run:View.run,
+                            messages:View.messages,
+                            tools:View.tools,
+                            approvals:View.approvals,
+                            questions:View.questions,
+                            subagents:View.subagents,
+                            verification:View.verification,
+                            usage:View.usage,
+                            traces:View.traces,
+                            indeterminate_effects:View.indeterminate_effects,
+                            extensions:View.extensions},
+    canonical_ui_data(Raw, State).
+
+canonical_ui_data(Value0, Value) :-
+    is_dict(Value0),
+    !,
+    dict_pairs(Value0, _, Pairs0),
+    maplist(canonical_ui_pair, Pairs0, Pairs),
+    dict_pairs(Value, ui_data, Pairs).
+canonical_ui_data(Values0, Values) :-
+    is_list(Values0),
+    !,
+    maplist(canonical_ui_data, Values0, Values).
+canonical_ui_data(Value, Value).
+
+canonical_ui_pair(Key-Value0, Key-Value) :-
+    canonical_ui_data(Value0, Value).
 
 ui_v1_apply_snapshot(_View0, Frame, Outcome) :-
     ui_v1_validate_frame(Frame, Validation),
@@ -553,10 +574,13 @@ append_bounded(Items0, Item, Items) :-
 
 /* Helpers -------------------------------------------------------------- */
 
-normalize_payload(Payload, Payload) :-
-    is_dict(Payload), !.
-normalize_payload(null, _{}) :- !.
-normalize_payload(Payload, _{value:Payload}).
+normalize_payload(Payload0, Payload) :-
+    is_dict(Payload0),
+    !,
+    canonical_ui_data(Payload0, Payload).
+normalize_payload(null, ui_data{}) :- !.
+normalize_payload(Payload0, Payload) :-
+    canonical_ui_data(ui_data{value:Payload0}, Payload).
 
 put_optional_correlation(none, Base, Base) :- !.
 put_optional_correlation(CausedBy, Base, Frame) :-

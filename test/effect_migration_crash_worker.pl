@@ -14,7 +14,9 @@ main([hold,_,Source,_]) :-
 main([Mode,Phase,Source,Destination]) :-
     setenv('RLM_EFFECT_MIGRATION_MARKER_DIR', '/tmp'),
     configure_failure(Mode, Phase),
-    effect_store_migrate(_{source:Source,output:Destination}, Report),
+    effect_store_migrate(migration_options{source:Source,
+                                           output:Destination},
+                         Report),
     format('migration_result ~w~n', [Report.status]),
     halt(0).
 

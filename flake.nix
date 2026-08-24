@@ -55,7 +55,7 @@
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME" "$TMPDIR/outside-source"
           cd "$TMPDIR/outside-source"
-          swipl -q -g "use_module(library(rlm)),halt"
+          swipl -q -g "use_module(library(rlm)),rlm:rlm_ready,rlm:rlm_agent_zero_adapter_ready,halt"
           touch "$out"
         '';
 
@@ -65,7 +65,7 @@
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME" "$TMPDIR/outside-source"
           cd "$TMPDIR/outside-source"
-          prolog-rlm-swipl -q -g "use_module(library(rlm)),halt"
+          prolog-rlm-swipl -q -g "use_module(library(rlm)),rlm:rlm_ready,rlm:rlm_agent_zero_adapter_ready,halt"
           touch "$out"
         '';
       });

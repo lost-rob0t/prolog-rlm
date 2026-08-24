@@ -125,6 +125,9 @@ corpus_entry('rlm_demo_test.pl', include(rlm_demo)).
 corpus_entry('rlm_cli_test.pl', include(rlm_cli)).
 corpus_entry('rlm_async_test.pl', include(rlm_async)).
 corpus_entry('rlm_async_canonical_test.pl', include(rlm_async_canonical)).
+corpus_entry('rlm_async_control_test.pl', include(rlm_async_control)).
+corpus_entry('rlm_agent_zero_adapter_test.pl',
+             include(rlm_agent_zero_adapter)).
 corpus_entry('rlm_spec_verify_test.pl', include(rlm_spec_verify)).
 corpus_entry('rlm_spec_lang_test.pl', include(rlm_spec_lang)).
 corpus_entry('rlm_spec_workflow_test.pl', include(rlm_spec_workflow)).

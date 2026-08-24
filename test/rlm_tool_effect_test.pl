@@ -1,5 +1,7 @@
 :- begin_tests(rlm_tool_effect).
 
+:- meta_predicate with_effect_store(0).
+
 :- use_module(library(process)).
 :- use_module(library(readutil)).
 :- use_module('../prolog/rlm_tool').
@@ -125,19 +127,25 @@ test(edited_pending_cannot_execute_stale_ticket,
         ( Context = session(tool_effect_edit),
           setup_write_registry(Registry),
           invoke_write(Registry, Context, 41, approval_required(Old), _),
-          rlm_edit(Old.id, _{args:_{value:42}}, ok(Edit)),
-          assertion(Edit.fingerprint \== Old.fingerprint),
-          rlm_pending_resolution_async(Edit.id, ResolutionFuture),
-          rlm_approve(Edit.id, ok(_)),
+          get_dict(id, Old, OldId),
+          get_dict(fingerprint, Old, OldFingerprint),
+          rlm_edit(OldId, _{args:_{value:42}}, ok(Edit)),
+          get_dict(id, Edit, EditId),
+          get_dict(fingerprint, Edit, EditFingerprint),
+          assertion(EditFingerprint \== OldFingerprint),
+          rlm_pending_resolution_async(EditId, ResolutionFuture),
+          rlm_approve(EditId, ok(_)),
           rlm_future_await(ResolutionFuture, 2.0, Resolution),
-          Resolution.outcome = ok(Value),
-          assertion(Value.seen =:= 42),
+          get_dict(outcome, Resolution, ok(Value)),
+          get_dict(seen, Value, Seen),
+          assertion(Seen =:= 42),
           tool_effect_test_support:tool_mutation_count(Count),
           assertion(Count =:= 1),
           tool_effect_test_support:tool_last_value(LastValue),
           assertion(LastValue =:= 42),
-          rlm_approve(Old.id, error(Stale)),
-          assertion(Stale.kind == approval_not_pending),
+          rlm_approve(OldId, error(Stale)),
+          get_dict(kind, Stale, StaleKind),
+          assertion(StaleKind == approval_not_pending),
           tool_effect_test_support:tool_mutation_count(StillOne),
           assertion(StillOne =:= 1),
           rlm_future_destroy(ResolutionFuture),
@@ -211,7 +219,7 @@ test(legacy_store_fence_blocks_effectful_tool,
     effect_legacy_fixture:legacy_fixture_create(Ledger, _),
     setup_call_cleanup(
         true,
-        ( ( catch(rlm_effect_store_open(Ledger), _, Opened = false)
+        ( ( catch(rlm_effect_store_open(Ledger), _, fail)
           -> Opened = true
           ;  Opened = false ),
           assertion(Opened == false),

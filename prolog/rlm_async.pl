@@ -229,14 +229,29 @@ mark_backpressure(Id) :-
 /* Workers ---------------------------------------------------------------- */
 
 async_worker_loop(Queue) :-
-    catch(thread_get_message(Queue, Message), _, Message = stop),
-    (   Message == stop
+    catch(async_worker_step(Queue, Continue),
+          Exception,
+          async_worker_step_exception(Exception, Continue)),
+    (   Continue == stop
     ->  true
-    ;   Message = async_task(Id, Goal)
-    ->  async_execute_task(Id, Goal),
-        async_worker_loop(Queue)
     ;   async_worker_loop(Queue)
     ).
+
+async_worker_step(Queue, Continue) :-
+    thread_get_message(Queue, Message),
+    (   Message == stop
+    ->  Continue = stop
+    ;   Message = async_task(Id, Goal)
+    ->  async_execute_task(Id, Goal),
+        Continue = continue
+    ;   Continue = continue
+    ).
+
+async_worker_step_exception(rlm_async_cancelled(_), continue) :- !.
+async_worker_step_exception('$aborted', stop) :- !.
+async_worker_step_exception(abort, stop) :- !.
+async_worker_step_exception(Exception, continue) :-
+    print_message(error, Exception).
 
 async_execute_task(Id, Goal) :-
     thread_self(Thread),

@@ -122,8 +122,9 @@ test(parallel_allow_once_has_one_authority_owner) :-
           message_queue_destroy(Start),
           message_queue_destroy(Results),
           select(execute(Permit), [R1,R2], [Other]),
-          assertion(Other = error(Error)),
-          assertion(Error.kind == allow_once_in_progress),
+          Other = error(Error),
+          get_dict(kind, Error, ErrorKind),
+          assertion(ErrorKind == allow_once_in_progress),
           complete_once(Context, Ticket, Permit),
           rlm_authority(Context, approve_diff) ),
         cleanup_fixture(File, Context)).

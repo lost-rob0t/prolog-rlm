@@ -40,8 +40,8 @@ spec_validate(Spec0, Registry, Outcome) :-
     catch(( require_acyclic(Spec0, spec),
             normalize_spec(Spec0, Spec),
             assertion_registry_validate(Registry, RegistryOutcome),
-            require_assertion_outcome(RegistryOutcome, NormalizedRegistry),
-            maplist(validate_requirement(NormalizedRegistry),
+            require_assertion_outcome(RegistryOutcome, _),
+            maplist(validate_requirement(Registry),
                     Spec.requirements,
                     Requirements),
             Validated = validated_spec{

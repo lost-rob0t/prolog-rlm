@@ -9,6 +9,8 @@
 
 :- dynamic execution_count/2.
 
+:- meta_predicate with_runtime(+, 1).
+
 reset_count(Key) :-
     retractall(execution_count(Key, _)),
     assertz(execution_count(Key, 0)).

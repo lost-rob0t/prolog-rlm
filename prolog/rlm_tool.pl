@@ -60,6 +60,8 @@ continuation.
 :- dynamic tool_registry_alive/1.
 :- dynamic tool_registry_entry/4.
 
+:- discontiguous invoke_after_effect_prepare/19.
+
 /* -------------------------------------------------------------------------
  * Capability model
  * ---------------------------------------------------------------------- */
@@ -253,14 +255,42 @@ tool_lookup_(Registry, Name, Outcome) :-
 
 tool_invoke_async(Registry, Capabilities, Name, Args, Options, Future) :-
     tool_task_metadata(Name, Options, Metadata),
-    rlm_async:rlm_async_submit(
-        rlm_tool:tool_invoke_execute(Registry,
+    (   tool_inline_approval_admission(Registry,
+                                       Capabilities,
+                                       Name,
+                                       Args,
+                                       Options,
+                                       Result)
+    ->  rlm_async:rlm_future_deferred(Metadata, Future),
+        rlm_async:rlm_future_resolve(Future, Result)
+    ;   rlm_async:rlm_async_submit(
+            rlm_tool:tool_invoke_execute(Registry,
+                                         Capabilities,
+                                         Name,
+                                         Args,
+                                         Options),
+            Metadata,
+            Future)
+    ).
+
+tool_inline_approval_admission(Registry,
+                               Capabilities,
+                               Name,
+                               Args,
+                               Options,
+                               Result) :-
+    registry_entry(Registry, Name, Schema, _Binding, ok),
+    Schema.effect \== read,
+    tool_authority_context(Registry, Options, Context),
+    with_mutex(rlm_authority,
+               ( rlm_authority:rlm_authority(Context, approve_diff),
+                 tool_invoke_execute(Registry,
                                      Capabilities,
                                      Name,
                                      Args,
-                                     Options),
-        Metadata,
-        Future).
+                                     Options,
+                                     Result)
+               )).
 
 tool_invoke(Registry, Capabilities, Name, Args, Options, Outcome, Trace) :-
     tool_invoke_async(Registry, Capabilities, Name, Args, Options, Future),
@@ -549,13 +579,13 @@ preflight_tool(tool_binding(Preflight, _), Args, TimeLimit, Outcome) :-
                                               NormalizedArgs0,
                                               Details0)),
           Exception,
-          preflight_exception(Exception, Outcome)),
-    (   var(Outcome)
+          preflight_exception(Exception, Failure)),
+    (   var(Failure)
     ->  normalize_authority_value(NormalizedArgs0, NormalizedArgs),
         normalize_authority_value(Details0, Details),
         require_ground_preflight(NormalizedArgs, Details),
         Outcome = ok(NormalizedArgs, Details)
-    ;   true
+    ;   Outcome = Failure
     ).
 
 call_preflight(Preflight, Args, NormalizedArgs, Details) :-
@@ -1289,10 +1319,11 @@ tool_effect_edit_validate(Context, Registry, Schema, Binding, Limits,
     tool_effect_request(Schema, NormalizedArgs, Details, Request),
     tool_effect_options(RegistryId, Schema, Binding, Limits,
                         Correlation, EffectOptions),
-    (   rlm_effect_executor:effect_prepare(rlm_tool, tool, Request,
-                                          EffectOptions, execute(Ticket))
+    rlm_effect_executor:effect_prepare(rlm_tool, tool, Request,
+                                       EffectOptions, PrepareDecision),
+    (   PrepareDecision = execute(Ticket)
     ->  true
-    ;   throw(tool_fault(effect_prepare_failed_for_edit))
+    ;   throw(tool_fault(effect_prepare_failed_for_edit(PrepareDecision)))
     ),
     BaseOperation = authority_operation{
                         name:Schema.name,
@@ -1485,8 +1516,7 @@ metadata_context(Current, agent(Runtime, Agent)) :-
     get_dict(agent_id, Current, Agent),
     Runtime \== none,
     Agent \== none,
-    !,
-    Context = agent(Runtime, Agent).
+    !.
 metadata_context(Current, graph(Runtime, Graph, Run)) :-
     is_dict(Current),
     get_dict(runtime_id, Current, Runtime),
@@ -1495,8 +1525,7 @@ metadata_context(Current, graph(Runtime, Graph, Run)) :-
     Runtime \== none,
     Graph \== none,
     Run \== none,
-    !,
-    Context = graph(Runtime, Graph, Run).
+    !.
 metadata_context(Current, runtime(Runtime)) :-
     is_dict(Current),
     get_dict(runtime_id, Current, Runtime),
@@ -1784,7 +1813,7 @@ require_limits_dict(Limits) :- throw(tool_fault(invalid_limits(Limits))).
 validate_schema_definition(Schema) :-
     (   is_dict(Schema),
         get_dict(type, Schema, Type),
-        memberchk(Type, [any,string,integer,number,boolean,list,object])
+        memberchk(Type, [any,string,integer,number,boolean,list,array,object])
     ->  validate_schema_definition_type(Type, Schema)
     ;   throw(tool_fault(invalid_schema(Schema)))
     ).
@@ -1794,6 +1823,12 @@ validate_schema_definition_type(object, Schema) :-
     validate_object_schema_properties(Schema),
     validate_object_schema_required(Schema).
 validate_schema_definition_type(list, Schema) :-
+    !,
+    (   get_dict(items, Schema, ItemSchema)
+    ->  validate_schema_definition(ItemSchema)
+    ;   true
+    ).
+validate_schema_definition_type(array, Schema) :-
     !,
     (   get_dict(items, Schema, ItemSchema)
     ->  validate_schema_definition(ItemSchema)
@@ -1837,6 +1872,13 @@ validate_type(integer, _, Value, _) :- integer(Value), !.
 validate_type(number, _, Value, _) :- number(Value), !.
 validate_type(boolean, _, Value, _) :- memberchk(Value, [true,false]), !.
 validate_type(list, Schema, Value, Path) :-
+    is_list(Value),
+    !,
+    (   get_dict(items, Schema, ItemSchema)
+    ->  validate_list_items(Value, ItemSchema, Path, 0)
+    ;   true
+    ).
+validate_type(array, Schema, Value, Path) :-
     is_list(Value),
     !,
     (   get_dict(items, Schema, ItemSchema)

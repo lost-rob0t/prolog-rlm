@@ -44,7 +44,9 @@ test(sigkill_at_validated_stage_is_recoverable) :-
           process_wait(Pid, Killed),
           assertion(Killed = killed(_)),
           close(In), close(Out),
-          effect_store_migrate(_{source:Source,output:Destination}, Report),
+          effect_store_migrate(migration_options{source:Source,
+                                                 output:Destination},
+                               Report),
           assertion(Report.status == migrated),
           rlm_effect_store_open(Destination),
           rlm_effect_status(Details.uncertain_attempt, Attempt),
@@ -60,7 +62,9 @@ test(competing_migration_fails_on_the_canonical_source_lock) :-
         ( start_hold_worker(Source, Destination, Pid, In, Out),
           read_line_to_string(Out, Marker),
           assertion(Marker == "migration_holder_ready"),
-          effect_store_migrate(_{source:Source,output:Destination}, Report),
+          effect_store_migrate(migration_options{source:Source,
+                                                 output:Destination},
+                               Report),
           assertion(Report.status == lock_conflict),
           assertion(\+ exists_file(Destination)),
           format(In, 'release~n', []), flush_output(In),
@@ -71,8 +75,12 @@ test(competing_migration_fails_on_the_canonical_source_lock) :-
 
 finish_after_crash(Source, Destination, Report) :-
     ( exists_file(Destination)
-    -> effect_store_migrate(_{source:Destination,output:Source}, Report)
-    ;  effect_store_migrate(_{source:Source,output:Destination}, Report) ).
+    -> effect_store_migrate(migration_options{source:Destination,
+                                              output:Source},
+                            Report)
+    ;  effect_store_migrate(migration_options{source:Source,
+                                              output:Destination},
+                            Report) ).
 
 run_crash_worker(Mode, Phase, Source, Destination, Status) :-
     worker_arguments(Mode, Phase, Source, Destination, Arguments),
