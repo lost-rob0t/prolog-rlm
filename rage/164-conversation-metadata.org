@@ -1,0 +1,52 @@
+* Run identity
+- Consumed issue :: #164
+- Branch :: =rage/164-conversation-metadata=
+- RAGE start commit :: =ab426de54a54101ca3a6d8197db77e4c1f9d009f=
+
+* Control plane
+- Mode :: Auto-RAGE
+- Selection evidence :: Explicit operator choice on 2026-08-24
+
+* Iteration 1
+** Analyze
+- Verified fact :: SWI anonymous dict tags are variables, so raw =ground/1= rejects otherwise closed =_{...}= metadata.
+- Verified fact :: =conversation_create_/3= validates metadata before =backend_create/4= and currently calls =require_ground/2= directly.
+- Verified fact :: The shared =rlm_closed_data:closed_data_normalize/2= boundary is on current main and already canonicalizes nested anonymous tags, preserves named tags, and rejects genuine variables and cycles.
+- Contradiction :: Commit =90a054137a38b5b5231e6a45037597e52a5b5f2d= changed the conversation regression from anonymous to named =json= dicts, making the suite green without exercising issue #164.
+- Red evidence :: Restoring nested anonymous metadata makes focused =rlm_conversation= fail 1/7 at =store_lists_reopenable_conversations= before any production change.
+
+** Design
+- Ownership :: Normalize metadata once at the public conversation-create boundary, before either memory or persistent backend admission.
+- Canonical path :: =Metadata0 -> closed_data_normalize/2 -> Metadata -> backend_create/4 -> returned conversation_ref=.
+- Failure contract :: Map =rlm_closed_data_fault(Reason)= to structured =conversation_fault(invalid_metadata(Reason))=; do not call either backend on failure.
+- Persistence contract :: Both backends receive the same already-canonical value; reopen/list return that stored value without a second representation-specific path.
+- Compatibility :: Named dict tags and the named default =conversation_metadata{}= remain unchanged.
+- Verification :: Cover nested anonymous metadata through list/reopen, named-tag preservation, variable/cycle rejection without partial creation, and persistent close/reopen.
+
+** Adversarial review
+- Nested anonymous tags could remain non-ground if only the outer tag were rewritten; require the shared recursive normalizer and assert both levels.
+- Normalizing only on reopen would leave non-ground persistent admission broken and memory/persistent behavior divergent; normalize before backend dispatch.
+- Catching every exception would hide programming/backend faults; catch only =rlm_closed_data_fault/1=.
+- A rejected value could partially reserve its id if validation occurred after dispatch; assert the id can be created successfully after rejection.
+- Replacing all dict tags would destroy named-tag semantics; assert a named metadata tag survives unchanged.
+- No new callable execution is introduced: normalized metadata remains inert data and is never invoked.
+
+** Decision
+- Auto-RAGE decision :: Accept the design above for realization. It reuses the existing shared boundary, adds no parallel normalizer, and is the smallest change that makes both backends representation-independent.
+
+** Realize
+- Implementation :: =conversation_create_/3= now canonicalizes metadata through =rlm_closed_data= before backend dispatch and maps only closed-data faults to structured =invalid_metadata(Reason)= outcomes.
+- Cleanup :: Removed the now-unused conversation-local raw =require_ground/2= helper.
+- Public contract :: Documented anonymous/named metadata behavior and pre-admission variable/cycle rejection.
+
+** Verification
+- Focused red :: 4/10 conversation tests failed before the production change for anonymous memory metadata, variable structure, cyclic structure, and persistent anonymous metadata.
+- Focused green :: 10/10 conversation tests passed.
+- Runtime/load :: =test/check_runtime.pl= reported SWI-Prolog 9.2.9; =test/load_all.pl= passed.
+- Runner integrity :: 19/19 passed.
+- Aggregate :: 74 suites; 770 discovered/planned/completed/passed; 0 failed/timeout/blocked/fixme.
+- Deterministic benchmark :: 16/16 passed.
+- Deep experiment :: 15/15 passed.
+- CLI JSON demo :: =demo(all)= status pass.
+- Nix flake :: All 3 checks passed with =max-jobs=1= and =cores=1=.
+- Hygiene :: =git diff --check= passed.

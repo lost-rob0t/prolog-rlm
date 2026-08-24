@@ -34,6 +34,7 @@ usable independently. Cold history is exposed through a trusted lazy
 :- use_module(rlm_chain_schema,
               [ message_normalize/2 ]).
 :- use_module(rlm_completion, []).
+:- use_module(rlm_closed_data, []).
 :- use_module(rlm_context,
               [ context_adapter_register/5,
                 context_register_adapter/4,
@@ -106,8 +107,8 @@ conversation_create_(Store, Options, Conversation) :-
     require_store(Store),
     require_options(Options),
     conversation_id(Options, Id),
-    option(metadata(Metadata), Options, conversation_metadata{}),
-    require_ground(Metadata, metadata),
+    option(metadata(Metadata0), Options, conversation_metadata{}),
+    normalize_metadata(Metadata0, Metadata),
     get_time(CreatedAt),
     backend_create(Store, Id, CreatedAt, Metadata),
     Conversation = conversation_ref{store:Store,
@@ -1097,9 +1098,10 @@ require_list(Value, _) :- is_list(Value), !.
 require_list(Value, Name) :-
     throw(conversation_fault(expected_list(Name, Value))).
 
-require_ground(Value, _) :- ground(Value), !.
-require_ground(Value, Name) :-
-    throw(conversation_fault(non_ground(Name, Value))).
+normalize_metadata(Metadata0, Metadata) :-
+    catch(rlm_closed_data:closed_data_normalize(Metadata0, Metadata),
+          rlm_closed_data_fault(Reason),
+          throw(conversation_fault(invalid_metadata(Reason)))).
 
 require_boolean(true, _) :- !.
 require_boolean(false, _) :- !.

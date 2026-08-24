@@ -43,6 +43,11 @@ conversation_turn(+Conversation, +UserMessage, +Options, -Outcome).
 
 Stores currently support `memory` and `persist(File)`.
 
+Conversation metadata is inert closed data. Anonymous SWI-Prolog dict tags are
+recursively canonicalized to `rlm_anonymous_dict` before either backend stores
+them; named tags are preserved. Genuine variable values and cyclic terms fail
+as structured `invalid_metadata` conversation errors before an id is reserved.
+
 ## Managed turns
 
 The public `rlm:conversation_turn/4` resolves configured warm artifacts, derives the synthetic cold-history boundary when needed, persists the user turn, compiles hot + warm + boundary context under the hard token ceiling, registers an ephemeral opaque cold-history handle, runs `rlm_completion/4`, deletes only the handle, and persists the assistant result.
