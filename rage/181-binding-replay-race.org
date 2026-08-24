@@ -1,0 +1,52 @@
+* Run identity
+- Consumed issue :: #181
+- Branch :: =rage/181-binding-replay-race=
+- RAGE start commit :: =0d8e1008ba525f0ec7e51cba2de34ede8a63cf6f=
+
+* Control plane
+- Mode :: Auto-RAGE
+- Selection evidence :: The operator selected Auto-RAGE for the immediately preceding repository loop on 2026-08-24; this is a direct post-merge regression continuation, not a new architecture mode choice.
+- Scope :: Issue #181 owns the single post-merge deterministic failure. Open #79 remains the broader provider/MCP/process adoption issue.
+
+* Iteration 1
+** Analyze
+- Exact failure :: GitHub Actions run =32750635555= at merge commit =0d8e1008ba525f0ec7e51cba2de34ede8a63cf6f= discovered/planned/completed 783 tests but passed 782. The failed case was =rlm_tool_effect:trusted_binding_identity_prevents_cross_binding_replay=.
+- Tree identity :: Reviewed PR head =c56c82dd5c774e976cf1af5858addea4e97c5619= and merge commit =0d8e1008ba525f0ec7e51cba2de34ede8a63cf6f= share Git tree =3c7b41f8b4bc02bedac94fb5d4ad01ef1572cada=. A merge-only source difference is impossible.
+- Reproduction bounds :: Focused case 50/50 green, full effect suite 50/50 green, complete aggregate 12/12 green, and aggregate-prefix plus effect suite 20/20 green.
+- Scheduler boundary :: Every prefix run observed the shared async runtime with zero queued, pending, running, completed, or cancelled Futures before the effect suite. Prior-suite worker leakage is ruled out.
+- Diagnostic gap :: The failing test uses raw goal matching for authority transitions and Future outcomes. PL-Unit therefore reported only =test ...: failed= and discarded which transition/outcome violated the contract.
+- Non-causes :: The credentialed REAL OpenRouter job passed. No =.env*= input participates in this deterministic test or investigation.
+
+** Design
+- Oracle ownership :: This case verifies durable identity and cross-binding replay, not a two-second performance SLO. Await semantic completion through =rlm_future_await/2= and let the canonical deterministic runner own the existing 20-second per-test timeout.
+- Diagnostic contract :: Replace raw expected-outcome unifications with a stage-labelled matcher that throws the actual prepare, approval, resolution, or denial value. Preserve every prior value and mutation assertion.
+- Deterministic concurrency :: Gate the two materially different trusted handlers on message queues, wait until both have entered, then release both. This forces the cross-binding interleaving without sleeps.
+- Production boundary :: Do not change =rlm_authority=, =rlm_async=, =rlm_effect*=, or =rlm_tool= without a reproduced product-state violation. Current evidence shows an oracle latency/diagnostic defect, not a durable execution defect.
+
+** Adversarial review
+- Retry-only green would hide the first failure; retain attempt 1 as red evidence and require an exact-head branch gate.
+- Merely increasing two seconds to a larger magic number preserves the same unowned wall-clock flake; use semantic await under the outer canonical timeout.
+- Serial handler execution could miss a cross-binding race; the two-party queue gate forces both handler identities to be live before release.
+- A shared handler for both registries would erase the identity distinction; use separate gated counting and alternate entrypoints while keeping the same schema and normalized arguments.
+- Stage instrumentation must not bind differently or weaken equality/mutation checks; the matcher unifies the same expected term and throws only on mismatch.
+- The Prolog MCP focused file load passed the target case but could not run fresh-process crash fixtures because its session working directory did not resolve repository-relative fixture paths. Shell gates remain authoritative for those fixtures.
+
+** Decision
+- Auto-RAGE decision :: Repair the deterministic oracle and strengthen its forced interleaving. No production runtime change is authorized by the evidence. Return to Analyze if the strengthened test exposes a product-state violation.
+
+** Realize
+- Forced interleaving :: The two same-binding registries use one gated counting entrypoint; the distinct binding uses a gated alternate entrypoint. Both workers report entry through a queue before the test releases either.
+- Semantic wait :: Removed the test-local two-second Future waits. The canonical runner still enforces its 20-second per-test bound and records a timeout distinctly.
+- Failure evidence :: Prepare A/A2/B, approval A/B, resolution A/B, and cleanup denial now use stage-labelled expectations that retain the actual mismatched value in a thrown error.
+- Fixture lifecycle :: Fixed =reset_tool_mutations/0= and gate arming to retract and destroy message queues in the correct order. The old reset erased the only queue handles before its destroy predicate could see them.
+- Cleanup :: Removed the now-unused ungated alternate-registry helper.
+
+** Verify
+- Original red evidence :: GitHub attempt 1 remains 782/783 with the exact named binding-replay case. Unchanged attempt 2 passed; it is reproduction evidence, not the fix claim.
+- Strengthened stress :: The forced-interleaving case passed 800/800 across eight concurrent fresh-process workers.
+- Focused suite :: =rlm_tool_effect= passed 14/14, including fresh-process crash recovery.
+- Runner integrity :: 19/19 passed.
+- Complete deterministic suite :: 75 suites; 783 discovered, planned, completed, and passed; zero failed, timeout, blocked, or fixme.
+- Benchmarks and smoke :: Deterministic 16/16; deep experiment 15/15; JSON demo passed.
+- Packaging and hygiene :: All three Nix flake checks passed; =git diff --check= passed.
+- Runtime conclusion :: The deterministic gated interleaving did not expose a production authority/effect/async violation, so no production boundary was changed.
