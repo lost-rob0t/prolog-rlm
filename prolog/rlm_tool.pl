@@ -7,6 +7,7 @@
             tool_invoke/7,
             tool_invoke_async/6,
             tool_registry_runtime_tools/3,
+            tool_registry_runtime_tools/4,
             capabilities_normalize/2,
             capability_allowed/2,
             capabilities_narrow/3,
@@ -1564,20 +1565,25 @@ option_ground(Name, Options, Value) :-
  * ---------------------------------------------------------------------- */
 
 tool_registry_runtime_tools(Registry, Capabilities, Tools) :-
+    tool_registry_runtime_tools(Registry, Capabilities, [], Tools).
+
+tool_registry_runtime_tools(Registry, Capabilities, InvocationOptions, Tools) :-
     registry_id(Registry, Id),
     findall(tool(Name,
                  rlm_tool:registry_plan_handler(Registry,
                                                 Capabilities,
+                                                InvocationOptions,
                                                 Name)),
             tool_registry_entry(Id, Name, _, _),
             Tools).
 
-registry_plan_handler(Registry, Capabilities, Name, Args, Envelope) :-
+registry_plan_handler(Registry, Capabilities, InvocationOptions, Name, Args,
+                      Envelope) :-
     tool_invoke_execute(Registry,
                         Capabilities,
                         Name,
                         Args,
-                        [],
+                        InvocationOptions,
                         Result),
     Outcome = Result.outcome,
     Trace = Result.trace,

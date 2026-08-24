@@ -258,7 +258,7 @@ test(tool_sync_starts_async_operation) :-
                                tool_invoke_async/6)).
 
 test(tool_plan_adapter_uses_execute_abi_not_sync_wrapper) :-
-    clause(rlm_tool:registry_plan_handler(_, _, _, _, _), Body),
+    clause(rlm_tool:registry_plan_handler(_, _, _, _, _, _), Body),
     assertion(body_calls(Body, tool_invoke_execute, 6)),
     assertion(\+ body_calls(Body, tool_invoke, 7)).
 

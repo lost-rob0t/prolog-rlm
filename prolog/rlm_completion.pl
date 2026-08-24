@@ -1375,10 +1375,26 @@ runtime_tools(Options, Capabilities, Tools, Schemas) :-
     option_value(tool_registry, Options, none, Registry),
     (   Registry == none
     ->  RegistryTools = [], Schemas = []
-    ;   tool_registry_runtime_tools(Registry, Capabilities, RegistryTools),
+    ;   tool_invocation_options(Options, InvocationOptions),
+        tool_registry_runtime_tools(Registry,
+                                    Capabilities,
+                                    InvocationOptions,
+                                    RegistryTools),
         tool_discover(Registry, Schemas)
     ),
     append(RegistryTools, DirectTools, Tools).
+
+tool_invocation_options(Options, InvocationOptions) :-
+    ToolMetadata = [authority_context, trace_id, session_id, runtime_id,
+                    agent_id, graph_id, run_id],
+    findall(Option,
+            ( member(Name, ToolMetadata),
+              option_value(Name, Options, none, Value),
+              Value \== none,
+              ground(Value),
+              Option =.. [Name, Value]
+            ),
+            InvocationOptions).
 
 context_runtime_options(Options, ContextOptions) :-
     option_value(context_options,

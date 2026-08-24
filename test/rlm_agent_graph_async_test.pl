@@ -288,7 +288,7 @@ test(agent_internal_composition_uses_execute_abi) :-
     clause(rlm_agent:CancelHead, CancelBody),
     body_contains_local(CancelBody, agent_cancel_execute, 4),
     assertion(\+ body_contains_local(CancelBody, agent_cancel, 4)),
-    SubagentHead = subagent_after_spawn(ok(_), _, _, _, _, _, _),
+    SubagentHead = subagent_after_options(ok(_), _, _, _, _, _, _),
     clause(rlm_subagent:SubagentHead, SubagentBody),
     assertion(body_contains_qualified(SubagentBody,
                                       rlm_agent,

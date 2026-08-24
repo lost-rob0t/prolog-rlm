@@ -1,0 +1,58 @@
+* Run identity
+- Consumed issue :: #144
+- Branch :: =rage/144-fallback-closure=
+- RAGE start commit :: =843337e85efdd2833a4308b1a6e1a4376eab72f2=
+
+* Control plane
+- Discovery :: The repository uses =research/= for durable architecture research and =rage/= for per-run decision evidence.
+- Mode :: Auto-RAGE
+- Selection evidence :: Explicit operator choice on 2026-08-24.
+- Evidence :: Repository instructions and =research/README.md= do not define a project-wide ADADR versus Auto-RAGE mode. The prior #164 log records Auto-RAGE as an explicit issue-specific operator choice, not a durable project instruction.
+
+* Iteration 1
+** Analyze
+- Verified fact :: PR #149 merged child-owned completion, parent result propagation, cancellation, backpressure, typed envelopes, and the closed =unknown -> delegate_subagent= command path at =843337e85efdd2833a4308b1a6e1a4376eab72f2=.
+- Verified fact :: =agent_spawn/5= narrows and stores the logical child's capabilities and authority, but =rlm_subagent= passes registration-time completion options unchanged to =rlm_completion_execute/4=.
+- Verified fact :: =rlm_completion= reads its execution capabilities from =capabilities(...)= in those options, independently of the spawned child record.
+- Verified fact :: =tool_registry_runtime_tools/3= builds plan handlers that invoke tools with empty invocation options, so child-selected tools fall back to the registry authority context.
+- Red evidence :: =child_completion_cannot_widen_spawn_capabilities= spawned a child with =[rlm, model(openrouter)]= yet executed =secret_fixture= because registration options carried the broader parent set.
+- Red evidence :: =child_completion_uses_child_authority_context= observed =dangerous= from the registry instead of the spawned child's =approve_diff= authority.
+- Scope boundary :: Generic result acceptance/evidence verification remains owned by #56; this slice closes #144 capability/authority possession and focused bounded-failure evidence without creating another verifier stack.
+
+** Design
+- Ownership :: The spawned child identity owns the effective completion capability ceiling and authority context. Registration options remain host configuration but cannot override those two possession boundaries after spawn.
+- Canonical path :: =spawn child -> normalize requested child capabilities -> replace completion capabilities -> replace authority_context with agent(RuntimeId, ChildId) -> child-owned completion execute=.
+- Tool adapter :: Add =tool_registry_runtime_tools/4= to carry trusted invocation options into existing registry plan handlers; keep =/3= as the empty-options compatibility facade.
+- Completion integration :: Extract only trusted tool invocation metadata from completion options and pass it through =tool_registry_runtime_tools/4=. Do not pass planner/model/callable configuration as tool metadata.
+- Failure contract :: A planner-selected tool outside the spawned child ceiling fails through the existing capability boundary. Tool authority resolves against the child context and retains the existing approve/deny/pending semantics.
+- Compatibility :: Direct completion callers and =tool_registry_runtime_tools/3= retain current behavior when no authority metadata is supplied.
+- Verification :: Preserve the two red regressions, then cover agent-count, recursive-depth, parallel-width, token/time, unavailable, denied, cancelled, and failed subagent outcomes using deterministic existing boundaries.
+
+** Adversarial review
+- Duplicate =capabilities(...)= or =authority_context(...)= entries could make first-option semantics order-dependent; remove every existing instance before prepending the child-owned value.
+- Trusting the raw requested capability list could retain duplicates or malformed values; normalize it through the canonical capability normalizer after successful spawn.
+- Overriding =child_capabilities(...)= would silently widen recursive descendants; leave it intact so =rlm_completion= narrows it against the injected child ceiling and rejects widening.
+- Passing all completion options into tool invocation could leak callables or unrelated policy; project only authority/correlation metadata.
+- Replacing the registry's stored authority would couple concurrent children; pass an invocation-local child context instead.
+- Calling the public async status facade from the bounded worker would nest Future waits; derive the opaque child context directly from trusted runtime/child identities.
+- The change does not make model or KB data executable and does not add a scheduler, authority system, effect path, or recursive delegation bypass.
+
+** Decision
+- Auto-RAGE decision :: Accept the design above for realization. It binds existing completion and tool boundaries to the already-created supervised child, preserves compatibility, and repairs both demonstrated possession escapes without introducing parallel infrastructure.
+
+** Realize
+- Capability possession :: =rlm_subagent_register/7= canonicalizes the child ceiling once, and the spawned child replaces every registration-time =capabilities(...)= option before completion execution.
+- Authority and lineage :: Child completion replaces =authority_context=, =runtime_id=, and =agent_id= with the spawned =agent(RuntimeId, ChildId)= identity. =rlm_completion= projects that trusted metadata into registry plan handlers through the new =tool_registry_runtime_tools/4= adapter; =/3= remains the empty-options compatibility facade.
+- Recursive safety :: Registration rejects a child ceiling containing =tool(rlm_subagent)= until a depth-aware recursive child binding exists. Bounded recursive =rlm(...)= plans remain available under the existing completion budget.
+- Structured bounds :: Added end-to-end regressions for agent count, recursive depth, parallel width, token usage, wall time, cancellation, capability denial, and child authority/identity fingerprints.
+- Architecture guards :: Updated the existing execute-ABI structural tests to inspect the new canonical adapter/helper shapes without weakening their sync-wrapper prohibitions.
+- Documentation :: Updated the agent runtime, tool adapter contract, research closure, and PrologAgent roadmap while leaving broader verifier-backed result acceptance under #56.
+
+** Verify
+- Red-to-green evidence :: The focused subagent suite first failed exactly the capability and authority regressions: a child without =tool(secret_fixture)= executed it, and the inner tool observed registry =dangerous= instead of child =approve_diff=. After the fix, all 12 subagent cases pass, including an exact child authority fingerprint with forged caller lineage inputs.
+- Focused architecture evidence :: The tool/MCP async and agent/graph async structural suites pass 54/54 and continue to prohibit sync-wrapper waits inside bounded workers.
+- Runner integrity :: The canonical integrity gate passes 19/19 in 25 seconds. Two earlier attempts exposed an intermittent SWI-Prolog child shutdown hang after the child had emitted its complete scenario result; direct scenarios, 20 repeated direct runs, 12 repeated focused runs, and the subsequent unchanged canonical gate all completed. No test timeout or assertion was weakened.
+- Complete deterministic suite :: 75 suites; 783 discovered, planned, completed, and passed; 0 failed, timeout, blocked, or fixme.
+- Benchmarks and smoke :: Deterministic benchmark 16/16; deep experiment 15/15; JSON CLI demo passed.
+- Packaging and hygiene :: All three Nix flake checks passed with one job/one core; =git diff --check= passed.
+- Non-goals preserved :: No new scheduler, authority tier, ambient capability, executable model data, result-verifier subsystem, or recursive subagent binding was added.
