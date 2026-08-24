@@ -120,10 +120,10 @@ never returned through discovery. Reusing the same name and manifest is
 idempotent. Attempting to change an already-loaded instance manifest fails
 closed. This API grants no capability and changes no authority.
 
-`rlm_agent_zero_adapter` converts Agent Zero DOX, skill and tool declarations
-into prompt-compiler units, creates sanitized pack manifests, and imports only
-trusted host bindings. Permanent visibility is explicit inert metadata; it
-does not register, authorize or execute a tool.
+`prolog/adaptors/rlm_agent_zero_adapter.pl` converts Agent Zero DOX, skill and
+tool declarations into prompt-compiler units, creates sanitized pack manifests,
+and imports only trusted host bindings. Permanent visibility is explicit inert
+metadata; it does not register, authorize or execute a tool.
 
 ## Idempotency
 

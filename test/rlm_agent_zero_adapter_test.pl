@@ -1,6 +1,6 @@
 :- begin_tests(rlm_agent_zero_adapter).
 
-:- use_module('../prolog/rlm_agent_zero_adapter').
+:- use_module('../prolog/adaptors/rlm_agent_zero_adapter').
 :- use_module('../prolog/rlm_tool').
 
 compile_request(Message, Request) :-

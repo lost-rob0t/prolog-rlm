@@ -20,9 +20,9 @@ change authority.
 */
 
 :- use_module(library(lists)).
-:- use_module(rlm_prompt_compiler, []).
-:- use_module(rlm_tool, []).
-:- use_module(rlm_authority, []).
+:- use_module('../rlm_prompt_compiler', []).
+:- use_module('../rlm_tool', []).
+:- use_module('../rlm_authority', []).
 
 :- meta_predicate agent_zero_tool_registry_import(+, +, 3, -).
 
