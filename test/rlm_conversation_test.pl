@@ -45,11 +45,18 @@ test(store_lists_reopenable_conversations) :-
         conversation_store_close(Store, _)).
 
 conversation_list_case(Store) :-
+    ExpectedAlpha = rlm_anonymous_dict{
+                        nested:rlm_anonymous_dict{enabled:true},
+                        project:"one"
+                    },
     conversation_create(Store,
-                        [id(alpha), metadata(json{project:"one"})],
-                        ok(_)),
+                        [ id(alpha),
+                          metadata(_{project:"one", nested:_{enabled:true}})
+                        ],
+                        ok(Alpha)),
+    assertion(Alpha.metadata == ExpectedAlpha),
     conversation_create(Store,
-                        [id(beta), metadata(json{project:"two"})],
+                        [id(beta), metadata(_{project:"two"})],
                         ok(_)),
     conversation_list(Store, [order(asc)], ok(Ascending)),
     findall(Id,
@@ -61,7 +68,52 @@ conversation_list_case(Store) :-
     assertion(memberchk(Latest.id, [alpha,beta])),
     conversation_open(Store, Latest.id, ok(Reopened)),
     assertion(Reopened.id == Latest.id),
-    assertion(Reopened.metadata == Latest.metadata).
+    assertion(Reopened.metadata == Latest.metadata),
+    conversation_open(Store, alpha, ok(ReopenedAlpha)),
+    assertion(ReopenedAlpha.metadata == ExpectedAlpha).
+
+test(named_metadata_tag_is_preserved) :-
+    setup_call_cleanup(
+        conversation_store_open(memory, ok(Store)),
+        ( conversation_create(Store,
+                              [id(named_metadata), metadata(project{one:1})],
+                              ok(Conversation)),
+          assertion(Conversation.metadata == project{one:1})
+        ),
+        conversation_store_close(Store, _)).
+
+test(variable_metadata_fails_before_backend_create) :-
+    setup_call_cleanup(
+        conversation_store_open(memory, ok(Store)),
+        variable_metadata_case(Store),
+        conversation_store_close(Store, _)).
+
+variable_metadata_case(Store) :-
+    conversation_create(Store,
+                        [id(reusable_after_rejection), metadata(meta{value:_})],
+                        error(Error)),
+    assertion(Error.kind == conversation_error),
+    assertion(Error.detail == invalid_metadata(non_ground_value)),
+    conversation_create(Store,
+                        [id(reusable_after_rejection), metadata(meta{value:ok})],
+                        ok(_)).
+
+test(cyclic_metadata_fails_before_backend_create) :-
+    setup_call_cleanup(
+        conversation_store_open(memory, ok(Store)),
+        cyclic_metadata_case(Store),
+        conversation_store_close(Store, _)).
+
+cyclic_metadata_case(Store) :-
+    Cycle = cycle(Cycle),
+    conversation_create(Store,
+                        [id(reusable_after_cycle), metadata(meta{value:Cycle})],
+                        error(Error)),
+    assertion(Error.kind == conversation_error),
+    assertion(Error.detail == invalid_metadata(cyclic_value)),
+    conversation_create(Store,
+                        [id(reusable_after_cycle), metadata(meta{value:ok})],
+                        ok(_)).
 
 test(history_selectors_and_search_address_old_turns) :-
     with_memory_conversation(history_search_case).
@@ -157,10 +209,20 @@ test(persistent_conversation_survives_close_and_reopen) :-
         cleanup_file(File)).
 
 persistent_reopen_case(File) :-
+    ExpectedMetadata = rlm_anonymous_dict{
+                           nested:rlm_anonymous_dict{enabled:true},
+                           project:"durable"
+                       },
     conversation_store_open(persist(File), ok(Store1)),
     conversation_create(Store1,
-                        [id(durable_conversation)],
+                        [ id(durable_conversation),
+                          metadata(_{
+                              project:"durable",
+                              nested:_{enabled:true}
+                          })
+                        ],
                         ok(Conversation1)),
+    assertion(Conversation1.metadata == ExpectedMetadata),
     conversation_append(Conversation1,
                         message(user, "survives restart"),
                         ok(Original)),
@@ -169,6 +231,7 @@ persistent_reopen_case(File) :-
     conversation_open(Store2,
                       durable_conversation,
                       ok(Conversation2)),
+    assertion(Conversation2.metadata == ExpectedMetadata),
     conversation_message(Conversation2, 1, ok(Restored)),
     assertion(Restored.ref == Original.ref),
     assertion(Restored.content == "survives restart"),
