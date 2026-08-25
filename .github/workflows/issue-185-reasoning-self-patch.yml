@@ -1,46 +1,31 @@
-name: Apply issue 185 reasoning patch
+name: Issue 185 patch runner
 
 on:
   push:
-    branches:
-      - fix/185-reasoning-routing
 
 permissions:
   contents: write
 
-concurrency:
-  group: issue-185-reasoning-self-patch
-  cancel-in-progress: false
-
 jobs:
   patch:
-    if: contains(github.event.head_commit.message, 'ci: apply issue 185 reasoning patch')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fix/185-reasoning-routing
           fetch-depth: 0
 
-      - name: Apply closed reasoning-control patch
-        run: python3 scripts/issue185_patch.py
+      - run: python3 scripts/issue185_patch.py
 
-      - name: Install SWI-Prolog
-        run: |
+      - run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends swi-prolog-nox
 
-      - name: Run focused reasoning tests
-        run: |
+      - run: |
           swipl -q -s test/rlm_reasoning_control_test.pl -g 'run_tests,halt'
           swipl -q -s test/rlm_cli_test.pl -g 'run_tests,halt'
+          swipl -q -s test/run_tests.pl
 
-      - name: Run deterministic corpus
-        run: swipl -q -s test/run_tests.pl
-
-      - name: Commit tested implementation
-        run: |
+      - run: |
           git config user.name 'prolog-rlm[bot]'
           git config user.email 'prolog-rlm@users.noreply.github.com'
           git add -A
