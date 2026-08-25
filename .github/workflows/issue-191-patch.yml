@@ -1,0 +1,93 @@
+name: Issue 191 tool visibility patch
+
+on:
+  push:
+    branches:
+      - fix/191-capability-filtered-tool-schemas
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install SWI-Prolog
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends swi-prolog-nox
+
+      - name: Apply capability-filtered planner schema patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('prolog/rlm_completion.pl')
+          text = path.read_text()
+          old = '''        tool_registry_runtime_tools(Registry,
+                                    Capabilities,
+                                    InvocationOptions,
+                                    RegistryTools),
+        tool_discover(Registry, Schemas)
+    ),
+    append(RegistryTools, DirectTools, Tools).
+
+tool_invocation_options(Options, InvocationOptions) :-
+'''
+          new = '''        tool_registry_runtime_tools(Registry,
+                                    Capabilities,
+                                    InvocationOptions,
+                                    RegistryTools),
+        tool_discover(Registry, DiscoveredSchemas),
+        include(tool_schema_capability_allowed(Capabilities),
+                DiscoveredSchemas,
+                Schemas)
+    ),
+    append(RegistryTools, DirectTools, Tools).
+
+tool_schema_capability_allowed(Capabilities, Schema) :-
+    is_dict(Schema),
+    get_dict(capability, Schema, Capability),
+    capability_allowed(Capabilities, Capability).
+
+tool_invocation_options(Options, InvocationOptions) :-
+'''
+          if old not in text:
+              raise SystemExit('expected runtime_tools block not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Run focused regression and completion tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          swipl -q -s test/rlm_completion_tool_visibility_test.pl -g 'run_tests,halt'
+          swipl -q -s test/rlm_completion_test.pl -g 'run_tests,halt'
+          swipl -q -s test/check_runtime.pl
+          git diff --check
+
+      - name: Commit verified runtime patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add prolog/rlm_completion.pl
+          if git diff --cached --quiet; then
+            echo 'No runtime patch to commit.'
+            exit 0
+          fi
+          git commit -m 'fix: filter planner tool schemas by capabilities'
+          git push origin HEAD:fix/191-capability-filtered-tool-schemas
