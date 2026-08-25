@@ -1,5 +1,7 @@
 :- begin_tests(rlm_conversation_cold).
 
+:- meta_predicate with_cold_conversation(1).
+
 :- use_module('../prolog/rlm_context').
 :- use_module('../prolog/rlm_conversation').
 
@@ -33,23 +35,32 @@ cold_search_case(Conversation) :-
           token_options([token_counter(plunit_rlm_conversation_cold:char_counter)])
         ],
         ok(Pack)),
-    assertion(\+ selected_sequence(Pack.selected, OldRecord.sequence)),
+    get_dict(selected, Pack, Selected),
+    get_dict(sequence, OldRecord, OldSequence),
+    assertion(\+ selected_sequence(Selected, OldSequence)),
     conversation_cold_context(Conversation, [], ok(ColdRef)),
-    context_metadata(ColdRef.handle, ok(MetadataRef)),
-    assertion(MetadataRef.metadata.backend == adapter(conversation)),
-    assertion(MetadataRef.metadata.source.conversation_id == cold_test),
-    context_search(ColdRef.handle,
+    get_dict(handle, ColdRef, ColdHandle),
+    context_metadata(ColdHandle, ok(MetadataRef)),
+    get_dict(metadata, MetadataRef, Metadata),
+    get_dict(backend, Metadata, Backend),
+    assertion(Backend == adapter(conversation)),
+    get_dict(source, Metadata, Source),
+    get_dict(conversation_id, Source, cold_test),
+    context_search(ColdHandle,
                    "ancient-needle",
                    [max_results(4), max_bytes(4096)],
                    ok(Search)),
-    assertion(Search.value = [Match]),
-    assertion(Match.sequence =:= OldRecord.sequence),
-    assertion(sub_string(Match.content, _, _, _, "ancient-needle")),
-    context_delete(ColdRef.handle, ok(_)),
+    get_dict(value, Search, [Match]),
+    get_dict(sequence, Match, MatchSequence),
+    assertion(MatchSequence =:= OldSequence),
+    get_dict(content, Match, MatchContent),
+    assertion(sub_string(MatchContent, _, _, _, "ancient-needle")),
+    context_delete(ColdHandle, ok(_)),
     conversation_message(Conversation,
-                         OldRecord.sequence,
+                         OldSequence,
                          ok(Restored)),
-    assertion(Restored.content == Old).
+    get_dict(content, Restored, RestoredContent),
+    assertion(RestoredContent == Old).
 
 test(managed_turn_keeps_old_history_out_of_planner_prompt_but_can_search_it) :-
     with_cold_conversation(managed_cold_turn_case).
@@ -100,22 +111,27 @@ persistent_cold_reopen_case(File) :-
                         message(user, "durable ancient-needle"),
                         ok(_)),
     conversation_cold_context(Conversation1, [], ok(FirstRef)),
-    context_delete(FirstRef.handle, ok(_)),
+    get_dict(handle, FirstRef, FirstHandle),
+    context_delete(FirstHandle, ok(_)),
     conversation_store_close(Store1, ok(closed)),
     conversation_store_open(persist(File), ok(Store2)),
     conversation_open(Store2, cold_persist, ok(Conversation2)),
     conversation_cold_context(Conversation2, [], ok(SecondRef)),
-    context_search(SecondRef.handle,
+    get_dict(handle, SecondRef, SecondHandle),
+    context_search(SecondHandle,
                    "ancient-needle",
                    [],
                    ok(Search)),
-    assertion(Search.value = [Match]),
-    assertion(Match.sequence =:= 1),
-    context_delete(SecondRef.handle, ok(_)),
+    get_dict(value, Search, [Match]),
+    get_dict(sequence, Match, Sequence),
+    assertion(Sequence =:= 1),
+    context_delete(SecondHandle, ok(_)),
     conversation_store_close(Store2, ok(closed)).
 
 cold_search_planner(Request, ok(Output)) :-
-    Request.messages = [Message],
+    Request.messages = [System, Message],
+    assertion(System.role == system),
+    assertion(Message.role == user),
     assertion(\+ sub_string(Message.content,
                             _, _, _,
                             "ancient-needle")),
@@ -128,7 +144,7 @@ cold_search_planner(Request, ok(Output)) :-
     ]),
     Output = planner_output{
                  plan:Plan,
-                 usage:_{prompt_tokens:1,
+                 usage:json{prompt_tokens:1,
                          completion_tokens:1,
                          total_tokens:2,
                          cost:0.0}
@@ -136,8 +152,10 @@ cold_search_planner(Request, ok(Output)) :-
 
 selected_sequence(Selections, Sequence) :-
     member(Selection, Selections),
-    Selection.section == conversation,
-    Selection.value.sequence =:= Sequence.
+    get_dict(section, Selection, conversation),
+    get_dict(value, Selection, Value),
+    get_dict(sequence, Value, FoundSequence),
+    FoundSequence =:= Sequence.
 
 char_counter(Text, Tokens) :-
     string_length(Text, Tokens).

@@ -4,8 +4,13 @@
             tool_last_value/1,
             counting_write_tool/2,
             alternate_write_tool/2,
+            gated_counting_write_tool/2,
+            gated_alternate_write_tool/2,
             fresh_read_tool/2,
             blocking_write_tool/2,
+            arm_binding_gate/0,
+            await_binding_gate_entries/0,
+            release_binding_gate/0,
             arm_blocking_gate/0,
             release_blocking_write/0,
             await_blocking_write_entered/0,
@@ -21,19 +26,27 @@
 :- dynamic mutation_counter/1.
 :- dynamic last_value/1.
 :- dynamic blocking_gate/2.
+:- dynamic binding_gate/2.
 
 reset_tool_mutations :-
     retractall(mutation_counter(_)),
     retractall(last_value(_)),
-    retractall(blocking_gate(_, _)),
     destroy_blocking_gates,
+    destroy_binding_gates,
     assertz(mutation_counter(0)).
 
 destroy_blocking_gates :-
-    (   blocking_gate(Entered, Release)
+    (   retract(blocking_gate(Entered, Release))
     ->  catch(message_queue_destroy(Entered), _, true),
         catch(message_queue_destroy(Release), _, true),
-        fail
+        destroy_blocking_gates
+    ;   true ).
+
+destroy_binding_gates :-
+    (   retract(binding_gate(Entered, Release))
+    ->  catch(message_queue_destroy(Entered), _, true),
+        catch(message_queue_destroy(Release), _, true),
+        destroy_binding_gates
     ;   true ).
 
 tool_mutation_count(Count) :-
@@ -69,6 +82,35 @@ alternate_write_tool(Args, json{seen:Seen, count:Count}) :-
     Seen is Base.seen+1000,
     Count = Base.count.
 
+gated_counting_write_tool(Args, Result) :-
+    enter_binding_gate,
+    counting_write_tool(Args, Result).
+
+gated_alternate_write_tool(Args, Result) :-
+    enter_binding_gate,
+    alternate_write_tool(Args, Result).
+
+enter_binding_gate :-
+    binding_gate(Entered, Release),
+    thread_send_message(Entered, entered),
+    thread_get_message(Release, release).
+
+arm_binding_gate :-
+    destroy_binding_gates,
+    message_queue_create(Entered),
+    message_queue_create(Release),
+    assertz(binding_gate(Entered, Release)).
+
+await_binding_gate_entries :-
+    binding_gate(Entered, _),
+    thread_get_message(Entered, entered),
+    thread_get_message(Entered, entered).
+
+release_binding_gate :-
+    binding_gate(_, Release),
+    thread_send_message(Release, release),
+    thread_send_message(Release, release).
+
 fresh_read_tool(Args, json{seen:Value, count:Count}) :-
     get_dict(value, Args, Value),
     record_mutation(Value),
@@ -83,9 +125,9 @@ blocking_write_tool(Args, json{seen:Value, count:Count}) :-
     tool_mutation_count(Count).
 
 arm_blocking_gate :-
+    destroy_blocking_gates,
     message_queue_create(Entered),
     message_queue_create(Release),
-    retractall(blocking_gate(_, _)),
     assertz(blocking_gate(Entered, Release)).
 
 await_blocking_write_entered :-

@@ -116,8 +116,7 @@ test(dual_server_accepts_2026_discover_and_command) :-
     assertion(trace_has_type(Trace, server_discovered)),
     assertion(trace_has_protocol(Trace, '2026-07-28')).
 
-test(time_limit_exception_propagates_through_server,
-     [throws(time_limit_exceeded)]) :-
+test(time_limit_exception_propagates_through_server) :-
     server_info(ServerInfo),
     server_caps(ServerCaps),
     mcp_server_new(streamable_http,
@@ -137,12 +136,15 @@ test(time_limit_exception_propagates_through_server,
                             Wire,
                             Meta,
                             ok(_)),
-    mcp_server_handle(Server0,
-                      Wire,
-                      Meta,
-                      plunit_rlm_mcp_dual:throw_time_limit,
-                      _,
-                      _).
+    catch(mcp_server_handle(Server0,
+                            Wire,
+                            Meta,
+                            plunit_rlm_mcp_dual:throw_time_limit,
+                            _,
+                            _),
+          Exception,
+          true),
+    assertion(Exception == time_limit_exceeded).
 
 only_2026_exchange(Wire, Meta, Response) :-
     get_dict(method, Wire, Method),

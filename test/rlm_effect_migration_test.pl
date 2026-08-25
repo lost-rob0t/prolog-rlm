@@ -25,7 +25,9 @@ cleanup_paths(Paths) :-
 
 migrate_fixture(Source, Destination, Details, Report) :-
     legacy_fixture_create(Source, Details),
-    effect_store_migrate(_{source:Source,output:Destination}, Report).
+    effect_store_migrate(migration_options{source:Source,
+                                           output:Destination},
+                         Report).
 
 test(real_pr78_schema_preserves_observation_and_provider_keys) :-
     setup_paths(Source, Destination),
@@ -62,7 +64,9 @@ test(migration_is_idempotently_reported) :-
         true,
         ( migrate_fixture(Source, Destination, _, First),
           assertion(First.status == migrated),
-          effect_store_migrate(_{source:Destination,output:Source}, Second),
+          effect_store_migrate(migration_options{source:Destination,
+                                                 output:Source},
+                               Second),
           assertion(Second.status == already_migrated),
           assertion(Second.migration_id == First.migration_id) ),
         cleanup_paths([Source,Destination])).
@@ -133,21 +137,24 @@ test(strict_manifest_binds_original_attempt) :-
         legacy_fixture_create(Source, Details),
         ( crypto_file_hash(Source, Hex, [algorithm(sha256)]),
           atom_concat('sha256:', Hex, Digest),
-          Manifest = _{schema:'prolog-rlm.effect-migration-manifest.v1',
+          get_dict(uncertain_attempt, Details, UncertainAttempt),
+          Manifest = json{schema:'prolog-rlm.effect-migration-manifest.v1',
                        source_digest:Digest,
-                       bindings:[_{attempt_id:Details.uncertain_attempt,
-                                   adapter:trusted_legacy_adapter}]},
+                       bindings:[json{attempt_id:UncertainAttempt,
+                                      adapter:trusted_legacy_adapter}]},
           setup_call_cleanup(open(ManifestPath, write, Stream,
                                   [encoding(utf8)]),
                              json_write_dict(Stream, Manifest),
                              close(Stream)),
-          effect_store_migrate(_{source:Source,output:Destination,
-                                 manifest:ManifestPath}, Report),
+          effect_store_migrate(migration_options{source:Source,
+                                                 output:Destination,
+                                                 manifest:ManifestPath},
+                               Report),
           assertion(Report.status == migrated),
           assertion(Report.attempts_requiring_adapter_bindings == []),
           rlm_effect_store_open(Destination),
           rlm_effect_persist:effect_persist_legacy_adapter(
-              Details.uncertain_attempt, trusted_legacy_adapter),
+              UncertainAttempt, trusted_legacy_adapter),
           rlm_effect_store_close ),
         cleanup_paths([Source,Destination,ManifestPath])).
 
@@ -156,16 +163,19 @@ test(manifest_wrong_digest_aborts_and_preserves_source) :-
     atom_concat(Source, '.manifest.json', ManifestPath),
     setup_call_cleanup(
         legacy_fixture_create(Source, Details),
-        ( Manifest = _{schema:'prolog-rlm.effect-migration-manifest.v1',
+        ( get_dict(uncertain_attempt, Details, UncertainAttempt),
+          Manifest = json{schema:'prolog-rlm.effect-migration-manifest.v1',
                        source_digest:'sha256:not-this-ledger',
-                       bindings:[_{attempt_id:Details.uncertain_attempt,
-                                   adapter:trusted_adapter}]},
+                       bindings:[json{attempt_id:UncertainAttempt,
+                                      adapter:trusted_adapter}]},
           setup_call_cleanup(open(ManifestPath, write, Stream,
                                   [encoding(utf8)]),
                              json_write_dict(Stream, Manifest),
                              close(Stream)),
-          effect_store_migrate(_{source:Source,output:Destination,
-                                 manifest:ManifestPath}, Report),
+          effect_store_migrate(migration_options{source:Source,
+                                                 output:Destination,
+                                                 manifest:ManifestPath},
+                               Report),
           assertion(Report.status == ambiguous_adapter),
           assertion(\+ exists_file(Destination)),
           assertion(exists_file(Source)) ),
@@ -177,7 +187,9 @@ test(in_place_requires_and_preserves_byte_exact_backup) :-
     setup_call_cleanup(
         legacy_fixture_create(Source, _),
         ( crypto_file_hash(Source, Before, [algorithm(sha256)]),
-          effect_store_migrate(_{source:Source,in_place:true,backup:Backup},
+          effect_store_migrate(migration_options{source:Source,
+                                                 in_place:true,
+                                                 backup:Backup},
                                Report),
           assertion(Report.status == migrated),
           crypto_file_hash(Backup, BackupHash, [algorithm(sha256)]),

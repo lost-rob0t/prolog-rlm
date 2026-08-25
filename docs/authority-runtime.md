@@ -2,7 +2,7 @@
 
 `prolog-rlm` owns the authority policy, authority state, pending-operation protocol, exact operation identity, and execution resumption contract. Downstream clients own presentation.
 
-There is no authority UI or TUI in core. A terminal, Emacs UI, web UI, or future `agentProlog/` client may list pending operations and call the core approve/deny/edit predicates, but it must not reimplement policy.
+There is no authority UI or TUI in core. A terminal, Emacs UI, web UI, standalone AgentProlog client, or other downstream frontend may list pending operations and call the core approve/deny/edit predicates, but it must not reimplement policy.
 
 ## Canonical authority tiers
 
@@ -228,4 +228,4 @@ prolog-rlm owns policy/state/protocol.
 Downstream clients own presentation.
 ```
 
-The future `agentProlog/` TUI may render authority tiers, pending diffs, counters, approve/deny/edit controls, and asynchronous progress, but that UI is downstream of this contract and is not implemented here.
+Standalone AgentProlog, the approved DeepSeek Harness plugin path, Emacs, terminal clients, and other frontends may render authority tiers, pending diffs, counters, approve/deny/edit controls, and asynchronous progress. Those clients are downstream of this contract and are not implemented as a nested product harness here.

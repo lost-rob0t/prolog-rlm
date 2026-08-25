@@ -1,5 +1,7 @@
 :- begin_tests(rlm_tool_effect).
 
+:- meta_predicate with_effect_store(0).
+
 :- use_module(library(process)).
 :- use_module(library(readutil)).
 :- use_module('../prolog/rlm_tool').
@@ -33,11 +35,17 @@ setup_write_registry(Registry) :-
     tool_register(Registry, Schema,
                   tool_effect_test_support:counting_write_tool, ok(_)).
 
-setup_alternate_write_registry(Registry) :-
+setup_gated_write_registry(Registry) :-
     tool_registry_create(Registry),
     write_schema(Schema),
     tool_register(Registry, Schema,
-                  tool_effect_test_support:alternate_write_tool, ok(_)).
+                  tool_effect_test_support:gated_counting_write_tool, ok(_)).
+
+setup_gated_alternate_write_registry(Registry) :-
+    tool_registry_create(Registry),
+    write_schema(Schema),
+    tool_register(Registry, Schema,
+                  tool_effect_test_support:gated_alternate_write_tool, ok(_)).
 
 setup_read_registry(Registry) :-
     tool_registry_create(Registry),
@@ -75,6 +83,15 @@ allow_once_context(Context) :-
 
 cleanup_context(Context) :-
     catch(rlm_authority_clear(Context), _, true).
+
+expect_stage(_Stage, Expected, Actual) :-
+    Actual = Expected,
+    !.
+expect_stage(Stage, Expected, Actual) :-
+    throw(error(tool_effect_stage_failed(Stage,
+                                         expected(Expected),
+                                         actual(Actual)),
+                context(rlm_tool_effect, Stage))).
 
 /* 1. Effectful tool + later Prolog failure/backtracking mutates exactly once. */
 test(effectful_tool_backtracking_mutates_once,
@@ -125,19 +142,25 @@ test(edited_pending_cannot_execute_stale_ticket,
         ( Context = session(tool_effect_edit),
           setup_write_registry(Registry),
           invoke_write(Registry, Context, 41, approval_required(Old), _),
-          rlm_edit(Old.id, _{args:_{value:42}}, ok(Edit)),
-          assertion(Edit.fingerprint \== Old.fingerprint),
-          rlm_pending_resolution_async(Edit.id, ResolutionFuture),
-          rlm_approve(Edit.id, ok(_)),
+          get_dict(id, Old, OldId),
+          get_dict(fingerprint, Old, OldFingerprint),
+          rlm_edit(OldId, _{args:_{value:42}}, ok(Edit)),
+          get_dict(id, Edit, EditId),
+          get_dict(fingerprint, Edit, EditFingerprint),
+          assertion(EditFingerprint \== OldFingerprint),
+          rlm_pending_resolution_async(EditId, ResolutionFuture),
+          rlm_approve(EditId, ok(_)),
           rlm_future_await(ResolutionFuture, 2.0, Resolution),
-          Resolution.outcome = ok(Value),
-          assertion(Value.seen =:= 42),
+          get_dict(outcome, Resolution, ok(Value)),
+          get_dict(seen, Value, Seen),
+          assertion(Seen =:= 42),
           tool_effect_test_support:tool_mutation_count(Count),
           assertion(Count =:= 1),
           tool_effect_test_support:tool_last_value(LastValue),
           assertion(LastValue =:= 42),
-          rlm_approve(Old.id, error(Stale)),
-          assertion(Stale.kind == approval_not_pending),
+          rlm_approve(OldId, error(Stale)),
+          get_dict(kind, Stale, StaleKind),
+          assertion(StaleKind == approval_not_pending),
           tool_effect_test_support:tool_mutation_count(StillOne),
           assertion(StillOne =:= 1),
           rlm_future_destroy(ResolutionFuture),
@@ -211,7 +234,7 @@ test(legacy_store_fence_blocks_effectful_tool,
     effect_legacy_fixture:legacy_fixture_create(Ledger, _),
     setup_call_cleanup(
         true,
-        ( ( catch(rlm_effect_store_open(Ledger), _, Opened = false)
+        ( ( catch(rlm_effect_store_open(Ledger), _, fail)
           -> Opened = true
           ;  Opened = false ),
           assertion(Opened == false),
@@ -292,18 +315,22 @@ test(trusted_binding_identity_prevents_cross_binding_replay,
         ( ContextA = session(tool_effect_binding_a),
           ContextA2 = session(tool_effect_binding_a2),
           ContextB = session(tool_effect_binding_b),
-          setup_write_registry(RegistryA),
-          setup_write_registry(RegistryA2),
-          setup_alternate_write_registry(RegistryB),
+          tool_effect_test_support:arm_binding_gate,
+          setup_gated_write_registry(RegistryA),
+          setup_gated_write_registry(RegistryA2),
+          setup_gated_alternate_write_registry(RegistryB),
           RegistryA = tool_registry(RegistryAId),
           RegistryA2 = tool_registry(RegistryA2Id),
           assertion(RegistryAId \== RegistryA2Id),
-          invoke_write(RegistryA, ContextA, 88,
-                       approval_required(PendingA), _),
-          invoke_write(RegistryA2, ContextA2, 88,
-                       approval_required(PendingA2), _),
-          invoke_write(RegistryB, ContextB, 88,
-                       approval_required(PendingB), _),
+          invoke_write(RegistryA, ContextA, 88, PrepareA, _),
+          expect_stage(prepare_binding_a,
+                       approval_required(PendingA), PrepareA),
+          invoke_write(RegistryA2, ContextA2, 88, PrepareA2, _),
+          expect_stage(prepare_binding_a2,
+                       approval_required(PendingA2), PrepareA2),
+          invoke_write(RegistryB, ContextB, 88, PrepareB, _),
+          expect_stage(prepare_binding_b,
+                       approval_required(PendingB), PrepareB),
           IdentityA = PendingA.operation.effect_identity,
           IdentityA2 = PendingA2.operation.effect_identity,
           IdentityB = PendingB.operation.effect_identity,
@@ -314,17 +341,32 @@ test(trusted_binding_identity_prevents_cross_binding_replay,
           assertion(IdentityA.call_id \== IdentityB.call_id),
           rlm_pending_resolution_async(PendingA.id, FutureA),
           rlm_pending_resolution_async(PendingB.id, FutureB),
-          rlm_approve(PendingA.id, ok(_)),
-          rlm_approve(PendingB.id, ok(_)),
-          rlm_future_await(FutureA, 2.0, ResolutionA),
-          rlm_future_await(FutureB, 2.0, ResolutionB),
-          ResolutionA.outcome = ok(ValueA),
-          ResolutionB.outcome = ok(ValueB),
+          rlm_approve(PendingA.id, ApprovalA),
+          expect_stage(approve_binding_a, ok(_), ApprovalA),
+          rlm_approve(PendingB.id, ApprovalB),
+          expect_stage(approve_binding_b, ok(_), ApprovalB),
+          tool_effect_test_support:await_binding_gate_entries,
+          tool_effect_test_support:release_binding_gate,
+          rlm_future_await(FutureA, ResolutionA),
+          rlm_future_await(FutureB, ResolutionB),
+          expect_stage(resolve_binding_a,
+                       tool_pending_resolution{outcome:ok(ValueA),
+                                               status:ok,
+                                               output_bytes:_,
+                                               elapsed_ms:_},
+                       ResolutionA),
+          expect_stage(resolve_binding_b,
+                       tool_pending_resolution{outcome:ok(ValueB),
+                                               status:ok,
+                                               output_bytes:_,
+                                               elapsed_ms:_},
+                       ResolutionB),
           assertion(ValueA.seen =:= 88),
           assertion(ValueB.seen =:= 1088),
           tool_effect_test_support:tool_mutation_count(Count),
           assertion(Count =:= 2),
-          rlm_deny(PendingA2.id, test_cleanup, ok(_)),
+          rlm_deny(PendingA2.id, test_cleanup, DenialA2),
+          expect_stage(deny_unexecuted_binding_a2, ok(_), DenialA2),
           rlm_future_destroy(FutureA),
           rlm_future_destroy(FutureB),
           cleanup_context(ContextA),

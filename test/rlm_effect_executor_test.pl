@@ -1,5 +1,7 @@
 :- begin_tests(rlm_effect_executor).
 
+:- meta_predicate with_executor(0).
+
 :- use_module('../prolog/rlm_effect').
 :- use_module('../prolog/rlm_effect_executor').
 :- use_module('../prolog/rlm_async').

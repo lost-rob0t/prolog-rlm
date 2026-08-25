@@ -4,6 +4,12 @@
 
 :- dynamic live_stream_event/1.
 
+test(free_router_treats_sentinel_as_quality_evidence) :-
+    sentinel_required('openrouter/free', false).
+
+test(pinned_model_keeps_sentinel_sensitive_acceptance) :-
+    sentinel_required('openai/gpt-4.1-mini', true).
+
 test(real_openrouter_streaming_request,
      [setup(retractall(live_stream_event(_)))]) :-
     require_stream_credential,
@@ -55,7 +61,8 @@ validate_stream_result(RequestedModel, Result) :-
     assertion(Response.metadata.streaming == true),
     assertion(string(Response.text)),
     assertion(Response.text \== ""),
-    assertion(sub_string(Response.text, _, _, _, "STREAM_OK")),
+    sentinel_compliance(Response.text, SentinelCompliant),
+    validate_sentinel_policy(RequestedModel, SentinelCompliant),
     assertion(nonempty_textlike(Response.finish_reason)),
     assertion(is_list(Result.stream_events)),
     assertion(Result.stream_events \== []),
@@ -69,6 +76,21 @@ validate_stream_result(RequestedModel, Result) :-
     last(Delivered, DoneEvent),
     assertion(DoneEvent.type == done),
     validate_stream_usage(Response.usage).
+
+sentinel_required('openrouter/free', false) :- !.
+sentinel_required(_, true).
+
+sentinel_compliance(Text, true) :-
+    sub_string(Text, _, _, _, "STREAM_OK"),
+    !.
+sentinel_compliance(_, false).
+
+validate_sentinel_policy(RequestedModel, SentinelCompliant) :-
+    sentinel_required(RequestedModel, Required),
+    (   Required == true
+    ->  assertion(SentinelCompliant == true)
+    ;   true
+    ).
 
 validate_stream_usage(Usage) :-
     assertion(memberchk(Usage.present, [true,false])),
@@ -106,6 +128,8 @@ log_stream_evidence(RequestedModel, Result) :-
     ->  DonePresent = true
     ;   DonePresent = false
     ),
+    sentinel_required(RequestedModel, SentinelRequired),
+    sentinel_compliance(Response.text, SentinelCompliant),
     format('stream_provider: openrouter~n', []),
     format('stream_requested_model: ~w~n', [RequestedModel]),
     format('stream_selected_model: ~w~n', [Response.selected_model]),
@@ -115,6 +139,8 @@ log_stream_evidence(RequestedModel, Result) :-
     format('stream_done: ~w~n', [DonePresent]),
     format('stream_finish_reason: ~w~n', [Response.finish_reason]),
     format('stream_usage_present: ~w~n', [Response.usage.present]),
-    format('stream_final_text_present: ~w~n', [TextPresent]).
+    format('stream_final_text_present: ~w~n', [TextPresent]),
+    format('stream_sentinel_required: ~w~n', [SentinelRequired]),
+    format('stream_sentinel_compliant: ~w~n', [SentinelCompliant]).
 
 :- end_tests(live_chain_stream_openrouter).

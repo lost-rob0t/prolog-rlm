@@ -64,19 +64,20 @@ rlm_effect_normalize(Value, Normalized) :-
     canonical_value(Value, Normalized).
 
 require_normalizable(Value) :-
-    (   ground(Value)
-    ->  true
-    ;   throw(effect_fault(non_ground_request))
-    ),
     (   acyclic_term(Value)
     ->  true
     ;   throw(effect_fault(cyclic_request))
     ).
 
+canonical_value(Value, _) :-
+    var(Value),
+    !,
+    throw(effect_fault(non_ground_request)).
 canonical_value(Value, Canonical) :-
     is_dict(Value),
     !,
-    dict_pairs(Value, Tag, Pairs0),
+    dict_pairs(Value, Tag0, Pairs0),
+    canonical_dict_tag(Tag0, Tag),
     keysort(Pairs0, Sorted),
     maplist(canonical_pair, Sorted, Pairs),
     dict_pairs(Canonical, Tag, Pairs).
@@ -100,6 +101,15 @@ canonical_value(Value, Canonical) :-
     maplist(canonical_value, Args0, Args),
     Canonical =.. [Functor|Args].
 canonical_value(_, _) :-
+    throw(effect_fault(unsupported_value)).
+
+canonical_dict_tag(Tag0, rlm_anonymous_dict) :-
+    var(Tag0),
+    !.
+canonical_dict_tag(Tag, Tag) :-
+    atom(Tag),
+    !.
+canonical_dict_tag(_, _) :-
     throw(effect_fault(unsupported_value)).
 
 canonical_pair(Key-Value0, Key-Value) :-
@@ -130,7 +140,7 @@ effect_prepare_(Kind, Request0, Options0, Outcome) :-
                  LogicalKey, StoreId, BaseCallId, Epoch, Options, Outcome).
 
 normalize_options(Options0, Options) :-
-    (   is_dict(Options0), dict_payload_ground(Options0)
+    (   is_dict(Options0)
     ->  true
     ;   throw(effect_fault(invalid_options))
     ),
@@ -150,10 +160,6 @@ normalize_options(Options0, Options) :-
                            metadata:Metadata,
                            logical_key:LogicalKey,
                            parent_attempt:Parent}).
-
-dict_payload_ground(Dict) :-
-    dict_pairs(Dict, _, Pairs),
-    ground(Pairs).
 
 validate_option_keys(Options) :-
     dict_keys(Options, Keys),
@@ -596,7 +602,7 @@ record_observation_(Source, AttemptId, Observation0, Outcome) :-
                                          Outcome)).
 
 normalize_observation(Observation0, Observation) :-
-    (   is_dict(Observation0), ground(Observation0)
+    (   is_dict(Observation0)
     ->  true
     ;   throw(effect_fault(invalid_observation))
     ),

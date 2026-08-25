@@ -169,10 +169,12 @@ normalize_demo_result(Result, Result, Status) :-
 direct_session(Prompt, Options, Session) :-
     provider_from_options(Options, ProviderName, Provider, Model),
     completion_budget_from_options(Options, Budget),
-    RuntimeOptions = [provider(Provider),
-                      provider_name(ProviderName),
-                      planner_max_tokens(Options.max_tokens),
-                      budget(Budget)],
+    RuntimeBase = [provider(Provider),
+                   provider_name(ProviderName),
+                   planner_max_tokens(Options.max_tokens),
+                   budget(Budget)],
+    runtime_reasoning_options(Options, ReasoningOptions),
+    append(RuntimeBase, ReasoningOptions, RuntimeOptions),
     llm_query(Prompt, RuntimeOptions, Outcome),
     direct_outcome(ProviderName, Model, Outcome, Options, Session).
 
@@ -212,18 +214,20 @@ rlm_session(Query, Options, Session) :-
                max_context_ops:1},
              Budget0,
              Budget),
-    RuntimeOptions = [provider(Provider),
-                      provider_name(ProviderName),
-                      capabilities([rlm,
-                                    context(slice),
-                                    model(ProviderName)]),
-                      child_capabilities([model(ProviderName)]),
-                      planner_handler(rlm_cli:fixed_cli_planner(Plan)),
-                      planner_attempts(1),
-                      planner_max_tokens(1),
-                      context_options([max_bytes(Options.context_bytes),
-                                       time_limit(2.0)]),
-                      budget(Budget)],
+    RuntimeBase = [provider(Provider),
+                   provider_name(ProviderName),
+                   capabilities([rlm,
+                                 context(slice),
+                                 model(ProviderName)]),
+                   child_capabilities([model(ProviderName)]),
+                   planner_handler(rlm_cli:fixed_cli_planner(Plan)),
+                   planner_attempts(1),
+                   planner_max_tokens(1),
+                   context_options([max_bytes(Options.context_bytes),
+                                    time_limit(2.0)]),
+                   budget(Budget)],
+    runtime_reasoning_options(Options, ReasoningOptions),
+    append(RuntimeBase, ReasoningOptions, RuntimeOptions),
     rlm_completion(Query,
                    text(ContextText),
                    RuntimeOptions,
@@ -300,6 +304,18 @@ fixed_cli_planner(Plan, _Request,
                             cost:0.0}}).
 
 /* Provider configuration ---------------------------------------------- */
+
+runtime_reasoning_options(Options, RuntimeOptions) :-
+    findall(Option,
+            runtime_reasoning_option(Options, Option),
+            RuntimeOptions).
+
+runtime_reasoning_option(Options, reasoning_effort(Effort)) :-
+    Options.reasoning_effort \== unspecified,
+    Effort = Options.reasoning_effort.
+runtime_reasoning_option(Options, planner_reasoning_effort(Effort)) :-
+    Options.planner_reasoning_effort \== inherit,
+    Effort = Options.planner_reasoning_effort.
 
 provider_from_options(Options, openrouter, Provider, Model) :-
     Options.endpoint == none,
@@ -430,6 +446,8 @@ default_cli_options(
                 trace:none,
                 trace_format:json,
                 model:auto,
+                reasoning_effort:unspecified,
+                planner_reasoning_effort:inherit,
                 endpoint:none,
                 credential_env:"OPENAI_API_KEY",
                 no_credential:false,
@@ -460,6 +478,18 @@ parse_options(['--trace-format',Value|Rest], O0, O, P0, P) :-
     put_dict(trace_format, O0, Format, O1), parse_options(Rest, O1, O, P0, P).
 parse_options(['--model',Value|Rest], O0, O, P0, P) :-
     !, atom_arg(Value, Model), put_dict(model, O0, Model, O1),
+    parse_options(Rest, O1, O, P0, P).
+parse_options(['--reasoning-effort',Value|Rest], O0, O, P0, P) :-
+    !,
+    atom_arg(Value, Effort),
+    require_member(Effort, [none,minimal,low,medium,high,xhigh,max], reasoning_effort),
+    put_dict(reasoning_effort, O0, Effort, O1),
+    parse_options(Rest, O1, O, P0, P).
+parse_options(['--planner-reasoning-effort',Value|Rest], O0, O, P0, P) :-
+    !,
+    atom_arg(Value, Effort),
+    require_member(Effort, [none,minimal,low,medium,high,xhigh,max], planner_reasoning_effort),
+    put_dict(planner_reasoning_effort, O0, Effort, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--endpoint',Value|Rest], O0, O, P0, P) :-
     !, text_arg(Value, Endpoint), put_dict(endpoint, O0, Endpoint, O1),
@@ -560,6 +590,8 @@ cli_usage(Usage) :-
         "",
         "Provider options:",
         "  --model MODEL                 OpenRouter model; defaults to OPENROUTER_TEST_MODEL or openrouter/free",
+        "  --reasoning-effort EFFORT      none|minimal|low|medium|high|xhigh|max",
+        "  --planner-reasoning-effort EFFORT  Override planner effort; otherwise inherits reasoning effort",
         "  --endpoint URL                Use an OpenAI-compatible endpoint instead of OpenRouter",
         "  --credential-env NAME         Credential env var for custom endpoint (default OPENAI_API_KEY)",
         "  --no-credential               Custom endpoint requires no credential",

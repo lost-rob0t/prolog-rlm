@@ -2,6 +2,7 @@
 
 :- use_module('../prolog/rlm_async').
 :- use_module('../prolog/rlm_authority').
+:- use_module('../prolog/rlm_effect').
 :- use_module('../prolog/rlm_graph').
 :- use_module('../prolog/rlm_tool').
 
@@ -47,16 +48,21 @@ graph_side_effect_node(Registry, _, _, Result) :-
         ToolResult),
     graph_node_from_tool_result(ToolResult, Result).
 
-graph_node_from_tool_result(
-    tool_async_result{outcome:approval_required(Pending)},
-    interrupt(approval_required(Pending.id), _{})) :-
-    !.
-graph_node_from_tool_result(
-    tool_async_result{outcome:ok(_)},
+graph_node_from_tool_result(Result, NodeResult) :-
+    get_dict(outcome, Result, Outcome),
+    graph_node_from_tool_outcome(Outcome, NodeResult).
+
+graph_node_from_tool_outcome(
+    approval_required(Pending),
+    interrupt(approval_required(ApprovalId), graph_resume{})) :-
+    !,
+    get_dict(id, Pending, ApprovalId).
+graph_node_from_tool_outcome(
+    ok(_),
     update(_{done:true})) :-
     !.
-graph_node_from_tool_result(
-    tool_async_result{outcome:error(Error)},
+graph_node_from_tool_outcome(
+    error(Error),
     _) :-
     throw(error(graph_authority_tool_failed(Error), _)).
 
@@ -71,8 +77,10 @@ compile_graph_authority(Registry, Compiled) :-
                                  Registry))],
     graph_compile(Spec, GraphRegistry, [], ok(Compiled)).
 
-setup_graph_authority(Registry, Backend, Context, Compiled) :-
+setup_graph_authority(Registry, Backend, Context, Compiled, EffectStore) :-
     reset_graph_mutations,
+    tmp_file(rlm_graph_authority, EffectStore),
+    rlm_effect_store_open(EffectStore),
     tool_registry_create(Registry),
     graph_tool_schema(Schema),
     tool_register(Registry,
@@ -84,16 +92,18 @@ setup_graph_authority(Registry, Backend, Context, Compiled) :-
     rlm_authority_clear(Context),
     compile_graph_authority(Registry, Compiled).
 
-cleanup_graph_authority(Registry, Backend, Context) :-
+cleanup_graph_authority(Registry, Backend, Context, EffectStore) :-
     catch(rlm_authority_clear(Context), _, true),
     catch(graph_backend_close(Backend), _, true),
-    catch(tool_registry_destroy(Registry), _, true).
+    catch(tool_registry_destroy(Registry), _, true),
+    catch(rlm_effect_store_close, _, true),
+    catch(delete_file(EffectStore), _, true).
 
 test(graph_side_effect_pauses_for_shared_authority_without_worker_hostage) :-
     setup_call_cleanup(
-        setup_graph_authority(Registry, Backend, Context, Compiled),
+        setup_graph_authority(Registry, Backend, Context, Compiled, EffectStore),
         ( graph_run(Compiled,
-                    _{},
+                    graph_input{},
                     [ backend(Backend),
                       run_id(graph_authority_run),
                       session_id(graph_authority_session)
@@ -110,9 +120,9 @@ test(graph_side_effect_pauses_for_shared_authority_without_worker_hostage) :-
           assertion(Scheduler.running =:= 0),
           assertion(Scheduler.queued =:= 0),
           rlm_approve(ApprovalId, ok(Transition)),
-          assertion(Transition.state == executing),
+          assertion(Transition.state == scheduled),
           rlm_future_await(ResolutionFuture, 2.0, Resolution),
-          Resolution = tool_pending_resolution{outcome:ok(Value)},
+          get_dict(outcome, Resolution, ok(Value)),
           assertion(Value.seen =:= 1),
           graph_mutation_count(After),
           assertion(After =:= 1),
@@ -126,6 +136,6 @@ test(graph_side_effect_pauses_for_shared_authority_without_worker_hostage) :-
           graph_mutation_count(Final),
           assertion(Final =:= 1)
         ),
-        cleanup_graph_authority(Registry, Backend, Context)).
+        cleanup_graph_authority(Registry, Backend, Context, EffectStore)).
 
 :- end_tests(rlm_graph_authority).

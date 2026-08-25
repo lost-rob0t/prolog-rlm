@@ -15,8 +15,9 @@ test(catalog_rejects_symlinked_skill_directory) :-
 
 test(resource_read_rejects_symlinked_subdirectory) :-
     setup_call_cleanup(
-        symlink_resource_fixture(Skill, Root, Outside, Link),
-        ( rlm_skill:skill_read_resource(Skill, 'escape/secret.md', Outcome),
+        symlink_resource_fixture(Catalog, Root, Outside, Link),
+        ( rlm_skill:skill_catalog_skill(Catalog, selected, Skill),
+          rlm_skill:skill_read_resource(Skill, 'escape/secret.md', Outcome),
           assertion(Outcome = error(_))
         ),
         cleanup_symlink_fixture(Root, Outside, Link)).
@@ -36,10 +37,19 @@ symlink_catalog_fixture(Root, Outside, Link) :-
     link_file(Outside, Link, symbolic).
 
 
-symlink_resource_fixture(Skill, Root, Outside, Link) :-
+symlink_resource_fixture(Catalog, Root, Outside, Link) :-
     fresh_directory(skill_resource_root, Root),
     directory_file_path(Root, selected, SkillDir),
     make_directory(SkillDir),
+    directory_file_path(SkillDir, 'SKILL.md', SkillFile),
+    write_file(SkillFile,
+               '---~nname: selected~ndescription: selected skill~n---~nbody~n'),
+    directory_file_path(SkillDir, escape, AdmittedDir),
+    make_directory(AdmittedDir),
+    directory_file_path(AdmittedDir, 'secret.md', AdmittedSecret),
+    write_file(AdmittedSecret, 'admitted secret~n'),
+    rlm_skill:skill_catalog_load(Root, [], ok(Catalog)),
+    delete_directory_and_contents(AdmittedDir),
     fresh_directory(skill_resource_outside, Outside),
     directory_file_path(Outside, 'secret.md', Secret),
     setup_call_cleanup(
@@ -47,8 +57,14 @@ symlink_resource_fixture(Skill, Root, Outside, Link) :-
         format(Stream, 'outside secret~n', []),
         close(Stream)),
     directory_file_path(SkillDir, escape, Link),
-    link_file(Outside, Link, symbolic),
-    Skill = skill{directory:SkillDir}.
+    link_file(Outside, Link, symbolic).
+
+
+write_file(Path, Format) :-
+    setup_call_cleanup(
+        open(Path, write, Stream, [encoding(utf8)]),
+        format(Stream, Format, []),
+        close(Stream)).
 
 
 fresh_directory(Prefix, Directory) :-

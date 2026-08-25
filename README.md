@@ -47,6 +47,15 @@ Run deterministic tests with:
 swipl -q -s test/run_tests.pl
 ```
 
+The aggregate runner reports its discovered, planned, completed, and outcome
+counts and fails closed for an empty, partial, failing, blocked, or skipped
+suite. Each test runs under a 20-second watchdog and the runner has a
+best-effort 45-second internal failsafe; CI additionally enforces a hard
+50-second process bound, so a hung or stalled suite fails the gate within
+roughly a minute instead of blocking it. The internal failsafe cannot
+interrupt a test stuck inside uninterruptible code, so the process bound is
+the hard guarantee.
+
 ### CLI quickstart
 
 A fresh checkout can run a real deterministic runtime walkthrough with **no credentials**:
@@ -125,8 +134,10 @@ Production namespaces live under `prolog/`:
 - `rlm_chain` — provider/model abstraction;
 - `rlm_context` — bounded opaque external-context operations;
 - `rlm_tool` — capability-gated local tool execution;
-- `rlm_skill` — inert skill catalog, deterministic Prolog activation, dependency closure, prompt budgets, and safe resource loading;
-- `rlm_skill_completion` — completion bridge that compiles selected skill instructions before planner execution;
+- `rlm_skill` — confined inert `SKILL.md` package discovery, normalization, provenance, and lazy resource access;
+- `rlm_prompt_compiler` — the single selector and bounded provider-context packer for skills, instructions, and tool metadata;
+- `adaptors/rlm_agent_zero_adapter` — Agent Zero DOX/skill/context compilation and
+  trusted external tool-pack adaptation;
 - `rlm_completion` — model-to-plan-to-execution RLM loop;
 - `rlm_recursion_policy` / `rlm_recursion_runtime` — bounded adaptive recursion selection and execution;
 - `rlm_deep_experiment` — explicit depth 0/1/2 comparison, alternative recursive harnesses, and promotion evidence;
@@ -231,11 +242,11 @@ Opaque context handles and bounded `peek`, `search`, `slice`, `partition`, `map`
 
 ### `rlm_skill`
 
-A trusted skill-catalog and prompt-compilation boundary. `SKILL.md` frontmatter is indexed as inert metadata; Prolog scores request signals, applies trusted aliases/triggers, closes required dependencies, enforces negation/conflicts/count and token ceilings, and only then reads the selected instruction bodies and bounded local resources. The model receives the compiled instructions, never the full catalog or a skill-selection tool. Skill activation changes model-visible context only; it does not grant tool capabilities or authority.
+A confined package boundary for inert Agent Skills. It indexes bounded `SKILL.md` metadata and resource identities, normalizes packages into canonical `prompt_unit(skill(...))` records, and reads instruction bodies only after the shared `rlm_prompt_compiler` selects them. Resources remain lazy until an explicit confined read. Skill text never grants tool capabilities, authority, or execution permission.
 
 ### `rlm_completion`
 
-The high-level RLM execution loop: root model planning, closed-plan validation, capability checks, bounded context/tool/model execution, recursive child calls, structured repair, usage aggregation, and trajectories. Skill compilation occurs before planner execution so injected or real providers observe only the Prolog-selected instruction set.
+The high-level RLM execution loop: root model planning, closed-plan validation, capability checks, bounded context/tool/model execution, recursive child calls, structured repair, usage aggregation, and trajectories. The root planner receives the bounded skill projection in provider instruction context; broader leaf/subagent provider projection remains tracked separately.
 
 ### `rlm_graph`
 
@@ -264,8 +275,8 @@ rlm_completion(+Query, +Context, +Options, -Result).
 llm_query(+Prompt, +Options, -Result).
 rlm_query(+Query, +SubContext, +Options, -Result).
 skill_catalog_load(+Roots, +Options, -Outcome).
-skill_compile(+Catalog, +Input, +Options, -Outcome).
-skill_prompt_fragment(+Compiled, -Prompt).
+skill_prompt_unit(+Skill, +HostOptions, -Outcome).
+skill_catalog_prompt_units(+Catalog, +HostOptions, -Outcome).
 deep_experiment_run(+Options, -Outcome).
 deep_experiment_promotion(+Evidence, -Decision).
 agent_spawn(+Runtime, +Parent, +Spec, +Capabilities, -Outcome).
@@ -297,7 +308,7 @@ The runnable core includes:
 13. deterministic benchmark/conformance plus live provider gates;
 14. a CLI/demo/trace surface over the same production runtime;
 15. controlled depth 0/1/2 experiments with explicit opt-in, alternative recursive harness comparisons, and non-automatic promotion criteria;
-16. Prolog-owned automatic skill activation with lazy instruction loading, trusted dependency overlays, deterministic explanations, and bounded prompt cost.
+16. confined `SKILL.md` loading into the canonical prompt compiler, with host-owned permanent activation, deterministic explanations, bounded prompt cost, and exact planner-request projection.
 
 Fake model providers are required **only for deterministic tests**.
 
@@ -309,9 +320,9 @@ Current records span `RLM-RESEARCH-000` through `RLM-RESEARCH-010` and cover RLM
 
 ## Third-party skills
 
-The default catalog includes a pinned, selected stable set from Matt Pocock's [`mattpocock/skills`](https://github.com/mattpocock/skills) collection. **Thanks to Matt Pocock for publishing the skill collection under the MIT License.** The upstream material is pinned at revision `9c9f36ccd3995266cd675468af71639c8dde1ec5`; its copyright and MIT license are preserved under `third_party/mattpocock-skills/`.
+The default runtime catalog contains four concise, domain-neutral RLM operating skills under `skills/core/`. Host policy pins them as mandatory provider context; package text cannot pin itself or grant authority.
 
-Vendored skill documents are kept byte-for-byte upstream. Runtime-specific relationships live in trusted Prolog overlay rules rather than edits to third-party Markdown. In particular, legacy instructions that tell a model to call a `Skill` tool are inert in `prolog-rlm`: Prolog owns skill activation and the model never receives a skill router. See `third_party/mattpocock-skills/UPSTREAM.md` and `docs/skills.md`.
+The repository also carries an optional pinned stable set from Matt Pocock's [`mattpocock/skills`](https://github.com/mattpocock/skills) collection. **Thanks to Matt Pocock for publishing the skill collection under the MIT License.** The upstream material is pinned at revision `9c9f36ccd3995266cd675468af71639c8dde1ec5`; its copyright and MIT license are preserved under `third_party/mattpocock-skills/`. Legacy instructions that mention a model-side `Skill` tool remain inert. See `third_party/mattpocock-skills/UPSTREAM.md` and `docs/skills.md`.
 
 ## Non-goals
 

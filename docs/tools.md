@@ -11,7 +11,11 @@
 - arguments and normalized results are checked against the registered schema;
 - per-tool wall-time and output-byte ceilings are enforced;
 - a per-invocation trace records authorization, status, output bytes, and elapsed time;
-- plan execution uses `tool_registry_runtime_tools/3` to adapt the registry to the closed typed-plan runtime.
+- plan execution uses `tool_registry_runtime_tools/3` to adapt the registry to
+  the closed typed-plan runtime;
+- trusted hosts that need invocation-local authority or correlation metadata
+  use `tool_registry_runtime_tools/4`; registration and model visibility remain
+  unchanged.
 
 The capability vocabulary also reserves explicit terms for context, model, graph, persistence, network, filesystem, process, and MCP authority. Merely possessing one capability does not imply another. In particular, no shell/process or ambient filesystem/network capability is granted by default.
 
@@ -85,6 +89,17 @@ plan_run(Plan,
          [tools(RuntimeTools)],
          Inputs,
          Outcome).
+```
+
+Trusted supervised execution can bind those same adapters to an existing
+authority owner without mutating registry-wide state:
+
+```prolog
+tool_registry_runtime_tools(
+    Registry,
+    ChildCaps,
+    [authority_context(agent(RuntimeId, ChildId))],
+    RuntimeTools).
 ```
 
 The typed plan is validated for `tool(project_read)` before execution. The registry adapter independently rechecks the same capability at invocation time. Successful plan tool results include non-secret authorization/status metadata, and the plan trajectory records the `tool(project_read)` transition.

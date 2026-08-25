@@ -10,8 +10,48 @@ test(openrouter_provider_keeps_credential_unresolved) :-
     openrouter_provider('openrouter/free', Provider),
     Provider = provider(openrouter, Config),
     assertion(memberchk(credential(env('OPENROUTER_API_KEY')), Config)),
+    assertion(memberchk(address_family(inet), Config)),
     term_string(Provider, Text),
     assertion(\+ sub_string(Text, _, _, _, "Bearer ")).
+
+test(address_family_is_applied_to_completion_and_stream_connections) :-
+    rlm_openai_compatible:http_options(none,
+                                       30,
+                                       inet,
+                                       _,
+                                       CompletionOptions),
+    assertion(memberchk(domain(inet), CompletionOptions)),
+    rlm_openai_compatible:stream_http_options(none,
+                                              30,
+                                              inet6,
+                                              _,
+                                              _{},
+                                              StreamOptions),
+    assertion(memberchk(domain(inet6), StreamOptions)).
+
+test(automatic_address_family_leaves_socket_selection_unconstrained) :-
+    rlm_openai_compatible:http_options(none,
+                                       30,
+                                       auto,
+                                       _,
+                                       Options),
+    assertion(\+ memberchk(domain(_), Options)).
+
+test(invalid_address_family_fails_before_network) :-
+    Provider = provider(openai_compatible,
+                        [ endpoint('https://invalid.invalid/chat/completions'),
+                          credential(none),
+                          model(test),
+                          timeout(1),
+                          address_family(ipx)
+                        ]),
+    Request = model_request{
+                  messages:[message{role:user, content:"ping"}]
+              },
+    model_complete(Provider, Request, error(Error)),
+    assertion(get_dict(kind, Error, configuration_error)),
+    assertion(get_dict(field, Error, address_family)),
+    assertion(get_dict(response_received, Error, false)).
 
 test(provider_capabilities_are_explicit) :-
     assertion(provider_capability(openrouter, chat_completions)),

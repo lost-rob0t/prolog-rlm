@@ -1,145 +1,181 @@
-# Prolog-owned skill activation
+# Skill packages
 
-`prolog-rlm` treats skills as inert instruction documents compiled into a turn by Prolog. The model does not receive a skill router, a skill-selection tool, or the full skill catalog.
+`rlm_skill` is the confined package layer for Agent Skills. It discovers
+ordinary `SKILL.md` packages and converts them to the existing
+`prompt_unit{unit:skill(Name), ...}` input accepted by
+`rlm_prompt_compiler`. It does not contain an independent selector, lexical
+scorer, dependency resolver, token packer, or prompt renderer.
 
-## Runtime flow
+## Progressive disclosure
 
-```text
-user/runtime input
-      |
-      v
-SKILL.md metadata catalog
-      |
-      v
-Prolog signal scoring + explicit host selections
-      |
-      v
-dependency/conflict/budget resolution
-      |
-      v
-selected skill bodies + bounded local resources
-      |
-      v
-planner instruction
-      |
-      v
-model
-```
+The package boundary has three explicit stages:
 
-Activation is not authorization. A selected skill can change model-visible instructions, but it cannot register a callable, grant a tool capability, change authority mode, start an MCP server, execute a bundled script, or bypass the existing execution policy.
+1. `skill_catalog_load/3` admits only bounded package files. It reads bounded
+   `SKILL.md` and resource bytes to compute SHA-256 fingerprints, parses the
+   frontmatter, and indexes resources, but retains neither instruction nor
+   resource content.
+2. `skill_prompt_unit/3` defaults to `load_content(true)`: it rereads bounded
+   `SKILL.md` bytes, verifies them against the admitted instruction SHA-256,
+   and puts the stripped inert body in the prompt unit's `content` field. With
+   host option `load_content(false)`, it does not open the instruction file and
+   emits the same canonical routing metadata with `content:none`. It never
+   reads resource bodies.
+3. `skill_read_resource/3` explicitly reads one indexed, confined text
+   resource and verifies its admitted fingerprint before returning content.
+   Reading a script or template grants no execution authority.
 
-## Skill format
+The canonical prompt compiler owns selection, typed dependency resolution,
+conflicts, scoring, packing, explanations, and provider-context fingerprints.
 
-A skill directory contains `SKILL.md`. Discovery parses only this frontmatter subset:
-
-```yaml
----
-name: tdd
-description: Test-driven development. Use when the request is about test-first implementation.
-disable-model-invocation: false
----
-```
-
-The Markdown body is not read during catalog discovery. Unknown frontmatter keys are ignored and never interpreted as Prolog. After Prolog selects a skill, the body and bounded recursive text resources under that skill directory are read and rendered into the planner instruction. Resource types include Markdown, text, shell templates, configuration, and common source formats. They remain inert text even when their filename is executable-looking.
-
-`disable-model-invocation: true` is normalized as `explicit_user`. In `prolog-rlm` that name is historical compatibility metadata: it means **automatic Prolog activation is disabled**. A trusted host may still select the skill with `explicit_skills([...])`.
-
-Legacy text inside third-party skills that says to call a `Skill` tool is inert. `prolog-rlm` intentionally exposes no such model-callable tool; Prolog owns activation.
-
-## Public catalog API
+## Public API
 
 ```prolog
+skill_catalog_empty(-Catalog).
 skill_catalog_load(+Roots, +Options, -Outcome).
 skill_catalog_merge(+A, +B, -Outcome).
 skill_catalog_skills(+Catalog, -Skills).
 skill_catalog_skill(+Catalog, +Name, -Skill).
-skill_compile(+Catalog, +Input, +Options, -Outcome).
-skill_prompt_fragment(+Compiled, -Prompt).
+skill_default_catalog(-Outcome).
+skill_default_catalog_reset.
+skill_prompt_unit(+Skill, +HostOptions, -Outcome).
+skill_catalog_prompt_units(+Catalog, +HostOptions, -Outcome).
+skill_read_resource(+Skill, +RelativePath, -Outcome).
 ```
 
-A root may be a path or a trusted source-labelled term:
+A root may be source-labelled trusted host configuration:
 
 ```prolog
-skill_catalog_load(
-    [skill_root(project, ".agents/skills")],
-    [],
-    ok(Catalog)).
+skill_catalog_load([skill_root(project, ".agents/skills")], [], ok(Catalog)).
 ```
 
-Catalog entries contain only normalized metadata and canonical file locations. They contain no executable handler terms.
+`skill_prompt_unit/3` accepts host-owned `load_content(true|false)`,
+`activation(relevant|always)`,
+`available/1`, `provider_visible/1`, `mandatory_context/1`, `priority/1`,
+`requires_capability/1`, and `category/1` options. Activation defaults to
+`relevant`; any other value is rejected. A package cannot self-declare
+provenance, availability, `activation:always`, mandatory context, provider
+visibility, capabilities, handlers, authority, or effect permission. The
+default is provider-visible but not mandatory.
 
-## Compiler options
+`disable-model-invocation: true` is recognized for Claude compatibility. The
+converted unit defaults to `available:false`, so it cannot route
+automatically. A trusted host may explicitly override availability as part of
+its activation policy. If both Claude metadata and the portable extension
+disable automatic activation, the restrictive result wins.
 
-The first deterministic compiler slice supports:
+Portable `activation.automatic` metadata may only narrow ordinary automatic
+routing. It never maps to prompt-unit `activation:always`. Extra activation
+keys or values such as `mode: always` are rejected structurally. Only the
+trusted `HostOptions` argument can emit `activation:always`.
 
-- `skill_mode(auto|off)`
-- `skill_catalog(default|none|Catalog)` on completion
-- `explicit_skills(Names)` for trusted explicit user/host selections
-- `disabled_skills(Names)` for hard host exclusions
-- `skill_min_score(N)`
-- `skill_max_count(N)`
-- `skill_max_tokens(N)`
-- `skill_rules(Rules)`
+## Standard metadata
 
-Rules are trusted host data:
+The required portable frontmatter is:
 
-```prolog
-skill_rules([
-    alias(tdd, "red green refactor"),
-    trigger('diagnosing-bugs', "debug this", 80),
-    requires(tdd, 'codebase-design'),
-    conflicts(prototype, tdd),
-    priority(tdd, 10)
-]).
+```yaml
+---
+name: review-pr
+description: Review a pull request for correctness and regressions.
+---
 ```
 
-Supported rules are `alias/2`, `trigger/3`, `requires/2`, `conflicts/2`, and `priority/2`. Dependencies close transitively. Missing, disabled, or explicit-user-only required dependencies fail closed instead of silently weakening the selected skill.
+The body is inert instruction content. Unknown simple top-level fields are not
+executed. `allowed-tools`, when present in third-party material, is advisory
+text only and never grants a Prolog capability or authority.
 
-Automatic evidence is deterministic: exact skill-name phrases, aliases, configured trigger phrases, and normalized lexical overlap with the skill name/description contribute scores. Explicit trusted selection dominates heuristic evidence. Common negation forms such as `do not use tdd` suppress ordinary automatic activation.
+This slice also supports the approved standard string extension form:
 
-## Distribution overlays
-
-Third-party skill documents stay inert and may contain routing syntax for another runtime. `prolog-rlm` does not rewrite that text and does not emulate a model-callable router. Instead, a trusted distribution overlay can translate known compatibility relationships into ordinary compiler rules.
-
-The pinned Matt Pocock distribution uses `rlm_skill_mattpocock:mattpocock_skill_rules/1`. For example, upstream `grill-me` is explicit-user-only and says to call a `Skill` tool with `grilling`; the trusted overlay represents that as:
-
-```prolog
-requires('grill-me', grilling).
+```yaml
+metadata:
+  prolog-rlm: |-
+    {
+      "schema": 1,
+      "category": "review",
+      "aliases": ["pr review"],
+      "triggers": [
+        {"kind": "phrase", "value": "review pull request", "weight": 80}
+      ],
+      "requires": [{"kind": "tool", "name": "git_diff"}],
+      "suggests": [],
+      "conflicts": [],
+      "supersedes": [],
+      "requires_capability": null,
+      "priority": 200,
+      "activation": {"automatic": true}
+    }
 ```
 
-An explicit host selection of `grill-me` therefore causes Prolog dependency closure to select `grilling` before the planner request exists. The model sees both compiled instruction bodies but never performs the activation itself. Custom catalogs do not receive Matt-specific rules automatically; hosts supply their own `skill_rules/1` when needed.
+JSON is parsed as data, never as a Prolog term. Schema v1 supports bounded
+category, aliases, triggers, priority, automatic activation, and typed
+`skill`, `tool`, and `resource` relationships. Unknown keys, kinds, malformed
+values, unknown schema versions, and non-null capability descriptors are
+reported as structured `unsupported_prolog_rlm_metadata(...)` faults rather
+than guessed or partially executed. Capability descriptors remain host-owned
+in this bounded slice.
 
-## Completion boundary
+## Prompt-unit mapping
 
-`rlm_skill_completion` wraps the canonical guarded completion predicate inside the scheduled completion task. This means public `rlm:rlm_completion/4`, lower-level `rlm_completion:rlm_completion/4`, managed conversation paths, and the CLI all reach the same Prolog skill-compilation boundary before a planner request exists. A compilation fingerprint marker prevents nested facades from injecting the same skill prompt twice.
+The conversion maps package fields as follows:
 
-`skill_catalog(none)` or `skill_mode(off)` preserves the non-skill path. Existing caller `planner_instruction` content is retained unchanged and no catalog or skill body is exposed to the model.
+- name to `unit:skill(Name)` and `name:Name`;
+- description, category, aliases, triggers, and typed relationships to their
+  existing prompt-unit fields;
+- the verified, bounded Markdown body to inert `content`, or `content:none`
+  without opening the body when `load_content(false)` is selected;
+- source plus package fingerprint to bounded provenance;
+- host options to `activation:relevant|always`, availability, provider
+  visibility, mandatory context, priority, and capability requirement;
+- resources remain on the loaded skill's index and are not bulk-loaded into
+  the prompt unit.
 
-## Prompt budget
+The resulting dictionary can be passed directly to
+`prompt_catalog_register/3`. Host registration and compile input determine
+activation. A skill's text cannot promote itself to always-active or
+mandatory.
 
-Skill files are assigned a conservative byte-based prompt-token estimate at discovery time. Selection is bounded by both `skill_max_count` and `skill_max_tokens`; only admitted skill bodies/resources are read. This is a skill-local ceiling, not a replacement for the completion provider's measured token/cost budget.
+## Default and optional catalogs
 
-The compiled result records selected skills, rejected skills with structured reasons, estimated prompt tokens, and a stable fingerprint over catalog/input/compiler state.
+The stable default runtime catalog is `skills/core/`. It contains the concise
+`rlm-operate`, `rlm-recurse`, `rlm-facts`, and `rlm-constraints` packages.
+Canonical RLM completion applies trusted host policy that marks these units
+always-active, mandatory, and provider-visible. `skill_mode(off)`,
+`skill_catalog(none)`, and `disabled_skills/1` are trusted host controls; user
+or model prose cannot unpin them.
 
-## Resource confinement
+`third_party/mattpocock-skills/` is an optional pinned coding-skill
+distribution, not ambient core behavior. Thanks to Matt Pocock for publishing
+that collection under the MIT License. The vendored material remains inert,
+is never fetched at runtime, and does not grant tools or execution authority.
 
-`skill_read_resource/3` accepts only relative paths and resolves them under the selected skill directory. Catalog scanning and resource loading reject descendant symlinks before following them, then re-check the resolved path remains inside the configured root. Absolute paths, missing files, `..` traversal, symlink escapes, oversized resources, and non-text resources are rejected.
+## Confinement and bounds
 
-Recursive resource discovery deliberately supports nested inert templates such as `scripts/*.sh` because the pinned upstream collection references them. Loading such text does not grant process or shell authority.
+Scanning is restricted to configured roots. Every descendant path is checked
+lexically, each descendant symlink is rejected before canonicalization, and
+the canonical path is checked again against the root. Resource reads accept
+only paths in the admitted `Skill.resources` index and reject traversal,
+absolute paths, symlinks, non-text files, missing files, `SKILL.md`, and files
+created after admission. Bounded reads hash the bytes actually read and check
+the path again afterward; changed instruction or resource bytes are rejected
+and are never returned or injected.
 
-## Default and complete Matt Pocock distribution
+The exact package limits are:
 
-The repository carries two forms of the same pinned upstream revision `9c9f36ccd3995266cd675468af71639c8dde1ec5`:
+- 16 configured roots per catalog load;
+- 4,096 visited directory entries per configured root scan and a separate
+  4,096 visited directory entries per skill package scan; these totals include
+  ignored directories and non-text files, not only admitted skills and text
+  resources;
+- 100 KiB total bytes per `SKILL.md`, checked before frontmatter parsing or
+  hashing;
+- 64 KiB of frontmatter and 32 KiB of stripped body bytes when content is
+  loaded;
+- 512 KiB per text resource, 128 resources per skill, and 4 MiB aggregate
+  resource bytes per skill;
+- 256 skills per configured root and 512 skills per catalog, including merged
+  catalogs;
+- 16 descendant directory levels while scanning either a catalog root or a
+  skill's resources.
 
-- `third_party/mattpocock-skills/upstream` is a git submodule pin to the complete upstream repository;
-- `third_party/mattpocock-skills/skills` is a vendored stable fallback used by source archives and CI checkouts that do not initialize submodules.
-
-Initialize the complete collection with:
-
-```sh
-git submodule update --init third_party/mattpocock-skills/upstream
-```
-
-When the submodule is initialized, `skill_catalog(default)` automatically prefers the complete pinned `upstream/skills` tree. When it is absent, the same completion path falls back to the vendored stable corpus. No runtime network fetch occurs in either case. The scanner excludes `deprecated/` and `in-progress/` unless explicitly configured otherwise.
-
-A host may also load either tree explicitly with `skill_catalog_load/3`. Runtime compatibility belongs in Prolog overlay rules, not edits to upstream Markdown. The upstream collection remains third-party material under its MIT license. See `third_party/mattpocock-skills/UPSTREAM.md` and `LICENSE` for provenance and attribution.
+These are admission ceilings, not authority grants. Catalog admission reads
+bounded bytes for fingerprints but discards their content. Prompt bodies and
+resource text remain unavailable until their explicit disclosure operation.

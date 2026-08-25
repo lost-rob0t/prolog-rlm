@@ -18,6 +18,7 @@ constructor; legacy tickets are never made admissible.
 :- use_module(library(pairs)).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
+:- use_module(rlm_closed_data, []).
 :- use_module(rlm_effect_persist, []).
 
 effect_store_migrate(Options0, Report) :-
@@ -491,8 +492,12 @@ require_unique(_, Kind) :- throw(migration_fault(corrupt, Kind)).
 effect_migration_read_manifest(none, _, _, []) :- !.
 effect_migration_read_manifest(Path, SourceDigest, Snapshot, Bindings) :-
     catch(setup_call_cleanup(open(Path, read, Stream, [encoding(utf8)]),
-                             json_read_dict(Stream, Manifest,
-                                            [value_string_as(atom)]),
+                             ( json_read_dict(Stream, RawManifest,
+                                              [value_string_as(atom)]),
+                               rlm_closed_data:closed_data_normalize(
+                                   RawManifest,
+                                   Manifest)
+                             ),
                              close(Stream)),
           Exception,
           throw(migration_fault(ambiguous_adapter,

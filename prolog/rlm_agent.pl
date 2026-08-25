@@ -10,6 +10,8 @@
             agent_send_async/5,
             agent_pump/4,
             agent_pump_async/4,
+            agent_supervised_call/6,
+            agent_supervised_call_async/6,
             agent_status/3,
             agent_children/3,
             agent_cancel/4,
@@ -492,6 +494,205 @@ agent_pump_(Runtime, agent(AgentId), Options, Outcome) :-
 agent_pump_(_, Agent, _, _) :-
     throw(agent_fault(invalid_agent(Agent))).
 
+agent_supervised_call_async(Runtime, Agent, Handler, Work, Options, Future) :-
+    agent_task_metadata(agent_supervised_call, Runtime, Agent, Options, Metadata),
+    rlm_async:rlm_async_submit(
+        rlm_agent:agent_supervised_call_execute(Runtime,
+                                                Agent,
+                                                Handler,
+                                                Work,
+                                                Options),
+        Metadata,
+        Future).
+
+agent_supervised_call(Runtime, Agent, Handler, Work, Options, Outcome) :-
+    agent_supervised_call_async(Runtime,
+                                Agent,
+                                Handler,
+                                Work,
+                                Options,
+                                Future),
+    await_agent_future(Future, Outcome).
+
+agent_supervised_call_execute(Runtime, Agent, Handler, Work, Options, Outcome) :-
+    catch(agent_supervised_call_(Runtime,
+                                 Agent,
+                                 Handler,
+                                 Work,
+                                 Options,
+                                 Outcome),
+          Exception,
+          agent_api_exception(supervised_call, Exception, Outcome)).
+
+agent_supervised_call_(Runtime, agent(AgentId), Handler, Work, Options,
+                       Outcome) :-
+    runtime_record(Runtime, RuntimeId, _, Config),
+    agent_engine(RuntimeId, AgentId, Engine),
+    require_supervised_handler(Handler),
+    require_supervised_work(Work),
+    supervised_call_timeout(Options, Timeout),
+    gensym(supervised_call_, CallId),
+    engine_reply(Engine,
+                 deliver(request(RuntimeId,
+                                 CallId,
+                                 work(supervised_call, Work))),
+                 Admission),
+    supervised_call_after_admission(Admission,
+                                    Runtime,
+                                    RuntimeId,
+                                    AgentId,
+                                    CallId,
+                                    Handler,
+                                    Work,
+                                    Timeout,
+                                    Config,
+                                    Outcome).
+agent_supervised_call_(_, Agent, _, _, _, _) :-
+    throw(agent_fault(invalid_agent(Agent))).
+
+supervised_call_after_admission(error(Error), _, _, _, _, _, _, _, _,
+                                error(Error)) :-
+    !.
+supervised_call_after_admission(ok(Reply), Runtime, RuntimeId, AgentId,
+                                CallId, Handler, Work, Timeout, Config,
+                                Outcome) :-
+    (   is_dict(Reply, agent_reply),
+        get_dict(kind, Reply, dispatch),
+        get_dict(call_id, Reply, CallId)
+    ->  schedule_worker_handler(RuntimeId,
+                                AgentId,
+                                CallId,
+                                Work,
+                                Handler,
+                                Config,
+                                ScheduleOutcome),
+        supervised_call_after_schedule(ScheduleOutcome,
+                                       Runtime,
+                                       RuntimeId,
+                                       AgentId,
+                                       CallId,
+                                       Timeout,
+                                       Outcome)
+    ;   Outcome = error(agent_error{phase:supervised_call,
+                                    kind:admission_rejected,
+                                    agent:agent(AgentId),
+                                    call_id:CallId,
+                                    reply:Reply,
+                                    message:"agent rejected supervised call admission"})
+    ).
+
+supervised_call_after_schedule(error(Error), _, RuntimeId, AgentId, CallId,
+                               _, error(Error)) :-
+    !,
+    fail_pending_call(RuntimeId, AgentId, CallId, Error).
+supervised_call_after_schedule(ok(Worker), Runtime, RuntimeId, AgentId, CallId,
+                               Timeout, Outcome) :-
+    trace_add(RuntimeId,
+              supervised_call_dispatched,
+              _{agent:agent(AgentId), call_id:CallId, worker:Worker}),
+    get_time(Start),
+    catch(supervised_call_wait(Runtime,
+                               RuntimeId,
+                               AgentId,
+                               CallId,
+                               Start,
+                               Timeout,
+                               Outcome),
+          Exception,
+          ( agent_cancel_execute(Runtime,
+                                 agent(AgentId),
+                                 supervised_call_interrupted(CallId),
+                                 _),
+            throw(Exception)
+          )).
+
+supervised_call_wait(Runtime, RuntimeId, AgentId, CallId, Start, Timeout,
+                     Outcome) :-
+    agent_engine(RuntimeId, AgentId, Engine),
+    engine_reply(Engine, inspect, StateOutcome),
+    supervised_call_state(StateOutcome,
+                          Runtime,
+                          RuntimeId,
+                          AgentId,
+                          CallId,
+                          Start,
+                          Timeout,
+                          Outcome).
+
+supervised_call_state(error(Error), _, _, _, _, _, _, error(Error)) :- !.
+supervised_call_state(ok(agent_reply{kind:state, state:State}),
+                      Runtime, RuntimeId, AgentId, CallId, Start, Timeout,
+                      Outcome) :-
+    (   State.status = cancelled(Reason)
+    ->  Outcome = error(agent_error{phase:supervised_call,
+                                    kind:cancelled,
+                                    agent:agent(AgentId),
+                                    call_id:CallId,
+                                    reason:Reason,
+                                    message:"supervised child call was cancelled"})
+    ;   State.status = failed(Error)
+    ->  Outcome = error(Error)
+    ;   supervised_call_pump(Runtime,
+                             RuntimeId,
+                             AgentId,
+                             CallId,
+                             Start,
+                             Timeout,
+                             Outcome)
+    ).
+
+supervised_call_pump(Runtime, RuntimeId, AgentId, CallId, Start, Timeout,
+                     Outcome) :-
+    get_time(Now),
+    Remaining is Timeout-(Now-Start),
+    (   Remaining =< 0
+    ->  agent_cancel_execute(Runtime,
+                             agent(AgentId),
+                             supervised_call_timeout(CallId),
+                             _),
+        Outcome = error(agent_error{phase:supervised_call,
+                                    kind:timeout,
+                                    agent:agent(AgentId),
+                                    call_id:CallId,
+                                    timeout:Timeout,
+                                    message:"supervised child call exceeded its wait budget"})
+    ;   Slice is min(0.05, Remaining),
+        agent_pump_execute(Runtime,
+                           agent(AgentId),
+                           [timeout(Slice)],
+                           PumpOutcome),
+        supervised_call_after_pump(PumpOutcome,
+                                   Runtime,
+                                   RuntimeId,
+                                   AgentId,
+                                   CallId,
+                                   Start,
+                                   Timeout,
+                                   Outcome)
+    ).
+
+supervised_call_after_pump(error(Error), _, _, _, _, _, _, error(Error)) :- !.
+supervised_call_after_pump(ok(Pump), Runtime, RuntimeId, AgentId, CallId,
+                           Start, Timeout, Outcome) :-
+    (   Pump.status == processed,
+        Pump.reply = agent_reply{kind:result,
+                                 call_id:CallId,
+                                 value:Value}
+    ->  Outcome = ok(Value)
+    ;   Pump.status == processed,
+        Pump.reply = agent_reply{kind:failed,
+                                 call_id:CallId,
+                                 error:Error}
+    ->  Outcome = error(Error)
+    ;   supervised_call_wait(Runtime,
+                             RuntimeId,
+                             AgentId,
+                             CallId,
+                             Start,
+                             Timeout,
+                             Outcome)
+    ).
+
 pump_reply(error(Error), RuntimeId, AgentId, _, _, error(AgentError)) :-
     !,
     AgentError = agent_error{phase:pump,
@@ -548,20 +749,31 @@ pump_after_schedule(error(Error), RuntimeId, AgentId, CallId, Message, _,
               _{agent:AgentId, call_id:CallId, cause:Error, message:Message}).
 
 schedule_worker(RuntimeId, AgentId, CallId, Work, Config, Outcome) :-
-    agent_runtime_record(RuntimeId, Pool, _),
     (   Config.worker_handler == none
     ->  Outcome = error(agent_error{phase:dispatch,
                                     kind:no_worker_handler,
                                     agent:agent(AgentId),
                                     call_id:CallId,
                                     message:"runtime has no trusted worker handler"})
-    ;   catch(( thread_create_in_pool(
+    ;   schedule_worker_handler(RuntimeId,
+                                AgentId,
+                                CallId,
+                                Work,
+                                Config.worker_handler,
+                                Config,
+                                Outcome)
+    ).
+
+schedule_worker_handler(RuntimeId, AgentId, CallId, Work, Handler, Config,
+                        Outcome) :-
+    agent_runtime_record(RuntimeId, Pool, _),
+    catch(( thread_create_in_pool(
                     Pool,
                     rlm_agent:worker_entry(RuntimeId,
                                            AgentId,
                                            CallId,
                                            Work,
-                                           Config.worker_handler,
+                                           Handler,
                                            Config.send_timeout),
                     Thread,
                     [detached(true), wait(false)]),
@@ -577,8 +789,7 @@ schedule_worker(RuntimeId, AgentId, CallId, Work, Config, Outcome) :-
                                 RuntimeId,
                                 AgentId,
                                 CallId,
-                                Outcome)
-    ).
+                                Outcome).
 
 schedule_created_worker(error(Error), _, _, _, error(Error)) :- !.
 schedule_created_worker(ok(Thread), RuntimeId, AgentId, CallId,
@@ -638,7 +849,7 @@ worker_call(Handler, Work, Result) :-
                                    message:"trusted worker handler failed"})
     ).
 
-worker_exception(agent_worker_cancelled(Reason),
+worker_exception(rlm_cancelled(agent_worker(Reason)),
                  error(agent_error{phase:worker,
                                    kind:cancelled,
                                    reason:Reason,
@@ -791,6 +1002,13 @@ transition_worker_result(ok(Value), CallId, State0, Reply, State) :-
     !,
     increment_processed(State0, State),
     Reply = agent_reply{kind:result, call_id:CallId, value:Value}.
+transition_worker_result(error(Error), CallId, State0, Reply, State) :-
+    State0.status = cancelled(_),
+    is_dict(Error),
+    get_dict(kind, Error, cancelled),
+    !,
+    increment_processed(State0, State),
+    Reply = agent_reply{kind:failed, call_id:CallId, error:Error}.
 transition_worker_result(error(Error), CallId, State0, Reply, State) :-
     !,
     put_dict(status, State0, failed(Error), State1),
@@ -956,8 +1174,32 @@ signal_agent_workers(RuntimeId, AgentId, Reason) :-
            signal_worker(Thread, Reason)).
 
 signal_worker(Thread, Reason) :-
-    catch(thread_signal(Thread, throw(agent_worker_cancelled(Reason))), _, true).
+    catch(thread_signal(Thread,
+                        throw(rlm_cancelled(agent_worker(Reason)))),
+          _,
+          true).
 
+notify_parent_from_reply(RuntimeId, AgentId, Reply) :-
+    is_dict(Reply),
+    get_dict(kind, Reply, result),
+    get_dict(value, Reply, Value),
+    !,
+    (   agent_record(RuntimeId, AgentId, ParentId, _, _, _, _),
+        ParentId \== none
+    ->  Parent = agent(ParentId),
+        Child = agent(AgentId),
+        Result = ok(Value),
+        internal_send(RuntimeId,
+                      ParentId,
+                      result(child(Child), Result),
+                      SendOutcome),
+        trace_child_result(RuntimeId,
+                           Parent,
+                           Child,
+                           Result,
+                           SendOutcome)
+    ;   true
+    ).
 notify_parent_from_reply(RuntimeId, AgentId, Reply) :-
     is_dict(Reply),
     get_dict(kind, Reply, failed),
@@ -975,6 +1217,16 @@ notify_parent_from_reply(RuntimeId, AgentId, Reply) :-
     ;   true
     ).
 notify_parent_from_reply(_, _, _).
+
+trace_child_result(RuntimeId, Parent, Child, Result, ok) :-
+    !,
+    trace_add(RuntimeId,
+              child_result,
+              _{parent:Parent, child:Child, result:Result}).
+trace_child_result(RuntimeId, Parent, Child, Result, Error) :-
+    trace_add(RuntimeId,
+              child_result_backpressure,
+              _{parent:Parent, child:Child, result:Result, cause:Error}).
 
 /* -------------------------------------------------------------------------
  * Plan adapter
@@ -1051,8 +1303,8 @@ trace_add(RuntimeId, Type, Fields) :-
                    ( retract(agent_trace_sequence(RuntimeId, Seq0)),
                      Seq is Seq0+1,
                      assertz(agent_trace_sequence(RuntimeId, Seq)),
-                     put_dict(_{sequence:Seq, type:Type},
-                              Fields,
+                     put_dict(Fields,
+                              agent_event{sequence:Seq, type:Type},
                               Event),
                      assertz(agent_trace_event(RuntimeId, Seq, Event)),
                      trim_trace(RuntimeId, Config.trace_limit)
@@ -1151,6 +1403,27 @@ pump_timeout(Options, Timeout) :-
     require_nonnegative_number(Timeout0, timeout),
     Timeout = Timeout0.
 
+supervised_call_timeout(Options, Timeout) :-
+    (   is_list(Options)
+    ->  option(timeout(Timeout0), Options, 30.0)
+    ;   throw(agent_fault(invalid_supervised_call_options(Options)))
+    ),
+    require_positive_number(Timeout0, timeout),
+    Timeout = Timeout0.
+
+require_supervised_handler(Handler) :-
+    callable(Handler),
+    ground(Handler),
+    !.
+require_supervised_handler(Handler) :-
+    throw(agent_fault(invalid_supervised_call_handler(Handler))).
+
+require_supervised_work(Work) :-
+    ground(Work),
+    !.
+require_supervised_work(Work) :-
+    throw(agent_fault(invalid_supervised_call_work(Work))).
+
 require_capability_outcome(ok(Value), Value) :- !.
 require_capability_outcome(error(Error), _) :-
     throw(agent_fault(invalid_capabilities(Error))).
@@ -1185,6 +1458,12 @@ require_nonnegative_number(Value, _) :-
     number(Value), Value >= 0,
     !.
 require_nonnegative_number(Value, Name) :-
+    throw(agent_fault(invalid_option(Name, Value))).
+
+require_positive_number(Value, _) :-
+    number(Value), Value > 0,
+    !.
+require_positive_number(Value, Name) :-
     throw(agent_fault(invalid_option(Name, Value))).
 
 require_name_atom(Value, Atom) :-

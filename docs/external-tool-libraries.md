@@ -99,19 +99,47 @@ rlm_load_all_tools(Registry, Outcome).
 
 Load-all resolves every declared pack deterministically and performs conflict preflight before executing trusted loaders. It does **not** grant any capability and does **not** change authority.
 
+## Loading a trusted host-scoped pack instance
+
+Framework adapters such as Agent Zero may have a tool catalog that is known
+only after plugin, project and profile activation. Trusted host code can load
+that exact catalog without installing global multifile declarations:
+
+```prolog
+rlm_load_tool_pack_instance(Registry,
+                            PackName,
+                            SanitizedManifest,
+                            TrustedLoader,
+                            Outcome).
+```
+
+The manifest uses the same closed `tool_pack_manifest` structure and passes the
+same conflict preflight as installed packs. `TrustedLoader` retains the normal
+`Loader(+Registry,-Outcome)` ABI, must be a ground code-owned callable, and is
+never returned through discovery. Reusing the same name and manifest is
+idempotent. Attempting to change an already-loaded instance manifest fails
+closed. This API grants no capability and changes no authority.
+
+`prolog/adaptors/rlm_agent_zero_adapter.pl` converts Agent Zero DOX, skill and
+tool declarations into prompt-compiler units, creates sanitized pack manifests,
+and imports only trusted host bindings. Permanent visibility is explicit inert
+metadata; it does not register, authorize or execute a tool.
+
 ## Idempotency
 
 Successful pack loads are recorded per live registry.
 
 The first successful load reports `status:loaded`. Loading the same pack/category again in the same registry reports `status:reused` and does not call the trusted loader again, so duplicate registration is not used as the idempotency mechanism.
 
-Hosts that explicitly manage loader state independently of a registry may call:
+Ordinary `tool_registry_destroy/1` automatically reclaims the loader's per-registry idempotency bookkeeping when `rlm_tool_loader` is loaded. The loader observes the registry-liveness lifecycle through SWI-Prolog's named predicate listener; core does not import the loader or transfer registry ownership to it. Cleanup is scoped, deterministic and idempotent.
+
+Hosts that explicitly manage loader state independently of a registry may still call:
 
 ```prolog
 rlm_tool_loader_forget_registry(Registry).
 ```
 
-Normal fixture/test cleanup uses this when a registry is destroyed. Automatic cleanup from ordinary registry destruction remains tracked separately in #67.
+That explicit operation remains useful for unusual host lifecycles, but normal registry destruction does not require it.
 
 ## Conflict semantics
 

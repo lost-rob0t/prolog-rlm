@@ -1,5 +1,7 @@
 :- begin_tests(rlm_effect_hardening).
 
+:- meta_predicate with_store(0).
+
 :- use_module('../prolog/rlm_effect').
 :- use_module('../prolog/rlm_effect_executor').
 :- use_module(library(filesex)).
@@ -273,14 +275,13 @@ fresh_store_path(Tag, Ledger) :-
     atomic_list_concat([Base,'-',Tag,'.db'], Ledger).
 
 run_contender(Ledger, Mode, Status) :-
-    absolute_file_name('test/effect_store_contender.pl', Script, [access(read)]),
+    test_script('effect_store_contender.pl', Script),
     append(['-q','-s',Script,'--'], [Ledger,Mode], Arguments),
     process_create(path(swipl), Arguments, [process(Pid)]),
     process_wait(Pid, Status).
 
 start_owner(Ledger, owner(Pid, In, Out)) :-
-    absolute_file_name('test/effect_store_owner_phase1.pl', Script,
-                       [access(read)]),
+    test_script('effect_store_owner_phase1.pl', Script),
     append(['-q','-s',Script,'--'], [Ledger], Arguments),
     process_create(path(swipl), Arguments,
                    [process(Pid),stdin(pipe(In)),stdout(pipe(Out))]),
@@ -306,8 +307,7 @@ start_racers(Ledger, RacerA, RacerB) :-
           ( cleanup_racer(RacerA), throw(Error) )).
 
 start_racer(Ledger, racer(Pid, In, Out)) :-
-    absolute_file_name('test/effect_store_race_contender.pl', Script,
-                       [access(read)]),
+    test_script('effect_store_race_contender.pl', Script),
     append(['-q','-s',Script,'--'], [Ledger], Arguments),
     process_create(path(swipl), Arguments,
                    [process(Pid),stdin(pipe(In)),stdout(pipe(Out))]),
@@ -336,5 +336,11 @@ cleanup_racer(racer(Pid, In, Out)) :-
     catch(close(Out), _, true),
     catch(process_kill(Pid, kill), _, true),
     catch(process_wait(Pid, _), _, true).
+
+test_script(Name, Script) :-
+    source_file(plunit_rlm_effect_hardening:run_contender(_, _, _), TestFile),
+    file_directory_name(TestFile, TestDirectory),
+    directory_file_path(TestDirectory, Name, Script),
+    access_file(Script, read).
 
 :- end_tests(rlm_effect_hardening).

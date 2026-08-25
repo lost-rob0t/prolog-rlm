@@ -1,5 +1,7 @@
 :- begin_tests(rlm_tool_loader).
 
+:- meta_predicate with_registry(1).
+
 :- use_module('../prolog/rlm_authority').
 :- use_module('../prolog/rlm_mcp_server').
 :- use_module('../prolog/rlm_mcp_tool_pack').
@@ -17,6 +19,7 @@
 :- dynamic duplicate_manifest_enabled/0.
 :- dynamic conflict_enabled/0.
 :- dynamic conflict_calls/1.
+:- dynamic lifecycle_race_gate/2.
 
 /* Backward-compatible manifestless pack -------------------------------- */
 
@@ -51,7 +54,7 @@ legacy_schema(
     }).
 
 legacy_handler(Args, Value) :-
-    Value = Args.value.
+    get_dict(value, Args, Value).
 
 /* Conditional malformed/conflict fixtures ------------------------------ */
 
@@ -110,6 +113,19 @@ rlm_tool_loader:tool_pack_manifest(
                                           effect:write}]}) :-
     conflict_enabled.
 
+rlm_tool_loader:tool_pack(
+    lifecycle_race_pack,
+    plunit_rlm_tool_loader:load_lifecycle_race_pack) :-
+    lifecycle_race_gate(_, _).
+rlm_tool_loader:tool_pack_manifest(
+    lifecycle_race_pack,
+    tool_pack_manifest{library:lifecycle_race_fixture,
+                       category:lifecycle_race,
+                       tools:[tool_export{name:lifecycle_race_echo,
+                                          capability:tool(lifecycle_race_echo),
+                                          effect:read}]}) :-
+    lifecycle_race_gate(_, _).
+
 noop_loader(_, ok(noop)).
 
 reset_conflict_calls :-
@@ -126,6 +142,37 @@ conflict_alpha_loader(_, ok(unreachable)) :-
 
 conflict_beta_loader(_, ok(unreachable)) :-
     bump_conflict_calls.
+
+lifecycle_race_schema(
+    tool_schema{
+        name:lifecycle_race_echo,
+        description:"registry destroy race fixture",
+        capability:tool(lifecycle_race_echo),
+        effect:read,
+        arguments:_{type:object,
+                    required:[],
+                    additional_properties:false,
+                    properties:_{}},
+        result:_{type:integer},
+        limits:_{time_limit:1.0, max_output_bytes:1024}
+    }).
+
+lifecycle_race_handler(_, 1).
+
+load_lifecycle_race_pack(Registry, Outcome) :-
+    lifecycle_race_schema(Schema),
+    tool_register(Registry,
+                  Schema,
+                  plunit_rlm_tool_loader:lifecycle_race_handler,
+                  RegisterOutcome),
+    (   RegisterOutcome = ok(_)
+    ->  lifecycle_race_gate(Entered, Release),
+        thread_send_message(Entered, registered),
+        thread_get_message(Release, release),
+        Outcome = ok(tool_pack{pack:lifecycle_race_pack,
+                               registered:[lifecycle_race_echo]})
+    ;   Outcome = RegisterOutcome
+    ).
 
 /* Inert MCP declaration used by the MCP category tests ----------------- */
 
@@ -147,8 +194,7 @@ unused_mcp_transport(_, _, _) :-
 with_registry(Goal) :-
     setup_call_cleanup(tool_registry_create(Registry),
                        call(Goal, Registry),
-                       ( rlm_tool_loader_forget_registry(Registry),
-                         tool_registry_destroy(Registry) )).
+                       tool_registry_destroy(Registry)).
 
 catalog_has_callable(Catalog) :-
     sub_term(Sub, Catalog),
@@ -157,8 +203,106 @@ catalog_has_callable(Catalog) :-
 
 pack_status(Pack, Packs, Status) :-
     member(Entry, Packs),
-    Entry.pack == Pack,
-    Status = Entry.status.
+    get_dict(pack, Entry, EntryPack),
+    EntryPack == Pack,
+    get_dict(status, Entry, Status).
+
+schema_named(Name, Schema) :-
+    get_dict(name, Schema, SchemaName),
+    SchemaName == Name.
+
+loader_state_count(Count) :-
+    findall(Registry-Pack,
+            rlm_tool_loader:loaded_tool_pack(Registry, Pack, _, _),
+            Rows),
+    length(Rows, Count).
+
+load_then_destroy_registry :-
+    setup_call_cleanup(
+        tool_registry_create(Registry),
+        rlm_load_tools(Registry, filesystem, ok(_)),
+        tool_registry_destroy(Registry)).
+
+setup_lifecycle_race(Entered, Release) :-
+    message_queue_create(Entered),
+    message_queue_create(Release),
+    assertz(lifecycle_race_gate(Entered, Release)).
+
+cleanup_lifecycle_race(Entered, Release) :-
+    retractall(lifecycle_race_gate(_, _)),
+    catch(message_queue_destroy(Entered), _, true),
+    catch(message_queue_destroy(Release), _, true).
+
+/* Registry lifecycle --------------------------------------------------- */
+
+test(destroy_reclaims_loader_idempotency_state_automatically) :-
+    loader_state_count(Before),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( rlm_load_tools(Registry, filesystem, ok(_)),
+          assertion(rlm_tool_loader:loaded_tool_pack(Registry,
+                                                     alpha_filesystem,
+                                                     _, _)),
+          tool_registry_destroy(Registry),
+          assertion(\+ rlm_tool_loader:loaded_tool_pack(Registry, _, _, _)),
+          loader_state_count(After),
+          assertion(After =:= Before)
+        ),
+        ( rlm_tool_loader_forget_registry(Registry),
+          tool_registry_destroy(Registry)
+        )).
+
+test(destroy_cleanup_is_scoped_to_the_destroyed_registry) :-
+    tool_registry_create(RegistryA),
+    tool_registry_create(RegistryB),
+    setup_call_cleanup(
+        true,
+        ( rlm_load_tools(RegistryA, filesystem, ok(_)),
+          rlm_load_tools(RegistryB, filesystem, ok(_)),
+          tool_registry_destroy(RegistryA),
+          assertion(\+ rlm_tool_loader:loaded_tool_pack(RegistryA, _, _, _)),
+          assertion(rlm_tool_loader:loaded_tool_pack(RegistryB,
+                                                     alpha_filesystem,
+                                                     _, _))
+        ),
+        ( rlm_tool_loader_forget_registry(RegistryA),
+          rlm_tool_loader_forget_registry(RegistryB),
+          tool_registry_destroy(RegistryA),
+          tool_registry_destroy(RegistryB)
+        )).
+
+test(repeated_registry_churn_does_not_retain_loader_state) :-
+    loader_state_count(Before),
+    forall(between(1, 32, _), load_then_destroy_registry),
+    loader_state_count(After),
+    assertion(After =:= Before).
+
+test(destroying_registry_that_never_used_loader_remains_valid) :-
+    tool_registry_create(Registry),
+    tool_registry_destroy(Registry),
+    tool_registry_destroy(Registry).
+
+test(destroy_during_loader_return_cannot_resurrect_loader_state,
+     [ setup(setup_lifecycle_race(Entered, Release)),
+       cleanup(cleanup_lifecycle_race(Entered, Release))
+     ]) :-
+    tool_registry_create(Registry),
+    thread_create(rlm_load_tools(Registry, lifecycle_race, _), Thread, []),
+    setup_call_cleanup(
+        true,
+        ( thread_get_message(Entered, registered),
+          tool_registry_destroy(Registry),
+          thread_send_message(Release, release),
+          thread_join(Thread, Status),
+          assertion(Status == true),
+          assertion(\+ rlm_tool_loader:loaded_tool_pack(Registry, _, _, _))
+        ),
+        ( catch(thread_send_message(Release, release), _, true),
+          catch(thread_join(Thread, _), _, true),
+          rlm_tool_loader_forget_registry(Registry),
+          tool_registry_destroy(Registry)
+        )).
 
 /* Discovery ------------------------------------------------------------- */
 
@@ -192,9 +336,10 @@ test(unknown_category_fails_closed_and_lists_valid_categories) :-
     with_registry(
         [Registry]>>(
             rlm_load_tools(Registry, definitely_missing_category, error(Error)),
-            assertion(Error.kind == unknown_tool_category),
-            assertion(memberchk(filesystem, Error.valid_categories)),
-            assertion(memberchk(mcp, Error.valid_categories))
+            get_dict(kind, Error, unknown_tool_category),
+            get_dict(valid_categories, Error, Categories),
+            assertion(memberchk(filesystem, Categories)),
+            assertion(memberchk(mcp, Categories))
         )).
 
 /* Category composition and isolation ---------------------------------- */
@@ -203,8 +348,9 @@ test(two_independent_libraries_contribute_one_category) :-
     with_registry(
         [Registry]>>(
             rlm_load_tools(Registry, filesystem, ok(Result)),
-            assertion(Result.category == filesystem),
-            assertion(length(Result.packs, 2)),
+            get_dict(category, Result, filesystem),
+            get_dict(packs, Result, Packs),
+            assertion(length(Packs, 2)),
             tool_lookup(Registry, alpha_echo, ok(_)),
             tool_lookup(Registry, beta_echo, ok(_))
         )).
@@ -216,20 +362,62 @@ test(one_library_can_advertise_multiple_categories_without_cross_loading) :-
             tool_lookup(Registry, alpha_echo, ok(_)),
             tool_lookup(Registry, beta_echo, ok(_)),
             tool_lookup(Registry, alpha_git_echo, error(GitError)),
-            assertion(GitError.kind == unknown_tool)
+            get_dict(kind, GitError, unknown_tool)
         )).
 
 test(repeated_category_loading_is_idempotent_and_reused) :-
     with_registry(
         [Registry]>>(
             rlm_load_tools(Registry, filesystem, ok(First)),
-            assertion(pack_status(alpha_filesystem, First.packs, loaded)),
+            get_dict(packs, First, FirstPacks),
+            assertion(pack_status(alpha_filesystem, FirstPacks, loaded)),
             rlm_load_tools(Registry, filesystem, ok(Second)),
-            assertion(pack_status(alpha_filesystem, Second.packs, reused)),
-            assertion(pack_status(beta_filesystem, Second.packs, reused)),
+            get_dict(packs, Second, SecondPacks),
+            assertion(pack_status(alpha_filesystem, SecondPacks, reused)),
+            assertion(pack_status(beta_filesystem, SecondPacks, reused)),
             tool_discover(Registry, Schemas),
-            include([Schema]>>(Schema.name == alpha_echo), Schemas, AlphaSchemas),
+            include(schema_named(alpha_echo), Schemas, AlphaSchemas),
             assertion(AlphaSchemas = [_])
+        )).
+
+test(trusted_host_can_load_scoped_external_pack_instance) :-
+    with_registry(
+        [Registry]>>(
+            Manifest = tool_pack_manifest{
+                           library:agent_zero_fixture,
+                           category:agent_zero,
+                           tools:[tool_export{
+                                      name:legacy_fixture_echo,
+                                      capability:tool(legacy_fixture_echo),
+                                      effect:read}]},
+            Loader = plunit_rlm_tool_loader:load_legacy_fixture_pack,
+            rlm_load_tool_pack_instance(Registry,
+                                        agent_zero_fixture_pack,
+                                        Manifest,
+                                        Loader,
+                                        ok(First)),
+            get_dict(status, First, loaded),
+            tool_lookup(Registry, legacy_fixture_echo, ok(_)),
+            rlm_load_tool_pack_instance(Registry,
+                                        agent_zero_fixture_pack,
+                                        Manifest,
+                                        Loader,
+                                        ok(Second)),
+            get_dict(status, Second, reused)
+        )).
+
+test(host_pack_instance_rejects_model_shaped_noncallable_loader) :-
+    with_registry(
+        [Registry]>>(
+            Manifest = tool_pack_manifest{library:bad,
+                                          category:agent_zero,
+                                          tools:[]},
+            rlm_load_tool_pack_instance(Registry,
+                                        invalid_instance,
+                                        Manifest,
+                                        _{handler:"model supplied"},
+                                        error(Error)),
+            get_dict(kind, Error, invalid_tool_pack_operation)
         )).
 
 test(load_all_loads_each_pack_once_and_reuses_previous_category_load) :-
@@ -237,11 +425,12 @@ test(load_all_loads_each_pack_once_and_reuses_previous_category_load) :-
         [Registry]>>(
             rlm_load_tools(Registry, filesystem, ok(_)),
             rlm_load_all_tools(Registry, ok(All)),
-            assertion(pack_status(alpha_filesystem, All.packs, reused)),
-            assertion(pack_status(beta_filesystem, All.packs, reused)),
-            assertion(pack_status(alpha_git, All.packs, loaded)),
-            assertion(pack_status(mcp_core, All.packs, loaded)),
-            assertion(pack_status(legacy_fixture_pack, All.packs, loaded)),
+            get_dict(packs, All, AllPacks),
+            assertion(pack_status(alpha_filesystem, AllPacks, reused)),
+            assertion(pack_status(beta_filesystem, AllPacks, reused)),
+            assertion(pack_status(alpha_git, AllPacks, loaded)),
+            assertion(pack_status(mcp_core, AllPacks, loaded)),
+            assertion(pack_status(legacy_fixture_pack, AllPacks, loaded)),
             tool_lookup(Registry, alpha_git_echo, ok(_)),
             tool_lookup(Registry, mcp_servers, ok(_)),
             tool_lookup(Registry, legacy_fixture_echo, ok(_))
@@ -255,7 +444,7 @@ test(malformed_manifest_fails_structurally,
     with_registry(
         [Registry]>>(
             rlm_load_tools(Registry, malformed_pack, error(Error)),
-            assertion(Error.kind == invalid_tool_pack_manifest)
+            get_dict(kind, Error, invalid_tool_pack_manifest)
         )).
 
 test(malformed_trusted_loader_fails_structurally,
@@ -264,7 +453,7 @@ test(malformed_trusted_loader_fails_structurally,
     with_registry(
         [Registry]>>(
             rlm_load_tools(Registry, bad_loader_pack, error(Error)),
-            assertion(Error.kind == invalid_tool_pack_operation)
+            get_dict(kind, Error, invalid_tool_pack_operation)
         )).
 
 test(duplicate_manifest_declaration_is_not_silently_deduplicated,
@@ -273,8 +462,9 @@ test(duplicate_manifest_declaration_is_not_silently_deduplicated,
     with_registry(
         [Registry]>>(
             rlm_load_tools(Registry, duplicate_manifest_pack, error(Error)),
-            assertion(Error.kind == invalid_tool_pack_manifest),
-            assertion(Error.cause.kind == duplicate_tool_pack_manifest)
+            get_dict(kind, Error, invalid_tool_pack_manifest),
+            get_dict(cause, Error, Cause),
+            get_dict(kind, Cause, duplicate_tool_pack_manifest)
         )).
 
 test(duplicate_tool_name_conflict_fails_before_either_loader_runs,
@@ -283,9 +473,10 @@ test(duplicate_tool_name_conflict_fails_before_either_loader_runs,
     with_registry(
         [Registry]>>(
             rlm_load_tools(Registry, conflict_category, error(Error)),
-            assertion(Error.kind == tool_name_conflict),
-            assertion(Error.tool == shared_conflict_tool),
-            assertion(length(Error.contributors, 2)),
+            get_dict(kind, Error, tool_name_conflict),
+            get_dict(tool, Error, shared_conflict_tool),
+            get_dict(contributors, Error, Contributors),
+            assertion(length(Contributors, 2)),
             conflict_calls(Calls),
             assertion(Calls =:= 0)
         )).
@@ -303,8 +494,8 @@ test(loading_registers_tools_but_grants_zero_capabilities) :-
                         [],
                         error(Error),
                         Trace),
-            assertion(Error.kind == capability_denied),
-            assertion(Trace.authorization == denied)
+            get_dict(kind, Error, capability_denied),
+            get_dict(authorization, Trace, denied)
         )).
 
 test(explicit_capability_allows_loaded_tool) :-
@@ -318,8 +509,8 @@ test(explicit_capability_allows_loaded_tool) :-
                         [],
                         ok(Execution),
                         Trace),
-            assertion(Execution.value =:= 9),
-            assertion(Trace.authorization == allowed)
+            get_dict(value, Execution, 9),
+            get_dict(authorization, Trace, allowed)
         )).
 
 test(loading_does_not_change_host_authority) :-
@@ -339,9 +530,9 @@ test(mcp_category_load_is_inert_and_capability_gated) :-
     with_registry(
         [Registry]>>(
             mcp_server_definition(loader_mcp_fixture, ok(BeforeSpec)),
-            assertion(BeforeSpec.name == loader_mcp_fixture),
+            get_dict(name, BeforeSpec, loader_mcp_fixture),
             rlm_load_tools(Registry, mcp, ok(Result)),
-            assertion(Result.category == mcp),
+            get_dict(category, Result, mcp),
             tool_lookup(Registry, mcp_servers, ok(_)),
             tool_lookup(Registry, mcp_server_inspect, ok(_)),
             tool_invoke(Registry,
@@ -351,8 +542,8 @@ test(mcp_category_load_is_inert_and_capability_gated) :-
                         [],
                         error(Denied),
                         Trace),
-            assertion(Denied.kind == capability_denied),
-            assertion(Trace.authorization == denied),
+            get_dict(kind, Denied, capability_denied),
+            get_dict(authorization, Trace, denied),
             mcp_server_definition(loader_mcp_fixture, ok(AfterSpec)),
             assertion(AfterSpec == BeforeSpec)
         )).
@@ -368,10 +559,13 @@ test(explicit_mcp_discovery_capability_invokes_only_sanitized_discovery) :-
                         [],
                         ok(Execution),
                         Trace),
-            assertion(Trace.authorization == allowed),
-            member(Server, Execution.value.servers),
-            Server.name == loader_mcp_fixture,
-            assertion(Server.transport.kind == fixture),
+            get_dict(authorization, Trace, allowed),
+            get_dict(value, Execution, ExecutionValue),
+            get_dict(servers, ExecutionValue, Servers),
+            member(Server, Servers),
+            get_dict(name, Server, loader_mcp_fixture),
+            get_dict(transport, Server, Transport),
+            get_dict(kind, Transport, fixture),
             assertion(\+ catalog_has_callable(Server))
         )).
 

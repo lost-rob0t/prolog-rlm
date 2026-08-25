@@ -37,25 +37,27 @@ openai_compatible_complete(Provider, Config, Request, Outcome) :-
 
 complete_from_config(error(Error), _, _, error(Error)) :-
     !.
-complete_from_config(ok(Endpoint, Credential, RequestedModel, Timeout),
+complete_from_config(ok(Endpoint, Credential, RequestedModel, Timeout,
+                        AddressFamily),
                      Provider, Request, Outcome) :-
     request_payload(Request, RequestedModel, PayloadOutcome),
     complete_payload(PayloadOutcome, Provider, Endpoint, Credential,
-                     RequestedModel, Timeout, Outcome).
+                     RequestedModel, Timeout, AddressFamily, Outcome).
 
-complete_payload(error(Error), _, _, _, _, _, error(Error)) :-
+complete_payload(error(Error), _, _, _, _, _, _, error(Error)) :-
     !.
 complete_payload(ok(Payload), Provider, Endpoint, Credential,
-                 RequestedModel, Timeout, Outcome) :-
+                 RequestedModel, Timeout, AddressFamily, Outcome) :-
     resolve_credential(Provider, Credential, CredentialOutcome),
     execute_credentialed(CredentialOutcome, Provider, Endpoint,
-                         RequestedModel, Timeout, Payload, Outcome).
+                         RequestedModel, Timeout, AddressFamily, Payload,
+                         Outcome).
 
-execute_credentialed(error(Error), _, _, _, _, _, error(Error)) :-
+execute_credentialed(error(Error), _, _, _, _, _, _, error(Error)) :-
     !.
 execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
-                     Payload, Outcome) :-
-    http_options(Key, Timeout, Status, HttpOptions),
+                     AddressFamily, Payload, Outcome) :-
+    http_options(Key, Timeout, AddressFamily, Status, HttpOptions),
     catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),
           Exception,
           transport_exception_handler(Exception)),
@@ -70,22 +72,18 @@ execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
                                        response_received:false})
     ).
 
-http_options(none, Timeout, Status,
-             [ timeout(Timeout),
-               status_code(Status),
-               json_object(dict),
-               request_header('Accept'='application/json'),
-               user_agent('prolog-rlm/0.1')
-             ]) :-
-    !.
-http_options(Key, Timeout, Status,
-             [ authorization(bearer(Key)),
-               timeout(Timeout),
-               status_code(Status),
-               json_object(dict),
-               request_header('Accept'='application/json'),
-               user_agent('prolog-rlm/0.1')
-             ]).
+http_options(Key, Timeout, AddressFamily, Status, Options) :-
+    credential_http_options(Key, CredentialOptions),
+    address_family_http_options(AddressFamily, AddressOptions),
+    append([CredentialOptions,
+            AddressOptions,
+            [ timeout(Timeout),
+              status_code(Status),
+              json_object(dict),
+              request_header('Accept'='application/json'),
+              user_agent('prolog-rlm/0.1')
+            ]],
+           Options).
 
 /* -------------------------------------------------------------------------
  * True SSE streaming
@@ -116,7 +114,8 @@ openai_compatible_stream(Provider, Config, Request, EventHandler, Outcome) :-
 
 stream_from_config(error(Error), _, _, _, error(Error)) :-
     !.
-stream_from_config(ok(Endpoint, Credential, RequestedModel, Timeout),
+stream_from_config(ok(Endpoint, Credential, RequestedModel, Timeout,
+                      AddressFamily),
                    Provider, Request, EventHandler, Outcome) :-
     request_payload(Request, RequestedModel, PayloadOutcome),
     stream_payload(PayloadOutcome,
@@ -125,13 +124,15 @@ stream_from_config(ok(Endpoint, Credential, RequestedModel, Timeout),
                    Credential,
                    RequestedModel,
                    Timeout,
+                   AddressFamily,
                    EventHandler,
                    Outcome).
 
-stream_payload(error(Error), _, _, _, _, _, _, error(Error)) :-
+stream_payload(error(Error), _, _, _, _, _, _, _, error(Error)) :-
     !.
 stream_payload(ok(Payload0), Provider, Endpoint, Credential,
-               RequestedModel, Timeout, EventHandler, Outcome) :-
+               RequestedModel, Timeout, AddressFamily, EventHandler,
+               Outcome) :-
     put_dict(stream_request{stream:true,
                             stream_options:stream_options{include_usage:true}},
              Payload0,
@@ -142,15 +143,18 @@ stream_payload(ok(Payload0), Provider, Endpoint, Credential,
                                 Endpoint,
                                 RequestedModel,
                                 Timeout,
+                                AddressFamily,
                                 Payload,
                                 EventHandler,
                                 Outcome).
 
-execute_stream_credentialed(error(Error), _, _, _, _, _, _, error(Error)) :-
+execute_stream_credentialed(error(Error), _, _, _, _, _, _, _, error(Error)) :-
     !.
 execute_stream_credentialed(ok(Key), Provider, Endpoint, RequestedModel,
-                            Timeout, Payload, EventHandler, Outcome) :-
-    stream_http_options(Key, Timeout, Status, Payload, HttpOptions),
+                            Timeout, AddressFamily, Payload, EventHandler,
+                            Outcome) :-
+    stream_http_options(Key, Timeout, AddressFamily, Status, Payload,
+                        HttpOptions),
     catch(setup_call_cleanup(
               http_open(Endpoint, In, HttpOptions),
               stream_http_result(Status,
@@ -172,22 +176,26 @@ execute_stream_credentialed(ok(Key), Provider, Endpoint, RequestedModel,
                                        response_received:false})
     ).
 
-stream_http_options(none, Timeout, Status, Payload,
-                    [ post(json(Payload)),
-                      timeout(Timeout),
-                      status_code(Status),
-                      request_header('Accept'='text/event-stream'),
-                      user_agent('prolog-rlm/0.1')
-                    ]) :-
+stream_http_options(Key, Timeout, AddressFamily, Status, Payload, Options) :-
+    credential_http_options(Key, CredentialOptions),
+    address_family_http_options(AddressFamily, AddressOptions),
+    append([CredentialOptions,
+            AddressOptions,
+            [ post(json(Payload)),
+              timeout(Timeout),
+              status_code(Status),
+              request_header('Accept'='text/event-stream'),
+              user_agent('prolog-rlm/0.1')
+            ]],
+           Options).
+
+credential_http_options(none, []) :-
     !.
-stream_http_options(Key, Timeout, Status, Payload,
-                    [ post(json(Payload)),
-                      authorization(bearer(Key)),
-                      timeout(Timeout),
-                      status_code(Status),
-                      request_header('Accept'='text/event-stream'),
-                      user_agent('prolog-rlm/0.1')
-                    ]).
+credential_http_options(Key, [authorization(bearer(Key))]).
+
+address_family_http_options(auto, []) :-
+    !.
+address_family_http_options(Family, [domain(Family)]).
 
 stream_http_result(Status, In, Provider, RequestedModel, EventHandler,
                    Outcome) :-
@@ -683,8 +691,9 @@ provider_config(Provider, Config, Outcome) :-
         config_value(model, Config, none, Model),
         config_value(credential, Config, none, Credential),
         config_value(timeout, Config, 30, Timeout),
+        config_value(address_family, Config, auto, AddressFamily),
         validate_provider_config(Provider, Endpoint, Model, Credential,
-                                 Timeout, Outcome)
+                                 Timeout, AddressFamily, Outcome)
     ;   Outcome = error(provider_error{provider:Provider,
                                        kind:configuration_error,
                                        field:config,
@@ -692,21 +701,21 @@ provider_config(Provider, Config, Outcome) :-
                                        response_received:false})
     ).
 
-validate_provider_config(Provider, none, _, _, _, error(Error)) :-
+validate_provider_config(Provider, none, _, _, _, _, error(Error)) :-
     !,
     Error = provider_error{provider:Provider,
                            kind:configuration_error,
                            field:endpoint,
                            message:"provider endpoint is not configured",
                            response_received:false}.
-validate_provider_config(Provider, _, none, _, _, error(Error)) :-
+validate_provider_config(Provider, _, none, _, _, _, error(Error)) :-
     !,
     Error = provider_error{provider:Provider,
                            kind:configuration_error,
                            field:model,
                            message:"provider model is not configured",
                            response_received:false}.
-validate_provider_config(Provider, _, _, Credential, _, error(Error)) :-
+validate_provider_config(Provider, _, _, Credential, _, _, error(Error)) :-
     \+ valid_credential_spec(Credential),
     !,
     Error = provider_error{provider:Provider,
@@ -714,7 +723,7 @@ validate_provider_config(Provider, _, _, Credential, _, error(Error)) :-
                            field:credential,
                            message:"credentials must use env(Name) or none",
                            response_received:false}.
-validate_provider_config(Provider, _, _, _, Timeout, error(Error)) :-
+validate_provider_config(Provider, _, _, _, Timeout, _, error(Error)) :-
     (   \+ number(Timeout)
     ;   Timeout =< 0
     ),
@@ -724,8 +733,18 @@ validate_provider_config(Provider, _, _, _, Timeout, error(Error)) :-
                            field:timeout,
                            message:"timeout must be a positive number",
                            response_received:false}.
+validate_provider_config(Provider, _, _, _, _, AddressFamily, error(Error)) :-
+    \+ memberchk(AddressFamily, [auto, inet, inet6]),
+    !,
+    Error = provider_error{provider:Provider,
+                           kind:configuration_error,
+                           field:address_family,
+                           message:"address_family must be auto, inet, or inet6",
+                           response_received:false}.
 validate_provider_config(_, Endpoint, Model, Credential, Timeout,
-                         ok(Endpoint, Credential, Model, Timeout)).
+                         AddressFamily,
+                         ok(Endpoint, Credential, Model, Timeout,
+                            AddressFamily)).
 
 valid_credential_spec(none).
 valid_credential_spec(env(Name)) :-

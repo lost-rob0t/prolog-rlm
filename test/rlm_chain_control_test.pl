@@ -31,15 +31,17 @@ test(request_trace_reports_actual_message_count) :-
     assertion(First.type == request_normalized),
     assertion(First.fields.message_count =:= 1).
 
-test(stream_time_limit_exception_is_not_wrapped,
-     [throws(time_limit_exceeded)]) :-
+test(stream_time_limit_exception_is_not_wrapped) :-
     base_request(Request),
-    chain_stream_with_transport(provider(test, []),
-                                Request,
-                                [],
-                                plunit_rlm_chain_control:time_limit_stream,
-                                plunit_rlm_chain_control:accept_event,
-                                _).
+    catch(chain_stream_with_transport(provider(test, []),
+                                      Request,
+                                      [],
+                                      plunit_rlm_chain_control:time_limit_stream,
+                                      plunit_rlm_chain_control:accept_event,
+                                      _),
+          Exception,
+          true),
+    assertion(Exception == time_limit_exceeded).
 
 test(stream_cancellation_exception_is_not_wrapped,
      [throws(error(rlm_cancelled(test_token), test_context))]) :-

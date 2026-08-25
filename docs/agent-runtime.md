@@ -22,6 +22,8 @@ agent_send(+Runtime, +Agent, +Message, +Options, -Outcome).
 agent_send_async(+Runtime, +Agent, +Message, +Options, -Future).
 agent_pump(+Runtime, +Agent, +Options, -Outcome).
 agent_pump_async(+Runtime, +Agent, +Options, -Future).
+agent_supervised_call(+Runtime, +Agent, +Handler, +Work, +Options, -Outcome).
+agent_supervised_call_async(+Runtime, +Agent, +Handler, +Work, +Options, -Future).
 agent_status(+Runtime, +Agent, -Outcome).
 agent_children(+Runtime, +Agent, -Children).
 agent_cancel(+Runtime, +Agent, +Reason, -Outcome).
@@ -39,6 +41,14 @@ The execute predicates are a trusted host/library composition ABI, not part of
 model-generated callable resolution. `rlm_async` schedules public API work; the
 agent runtime's separate bounded worker pool still bounds blocking mailbox host
 work and preserves actor fairness, backpressure, and supervision semantics.
+
+`agent_supervised_call/6` admits one ground work value into an existing logical
+agent, runs a ground trusted host closure on that same bounded worker pool, and
+waits for the result through the agent mailbox. Its `timeout(Seconds)` option is
+a positive wall-time ceiling. The handler is host-owned executable policy; it
+is never derived from model or KB data. Cancellation of a parent signals the
+admitted child worker, preserves the child's cancelled terminal state, and
+returns a structured cancelled outcome.
 
 Always destroy a runtime with `setup_call_cleanup/3` or an equivalent host
 lifecycle. Destruction cancels outstanding worker activity, drains the bounded
@@ -172,6 +182,40 @@ thread.
 Worker results return through the requesting agent's mailbox as `result/2`.
 Worker exceptions are converted to structured failures in the agent state.
 
+When the requesting agent is supervised, a successful worker result is also
+enqueued to its parent as `result(child(agent(ChildId)), ok(Value))`. The
+parent records that value as a canonical `child_result`, and the runtime emits
+one correlated `child_result` trace event containing the opaque parent and
+child identities. If the bounded parent mailbox rejects delivery, the runtime
+emits `child_result_backpressure` instead of claiming delivery.
+
+The canonical `rlm_subagent` tool uses this supervised-call execute ABI. Its
+bounded completion therefore runs as child-owned worker activity rather than
+inside the tool-handler thread. An `unknown -> delegate_subagent` KB command
+still compiles only to inert `tool(rlm_subagent)` data; ordinary tool
+capability/authority checks run before child creation, and the parent receives
+the same typed subagent result envelope that the tool returns.
+
+The spawned logical child is authoritative for possession. Registration-time
+completion options cannot substitute a broader `capabilities(...)` set or a
+registry/session authority context: the handler replaces both with the
+normalized spawned-child ceiling and `agent(RuntimeId, ChildId)` context before
+calling completion. It likewise replaces `runtime_id` and `agent_id` lineage
+metadata with the spawned identities. Inner registered tools therefore recheck
+exactly the child's capability set, use its narrowed authority tier, and cannot
+attribute work to caller-supplied agent identities.
+
+Child completion still supports bounded recursive `rlm(...)` plans. A child
+ceiling containing `tool(rlm_subagent)` is rejected at registration because the
+current handler is parent-bound and has no trustworthy recursive depth
+identity; this prevents implicit sibling recursion from using only the global
+agent limit as a de facto depth bound. A future recursive subagent binding must
+carry an explicit depth/concurrency contract rather than weakening this check.
+
+Focused conformance covers child capability and authority possession,
+agent-count admission, recursive depth, parallel width, token and wall-time
+budgets, cancellation, parent delivery, and mailbox/worker backpressure.
+
 ## Failure supervision
 
 When child work fails, the child enters a failed state and its supervisor gets
@@ -199,7 +243,7 @@ cancelled. The runtime does not expose engine or thread handles to model output.
 
 ## Bounded traces
 
-`agent_trace/2` returns ordered runtime events such as:
+`agent_trace/2` returns ordered, ground `agent_event` dicts such as:
 
 - `runtime_created`;
 - `spawn`;
@@ -208,6 +252,8 @@ cancelled. The runtime does not expose engine or thread handles to model output.
 - `request_dispatched`;
 - `worker_completed`;
 - `worker_result_enqueued`;
+- `child_result`;
+- `child_result_backpressure`;
 - `child_failure`;
 - `cancel`.
 

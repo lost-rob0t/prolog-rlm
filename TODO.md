@@ -4,20 +4,15 @@ This backlog is intentionally broader than the first runnable RLM. Work should l
 
 ## Status convention
 
-Status reconciled against canonical `main` commit `591c936d0476df5ac56de31fd327e7d0d678fb4e` on 2026-08-18. This change adds the first-class Spec/Verify substrate while leaving the broader #56 and #68-#71 integration tracks open.
+Status reconciled against canonical `main` commit `04d90b608d11196c5a8fd3bdeb235566ef9352fd` on 2026-08-21. #42, #44, #46, and #67 are merged/closed; this slice resolves the remaining #45 nested-trajectory correctness defect while leaving the broader feature and architecture tracks open.
 
 - `[x]` means the implementation/documentation/test surface represented by that checkbox is present in this branch and sufficiently verified for this slice.
 - `[ ]` means meaningful work remains, the surface is only partially covered, or a known open defect prevents treating the aggregate contract as complete.
 - GitHub issue state, merged source/tests, this TODO, and the PrologAgent roadmap must be reconciled together. Merged canonical source and tests outrank historical status prose.
 
-### Currently open correctness defects
+### Correctness status for the v0.1/manual-validation umbrella
 
-These remain blockers for the v0.1/manual-validation umbrella in #3:
-
-- #42 — recursive-plan fingerprints can falsely report a cycle for anonymous-tag SWI dicts.
-- #44 — completion still loses executed provider usage when a later plan operation fails; the issue was reopened during this reconciliation because `completion_after_execution/8` on `main` still returns the execution error before aggregating plan usage.
-- #45 — nested completion trajectories can omit model events or report the wrong true depth.
-- #46 — the live OpenRouter streaming gate is not router-safe when `openrouter/free` selects a healthy model that ignores the sentinel instruction.
+The #42 recursive fingerprint, #44 error-path usage, and #46 router-safe live-streaming defects are merged and closed. This slice resolves #45 by recording nested model events at execution time with stable identity, parent lineage, true depth, provider metadata, usage, and deterministic ordering. After this lands, the umbrella's remaining work is full-system validation rather than a known correctness defect from this set.
 
 ### Open feature and architecture work
 
@@ -29,19 +24,19 @@ The generic #57 effect substrate is already merged through #78, #83, and #85. Th
 
 ### Documentation and hygiene work
 
-- #67 — registry destruction still does not automatically clear loader idempotency bookkeeping.
+#67 is closed: registry destruction now clears loader idempotency bookkeeping automatically, including the destroy-race regression.
 
 ### Completed historical foundations
 
 The external loader boundary (#48), declarative MCP policy/config boundary (#52), host authority and pending-operation boundary (#53/#63/#64), generic durable effect substrate/hardening/migration (#78/#83/#85), external-tool documentation refresh (#73), and PrologAgent product roadmap (#87) are complete foundations. This branch adds the domain-neutral Spec/Verify foundation described in `docs/spec-verify.md`.
 
-GitHub Actions remains the authoritative executable gate. Do not encode a transient “latest CI run” result here as durable project state; preserve open CI-contract defects such as #46 until their acceptance criteria actually land.
+GitHub Actions remains the authoritative executable gate. Do not encode a transient latest-run result here as durable project state; #46's router-safe live-streaming acceptance is now part of the merged CI contract.
 
 ## P0 — First real agentic RLM slice
 
 - [x] Establish SWI-Prolog as the initial implementation target and document the portability boundary.
 - [x] Add project/module skeleton and PlUnit test harness.
-- [ ] Define `rlm_completion/4`, result terms, structured error/outcome terms, usage accounting, and trace events. *(Implemented broadly, but #44 and #45 keep the aggregate contract open.)*
+- [x] Define `rlm_completion/4`, result terms, structured error/outcome terms, usage accounting, and trace events. *(#44 preserves executed usage on failure; #45 makes nested trajectory events authoritative.)*
 - [x] Define provider-neutral model behavior in the production `prolog/rlm_chain*.pl` modules.
 - [x] Implement one **real OpenAI-compatible provider** directly with SWI HTTP/JSON libraries; support configurable base URL so OpenAI-compatible local/router endpoints can work.
 - [x] Keep fake/model test doubles under tests only for deterministic CI.
@@ -56,8 +51,8 @@ GitHub Actions remains the authoritative executable gate. Do not encode a transi
 - [x] Implement final-answer/result semantics.
 - [x] Enforce iteration, recursion, inference-step, concurrent-call, wall-time, token, cost, tool-call, and output-byte budgets.
 - [x] Add cancellation and deterministic cleanup.
-- [ ] Persist or export a structured trajectory for every completion. *(Export exists; #45 keeps nested trajectory fidelity open.)*
-- [ ] Add integration test gated on explicit provider credentials and deterministic tests using a fake provider. *(Both exist; #46 keeps the live streaming gate contract open until it is router-safe.)*
+- [x] Persist or export a structured trajectory for every completion. *(#45 records nested model events before lexical scope restoration and projects the authoritative ledger.)*
+- [x] Add integration test gated on explicit provider credentials and deterministic tests using a fake provider. *(#46 makes the live streaming gate router-safe while retaining real transport assertions.)*
 
 ## P0 — Capability and execution boundary
 
@@ -68,7 +63,7 @@ GitHub Actions remains the authoritative executable gate. Do not encode a transi
 - [x] Separate pure context operations from side-effecting tools.
 - [x] Deny shell/process execution by default.
 - [x] Deny arbitrary filesystem/network access by default outside declared providers/tools.
-- [ ] Add cycle/runaway recursion detection. *(Implemented, but #42 keeps the fingerprint/cycle contract open.)*
+- [x] Add cycle/runaway recursion detection. *(#42 canonicalizes recursive-plan fingerprints while preserving genuine cycle/duplicate rejection.)*
 - [x] Add bounded output capture and structured exceptions.
 - [ ] Add an optional stronger isolation boundary for workloads that truly require generated Prolog source.
 
@@ -205,7 +200,7 @@ The production `prolog/rlm_mcp*.pl` modules provide a canonical internal represe
 - [x] Define recursion policy separate from `max_depth`.
 - [x] Record a reason/utility estimate for every recursive call.
 - [ ] Add cost/latency-aware routing between direct LM, LM subcall, RLM subcall, and subagent. *(Cost-aware expected-value routing exists; an explicit latency-aware policy signal is still absent.)*
-- [ ] Add recursion-cycle detection and duplicate-subproblem suppression. *(Implemented, but #42 keeps the cycle-fingerprint contract open.)*
+- [x] Add recursion-cycle detection and duplicate-subproblem suppression. *(#42 closes the anonymous-dict fingerprint false-positive without weakening genuine cycle detection.)*
 - [x] Compare depth 0/1/2 under fixed budgets.
 - [ ] Cancel low-value branches when budget pressure rises.
 

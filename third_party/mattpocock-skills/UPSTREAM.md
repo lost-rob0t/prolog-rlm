@@ -15,7 +15,7 @@ The complete upstream repository is pinned as the git submodule `third_party/mat
 git submodule update --init third_party/mattpocock-skills/upstream
 ```
 
-`third_party/mattpocock-skills/skills` remains a vendored stable fallback so ordinary source archives and CI checkouts that do not initialize submodules still have a deterministic default catalog. The fallback intentionally excludes upstream `deprecated/` and `in-progress/` trees. The submodule preserves the complete pinned upstream collection for callers that want the full catalog rather than the fallback subset.
+`third_party/mattpocock-skills/skills` is a vendored stable optional catalog for ordinary source archives and CI checkouts that do not initialize submodules. It intentionally excludes upstream `deprecated/` and `in-progress/` trees. The submodule preserves the complete pinned upstream collection for callers that want it. Neither location is the ambient runtime default; the domain-neutral default catalog lives under `skills/core/`.
 
 `prolog-rlm` does not preserve the upstream model-side invocation mechanism. The Markdown remains third-party instructional material, while Prolog owns discovery and activation. `disable-model-invocation: true` is normalized to trusted explicit-user-only activation; other stable skills are eligible for deterministic Prolog selection. Skill resources are loaded only after Prolog selects a skill and remain inert text, including shell templates.
 

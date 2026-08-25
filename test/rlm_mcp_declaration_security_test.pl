@@ -12,6 +12,8 @@
 :- multifile rlm_mcp_policy:mcp_stdio_profile/2.
 :- multifile rlm_mcp_policy:mcp_config_value/2.
 
+:- meta_predicate with_authority(+, +, 0).
+
 run_probe('/tmp/prolog_rlm_mcp_run_probe_52').
 install_probe('/tmp/prolog_rlm_mcp_install_probe_52').
 secret_value("MCP_SECRET_VALUE_52_DO_NOT_SURFACE").
@@ -265,7 +267,7 @@ test(sanitized_discovery_exposes_reference_not_resolved_secret) :-
           Server.name == secure_stdio_52,
           assertion(Server.transport.profile == test_stdio_cat),
           assertion(Server.install.profile == test_installer_true),
-          assertion(Server.configuration = [Reference]),
+          Server.configuration = [Reference],
           assertion(Reference.kind == config),
           assertion(Reference.name == test_secret_52),
           secret_value(Secret),

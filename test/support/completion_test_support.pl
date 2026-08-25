@@ -2,8 +2,17 @@
           [ direct_planner/2,
             depth_two_planner/2,
             duplicate_recursive_planner/2,
+            anonymous_dict_grandchild_tool_planner/2,
+            nonground_recursive_planner/2,
+            cyclic_recursive_planner/2,
             child_tool_planner/2,
-            invalid_planner/2,
+             invalid_planner/2,
+             capture_planner/2,
+             capture_retry_planner/2,
+             capture_model/2,
+             last_planner_request/1,
+             planner_requests/1,
+            last_model_request/1,
             fake_model/2,
             slow_model/2,
             slow_model_started/3,
@@ -16,10 +25,16 @@
 
 :- dynamic planner_call_count/1.
 :- dynamic model_call_count/1.
+:- dynamic last_planner_request/1.
+:- dynamic last_model_request/1.
+:- dynamic captured_planner_request/2.
 
 reset_calls :-
     retractall(planner_call_count(_)),
     retractall(model_call_count(_)),
+    retractall(last_planner_request(_)),
+    retractall(last_model_request(_)),
+    retractall(captured_planner_request(_, _)),
     assertz(planner_call_count(0)),
     assertz(model_call_count(0)).
 
@@ -65,6 +80,33 @@ duplicate_recursive_planner(_, ok(Output)) :-
                  final(var(first))]),
     planner_output(Plan, Output).
 
+anonymous_dict_grandchild_tool_planner(_, ok(Output)) :-
+    bump_planner,
+    Grandchild = plan([tool(secret_tool,
+                            literal(_{secret:true}),
+                            secret),
+                       final(var(secret))]),
+    Child = plan([rlm(Grandchild, grand),
+                  final(var(grand))]),
+    Plan = plan([rlm(Child, child),
+                 final(var(child))]),
+    planner_output(Plan, Output).
+
+nonground_recursive_planner(_, ok(Output)) :-
+    bump_planner,
+    Child = plan([final(literal(Unbound))]),
+    Plan = plan([rlm(Child, child),
+                 final(var(child))]),
+    planner_output(Plan, Output),
+    var(Unbound).
+
+cyclic_recursive_planner(_, ok(Output)) :-
+    bump_planner,
+    Child = plan([rlm(Child, loop)]),
+    Plan = plan([rlm(Child, child),
+                 final(var(child))]),
+    planner_output(Plan, Output).
+
 child_tool_planner(_, ok(Output)) :-
     bump_planner,
     Child = plan([tool(secret_tool,
@@ -78,6 +120,34 @@ child_tool_planner(_, ok(Output)) :-
 invalid_planner(_, ok(Response)) :-
     bump_planner,
     fake_response("not a typed plan", Response).
+
+capture_planner(Request, ok(Output)) :-
+    bump_planner,
+    retractall(last_planner_request(_)),
+    assertz(last_planner_request(Request)),
+    Plan = plan([final(literal("captured-planner"))]),
+    planner_output(Plan, Output).
+
+capture_retry_planner(Request, ok(Output)) :-
+    bump_planner,
+    planner_calls(Call),
+    assertz(captured_planner_request(Call, Request)),
+    (   Call =:= 1
+    ->  fake_response("not a typed plan", Output)
+    ;   Plan = plan([final(literal("captured-retry"))]),
+        planner_output(Plan, Output)
+    ).
+
+planner_requests(Requests) :-
+    findall(Request,
+            captured_planner_request(_, Request),
+            Requests).
+
+capture_model(Request, ok(Response)) :-
+    bump_model,
+    retractall(last_model_request(_)),
+    assertz(last_model_request(Request)),
+    fake_response("CAPTURED_MODEL_OK", Response).
 
 fake_model(_, ok(Response)) :-
     bump_model,

@@ -20,7 +20,8 @@ Provider = provider(openrouter,
                     [endpoint('https://openrouter.ai/api/v1/chat/completions'),
                      credential(env('OPENROUTER_API_KEY')),
                      model('openrouter/free'),
-                     timeout(30)]).
+                     timeout(30),
+                     address_family(inet)]).
 ```
 
 The provider term stores only the environment-variable reference. The key is
@@ -29,6 +30,13 @@ responses, errors, traces, fixtures, or logs.
 
 If `OPENROUTER_TEST_MODEL` is unset or empty, `default_openrouter_model/1`
 returns `openrouter/free`.
+
+OpenRouter uses IPv4 explicitly. SWI-Prolog applies its HTTP timeout only after
+the TCP connection is established, so automatic address selection can hang on
+a non-functional IPv6 route without reaching the configured timeout. Generic
+OpenAI-compatible provider terms default to `address_family(auto)`; trusted
+callers may add `address_family(inet)` or `address_family(inet6)` when their
+network requires a specific family.
 
 A minimal request is:
 

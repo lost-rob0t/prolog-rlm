@@ -17,9 +17,9 @@
             skill_catalog_skills/2,
             skill_catalog_skill/3,
             skill_default_catalog/1,
-            skill_default_catalog_reset/0,
-            skill_compile/4,
-            skill_prompt_fragment/2,
+             skill_default_catalog_reset/0,
+             skill_prompt_unit/3,
+             skill_catalog_prompt_units/3,
             skill_read_resource/3,
             default_context_policy/1,
             context_policy/2,
@@ -120,12 +120,17 @@
             agent_send_async/5,
             agent_pump/4,
             agent_pump_async/4,
+            agent_supervised_call/6,
+            agent_supervised_call_async/6,
             agent_status/3,
             agent_children/3,
             agent_cancel/4,
             agent_cancel_async/4,
             agent_trace/2,
             agent_tool_handler/4,
+            agent_zero_context_compile/2,
+            agent_zero_tool_pack_manifest/3,
+            agent_zero_tool_registry_import/4,
             default_graph_options/1,
             graph_compile/4,
             graph_backend_open/2,
@@ -197,15 +202,11 @@ latency is represented by a deferred pending-operation Future; no shared
                 skill_catalog_skills/2,
                 skill_catalog_skill/3,
                 skill_default_catalog/1,
-                skill_default_catalog_reset/0,
-                skill_compile/4,
-                skill_prompt_fragment/2,
-                skill_read_resource/3
-              ]).
-:- use_module(rlm_skill_completion,
-              [ rlm_skill_completion_ready/0,
-                skill_completion_options/3
-              ]).
+                 skill_default_catalog_reset/0,
+                 skill_prompt_unit/3,
+                 skill_catalog_prompt_units/3,
+                 skill_read_resource/3
+               ]).
 :- use_module(rlm_async,
               [ rlm_async_ready/0,
                 rlm_async_submit/2,
@@ -346,12 +347,20 @@ latency is represented by a deferred pending-operation Future; no shared
                 agent_send_async/5,
                 agent_pump/4,
                 agent_pump_async/4,
+                agent_supervised_call/6,
+                agent_supervised_call_async/6,
                 agent_status/3,
                 agent_children/3,
                 agent_cancel/4,
                 agent_cancel_async/4,
                 agent_trace/2,
                 agent_tool_handler/4
+              ]).
+:- use_module('./adaptors/rlm_agent_zero_adapter',
+              [ rlm_agent_zero_adapter_ready/0,
+                agent_zero_context_compile/2,
+                agent_zero_tool_pack_manifest/3,
+                agent_zero_tool_registry_import/4
               ]).
 :- use_module(rlm_graph,
               [ rlm_graph_ready/0,
@@ -415,7 +424,6 @@ rlm_ready :-
     rlm_plan:default_plan_budget(_),
     rlm_tool:capabilities_normalize([], ok([])),
     rlm_skill:rlm_skill_ready,
-    rlm_skill_completion:rlm_skill_completion_ready,
     rlm_async:rlm_async_ready,
     rlm_authority:rlm_authority(runtime(ready_probe), approve_diff),
     rlm_completion:default_completion_budget(_),
@@ -431,6 +439,7 @@ rlm_ready :-
     rlm_artifact_agent:rlm_artifact_agent_ready,
     rlm_artifact_graph:rlm_artifact_graph_ready,
     rlm_agent:rlm_agent_ready,
+    rlm_agent_zero_adapter:rlm_agent_zero_adapter_ready,
     rlm_graph:rlm_graph_ready,
     rlm_benchmark:rlm_benchmark_ready,
     rlm_demo:rlm_demo_ready,
@@ -451,33 +460,10 @@ rlm_completion_async(Query, Context, Options, Future) :-
 
 public_completion_async_after_gate(ok, Query, Context, Options, Future) :-
     !,
-    rlm_skill_completion:skill_completion_options(Query,
-                                                  Options,
-                                                  SkillOutcome),
-    public_completion_async_after_skills(SkillOutcome,
-                                         Query,
-                                         Context,
-                                         Future).
+    rlm_completion:rlm_completion_async(Query, Context, Options, Future).
 public_completion_async_after_gate(error(Error), _, _, _, Future) :-
     rlm_async:rlm_async_submit(rlm:public_gate_error(Error),
                                async_metadata{operation:completion_gate},
-                               Future).
-
-public_completion_async_after_skills(ok(Prepared), Query, Context, Future) :-
-    !,
-    rlm_completion:rlm_completion_async(Query,
-                                        Context,
-                                        Prepared.options,
-                                        Future).
-public_completion_async_after_skills(error(Error), _, _, Future) :-
-    SkillError = completion_error{
-                     phase:prompt_compile,
-                     kind:skill_compilation_failed,
-                     cause:Error,
-                     message:"Prolog skill compilation failed before planner execution"
-                 },
-    rlm_async:rlm_async_submit(rlm:public_gate_error(SkillError),
-                               async_metadata{operation:skill_compile},
                                Future).
 
 rlm_completion(Query, Context, Options, Outcome) :-
