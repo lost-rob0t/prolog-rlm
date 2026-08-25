@@ -269,4 +269,96 @@ test(rlm_query_depth_one_uses_model,
     completion_test_support:model_calls(Calls),
     assertion(Calls =:= 1).
 
+test(reasoning_effort_reaches_direct_model_request,
+     [setup(completion_test_support:reset_calls)]) :-
+    llm_query("reason",
+              [ reasoning_effort(max),
+                model_handler(completion_test_support:capture_model)
+              ],
+              Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_model_request(Request),
+    assertion(Request.options.reasoning.effort == max).
+
+test(reasoning_effort_reaches_root_planner_request,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Base),
+    append(Base, [reasoning_effort(max)], Options),
+    rlm_completion("planner reasoning", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_planner_request(Request),
+    assertion(Request.options.reasoning.effort == max).
+
+test(planner_reasoning_effort_overrides_global_effort,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Base),
+    append(Base,
+           [ reasoning_effort(max),
+             planner_reasoning_effort(low)
+           ],
+           Options),
+    rlm_completion("planner override", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_planner_request(Request),
+    assertion(Request.options.reasoning.effort == low).
+
+test(no_reasoning_option_preserves_direct_request_shape,
+     [setup(completion_test_support:reset_calls)]) :-
+    llm_query("plain",
+              [model_handler(completion_test_support:capture_model)],
+              Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_model_request(Request),
+    assertion(\+ get_dict(reasoning, Request.options, _)).
+
+test(invalid_reasoning_effort_is_structured_rejection,
+     [setup(completion_test_support:reset_calls)]) :-
+    llm_query("bad effort",
+              [ reasoning_effort(turbo),
+                model_handler(completion_test_support:capture_model)
+              ],
+              Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.kind == completion_fault),
+    assertion(Error.detail == invalid_reasoning_effort(turbo)),
+    completion_test_support:model_calls(Calls),
+    assertion(Calls =:= 0).
+
+test(host_reasoning_effort_overrides_nested_plan_model_options) :-
+    Plan0 = plan([
+               rlm(plan([
+                       model(openrouter,
+                             literal("child"),
+                             _{max_tokens:32, reasoning:_{effort:low}},
+                             child_response),
+                       final(var(child_response))
+                   ]),
+                   child),
+               final(var(child))
+           ]),
+    rlm_completion:enforce_plan_reasoning_options([reasoning_effort(max)],
+                                                  Plan0,
+                                                  Plan),
+    Plan = plan([
+               rlm(plan([
+                       model(openrouter,
+                             literal("child"),
+                             ModelOptions,
+                             child_response),
+                       final(var(child_response))
+                   ]),
+                   child),
+               final(var(child))
+           ]),
+    assertion(ModelOptions.reasoning.effort == max).
+
+test(absent_host_reasoning_does_not_rewrite_nested_plan_options) :-
+    Plan0 = plan([model(openrouter,
+                        literal("child"),
+                        _{max_tokens:32, reasoning:_{effort:low}},
+                        child_response),
+                  final(var(child_response))]),
+    rlm_completion:enforce_plan_reasoning_options([], Plan0, Plan),
+    assertion(Plan == Plan0).
+
 :- end_tests(rlm_completion).

@@ -130,4 +130,30 @@ test(help_is_a_valid_session) :-
     assertion(sub_string(Session.summary, _, _, _, "Usage:")),
     assertion(is_dict(Session.output)).
 
+test(reasoning_effort_options_parse_and_propagate) :-
+    rlm_cli:parse_cli_options(['--reasoning-effort',max,
+                               '--planner-reasoning-effort',low],
+                              Options,
+                              []),
+    assertion(Options.reasoning_effort == max),
+    assertion(Options.planner_reasoning_effort == low),
+    rlm_cli:runtime_reasoning_options(Options, RuntimeOptions),
+    assertion(memberchk(reasoning_effort(max), RuntimeOptions)),
+    assertion(memberchk(planner_reasoning_effort(low), RuntimeOptions)).
+
+test(default_reasoning_options_do_not_add_runtime_controls) :-
+    rlm_cli:default_cli_options(Options),
+    rlm_cli:runtime_reasoning_options(Options, RuntimeOptions),
+    assertion(RuntimeOptions == []).
+
+test(invalid_cli_reasoning_effort_is_rejected) :-
+    cli_run([demo,'--reasoning-effort',turbo], error(Error)),
+    assertion(Error.kind == invalid_cli_request),
+    assertion(Error.detail == invalid_option(reasoning_effort, turbo)).
+
+test(help_documents_reasoning_controls) :-
+    cli_usage(Usage),
+    assertion(sub_string(Usage, _, _, _, "--reasoning-effort")),
+    assertion(sub_string(Usage, _, _, _, "--planner-reasoning-effort")).
+
 :- end_tests(rlm_cli).

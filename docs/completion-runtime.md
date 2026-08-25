@@ -97,3 +97,20 @@ real root planner
 ```
 
 The live log emits only non-secret evidence such as HTTP status, authorization result, recursion depth/count, model-call count, and fixture-token success. Planner JSON, model response text/reasoning, API keys, Authorization headers, and environment dumps are not intentionally logged.
+
+## Reasoning controls
+
+Completion callers may set `reasoning_effort(Effort)` using the closed effort
+enum `none|minimal|low|medium|high|xhigh|max`. When present, the runtime sends
+`reasoning:{effort:Effort}` on direct model requests and enforces the same host
+selection on every model step in the validated symbolic plan, including nested
+`rlm`, `parallel`, and `retry` plans. Model-produced request options cannot
+downgrade or widen an explicit host-selected reasoning effort.
+
+The root planner inherits `reasoning_effort/1` by default. A trusted caller may
+set `planner_reasoning_effort(Effort)` to control the planner independently. If
+no reasoning option is supplied, no reasoning field is added and legacy request
+shape/behavior is preserved.
+
+The CLI exposes the same contract as `--reasoning-effort` and
+`--planner-reasoning-effort`.

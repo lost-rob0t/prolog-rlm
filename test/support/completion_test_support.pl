@@ -7,6 +7,10 @@
             cyclic_recursive_planner/2,
             child_tool_planner/2,
             invalid_planner/2,
+            capture_planner/2,
+            capture_model/2,
+            last_planner_request/1,
+            last_model_request/1,
             fake_model/2,
             slow_model/2,
             slow_model_started/3,
@@ -19,10 +23,14 @@
 
 :- dynamic planner_call_count/1.
 :- dynamic model_call_count/1.
+:- dynamic last_planner_request/1.
+:- dynamic last_model_request/1.
 
 reset_calls :-
     retractall(planner_call_count(_)),
     retractall(model_call_count(_)),
+    retractall(last_planner_request(_)),
+    retractall(last_model_request(_)),
     assertz(planner_call_count(0)),
     assertz(model_call_count(0)).
 
@@ -108,6 +116,19 @@ child_tool_planner(_, ok(Output)) :-
 invalid_planner(_, ok(Response)) :-
     bump_planner,
     fake_response("not a typed plan", Response).
+
+capture_planner(Request, ok(Output)) :-
+    bump_planner,
+    retractall(last_planner_request(_)),
+    assertz(last_planner_request(Request)),
+    Plan = plan([final(literal("captured-planner"))]),
+    planner_output(Plan, Output).
+
+capture_model(Request, ok(Response)) :-
+    bump_model,
+    retractall(last_model_request(_)),
+    assertz(last_model_request(Request)),
+    fake_response("CAPTURED_MODEL_OK", Response).
 
 fake_model(_, ok(Response)) :-
     bump_model,
