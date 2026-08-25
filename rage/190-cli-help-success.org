@@ -1,0 +1,37 @@
+#+title: RAGE closure for issue 190 CLI help semantics
+
+* Scope
+- Issue :: #190
+- Starting main :: =1636c7111389ce2d5430bcc111f064635b933fca=
+- Defect :: =--help= is parsed as an ordinary option below recognized subcommands, so =rlm --help= returns an invalid CLI request instead of a successful non-provider help path.
+
+* Analyze
+Current =rlm_cli= has a successful literal =help= command, but global =--help= falls through to unknown-command handling and subcommand =--help= reaches =parse_options/5=, which rejects it as =unknown_option('--help')=. Provider construction occurs after option parsing, so the narrow repair is entirely at CLI dispatch.
+
+* TDD contract
+Add deterministic regressions proving:
+- global =--help= is a passing help session;
+- =rlm --help= is a passing help session without entering provider execution;
+- executing both help forms yields exit code 0;
+- an unknown command followed by =--help= remains an unknown-command error.
+
+The test-only commit is expected to fail on the starting main before realization.
+
+* Design
+Treat help as control-plane dispatch, not as a normal runtime option. Intercept =--help= before subcommand option parsing only when the command is a known CLI surface. Reuse the existing =cli_usage/1= text and normal passing =cli_session= output path. Keep literal =help= behavior compatible. Do not add provider-specific behavior or a second parser.
+
+* Adversarial review
+- Help must not construct an OpenRouter/custom provider or require credentials.
+- Unknown commands must not become valid merely because =--help= follows them.
+- Existing unknown-option behavior remains unchanged when help was not requested.
+- Existing literal =help= command remains compatible.
+- Help output continues through =emit_session/1= so =cli_execute/2= derives exit 0 from the same session contract rather than a special process-exit escape hatch.
+
+* Decision
+GO. The dispatch-level repair is the smallest coherent fix and preserves the existing parser/provider/runtime boundaries.
+
+* Realize
+PENDING red evidence.
+
+* Verify
+PENDING exact-head verification.
