@@ -2,6 +2,9 @@
 
 :- use_module('../prolog/rlm_agent').
 :- use_module('../prolog/rlm_async').
+:- use_module('../prolog/rlm_subagent').
+:- use_module('../prolog/rlm_tool').
+:- use_module('support/completion_test_support').
 
 worker_handler(work(echo, Value), Value).
 blocking_handler(Queue, work(block), _) :-
@@ -130,6 +133,82 @@ child_result_backpressure_for(Parent, Child, Event) :-
     Event.child == Child,
     Event.result == ok(evidence),
     Event.cause == error(mailbox_full).
+
+test(subagent_records_trusted_delegation_provenance,
+     [setup(completion_test_support:reset_calls)]) :-
+    Caps = [tool(rlm_subagent), rlm, model(openrouter)],
+    ChildCaps = [rlm, model(openrouter)],
+    agent_runtime_create([root_capabilities(Caps), max_agents(3)], Runtime),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( agent_spawn(Runtime, none, agent_spec(parent), Caps, ok(Parent)),
+          Options = [planner_handler(completion_test_support:capture_planner),
+                     capabilities(ChildCaps),
+                     child_capabilities(ChildCaps),
+                     explicit_skills(['rlm-facts']),
+                     disabled_skills(['rlm-operate',
+                                      'rlm-recurse',
+                                      'rlm-constraints']),
+                     subagent_role(reviewer)],
+          rlm_subagent_register(Registry, Runtime, Parent, ChildCaps,
+                                text("bounded evidence"), Options, ok(_)),
+          tool_invoke(Registry, Caps, rlm_subagent,
+                      json{query:"Need a factual review."}, [],
+                      ok(Execution), _),
+          Envelope = Execution.value,
+          Expected = delegation{role:reviewer,
+                                skills:['rlm-facts'],
+                                source:trusted_host},
+          assertion(Envelope.status == completed),
+          assertion(Envelope.delegation == Expected),
+          Child = Envelope.correlation.child,
+          agent_status(Runtime, Child, ok(ChildStatus)),
+          assertion(ChildStatus.spec.metadata.delegation == Expected),
+          assertion(ChildStatus.capabilities == ChildCaps),
+          completion_test_support:last_planner_request(Request),
+          Request.messages = [System, User],
+          assertion(System.role == system),
+          assertion(User.role == user),
+          assertion(sub_string(System.content, _, _, _, "RLM_FACTS_BODY")),
+          assertion(\+ sub_string(System.content, _, _, _,
+                                  "RLM_OPERATE_BODY")),
+          assertion(\+ sub_string(System.content, _, _, _,
+                                  "RLM_RECURSE_BODY")),
+          assertion(\+ sub_string(System.content, _, _, _,
+                                  "RLM_CONSTRAINTS_BODY"))
+        ),
+        ( tool_registry_destroy(Registry),
+          agent_runtime_destroy(Runtime)
+        )).
+
+test(invalid_subagent_role_fails_before_child_creation) :-
+    Caps = [tool(rlm_subagent), rlm, model(openrouter)],
+    ChildCaps = [rlm, model(openrouter)],
+    agent_runtime_create([root_capabilities(Caps), max_agents(3)], Runtime),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( agent_spawn(Runtime, none, agent_spec(parent), Caps, ok(Parent)),
+          Options = [planner_handler(completion_test_support:direct_planner),
+                     capabilities(ChildCaps),
+                     child_capabilities(ChildCaps),
+                     subagent_role(_{not:an_identifier})],
+          rlm_subagent_register(Registry, Runtime, Parent, ChildCaps,
+                                text("bounded evidence"), Options, ok(_)),
+          agent_children(Runtime, Parent, Before),
+          tool_invoke(Registry, Caps, rlm_subagent,
+                      json{query:"Need evidence."}, [], ok(Execution), _),
+          Envelope = Execution.value,
+          assertion(Envelope.status == failed),
+          assertion(Envelope.error.kind == invalid_subagent_role),
+          assertion(Envelope.correlation.child == none),
+          agent_children(Runtime, Parent, After),
+          assertion(After == Before)
+        ),
+        ( tool_registry_destroy(Registry),
+          agent_runtime_destroy(Runtime)
+        )).
 
 pump_until_message(_, _, Attempts) :-
     Attempts =< 0,
