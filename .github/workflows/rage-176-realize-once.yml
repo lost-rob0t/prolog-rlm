@@ -1,0 +1,291 @@
+name: RAGE 176 one-shot realization
+
+on:
+  push:
+    branches:
+      - rage/176-root-planner-tool-projection
+
+permissions:
+  contents: write
+
+jobs:
+  realize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rage/176-root-planner-tool-projection
+          fetch-depth: 0
+
+      - name: Apply reviewed #176 realization
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          completion = Path('prolog/rlm_completion.pl')
+          text = completion.read_text()
+
+          old = '''    runtime_tools(Options,
+                  Capabilities,
+                  RuntimeTools,
+                  ToolSchemas),
+    planner_prompt(Query,
+'''
+          new = '''    runtime_tool_bindings(Options,
+                          Capabilities,
+                          RuntimeTools,
+                          ToolRegistry),
+    provider_tool_projection(Query,
+                             ToolRegistry,
+                             Capabilities,
+                             Options,
+                             Budget,
+                             ToolProjection),
+    ToolSchemas = ToolProjection.tool_schemas,
+    planner_prompt(Query,
+'''
+          assert text.count(old) == 1, 'completion call-site drifted'
+          text = text.replace(old, new)
+
+          old = '''runtime_tools(Options, Capabilities, Tools, Schemas) :-
+    option_value(tools, Options, [], DirectTools),
+    (   is_list(DirectTools)
+    ->  true
+    ;   throw(completion_fault(invalid_tools(DirectTools)))
+    ),
+    option_value(tool_registry, Options, none, Registry),
+    (   Registry == none
+    ->  RegistryTools = [], Schemas = []
+    ;   tool_invocation_options(Options, InvocationOptions),
+        tool_registry_runtime_tools(Registry,
+                                    Capabilities,
+                                    InvocationOptions,
+                                    RegistryTools),
+        tool_discover(Registry, DiscoveredSchemas),
+        include(tool_schema_capability_allowed(Capabilities),
+                DiscoveredSchemas,
+                Schemas)
+    ),
+    append(RegistryTools, DirectTools, Tools).
+
+tool_schema_capability_allowed(Capabilities, Schema) :-
+    is_dict(Schema),
+    get_dict(capability, Schema, Capability),
+    capability_allowed(Capabilities, Capability).
+'''
+          new = '''runtime_tool_bindings(Options, Capabilities, Tools, Registry) :-
+    option_value(tools, Options, [], DirectTools),
+    (   is_list(DirectTools)
+    ->  true
+    ;   throw(completion_fault(invalid_tools(DirectTools)))
+    ),
+    option_value(tool_registry, Options, none, Registry),
+    (   Registry == none
+    ->  RegistryTools = []
+    ;   tool_invocation_options(Options, InvocationOptions),
+        tool_registry_runtime_tools(Registry,
+                                    Capabilities,
+                                    InvocationOptions,
+                                    RegistryTools)
+    ),
+    append(RegistryTools, DirectTools, Tools).
+
+provider_tool_projection(_, none, _, Options, _, Projection) :-
+    !,
+    prompt_compile_mode(Options, _),
+    Projection = provider_projection{tool_schemas:[],
+                                     active_units:[],
+                                     fingerprint:none}.
+provider_tool_projection(Query,
+                         Registry,
+                         Capabilities,
+                         Options,
+                         Budget,
+                         Projection) :-
+    prompt_compile_mode(Options, Mode),
+    completion_skill_context_policy(Budget, Policy),
+    setup_call_cleanup(
+        rlm_prompt_compiler:prompt_catalog_create(Catalog),
+        provider_tool_projection_with_catalog(Catalog,
+                                              Query,
+                                              Registry,
+                                              Capabilities,
+                                              Mode,
+                                              Policy,
+                                              Projection),
+        rlm_prompt_compiler:prompt_catalog_destroy(Catalog)).
+
+provider_tool_projection_with_catalog(Catalog,
+                                      Query,
+                                      Registry,
+                                      Capabilities,
+                                      Mode,
+                                      Policy,
+                                      Projection) :-
+    rlm_prompt_compiler:prompt_catalog_register_tool_registry(Catalog,
+                                                              Registry,
+                                                              [],
+                                                              ImportOutcome),
+    require_tool_catalog_import(ImportOutcome),
+    rlm_prompt_compiler:prompt_compile(Catalog,
+                                       Query,
+                                       [ capabilities(Capabilities),
+                                         mode(Mode),
+                                         policy(Policy)
+                                       ],
+                                       CompileOutcome),
+    require_prompt_compile(CompileOutcome, Compiled),
+    rlm_prompt_compiler:prompt_compiler_tool_schemas(Compiled, ToolSchemas),
+    Projection = provider_projection{tool_schemas:ToolSchemas,
+                                     active_units:Compiled.active_units,
+                                     fingerprint:Compiled.fingerprint}.
+
+require_tool_catalog_import(ok(_)) :- !.
+require_tool_catalog_import(error(Error)) :-
+    throw(completion_fault(tool_catalog_import_failed(Error))).
+
+prompt_compile_mode(Options, Mode) :-
+    option_value(prompt_compile_mode, Options, compiled, Mode),
+    require_prompt_compile_mode(Mode).
+
+require_prompt_compile_mode(compiled) :- !.
+require_prompt_compile_mode(all_tools) :- !.
+require_prompt_compile_mode(Mode) :-
+    throw(completion_fault(invalid_prompt_compile_mode(Mode))).
+'''
+          assert text.count(old) == 1, 'runtime_tools definition drifted'
+          text = text.replace(old, new)
+
+          old = 'Registered tool schemas: ~q\\n\\\n'
+          new = 'Active tool schemas: ~q\\n\\\n'
+          assert text.count(old) == 1, 'planner schema label drifted'
+          text = text.replace(old, new)
+          completion.write_text(text)
+
+          test = Path('test/rlm_completion_tool_visibility_test.pl')
+          t = test.read_text()
+
+          old = '''                tool_registry(Registry),
+                capabilities([tool(allowed_research_tool)]),
+                child_capabilities([])
+'''
+          new = '''                tool_registry(Registry),
+                prompt_compile_mode(all_tools),
+                capabilities([tool(allowed_research_tool)]),
+                child_capabilities([])
+'''
+          assert t.count(old) == 1, 'capability-only fixture drifted'
+          t = t.replace(old, new)
+
+          old = '''test(root_planner_projection_contract_detects_raw_registry_visibility,
+     [setup(completion_test_support:reset_calls)]) :-
+'''
+          new = '''test(root_planner_projection_contract_uses_compiler_visibility,
+     [setup(completion_test_support:reset_calls)]) :-
+'''
+          assert t.count(old) == 1, 'projection test name drifted'
+          t = t.replace(old, new)
+
+          old = '''          ProjectionOutcome = error(ProjectionError),
+          assertion(get_dict(kind,
+                             ProjectionError,
+                             raw_registry_visibility))
+'''
+          new = '''          assertion(ProjectionOutcome == ok)
+'''
+          assert t.count(old) == 1, 'expected-failure contract drifted'
+          t = t.replace(old, new)
+
+          marker = '''        tool_registry_destroy(Registry)).
+
+:- end_tests(rlm_completion_tool_visibility).
+'''
+          addition = '''        tool_registry_destroy(Registry)).
+
+test(all_tools_compatibility_still_flows_through_compiler,
+     [setup(completion_test_support:reset_calls)]) :-
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        ( register_fixture_tool(Registry,
+                                weather_lookup,
+                                "WEATHER_ALL_TOOLS_SENTINEL_176"),
+          register_fixture_tool(Registry,
+                                unrelated_admin_export,
+                                "UNRELATED_ALL_TOOLS_SENTINEL_176")
+        ),
+        ( rlm_completion(
+              "use weather_lookup for the weather lookup",
+              text("opaque context"),
+              [ planner_handler(completion_test_support:capture_planner),
+                tool_registry(Registry),
+                prompt_compile_mode(all_tools),
+                capabilities([tool(weather_lookup),
+                              tool(unrelated_admin_export)]),
+                child_capabilities([])
+              ],
+              Outcome),
+          assertion(Outcome = ok(_)),
+          completion_test_support:last_planner_request(Request),
+          planner_request_prompt(Request, Prompt),
+          assertion(sub_string(Prompt, _, _, _,
+                               "WEATHER_ALL_TOOLS_SENTINEL_176")),
+          assertion(sub_string(Prompt, _, _, _,
+                               "UNRELATED_ALL_TOOLS_SENTINEL_176"))
+        ),
+        tool_registry_destroy(Registry)).
+
+test(invalid_prompt_compile_mode_fails_before_planner,
+     [setup(completion_test_support:reset_calls)]) :-
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        register_fixture_tool(Registry,
+                              weather_lookup,
+                              "INVALID_MODE_SENTINEL_176"),
+        ( rlm_completion(
+              "use weather_lookup",
+              text("opaque context"),
+              [ planner_handler(completion_test_support:capture_planner),
+                tool_registry(Registry),
+                prompt_compile_mode(unbounded_magic),
+                capabilities([tool(weather_lookup)]),
+                child_capabilities([])
+              ],
+              Outcome),
+          assertion(Outcome = error(Error)),
+          assertion(get_dict(kind, Error, completion_fault)),
+          assertion(get_dict(detail,
+                             Error,
+                             invalid_prompt_compile_mode(unbounded_magic))),
+          completion_test_support:planner_calls(Calls),
+          assertion(Calls =:= 0)
+        ),
+        tool_registry_destroy(Registry)).
+
+:- end_tests(rlm_completion_tool_visibility).
+'''
+          assert t.count(marker) == 1, 'test epilogue drifted'
+          t = t.replace(marker, addition)
+          test.write_text(t)
+          PY
+
+      - name: Install SWI-Prolog
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y swi-prolog-nox >/dev/null
+
+      - name: Run focused #176 contract
+        shell: bash
+        run: swipl -q -g run_tests -t halt test/rlm_completion_tool_visibility_test.pl
+
+      - name: Commit realization and remove one-shot runner
+        shell: bash
+        run: |
+          rm .github/workflows/rage-176-realize-once.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add prolog/rlm_completion.pl test/rlm_completion_tool_visibility_test.pl .github/workflows/rage-176-realize-once.yml
+          git commit -m 'feat: compile root planner tool visibility'
+          git push origin HEAD:rage/176-root-planner-tool-projection
