@@ -228,4 +228,25 @@ test(secret_redaction_removes_all_occurrences) :-
     assertion(\+ sub_string(SafeText, _, _, _, "unit-secret-do-not-log")),
     assertion(sub_string(SafeText, _, _, _, "<redacted>")).
 
+test(provider_context_prepends_host_messages_once) :-
+    Prefix = [message{role:system, content:"RLM_OPERATE_BODY"}],
+    Request0 = model_request{
+                   messages:[message{role:user, content:"leaf prompt"}],
+                   options:_{max_tokens:32}
+               },
+    rlm_chain:provider_context_request(Prefix, Request0, Request),
+    assertion(Request.messages ==
+              [ message{role:system, content:"RLM_OPERATE_BODY"},
+                message{role:user, content:"leaf prompt"}
+              ]),
+    assertion(Request.options == Request0.options).
+
+test(provider_context_empty_prefix_preserves_request) :-
+    Request = model_request{
+                  messages:[message{role:user, content:"raw leaf"}],
+                  options:_{}
+              },
+    rlm_chain:provider_context_request([], Request, Projected),
+    assertion(Projected == Request).
+
 :- end_tests(rlm_chain).
