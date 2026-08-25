@@ -196,7 +196,7 @@ test(invalid_subagent_role_fails_before_child_creation) :-
           Options = [planner_handler(completion_test_support:direct_planner),
                      capabilities(ChildCaps),
                      child_capabilities(ChildCaps),
-                     subagent_role(_{not:an_identifier})],
+                     subagent_role("Reviewer Role")],
           rlm_subagent_register(Registry, Runtime, Parent, ChildCaps,
                                 text("bounded evidence"), Options, ok(_)),
           agent_children(Runtime, Parent, Before),
