@@ -130,6 +130,33 @@ test(help_is_a_valid_session) :-
     assertion(sub_string(Session.summary, _, _, _, "Usage:")),
     assertion(is_dict(Session.output)).
 
+test(global_long_help_is_a_valid_session) :-
+    cli_run(['--help'], ok(Session)),
+    assertion(Session.status == pass),
+    assertion(Session.command == help),
+    assertion(sub_string(Session.summary, _, _, _, "Usage:")),
+    assertion(is_dict(Session.output)).
+
+test(rlm_long_help_is_a_valid_non_provider_session) :-
+    cli_run([rlm,'--help'], ok(Session)),
+    assertion(Session.status == pass),
+    assertion(Session.command == help(rlm)),
+    assertion(sub_string(Session.summary, _, _, _, "prolog-rlm rlm QUERY")),
+    assertion(is_dict(Session.output)).
+
+test(long_help_execute_paths_exit_zero) :-
+    with_output_to(string(_GlobalOutput),
+                   cli_execute(['--help'], GlobalExit)),
+    with_output_to(string(_RlmOutput),
+                   cli_execute([rlm,'--help'], RlmExit)),
+    assertion(GlobalExit =:= 0),
+    assertion(RlmExit =:= 0).
+
+test(unknown_command_with_help_remains_unknown) :-
+    cli_run([wat,'--help'], error(Error)),
+    assertion(Error.kind == invalid_cli_request),
+    assertion(Error.detail == unknown_command(wat)).
+
 test(reasoning_effort_options_parse_and_propagate) :-
     rlm_cli:parse_cli_options(['--reasoning-effort',max,
                                '--planner-reasoning-effort',low],
