@@ -1,0 +1,64 @@
+#+title: RAGE closure record for issue 203 subagent skill and role provenance
+
+* Scope
+- Issue :: #203
+- Parent :: #172
+- Permanent-context design :: #183
+- Starting main :: =a79e9c862b74449d73bcadc729d2a38b5163e10d=
+- Goal :: make canonical =rlm_subagent= carry trusted selected-skill and generic role provenance without exposing model control or widening child authority.
+
+* Analyze
+Current =rlm_subagent= already captures trusted =CompletionOptions= at registration and passes them into the child's canonical =rlm_completion=. Therefore =explicit_skills([...])= already reaches the child prompt compiler; a second selector or skill propagation mechanism would be duplicate policy.
+
+The missing seam is observability: the spawned child and returned =subagent_result= do not state which trusted role/skill choice caused the delegation. Issue #172 requires selected-skill provenance and generic reviewer/critic/researcher role metadata while preserving narrowed child capabilities and the canonical supervised runtime.
+
+* TDD contract
+The first branch commit =383cd91e2e89c355a3b32bf1de44338f4a880445= adds the delegation-provenance contract before runtime implementation.
+
+Exact-head CI on that test-only commit failed only the two new tests: 873/875 passed. One failure showed that the old result envelope had no =delegation= key; the other showed that the old runtime did not reject invalid host role configuration before child execution. Clean SWI pack, Tree-sitter, Nix, Paid OpenRouter and the REAL OpenRouter CI job remained green.
+
+Required behavior:
+- host-selected role and explicit skills are present in the returned subagent envelope;
+- spawned child metadata contains the same role/skill/source fields;
+- exact child planner request proves the selected =rlm-facts= body reaches the child while disabled core skills do not;
+- child capabilities remain exactly the configured narrowed ceiling;
+- invalid ground role data fails before child creation;
+- model-facing tool arguments remain query-only and closed;
+- subagent-only role metadata does not leak into generic =rlm_completion= options.
+
+* Design
+Keep =explicit_skills([...])= as the existing canonical trusted skill-selection input. Add a host-only =subagent_role(Role)= registration/completion option. Normalize role and explicit-skill identities into bounded inert identifiers before child spawn. Strip only =subagent_role/1= before invoking child =rlm_completion=, leaving =explicit_skills/1= to the canonical child prompt compiler.
+
+Build one inert record:
+
+=delegation{role:Role, skills:Skills, source:trusted_host}=
+
+Attach it to the subagent result envelope and to the child agent metadata. The =rlm_agent= metadata normalizer intentionally canonicalizes nested dict tags to =agent_metadata=; tests therefore assert the child metadata fields rather than introducing a second metadata normalization rule.
+
+Preserve =subagent_after_options/7= because the repository's canonical async-composition test inspects this existing internal seam to prove the subagent path calls =agent_supervised_call_execute/6= rather than a sync wrapper. Delegation is carried inside the options outcome instead of changing that predicate arity.
+
+* Adversarial review
+- =rlm_subagent= tool schema remains exactly one required =query= field with =additional_properties:false=; the model cannot send role or skills.
+- Role/skill metadata is visibility/provenance only and never changes =ChildCapabilities=, authority context, runtime id, agent id, handlers, or effects.
+- Child capability replacement remains the existing =child_completion_options= path.
+- Unknown/invalid =explicit_skills= still fail through the canonical child compiler; this layer records the host selection request but does not invent admission success.
+- Malformed role/skill errors do not echo non-ground host values into result envelopes.
+- Trusted tool handlers remain ground. The invalid-role fixture is deliberately ground-but-invalid; a non-ground handler is correctly rejected earlier by =rlm_tool= registration and is not a valid test of invocation-time role validation.
+- No second subagent API, selector, scheduler, authority boundary, or provider path is introduced.
+- Failure envelopes preserve delegation provenance once a child exists; pre-spawn validation failure records =delegation:none= because no valid delegation record was admitted.
+
+* Decision
+GO. This is the smallest first implementation slice under #172. It composes the already-landed skill compiler and supervised subagent runtime rather than inventing another agent system.
+
+* Realize
+- TDD commit :: =383cd91e2e89c355a3b32bf1de44338f4a880445=
+- First runtime implementation :: =b2380c20c4460591d07e331cfb9f8ddc2db4904a=
+- ABI/ground-failure repair :: =13d6a9b54c3ae6db88f1e7cda24b9cbf496c6cc4=
+- Metadata-shape test repair :: =837f73fbca9584d3b26d87828b028d39dd48e793=
+- Ground invalid-role fixture :: =0ba7e1409a3c9d401d7924e5a4721aaec800d130=
+- PR :: #204
+
+The first implementation CI exposed three precise integration failures: nested child metadata is canonically retagged, the async-composition probe expected =subagent_after_options/7=, and the original malformed-role fixture accidentally made the trusted handler non-ground. The next repair preserved all three existing runtime contracts. The subsequent head reduced deterministic failure to only the non-ground fixture mismatch before that fixture was corrected.
+
+* Verify
+GitHub Actions on the exact final head containing this record is authoritative. Required lanes are CI, Clean SWI pack install, Tree-sitter FFI, Nix flake, and Paid OpenRouter. CI must include green deterministic PlUnit/conformance/deep-recursion/CLI/restart checks and the REAL OpenRouter integration. Do not mark ready or merge until every final-head lane succeeds and the PR has no unresolved review/thread blockers.
