@@ -4,6 +4,8 @@
 
 This roadmap tracks the shortest path from the current runtime to a useful coding agent. It is not a second `TODO.md`, and it should not duplicate every core issue. When implementation changes the dependency picture, update this file in the same PR.
 
+**Repository boundary:** the AgentProlog product lives in the standalone `lost-rob0t/agentProlog` repository. There is no current nested `agentProlog/` product harness in `prolog-rlm`. This repository owns reusable runtime contracts and conformance evidence only.
+
 ## How far are we?
 
 The hard runtime substrate is mostly here. The product layer is not.
@@ -39,7 +41,7 @@ Still missing for a useful coding agent:
 - a headless coding loop that wires project inspection, edits, re-indexing, verification, and repair to those shared runtime concepts;
 - nonblocking approval/diff handling wired from the real coding workflow into the UI facade;
 - project instructions/context discovery for coding work;
-- the actual OpenTUI reference terminal client and native editor clients.
+- downstream product clients and editor integrations over the stable frontend boundary.
 
 A reasonable description is: **the runtime foundation is roughly three quarters built, but the end-user coding agent is closer to halfway than finished.** The remaining work is smaller than building another agent framework, but larger than writing a terminal renderer.
 
@@ -48,17 +50,17 @@ A reasonable description is: **the runtime foundation is roughly three quarters 
 Keep the layers boring and explicit:
 
 ```text
-JS TUI / CL TUI / Nim / Emacs / Lem
+standalone AgentProlog / DSH plugin / JS / CL / Nim / Emacs / Lem
               |
               v
        prolog_agent_ui_v1
  snapshots + ordered events + commands
               |
               v
-      AgentProlog UI facade
+     prolog-rlm frontend facade
               |
               v
-coding workflow + external tool pack + project parser/indexer
+ downstream coding workflow + external tool pack + project parser/indexer
   filesystem + git + process/test tools + canonical project KB
               |
               v
@@ -146,7 +148,7 @@ The project KB remains distinct from artifacts, graph checkpoints, authority, ef
 
 ## Phase 3: headless coding agent and frontend protocol
 
-Build the coding workflow before the full-screen UI. This gives us something testable instead of debugging terminal escape codes and autonomous edits at the same time, a classic human hobby.
+Build the coding workflow before coupling it to any particular renderer. This gives us something testable instead of debugging presentation and autonomous edits at the same time.
 
 The minimum workflow is:
 
@@ -180,7 +182,7 @@ The protocol owns:
 - optional extension handling that advances sequence without inventing semantics;
 - fail-closed handling for unsupported required extensions;
 - deterministic replay and duplicate suppression;
-- a runtime facade that converts canonical AgentProlog events once into frontend-safe values;
+- a runtime facade that converts canonical agent events once into frontend-safe values;
 - one-record-per-line UTF-8 NDJSON as the first polyglot encoding;
 - a child `swipl` stdio fixture/server while leaving transport semantics abstract enough for later Unix/local sockets.
 
@@ -192,66 +194,38 @@ negotiate -> canonical snapshot -> resume events after snapshot.at_seq
 
 A frontend never rebuilds domain state from pretty logs or raw trace internals.
 
-The first deterministic golden fixture covers model streaming, tools, an unknown tool, approvals, questions, subagents, verification, usage, traces, optional unknown events, reconnect and indeterminate effects. Stress coverage interleaves semantic events with 10,000 text deltas and verifies that order is preserved while snapshots remain bounded.
+The deterministic golden fixture covers model streaming, tools, an unknown tool, approvals, questions, subagents, verification, usage, traces, optional unknown events, reconnect and indeterminate effects. Stress coverage interleaves semantic events with 10,000 text deltas and verifies that order is preserved while snapshots remain bounded.
 
 The exact wire contract is documented in `docs/prolog-agent-ui-v1.md`.
 
 ### Headless workflow still required
 
-The protocol does **not** replace the real coding workflow. The workflow still needs to emit canonical events such as run/message/tool/approval/question/subagent/verification/usage/trace/effect/completion transitions through the facade while remaining authoritative for execution and state.
+The protocol does **not** replace the real coding workflow. The downstream workflow still needs to emit canonical events such as run/message/tool/approval/question/subagent/verification/usage/trace/effect/completion transitions through the facade while remaining authoritative for execution and state.
 
-A supported command should eventually feel like:
+From the standalone AgentProlog product, a supported command should eventually feel like:
 
 ```sh
-swipl -q -s agentProlog/bin/agent-prolog.pl -- \
-  "Add a timeout to the MCP request path and run the relevant tests"
+agent-prolog "Add a timeout to the MCP request path and run the relevant tests"
 ```
 
 The command should finish only when the exact Frozen Spec's configured acceptance checks pass or the run ends with a structured blocked/failed outcome.
 
-## Phase 4: OpenCode-style reference TUI and native editor clients
+## Phase 4: downstream product clients and editor integrations
 
-Only after the protocol/replay boundary is stable should the first rich client be built.
+Rich clients belong downstream and consume the stable runtime protocol rather than living as nested product code in `prolog-rlm`.
 
-The current renderer direction is:
+The researched renderer directions remain useful as downstream options:
 
-- **JavaScript/TypeScript:** OpenTUI + SolidJS as the reference standalone TUI path;
-- **Common Lisp:** a shared `prolog-agent-client`, with Tuition as the first standalone TUI spike;
-- **Nim:** a protocol client regardless of whether the final renderer is pure Illwill or an OpenTUI C ABI;
-- **Emacs:** native buffers/diffs/compilation UI over async process/socket transport, with Sweep optional for bounded direct calls;
-- **Lem:** native editor integration over the same Common Lisp client.
+- **DeepSeek Harness:** the approved #184 plugin-only path preserves the official upstream Web/headless surfaces and replaces only the agent factory/control seam needed to route canonical work through Prolog-RLM;
+- **JavaScript/TypeScript:** OpenTUI + SolidJS remains a possible standalone TUI path, not a core dependency;
+- **Common Lisp:** a shared protocol client, with Tuition as a possible standalone TUI;
+- **Nim:** a protocol client regardless of final renderer;
+- **Emacs:** native buffers/diffs/compilation UI over async process/socket transport;
+- **Lem:** native editor integration over the same renderer-independent protocol.
 
-The first standalone TUI only needs five useful surfaces:
+A downstream terminal client only needs a small set of useful surfaces initially: conversation/model stream, active task/tool state, diff/file preview, approvals, and compact usage/verification/error state.
 
-1. conversation/model stream;
-2. current task and active tool state;
-3. diff/file preview;
-4. approval prompt with allow-once/session/project choices where supported;
-5. compact usage, verification, and error status.
-
-The client must consume asynchronous protocol events so model, tool, and test work never freezes navigation or approval handling.
-
-Example interaction:
-
-```text
-> fix the failing authority tests
-
-Searching project...
-Reading prolog/rlm_authority.pl
-Editing test/rlm_authority_test.pl
-
-Diff ready: 2 files, +31 -8
-[a] allow once  [s] allow session  [p] allow project  [d] deny
-
-Running authority tests... PASS
-Running deterministic gate... PASS
-
-Done. 2 files changed. Trace: run_42
-```
-
-The UI should display structured outcomes, not translate every error into cheerful prose and hope nobody notices.
-
-If the reference JS client needs domain logic that is absent from `prolog_agent_ui_v1`, treat that as a protocol/facade defect. Do not smuggle runtime semantics into TypeScript merely because it is convenient.
+If a client needs domain logic that is absent from `prolog_agent_ui_v1`, treat that as a protocol/facade defect or an explicitly versioned extension. Do not smuggle runtime semantics into a renderer merely because it is convenient.
 
 ## Phase 5: coding-agent quality bar
 
@@ -270,14 +244,14 @@ Before calling the first release useful, cover these behaviors end to end:
 - reconnecting a frontend obtains canonical state instead of guessing from partial local history;
 - unknown tools remain renderable through a generic safe representation;
 - unsupported required protocol extensions fail closed;
-- the TUI remains responsive while provider, tool, and test operations are active;
+- clients remain responsive while provider, tool, and test operations are active;
 - final output shows changed files, verification results, usage, and trace reference.
 
 ## Milestone definition
 
 `PrologAgent v0.1` is reached when a user can open a repository, give a coding task, watch the model inspect and edit files, approve mutations, run tests, review the final diff, and receive a structured completion result without granting ambient shell/filesystem authority.
 
-The first release does not need IDE parity, a plugin marketplace, background daemons, arbitrary shell access, every OpenCode feature, or all researched frontend implementations. It needs a trustworthy inspect/edit/re-index/verify loop, a stable frontend contract, and at least one good terminal client.
+The first release does not need IDE parity, a plugin marketplace, background daemons, arbitrary shell access, every OpenCode feature, or all researched frontend implementations. It needs a trustworthy inspect/edit/re-index/verify loop, a stable frontend contract, and at least one good downstream client.
 
 ## Dependency map
 
@@ -293,6 +267,8 @@ Current core and product issues that materially affect the roadmap:
 - #71: workflow execution/resume must remain bound to the exact Frozen Spec; the Spec-bound graph foundation now demonstrates that invariant, while full TaskIR/continuation integration remains open.
 - #74-#77: durable project state, instructions, and bounded persistent authorization.
 - #93/#96-#99: #94/#95 are the direct parser and declarative source-registry substrate; the remaining child issues are required before the canonical project parser/indexer and project KB are complete.
-- #109: the renderer-independent `prolog_agent_ui_v1` protocol/replay foundation is landed; the next renderer slice is the small OpenTUI + SolidJS reference client against its deterministic fixture.
+- #109: the renderer-independent `prolog_agent_ui_v1` protocol/replay foundation is landed in core; concrete renderer/product work is downstream.
+- #184: approved plugin-only DeepSeek Harness architecture; implementation starts from the cleaned runtime boundary rather than reviving PR #125 or a nested harness.
+- #186: removes legacy nested harnesses and restores the runtime-only repository boundary before #184 implementation.
 
-Do not wait for every P1 research idea before starting `agentProlog/`. Build against stable public contracts, keep optional integrations optional, and let the first usable coding loop drive the remaining abstractions.
+Do not wait for every P1 research idea before advancing the standalone `lost-rob0t/agentProlog` product. Build downstream against stable public contracts, keep optional integrations optional, and let the first usable coding loop drive the remaining abstractions.
