@@ -15,7 +15,7 @@ Add deterministic regressions proving:
 - executing both help forms yields exit code 0;
 - an unknown command followed by =--help= remains an unknown-command error.
 
-The test-only commit is expected to fail on the starting main before realization.
+The test-only commit =75308f53e68b444700d2678780a238860b53adbc= encodes the red contract. No executable CI result attached to that intermediate SHA before realization, so the red evidence is limited to the issue reproduction and deterministic control-flow mismatch; no CI failure is claimed.
 
 * Design
 Treat help as control-plane dispatch, not as a normal runtime option. Intercept =--help= before subcommand option parsing only when the command is a known CLI surface. Reuse the existing =cli_usage/1= text and normal passing =cli_session= output path. Keep literal =help= behavior compatible. Do not add provider-specific behavior or a second parser.
@@ -31,7 +31,12 @@ Treat help as control-plane dispatch, not as a normal runtime option. Intercept 
 GO. The dispatch-level repair is the smallest coherent fix and preserves the existing parser/provider/runtime boundaries.
 
 * Realize
-PENDING red evidence.
+- Implementation commit :: =602a19a0143c6310c9478e219a3440b91fae006c=
+- =help_session/2= centralizes the existing passing help-session shape.
+- global =--help= dispatches directly to that path.
+- =cli_help_scope/3= recognizes help only for known command surfaces, including nested =effect-store migrate=, before normal option parsing.
+- unknown commands still fall through to =unknown_command/1=.
+- no provider, capability, authority, effect, scheduler, or runtime execution contract changed.
 
 * Verify
-PENDING exact-head verification.
+Exact-head GitHub Actions is authoritative. Required PR lanes include CI, Clean SWI pack install, Tree-sitter FFI, Nix flake, and the credentialed Paid OpenRouter lane. Merge is blocked until every required lane on the final documentation-inclusive head is successful and review/thread state remains clear.
