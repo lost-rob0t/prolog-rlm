@@ -201,7 +201,22 @@ metadata_option(Name, Options, Default, Value) :-
 %   Execute one provider request. This is the canonical implementation used by
 %   the async task and by larger canonical operations already running in an
 %   async worker. It is not a synchronous facade.
+%
+%   `provider_context(Messages, Provider)` is a trusted host/runtime wrapper.
+%   It projects already-compiled provider-visible system context onto a request
+%   before delegating to the underlying provider. Model-produced request data
+%   never chooses this wrapper.
 
+model_complete_execute(provider_context(Messages, Provider), Request0, Outcome) :-
+    !,
+    (   provider_context_request(Messages, Request0, Request)
+    ->  model_complete_execute(Provider, Request, Outcome)
+    ;   Outcome = error(provider_error{
+                            provider:provider_context,
+                            kind:configuration_error,
+                            message:"provider context must be ground system messages and a request message list"
+                        })
+    ).
 model_complete_execute(provider(Provider, Config), Request, Outcome) :-
     !,
     dispatch_provider(Provider, Config, Request, Outcome).
@@ -209,6 +224,28 @@ model_complete_execute(Provider, _,
                        error(provider_error{provider:Provider,
                                             kind:configuration_error,
                                             message:"provider must be provider(Name, Config)"})).
+
+provider_context_request([], Request, Request) :-
+    is_dict(Request),
+    get_dict(messages, Request, Messages),
+    is_list(Messages),
+    !.
+provider_context_request(Prefix, Request0, Request) :-
+    ground(Prefix),
+    is_list(Prefix),
+    Prefix \== [],
+    maplist(provider_context_system_message, Prefix),
+    is_dict(Request0),
+    get_dict(messages, Request0, Messages0),
+    is_list(Messages0),
+    append(Prefix, Messages0, Messages),
+    put_dict(messages, Request0, Messages, Request).
+
+provider_context_system_message(Message) :-
+    is_dict(Message),
+    get_dict(role, Message, system),
+    get_dict(content, Message, Content),
+    (string(Content) ; atom(Content)).
 
 dispatch_provider(openrouter, Config, Request, Outcome) :-
     !,
