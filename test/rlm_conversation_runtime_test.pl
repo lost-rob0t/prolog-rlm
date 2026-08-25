@@ -209,7 +209,9 @@ publish_old_warm_context(Conversation, ArtifactStore) :-
         ok(_)).
 
 warm_loaded_planner(Request, ok(Output)) :-
-    Request.messages = [Message],
+    Request.messages = [System, Message],
+    assertion(System.role == system),
+    assertion(Message.role == user),
     assertion(sub_string(Message.content,
                          _, _, _,
                          "Summary: compact useful summary")),
@@ -223,7 +225,9 @@ warm_loaded_planner(Request, ok(Output)) :-
              }.
 
 cold_boundary_planner(Request, ok(Output)) :-
-    Request.messages = [Message],
+    Request.messages = [System, Message],
+    assertion(System.role == system),
+    assertion(Message.role == user),
     assertion(sub_string(Message.content,
                          _, _, _,
                          "Cold history boundary:")),

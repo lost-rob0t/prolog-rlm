@@ -1,0 +1,56 @@
+* Run identity
+- Consumed issue :: #117
+- Branch :: =feature/117-prolog-skill-activation=
+- RAGE start commit :: =1a34d01dad9020a72a17b9bbae2a698451f575aa=
+
+* Approved design
+- Design gate :: #183
+- Normalization contract :: #173
+- Base reconciled :: =origin/main@a5e0a28b47fada46a15fe439d58bf2940ec224e7=
+
+* Reconciliation
+- Retained :: bounded SKILL.md discovery, standard/vendor normalization,
+  package provenance, symlink confinement, lazy bodies/resources, pinned corpus,
+  and compatibility controls.
+- Removed :: independent =skill_compile/4= scoring, dependency, packing, and
+  fingerprint path; completion predicate wrapping; model-side skill routing.
+- Canonical flow :: =SKILL.md -> prompt_unit(skill(...)) ->
+  rlm_prompt_compiler -> provider request=.
+- Permanent context :: host-owned =activation(always)= plus mandatory packing;
+  package metadata cannot self-promote or grant authority.
+
+* Red/green evidence
+- Initial merge gate :: PR conflicted with current main and paid OpenRouter was
+  red at old head =1a34d01d=.
+- First aggregate run :: 837/840; managed-conversation fixtures assumed a
+  single user message and were updated to assert system/user separation.
+- Security review :: found eager body loading, stale package identity,
+  unbounded catalog work, generic completion packing budget, unknown trusted
+  controls, and always/always supersession. Each received a focused regression.
+- Hardened aggregate run :: 866/866 across 77 deterministic suites.
+- Focused suites :: prompt compiler 33/33; skill loader 30/30; symlink
+  confinement 2/2; completion 40/40; subagent 12/12.
+- Additional gates :: runtime/load-all, deterministic benchmark, deep
+  experiment, CLI JSON smoke, runner integrity, runner main ownership, copied
+  SWI pack install/load, and diff checks pass locally.
+
+* Explicit follow-up
+- #176/#183 retain broader unified provider projection for tools/MCP and
+  RLM-internal leaf/repair calls. This slice proves canonical root planner and
+  child completion projection without inventing a second compiler.
+
+* Current-main reconciliation
+- Candidate before reconciliation :: =dd8105be6eb8cc173f607fb84c984990f7c1e368=
+- Advanced base :: =origin/main@30c620bae7ef6d4c21a98ffdf17bb969b2686638=
+- Pull-request failure :: CI run =32816525449= failed only the newly registered
+  planner visibility regression; the corresponding push run passed because it
+  did not test the pull-request merge result.
+- Red evidence :: after merging current =main=, the runtime correctly emitted a
+  system skill message followed by a user prompt containing only the allowed
+  schema, but the regression helper incorrectly required the user message to
+  be first.
+- Fix :: select the user message by its role instead of its position; this
+  preserves the issue #191 capability filter and the issue #117 system-message
+  projection contract.
+- Green evidence :: focused planner visibility test passes 1/1 after the
+  reconciliation edit.

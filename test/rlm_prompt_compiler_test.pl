@@ -83,6 +83,9 @@ rejected_reason(Compiled, Unit, Reason) :-
     Rejected.unit == Unit,
     member(Reason, Rejected.reasons).
 
+with_activation(Activation, Spec0, Spec) :-
+    put_dict(activation, Spec0, Activation, Spec).
+
 /* -------------------------------------------------------------------------
  * Activation evidence
  * ---------------------------------------------------------------------- */
@@ -154,6 +157,153 @@ test_negative_evidence(Catalog) :-
     assertion(rejected_reason(Compiled,
                               tool(git_diff),
                               text_negation("github"))).
+
+test(always_activates_on_unrelated_input_and_is_explained) :-
+    with_catalog(test_always_unrelated).
+
+test_always_unrelated(Catalog) :-
+    simple_instruction(core, [], [], [], Relevant),
+    with_activation(always, Relevant, Always),
+    register_unit(Catalog, Always),
+    prompt_compile(Catalog, "unrelated weather request", [], ok(Compiled)),
+    assertion(selected_unit(Compiled, instruction(core))),
+    prompt_explain(Compiled, instruction(core), ok(Explanation)),
+    assertion(Explanation.activation == always),
+    assertion(memberchk(activation(always), Explanation.reasons)).
+
+test(always_is_outside_ordinary_candidate_limit) :-
+    with_catalog(test_always_candidate_limit).
+
+test_always_candidate_limit(Catalog) :-
+    simple_instruction(core, [], [], [], Core0),
+    with_activation(always, Core0, Core),
+    simple_instruction(alpha,
+                       [trigger(keyword(work), 90)],
+                       [],
+                       [],
+                       Alpha),
+    simple_instruction(beta,
+                       [trigger(keyword(work), 80)],
+                       [],
+                       [],
+                       Beta),
+    maplist(register_unit(Catalog), [Core, Alpha, Beta]),
+    prompt_compile(Catalog,
+                   "work",
+                   [candidate_limit(1), pack(false)],
+                   ok(Compiled)),
+    assertion(selected_unit(Compiled, instruction(core))),
+    assertion(selected_unit(Compiled, instruction(alpha))),
+    assertion(\+ selected_unit(Compiled, instruction(beta))),
+    assertion(length(Compiled.candidates, 2)).
+
+test(always_resists_natural_language_and_untrusted_signal_denial) :-
+    with_catalog(test_always_untrusted_denial).
+
+test_always_untrusted_denial(Catalog) :-
+    simple_instruction(core, [], [], [], Core0),
+    put_dict(aliases, Core0, ["core policy"], Core1),
+    with_activation(always, Core1, Core),
+    register_unit(Catalog, Core),
+    Input = prompt_input{text:"do not use core policy",
+                         signals:[deny(instruction(core)),
+                                  negated(category(instruction))]},
+    prompt_compile(Catalog, Input, [], ok(Compiled)),
+    assertion(selected_unit(Compiled, instruction(core))).
+
+test(trusted_denial_removes_always_unit) :-
+    with_catalog(test_always_trusted_denial).
+
+test_always_trusted_denial(Catalog) :-
+    simple_instruction(core, [], [], [], Core0),
+    with_activation(always, Core0, Core),
+    register_unit(Catalog, Core),
+    prompt_compile(Catalog,
+                   prompt_input{text:"unrelated",
+                                denied:[instruction(core)]},
+                   [],
+                   ok(Compiled)),
+    assertion(\+ selected_unit(Compiled, instruction(core))),
+    assertion(rejected_reason(Compiled,
+                              instruction(core),
+                              explicit_denial)).
+
+test(always_still_requires_capability) :-
+    with_catalog(test_always_capability).
+
+test_always_capability(Catalog) :-
+    git_schema(Schema),
+    base_tool_spec(Schema, [], Tool0),
+    with_activation(always, Tool0, Tool),
+    register_unit(Catalog, Tool),
+    prompt_compile(Catalog, "unrelated", [], ok(Compiled)),
+    assertion(\+ selected_unit(Compiled, tool(git_diff))),
+    assertion(rejected_reason(Compiled,
+                              tool(git_diff),
+                              capability_denied(tool(git_diff)))).
+
+test(relevant_conflict_and_superseder_cannot_evict_always) :-
+    with_catalog(test_always_precedence).
+
+test_always_precedence(Catalog) :-
+    simple_instruction(core, [], [], [], Core0),
+    with_activation(always, Core0, Core),
+    simple_instruction(conflicting,
+                       [trigger(keyword(work), 1000)],
+                       [instruction(core)],
+                       [],
+                       Conflicting),
+    simple_instruction(replacement,
+                       [trigger(keyword(work), 900)],
+                       [],
+                       [instruction(core)],
+                       Replacement),
+    maplist(register_unit(Catalog), [Core, Conflicting, Replacement]),
+    prompt_compile(Catalog, "work", [pack(false)], ok(Compiled)),
+    assertion(selected_unit(Compiled, instruction(core))),
+    assertion(selected_unit(Compiled, instruction(replacement))),
+    assertion(rejected_reason(Compiled,
+                              instruction(conflicting),
+                              conflict_with(instruction(core)))).
+
+test(conflicting_always_units_fail_structurally) :-
+    with_catalog(test_always_conflict_error).
+
+test_always_conflict_error(Catalog) :-
+    simple_instruction(alpha, [], [instruction(beta)], [], Alpha0),
+    simple_instruction(beta, [], [], [], Beta0),
+    with_activation(always, Alpha0, Alpha),
+    with_activation(always, Beta0, Beta),
+    maplist(register_unit(Catalog), [Alpha, Beta]),
+    prompt_compile(Catalog, "unrelated", [], error(Error)),
+    assertion(Error.detail = conflicting_always_units(instruction(alpha),
+                                                       instruction(beta))).
+
+test(always_superseding_always_fails_structurally) :-
+    with_catalog(test_always_supersession_forward_error).
+
+test_always_supersession_forward_error(Catalog) :-
+    simple_instruction(alpha, [], [], [instruction(beta)], Alpha0),
+    simple_instruction(beta, [], [], [], Beta0),
+    with_activation(always, Alpha0, Alpha),
+    with_activation(always, Beta0, Beta),
+    maplist(register_unit(Catalog), [Alpha, Beta]),
+    prompt_compile(Catalog, "unrelated", [], error(Error)),
+    assertion(Error.detail = superseding_always_units(instruction(alpha),
+                                                       instruction(beta))).
+
+test(always_superseded_by_always_fails_structurally) :-
+    with_catalog(test_always_supersession_reverse_error).
+
+test_always_supersession_reverse_error(Catalog) :-
+    simple_instruction(alpha, [], [], [], Alpha0),
+    simple_instruction(beta, [], [], [instruction(alpha)], Beta0),
+    with_activation(always, Alpha0, Alpha),
+    with_activation(always, Beta0, Beta),
+    maplist(register_unit(Catalog), [Alpha, Beta]),
+    prompt_compile(Catalog, "unrelated", [], error(Error)),
+    assertion(Error.detail = superseding_always_units(instruction(beta),
+                                                       instruction(alpha))).
 
 test(conflict_keeps_higher_scored_candidate) :-
     with_catalog(test_conflict).
@@ -522,6 +672,20 @@ test_mandatory_over_budget(Catalog) :-
                    error(Error)),
     assertion(Error.detail = context_budget_failed(_)).
 
+test(always_mandatory_over_budget_uses_existing_budget_failure) :-
+    with_catalog(test_always_mandatory_over_budget).
+
+test_always_mandatory_over_budget(Catalog) :-
+    simple_instruction(core, [], [], [], Core0),
+    with_activation(always, Core0, Core),
+    register_unit(Catalog, Core),
+    compiler_policy(1, Policy),
+    prompt_compile(Catalog,
+                   "unrelated",
+                   [policy(Policy)],
+                   error(Error)),
+    assertion(Error.detail = context_budget_failed(_)).
+
 /* -------------------------------------------------------------------------
  * Determinism and scale
  * ---------------------------------------------------------------------- */
@@ -541,6 +705,33 @@ test_same_fingerprint(Catalog) :-
     assertion(A.fingerprint == B.fingerprint),
     prompt_compile(Catalog, "weather", Options, ok(C)),
     assertion(A.fingerprint \== C.fingerprint).
+
+test(activation_is_material_to_catalog_and_projection_fingerprints) :-
+    setup_call_cleanup(
+        prompt_catalog_create(RelevantCatalog),
+        setup_call_cleanup(
+            prompt_catalog_create(AlwaysCatalog),
+            activation_fingerprint_body(RelevantCatalog, AlwaysCatalog),
+            prompt_catalog_destroy(AlwaysCatalog)),
+        prompt_catalog_destroy(RelevantCatalog)).
+
+activation_fingerprint_body(RelevantCatalog, AlwaysCatalog) :-
+    simple_instruction(core,
+                       [trigger(keyword(core), 50)],
+                       [],
+                       [],
+                       Relevant),
+    with_activation(always, Relevant, Always),
+    register_unit(RelevantCatalog, Relevant),
+    register_unit(AlwaysCatalog, Always),
+    prompt_compile(RelevantCatalog, "core", [pack(false)], ok(A)),
+    prompt_compile(AlwaysCatalog, "core", [pack(false)], ok(B)),
+    assertion(A.catalog_fingerprint \== B.catalog_fingerprint),
+    assertion(A.fingerprint \== B.fingerprint),
+    prompt_explain(A, instruction(core), ok(RelevantExplanation)),
+    prompt_explain(B, instruction(core), ok(AlwaysExplanation)),
+    assertion(RelevantExplanation.activation == relevant),
+    assertion(AlwaysExplanation.activation == always).
 
 test(synthetic_5000_catalog_narrows_before_pack) :-
     setup_call_cleanup(
