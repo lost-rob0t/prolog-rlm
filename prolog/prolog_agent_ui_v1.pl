@@ -18,15 +18,15 @@
             ui_v1_replay/3
           ]).
 
-/** <module> Renderer-independent frontend protocol v1
+/** <module> PrologAgent application-facing UI protocol v1
 
-This module defines renderer-independent wire semantics for RLM frontends.
+This module defines renderer-independent wire semantics for PrologAgent.
 Frontends receive bounded canonical snapshots and ordered semantic events and
-send explicit correlated commands. Event sequence numbers are owned by the
-server/session. Request identifiers correlate commands and results and are
+send explicit correlated commands.  Event sequence numbers are owned by the
+server/session.  Request identifiers correlate commands and results and are
 never overloaded as event cursors.
 
-NDJSON is the reference encoding: one complete JSON object per line. The
+NDJSON is the reference encoding: one complete JSON object per line.  The
 newline is transport framing only; protocol semantics do not depend on stdio
 and can be carried over a local socket later without changing the records.
 */
@@ -546,9 +546,8 @@ update_item_fields(Id, Fields, Items0, Items) :-
     append(Before, [Item|After], Items).
 
 select_item(Id, Items, Item, Before, After) :-
-    existing_item(Id, Items0, Item, Before, After),
-    !,
-    Items = Items0.
+    existing_item(Id, Items, Item, Before, After),
+    !.
 select_item(Id, _, _, _, _) :-
     throw(ui_fault(replay_missing_entity, _{id:Id})).
 
