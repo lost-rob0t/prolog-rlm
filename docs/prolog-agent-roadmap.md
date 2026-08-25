@@ -15,6 +15,7 @@ Already available in core and the downstream application boundary:
 - real OpenAI-compatible providers and streaming;
 - typed model-selected plans;
 - capability-gated tools and a confined `project_read` tool;
+- confined Prolog-owned `SKILL.md` package discovery, inert resource indexing, and canonical skill prompt-unit normalization;
 - supervised logical agents and recursive subagents, including child-owned
   bounded completion, typed parent result propagation, and cancellation;
 - bounded async Futures, cancellation, and worker pools;
@@ -40,6 +41,7 @@ Still missing for a useful coding agent:
 - TaskIR/context/result-acceptance integration around the Frozen Spec substrate from #56 and #68-#71;
 - a headless coding loop that wires project inspection, edits, re-indexing, verification, and repair to those shared runtime concepts;
 - nonblocking approval/diff handling wired from the real coding workflow into the UI facade;
+- provider-bound adoption of the one prompt compiler for skills, tools, MCP metadata, project instructions, and managed context;
 - project instructions/context discovery for coding work;
 - downstream product clients and editor integrations over the stable frontend boundary.
 
@@ -126,7 +128,7 @@ git_diff()
 
 Every step remains a normal traced tool operation. File mutation does not bypass authority simply because it came from a coding workflow.
 
-## Phase 2: project state, project knowledge, and instructions
+## Phase 2: project state, project knowledge, instructions, and prompt compilation
 
 Land the scoped-state work in #74 through #77 far enough for a coding frontend to remember project-local operator choices without inventing product-specific persistence in the TUI.
 
@@ -140,7 +142,9 @@ Land the scoped-state work in #74 through #77 far enough for a coding frontend t
 
 It must not persist `allow_session`, silently promote permissions to `dangerous`, or auto-execute arbitrary project Prolog files.
 
-Project instructions should enter the coding context with provenance. Repository instructions, current source/tests, operator requirements, and model inference are not the same kind of evidence.
+The symbolic prompt compiler is the sole owner of skill, instruction, tool, and MCP provider-context selection and bounded packing. The `SKILL.md` layer only discovers and normalizes inert packages into prompt units; provider-bound adoption and permanent RLM operating context remain tracked by #176 and #183.
+
+Project instructions should enter the coding context with provenance. Repository instructions, current source/tests, operator requirements, skill instructions, and model inference are not the same kind of evidence.
 
 The direct Tree-sitter mechanics from #94 and the declarative Project/File/Language/grammar registry from #95 are now substrate. Implement #96-#99 behind the semantic project-state boundary established by `rlm_spec`/`rlm_verify`: project concrete syntax into versioned observations, run structural queries, normalize semantic source relations, and enforce incremental freshness. Source, build metadata, package metadata, and configuration should be parsed once into canonical project knowledge. Planner and verifier consumers query that knowledge through trusted semantic providers. Do not add a planner-only parser and a verifier-only parser.
 
@@ -165,7 +169,7 @@ operator requirements
 -> finish with structured evidence
 ```
 
-Reuse `rlm_spec`, `rlm_verify`, `rlm_spec_workflow`, `rlm_agent`, `rlm_graph`, `rlm_async`, `rlm_authority`, traces, effects, and artifacts. Do not create a special coding-agent scheduler or a second acceptance language.
+Reuse `rlm_spec`, `rlm_verify`, `rlm_spec_workflow`, `rlm_agent`, `rlm_graph`, `rlm_async`, `rlm_authority`, traces, effects, artifacts, and the shared prompt-compiler inputs. Do not create a special coding-agent scheduler, a second acceptance language, or a frontend-owned prompt router.
 
 TaskIR work from #69 should carry/reference the exact Frozen Spec rather than becoming a second canonical owner of acceptance criteria. Result acceptance work from #56 should share the same evidence/verifier substrate instead of growing an incompatible verifier stack. Resume/restart work from #71 must remain bound to the original Spec identity.
 
@@ -267,6 +271,7 @@ Current core and product issues that materially affect the roadmap:
 - #71: workflow execution/resume must remain bound to the exact Frozen Spec; the Spec-bound graph foundation now demonstrates that invariant, while full TaskIR/continuation integration remains open.
 - #74-#77: durable project state, instructions, and bounded persistent authorization.
 - #93/#96-#99: #94/#95 are the direct parser and declarative source-registry substrate; the remaining child issues are required before the canonical project parser/indexer and project KB are complete.
+- #101/#117/#173/#183: standard skill packages normalize into the one prompt compiler; permanent operating context and exact provider-bound adoption remain explicit follow-up scope.
 - #109: the renderer-independent `prolog_agent_ui_v1` protocol/replay foundation is landed in core; concrete renderer/product work is downstream.
 - #184: approved plugin-only DeepSeek Harness architecture; implementation starts from the cleaned runtime boundary rather than reviving PR #125 or a nested harness.
 - #186: removes legacy nested harnesses and restores the runtime-only repository boundary before #184 implementation.

@@ -80,6 +80,9 @@ corpus_entry('rlm_tool_loader_security_test.pl',
              include(rlm_tool_loader_security)).
 corpus_entry('rlm_prompt_compiler_test.pl', include(rlm_prompt_compiler)).
 corpus_entry('rlm_prompt_command_test.pl', include(rlm_prompt_command)).
+corpus_entry('rlm_skill_test.pl', include(rlm_skill)).
+corpus_entry('rlm_skill_symlink_test.pl',
+             include(rlm_skill_symlink_confinement)).
 corpus_entry('rlm_authority_test.pl', include(rlm_authority)).
 corpus_entry('rlm_authority_hardening_test.pl',
              include(rlm_authority_hardening)).

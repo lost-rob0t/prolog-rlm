@@ -129,7 +129,9 @@ persistent_cold_reopen_case(File) :-
     conversation_store_close(Store2, ok(closed)).
 
 cold_search_planner(Request, ok(Output)) :-
-    Request.messages = [Message],
+    Request.messages = [System, Message],
+    assertion(System.role == system),
+    assertion(Message.role == user),
     assertion(\+ sub_string(Message.content,
                             _, _, _,
                             "ancient-needle")),

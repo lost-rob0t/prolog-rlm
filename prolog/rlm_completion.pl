@@ -31,6 +31,8 @@ predicates directly and never re-enter a synchronous public facade.
 :- use_module(rlm_chain).
 :- use_module(rlm_context).
 :- use_module(rlm_plan).
+:- use_module(rlm_prompt_compiler, []).
+:- use_module(rlm_skill, []).
 :- use_module(rlm_tool).
 
 :- dynamic cancellation_state/2.
@@ -196,6 +198,12 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                        ProviderName,
                        Capabilities,
                        ChildCapabilities),
+    completion_skill_messages(Query,
+                               ProviderName,
+                               Capabilities,
+                               Options,
+                               Budget,
+                               SkillMessages),
     runtime_tools(Options,
                   Capabilities,
                   RuntimeTools,
@@ -207,6 +215,8 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                    ToolSchemas,
                    Options,
                    Prompt),
+    planner_messages(SkillMessages, Prompt, Messages),
+    planner_projection_options(Options, Messages, PlannerOptions),
     planner_attempts(Options, Attempts),
     planner_token_limit(Options, RequestedPlannerTokens),
     PlannerTokenLimit is min(Budget.max_total_tokens,
@@ -215,7 +225,7 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                  Prompt,
                  ProviderName,
                  Provider,
-                 Options,
+                 PlannerOptions,
                  PlannerTokenLimit,
                  Budget,
                  Token,
@@ -232,6 +242,303 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                              Budget,
                              Token,
                              Outcome).
+
+completion_skill_messages(Query, Provider, Capabilities, Options, Budget,
+                          Messages) :-
+    catch(completion_skill_messages_(Query,
+                                     Provider,
+                                     Capabilities,
+                                     Options,
+                                     Budget,
+                                     Messages),
+          Error,
+          completion_skill_exception(Error)).
+
+completion_skill_exception(rlm_cancelled(Token)) :-
+    !,
+    throw(rlm_cancelled(Token)).
+completion_skill_exception(error(rlm_cancelled(Token), Context)) :-
+    !,
+    throw(error(rlm_cancelled(Token), Context)).
+completion_skill_exception(time_limit_exceeded) :-
+    !,
+    throw(time_limit_exceeded).
+completion_skill_exception(time_limit_exceeded(Limit)) :-
+    !,
+    throw(time_limit_exceeded(Limit)).
+completion_skill_exception(Error) :-
+    throw(prompt_compile_fault(Error)).
+
+completion_skill_messages_(Query, Provider, Capabilities, Options, Budget,
+                           Messages) :-
+    trusted_skill_controls(Options, Mode, CatalogSpec, Selected, Denied),
+    (   Mode == off
+    ->  Messages = []
+    ;   CatalogSpec == none
+    ->  Messages = []
+    ;   completion_skill_catalog(CatalogSpec, SkillCatalog, UnitOptions),
+        validate_trusted_skill_names(SkillCatalog, Selected, Denied),
+        setup_call_cleanup(
+            rlm_prompt_compiler:prompt_catalog_create(MetadataCatalog),
+            select_skill_units(MetadataCatalog,
+                               SkillCatalog,
+                               UnitOptions,
+                               Query,
+                               Capabilities,
+                               Selected,
+                               Denied,
+                               SelectedNames),
+            rlm_prompt_compiler:prompt_catalog_destroy(MetadataCatalog)),
+        setup_call_cleanup(
+            rlm_prompt_compiler:prompt_catalog_create(FinalCatalog),
+            compile_selected_skill_catalog(FinalCatalog,
+                                           SkillCatalog,
+                                           UnitOptions,
+                                           SelectedNames,
+                                           Query,
+                                           Provider,
+                                           Capabilities,
+                                           Selected,
+                                           Denied,
+                                           Budget,
+                                           Messages),
+            rlm_prompt_compiler:prompt_catalog_destroy(FinalCatalog))
+    ).
+
+trusted_skill_controls(Options, Mode, Catalog, Selected, Denied) :-
+    option_value(skill_mode, Options, on, Mode),
+    require_skill_mode(Mode),
+    option_value(skill_catalog, Options, default, Catalog),
+    option_value(explicit_skills, Options, [], Selected0),
+    option_value(disabled_skills, Options, [], Denied0),
+    normalize_skill_names(explicit_skills, Selected0, Selected),
+    normalize_skill_names(disabled_skills, Denied0, Denied).
+
+require_skill_mode(on) :- !.
+require_skill_mode(off) :- !.
+require_skill_mode(Mode) :-
+    throw(completion_fault(invalid_skill_mode(Mode))).
+
+normalize_skill_names(Field, Names0, Names) :-
+    (   is_list(Names0)
+    ->  true
+    ;   throw(completion_fault(invalid_skill_names(Field, Names0)))
+    ),
+    length(Names0, Count),
+    (   Count =< 64
+    ->  true
+    ;   throw(completion_fault(too_many_skill_names(Field, Count)))
+    ),
+    maplist(normalize_skill_name(Field), Names0, Names1),
+    sort(Names1, Names).
+
+normalize_skill_name(_, Name, Name) :-
+    atom(Name),
+    valid_skill_name(Name),
+    !.
+normalize_skill_name(_, Name0, Name) :-
+    string(Name0),
+    atom_string(Name, Name0),
+    valid_skill_name(Name),
+    !.
+normalize_skill_name(Field, Name, _) :-
+    throw(completion_fault(invalid_skill_name(Field, Name))).
+
+valid_skill_name(Name) :-
+    atom_length(Name, Length),
+    between(1, 64, Length),
+    atom_chars(Name, [First|Chars]),
+    char_type(First, lower),
+    maplist(skill_name_char, Chars),
+    last([First|Chars], Last),
+    (char_type(Last, lower) ; char_type(Last, digit)),
+    \+ sub_atom(Name, _, 2, _, '--').
+
+skill_name_char(Char) :- char_type(Char, lower), !.
+skill_name_char(Char) :- char_type(Char, digit), !.
+skill_name_char('-').
+
+completion_skill_catalog(default, Catalog,
+                         [ activation(always),
+                           mandatory_context(true),
+                           provider_visible(true)
+                         ]) :-
+    !,
+    rlm_skill:skill_default_catalog(Outcome),
+    require_skill_catalog_outcome(Outcome, Catalog).
+completion_skill_catalog(Catalog, Catalog, []) :-
+    rlm_skill:skill_catalog_skills(Catalog, _),
+    !.
+completion_skill_catalog(Spec, _, _) :-
+    throw(completion_fault(invalid_skill_catalog_option(Spec))).
+
+require_skill_catalog_outcome(ok(Catalog), Catalog) :- !.
+require_skill_catalog_outcome(error(Error), _) :-
+    throw(completion_fault(skill_catalog_failed(Error))).
+
+validate_trusted_skill_names(SkillCatalog, Selected, Denied) :-
+    rlm_skill:skill_catalog_skills(SkillCatalog, Skills),
+    maplist(skill_name, Skills, CatalogNames),
+    require_known_skill_names(explicit_skills, Selected, CatalogNames),
+    require_known_skill_names(disabled_skills, Denied, CatalogNames).
+
+skill_name(Skill, Name) :-
+    Name = Skill.name.
+
+require_known_skill_names(_, [], _).
+require_known_skill_names(Field, [Name|Names], CatalogNames) :-
+    (   memberchk(Name, CatalogNames)
+    ->  require_known_skill_names(Field, Names, CatalogNames)
+    ;   throw(completion_fault(unknown_skill_name(Field, Name)))
+    ).
+
+select_skill_units(PromptCatalog,
+                   SkillCatalog,
+                   UnitOptions,
+                   Query,
+                   Capabilities,
+                   SelectedNames,
+                   DeniedNames,
+                   AdmittedNames) :-
+    MetadataOptions = [load_content(false)|UnitOptions],
+    rlm_skill:skill_catalog_prompt_units(SkillCatalog,
+                                         MetadataOptions,
+                                         UnitOutcome),
+    require_skill_units(UnitOutcome, Units0),
+    maplist(enable_explicit_skill(SelectedNames), Units0, Units),
+    maplist(register_prompt_unit(PromptCatalog), Units),
+    skill_compile_input(Query, SelectedNames, DeniedNames, Input),
+    rlm_prompt_compiler:prompt_compile(
+        PromptCatalog,
+        Input,
+        [capabilities(Capabilities), pack(false)],
+        CompileOutcome),
+    require_prompt_compile(CompileOutcome, Compiled),
+    selected_skill_names(Compiled.selected_units, AdmittedNames),
+    require_explicit_skills_admitted(SelectedNames,
+                                     AdmittedNames,
+                                     Compiled).
+
+require_explicit_skills_admitted([], _, _).
+require_explicit_skills_admitted([Name|Names], AdmittedNames, Compiled) :-
+    (   memberchk(Name, AdmittedNames)
+    ->  require_explicit_skills_admitted(Names, AdmittedNames, Compiled)
+    ;   explicit_skill_rejection_explanation(Compiled, Name, Explanation),
+        throw(completion_fault(explicit_skill_rejected(Name, Explanation)))
+    ).
+
+explicit_skill_rejection_explanation(Compiled, Name, Explanation) :-
+    rlm_prompt_compiler:prompt_explain(Compiled,
+                                       skill(Name),
+                                       ExplainOutcome),
+    (   ExplainOutcome = ok(Explanation)
+    ->  true
+    ;   ExplainOutcome = error(Cause),
+        Explanation = prompt_explanation{
+                          unit:skill(Name),
+                          state:rejected,
+                          reasons:[explanation_failed(Cause)]
+                      }
+    ).
+
+compile_selected_skill_catalog(PromptCatalog,
+                               SkillCatalog,
+                               UnitOptions,
+                               AdmittedNames,
+                               Query,
+                               Provider,
+                               Capabilities,
+                               SelectedNames,
+                               DeniedNames,
+                               Budget,
+                               Messages) :-
+    maplist(selected_full_skill_unit(SkillCatalog, UnitOptions, SelectedNames),
+            AdmittedNames,
+            Units),
+    maplist(register_prompt_unit(PromptCatalog), Units),
+    skill_compile_input(Query, SelectedNames, DeniedNames, Input),
+    completion_skill_context_policy(Budget, Policy),
+    rlm_prompt_compiler:prompt_compile(
+        PromptCatalog,
+        Input,
+        [capabilities(Capabilities), policy(Policy)],
+        CompileOutcome),
+    require_prompt_compile(CompileOutcome, Compiled),
+    rlm_prompt_compiler:prompt_render(Compiled, Provider, RenderOutcome),
+    require_prompt_render(RenderOutcome, Rendered),
+    rendered_skill_messages(Rendered.text, Messages).
+
+selected_full_skill_unit(SkillCatalog, UnitOptions, ExplicitNames, Name, Unit) :-
+    rlm_skill:skill_catalog_skill(SkillCatalog, Name, Skill),
+    rlm_skill:skill_prompt_unit(Skill, UnitOptions, UnitOutcome),
+    require_selected_skill_unit(UnitOutcome, Unit0),
+    enable_explicit_skill(ExplicitNames, Unit0, Unit).
+
+require_selected_skill_unit(ok(Unit), Unit) :- !.
+require_selected_skill_unit(error(Error), _) :-
+    throw(completion_fault(skill_conversion_failed(Error))).
+
+skill_compile_input(Query, SelectedNames, DeniedNames, Input) :-
+    maplist(skill_unit, SelectedNames, Selected),
+    maplist(skill_unit, DeniedNames, Denied),
+    Input = prompt_input{text:Query, selected:Selected, denied:Denied}.
+
+selected_skill_names(Units, Names) :-
+    findall(Name, member(skill(Name), Units), Names0),
+    sort(Names0, Names).
+
+completion_skill_context_policy(Budget,
+                                _{max_context_tokens:MaxTokens,
+                                  provider_context_tokens:MaxTokens,
+                                  reserve_output_tokens:0,
+                                  safety_margin_tokens:0,
+                                  min_recent_turns:0,
+                                  overflow:deny}) :-
+    MaxTokens = Budget.max_total_tokens.
+
+require_skill_units(ok(Units), Units) :- !.
+require_skill_units(error(Error), _) :-
+    throw(completion_fault(skill_conversion_failed(Error))).
+
+enable_explicit_skill(Selected, Unit0, Unit) :-
+    Unit0.unit = skill(Name),
+    (   memberchk(Name, Selected)
+    ->  put_dict(available, Unit0, true, Unit)
+    ;   Unit = Unit0
+    ).
+
+register_prompt_unit(Catalog, Unit) :-
+    rlm_prompt_compiler:prompt_catalog_register(Catalog, Unit, Outcome),
+    (   Outcome = ok(_)
+    ->  true
+    ;   Outcome = error(Error),
+        throw(completion_fault(skill_registration_failed(Error)))
+    ).
+
+skill_unit(Name, skill(Name)).
+
+require_prompt_compile(ok(Compiled), Compiled) :- !.
+require_prompt_compile(error(Error), _) :-
+    throw(completion_fault(prompt_compile_failed(Error))).
+
+require_prompt_render(ok(Rendered), Rendered) :- !.
+require_prompt_render(error(Error), _) :-
+    throw(completion_fault(prompt_render_failed(Error))).
+
+rendered_skill_messages("", []) :- !.
+rendered_skill_messages(Text, [message{role:system, content:Text}]).
+
+planner_messages([], Prompt, [message{role:user, content:Prompt}]).
+planner_messages([System], Prompt,
+                 [System, message{role:user, content:Prompt}]).
+
+planner_projection_options(Options0, Messages, Options) :-
+    exclude(named_option(compiled_planner_messages), Options0, Rest),
+    Options = [compiled_planner_messages(Messages)|Rest].
+
+named_option(Name, Option) :-
+    nonvar(Option),
+    Option =.. [Name, _].
 
 completion_after_planner(error(Error), _, _, _, _, _, _, _, _, _, _,
                          error(Error)) :-
@@ -558,8 +865,12 @@ planner_loop(Attempt,
             planner_request_options(Options,
                                     EffectiveLimit,
                                     RequestOptions),
+            option_value(compiled_planner_messages,
+                         Options,
+                         [message{role:user, content:Prompt}],
+                         Messages),
             Request = model_request{
-                          messages:[message{role:user, content:Prompt}],
+                          messages:Messages,
                           options:RequestOptions
                       },
             call_planner(Options, Provider, Request, PlannerCall),
@@ -1684,6 +1995,37 @@ completion_exception(completion_fault(Fault),
                                             kind:completion_fault,
                                             detail:Fault,
                                             message:"completion runtime rejected the operation"})) :-
+    !.
+completion_exception(
+    prompt_compile_fault(
+        completion_fault(prompt_compile_failed(CompilerError))),
+    error(completion_error{
+              phase:prompt_compile,
+              kind:token_budget_exceeded,
+              cause:CompilerError,
+              message:"mandatory skill context exceeds the completion token budget"
+          })) :-
+    is_dict(CompilerError),
+    get_dict(detail, CompilerError, context_budget_failed(_)),
+    !.
+completion_exception(
+    prompt_compile_fault(
+        completion_fault(explicit_skill_rejected(Name, Explanation))),
+    error(completion_error{
+              phase:prompt_compile,
+              kind:explicit_skill_rejected,
+              skill:Name,
+              cause:Explanation,
+              message:"explicit skill was rejected before planner dispatch"
+          })) :-
+    !.
+completion_exception(prompt_compile_fault(Cause),
+                     error(completion_error{
+                               phase:prompt_compile,
+                               kind:skill_compilation_failed,
+                               cause:Cause,
+                               message:"skill projection failed before planner dispatch"
+                           })) :-
     !.
 completion_exception(Exception,
                      error(completion_error{phase:runtime,

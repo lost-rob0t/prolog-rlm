@@ -29,7 +29,8 @@ register_fixture_tool(Registry, Name, Description) :-
                   ok(_)).
 
 planner_request_prompt(Request, Prompt) :-
-    get_dict(messages, Request, [Message|_]),
+    get_dict(messages, Request, Messages),
+    member(Message, Messages),
     get_dict(role, Message, user),
     get_dict(content, Message, Prompt).
 

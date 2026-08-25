@@ -333,8 +333,9 @@ compile_projection(Catalog, Id, Input, Options, Projection) :-
                        Options,
                        Candidates,
                        InitialRejected),
+    exclude(trusted_denied_spec(Input), Specs, ResolutionSpecs),
     resolve_candidates(Candidates,
-                       Specs,
+                       ResolutionSpecs,
                        Capabilities,
                        Scope,
                        Resolved0,
@@ -342,13 +343,15 @@ compile_projection(Catalog, Id, Input, Options, Projection) :-
                        DependencyEdges0),
     dedupe_resolved(Resolved0, RequiredResolved),
     add_suggestions(RequiredResolved,
-                    Specs,
+                    ResolutionSpecs,
                     Capabilities,
                     Scope,
                     SuggestedResolved,
                     SuggestionEdges),
     append(RequiredResolved, SuggestedResolved, WithSuggestions0),
     dedupe_resolved(WithSuggestions0, WithSuggestions),
+    validate_always_conflicts(WithSuggestions, Specs),
+    validate_always_supersession(WithSuggestions),
     append(DependencyEdges0, SuggestionEdges, DependencyEdges1),
     sort(DependencyEdges1, DependencyEdges),
     apply_supersession(WithSuggestions,
@@ -586,7 +589,16 @@ initial_candidates(Specs,
             Rejected),
     predsort(compare_candidate, Candidates0, Ranked),
     candidate_limit(Options, Limit),
-    take_first(Limit, Ranked, Candidates, _).
+    partition(always_candidate, Ranked, Always, Relevant),
+    take_first(Limit, Relevant, LimitedRelevant, _),
+    append(Always, LimitedRelevant, Limited0),
+    predsort(compare_candidate, Limited0, Candidates).
+
+always_candidate(Candidate) :-
+    Candidate.activation == always.
+
+trusted_denied_spec(Input, Spec) :-
+    memberchk(Spec.unit, Input.denied).
 
 root_candidate_status(Spec,
                       Input,
@@ -599,37 +611,59 @@ root_candidate_status(Spec,
     Score > 0,
     (   unit_negative_evidence(Spec, Input, NegativeReason)
     ->  Value = rejected_unit{unit:Spec.unit,
-                              reasons:[NegativeReason]},
+                              activation:Spec.activation,
+                              reasons:[activation(Spec.activation),
+                                       NegativeReason]},
         Status = reject
     ;   Spec.available \== true
     ->  Value = rejected_unit{unit:Spec.unit,
-                              reasons:[unavailable]},
+                              activation:Spec.activation,
+                              reasons:[activation(Spec.activation),
+                                       unavailable]},
         Status = reject
     ;   \+ scope_allows(Scope, Spec)
     ->  Value = rejected_unit{unit:Spec.unit,
-                              reasons:[discovery_scope_denied]},
+                              activation:Spec.activation,
+                              reasons:[activation(Spec.activation),
+                                       discovery_scope_denied]},
         Status = reject
     ;   \+ capability_eligible(Spec, Capabilities)
     ->  Value = rejected_unit{unit:Spec.unit,
-                              reasons:[capability_denied(Spec.requires_capability)]},
+                              activation:Spec.activation,
+                              reasons:[activation(Spec.activation),
+                                       capability_denied(Spec.requires_capability)]},
         Status = reject
     ;   Value = candidate{unit:Spec.unit,
+                          activation:Spec.activation,
                           score:Score,
                           priority:Spec.priority,
                           reasons:Reasons},
         Status = keep
     ).
 
-unit_evidence(Spec, _, all_tools, Score, Reasons) :-
+unit_evidence(Spec, _, all_tools, Score, [activation(always),
+                                         compatibility_mode(all_tools)]) :-
+    Spec.activation == always,
     !,
-    Score is 1000+Spec.priority,
-    Reasons = [compatibility_mode(all_tools)].
+    Score is 1000+Spec.priority.
+unit_evidence(Spec, _, compiled, Score, [activation(always)]) :-
+    Spec.activation == always,
+    !,
+    Score is 1+Spec.priority.
+unit_evidence(Spec, _, all_tools, Score, [activation(Spec.activation),
+                                         compatibility_mode(all_tools)]) :-
+    !,
+    Score is 1000+Spec.priority.
 unit_evidence(Spec, Input, compiled, Score, Reasons) :-
     explicit_score(Spec, Input, ExplicitScore, ExplicitReasons),
     trigger_score(Spec.triggers, Input, TriggerScore, TriggerReasons),
     lexical_score(Spec, Input.text, LexicalScore, LexicalReasons),
     BaseScore is ExplicitScore+TriggerScore+LexicalScore,
-    append([ExplicitReasons, TriggerReasons, LexicalReasons], Reasons0),
+    append([[activation(relevant)],
+            ExplicitReasons,
+            TriggerReasons,
+            LexicalReasons],
+           Reasons0),
     sort(Reasons0, Reasons),
     (   BaseScore > 0
     ->  Score is BaseScore+Spec.priority
@@ -719,6 +753,7 @@ unit_negative_evidence(Spec, Input, explicit_denial) :-
     memberchk(Spec.unit, Input.denied),
     !.
 unit_negative_evidence(Spec, Input, signal_denial(Signal)) :-
+    Spec.activation \== always,
     member(Signal, Input.signals),
     ( Signal = deny(Spec.unit)
     ; Signal = negated(Spec.unit)
@@ -727,6 +762,7 @@ unit_negative_evidence(Spec, Input, signal_denial(Signal)) :-
     ),
     !.
 unit_negative_evidence(Spec, Input, text_negation(Alias)) :-
+    Spec.activation \== always,
     unit_negative_aliases(Spec, Aliases),
     member(Alias, Aliases),
     string_lower(Input.text, TextLower),
@@ -789,7 +825,9 @@ resolve_candidates([Candidate|Candidates],
     ;   CandidateResult = error(Reason)
     ->  Resolved = RestResolved,
         Rejected = [rejected_unit{unit:Candidate.unit,
-                                  reasons:[Reason]}|RestRejected]
+                                  activation:Candidate.activation,
+                                  reasons:[activation(Candidate.activation),
+                                           Reason]}|RestRejected]
     ).
 
 resolve_candidate(Candidate,
@@ -924,11 +962,13 @@ dependency_resolution_result(ok(DependencyEntries),
                              Score,
                              Reasons,
                              ok([Entry|DependencyEntries])) :-
+    append([activation(Spec.activation)], Reasons, Reasons0),
+    sort(Reasons0, EntryReasons),
     Entry = resolved_unit{unit:Spec.unit,
                           root:Root,
                           score:Score,
                           priority:Spec.priority,
-                          reasons:Reasons,
+                          reasons:EntryReasons,
                           spec:Spec}.
 
 add_suggestions(Entries,
@@ -1022,9 +1062,12 @@ apply_supersession(Entries, Specs, Selected, Rejected) :-
               \+ entry_superseded(Entry, Entries, Specs, _) ),
             Selected),
     findall(rejected_unit{unit:Unit,
-                          reasons:[superseded_by(Superseder)]},
+                          activation:Activation,
+                          reasons:[activation(Activation),
+                                   superseded_by(Superseder)]},
             ( member(Entry, Entries),
               Unit = Entry.unit,
+              Activation = Entry.spec.activation,
               entry_superseded(Entry, Entries, Specs, Superseder) ),
             Rejected).
 
@@ -1033,15 +1076,56 @@ entry_superseded(Entry, Entries, Specs, Superseder) :-
     Other.unit \== Entry.unit,
     lookup_spec(Other.unit, Specs, OtherSpec),
     memberchk(Entry.unit, OtherSpec.supersedes),
+    ( Entry.spec.activation \== always
+    ; OtherSpec.activation == always
+    ),
     Superseder = Other.unit,
     !.
 
+validate_always_conflicts(Entries, Specs) :-
+    (   member(A, Entries),
+        A.spec.activation == always,
+        member(B, Entries),
+        B.spec.activation == always,
+        compare_unit((<), A.unit, B.unit),
+        units_conflict(A.unit, B.unit, Specs)
+    ->  throw(prompt_compiler_fault(conflicting_always_units(A.unit,
+                                                              B.unit)))
+    ;   true
+    ).
+
+validate_always_supersession(Entries) :-
+    (   member(Superseder, Entries),
+        Superseder.spec.activation == always,
+        member(Superseded, Entries),
+        Superseded.spec.activation == always,
+        Superseder.unit \== Superseded.unit,
+        memberchk(Superseded.unit, Superseder.spec.supersedes)
+    ->  throw(prompt_compiler_fault(
+                  superseding_always_units(Superseder.unit,
+                                            Superseded.unit)))
+    ;   true
+    ).
+
+units_conflict(A, B, Specs) :-
+    lookup_spec(A, Specs, ASpec),
+    lookup_spec(B, Specs, BSpec),
+    ( memberchk(B, ASpec.conflicts)
+    ; memberchk(A, BSpec.conflicts)
+    ).
+
 apply_conflicts(Entries, Specs, Selected, Rejected) :-
-    predsort(compare_resolved, Entries, Ranked),
+    partition(always_entry, Entries, Always0, Relevant0),
+    predsort(compare_resolved, Always0, Always),
+    predsort(compare_resolved, Relevant0, Relevant),
+    append(Always, Relevant, Ranked),
     apply_conflicts_ranked(Ranked, Specs, [], SelectedRev, [], RejectedRev),
     reverse(SelectedRev, Selected0),
     predsort(compare_resolved, Selected0, Selected),
     reverse(RejectedRev, Rejected).
+
+always_entry(Entry) :-
+    Entry.spec.activation == always.
 
 apply_conflicts_ranked([], _, Selected, Selected, Rejected, Rejected).
 apply_conflicts_ranked([Entry|Entries],
@@ -1053,7 +1137,9 @@ apply_conflicts_ranked([Entry|Entries],
     (   conflicting_selected(Entry, Selected0, Specs, Other)
     ->  Selected1 = Selected0,
         Rejected1 = [rejected_unit{unit:Entry.unit,
-                                   reasons:[conflict_with(Other.unit)]}
+                                   activation:Entry.spec.activation,
+                                   reasons:[activation(Entry.spec.activation),
+                                            conflict_with(Other.unit)]}
                      |Rejected0]
     ;   Selected1 = [Entry|Selected0],
         Rejected1 = Rejected0
@@ -1192,18 +1278,22 @@ explain_unit(Compiled, Unit, Explanation) :-
         Selected.unit == Unit
     ->  selected_state(Compiled, Unit, State),
         Explanation = prompt_explanation{unit:Unit,
+                                         activation:Selected.activation,
                                          state:State,
                                          reasons:Selected.reasons,
                                          capability_authority:runtime_recheck_required}
     ;   member(Rejected, Compiled.rejected),
         Rejected.unit == Unit
     ->  Explanation = prompt_explanation{unit:Unit,
+                                         activation:Rejected.activation,
                                          state:rejected,
                                          reasons:Rejected.reasons,
                                          capability_authority:not_granted}
     ;   Explanation = prompt_explanation{unit:Unit,
+                                         activation:relevant,
                                          state:hidden,
-                                         reasons:[no_matching_evidence],
+                                         reasons:[activation(relevant),
+                                                  no_matching_evidence],
                                          capability_authority:not_granted}
     ).
 
@@ -1267,8 +1357,9 @@ candidate_public(Candidates, Public) :-
     maplist(candidate_public_one, Candidates, Public).
 
 candidate_public_one(Candidate,
-                     candidate{unit:Candidate.unit,
-                               score:Candidate.score,
+                      candidate{unit:Candidate.unit,
+                                activation:Candidate.activation,
+                                score:Candidate.score,
                                reasons:Candidate.reasons}).
 
 selected_public(Entries, Public) :-
@@ -1276,6 +1367,7 @@ selected_public(Entries, Public) :-
 
 selected_public_one(Entry,
                     selected_unit{unit:Entry.unit,
+                                  activation:Entry.spec.activation,
                                   score:Entry.score,
                                   reasons:Entry.reasons}).
 
@@ -1346,6 +1438,8 @@ normalize_unit_spec(Spec0, Spec) :-
         bounded_description(Description0, Description),
         dict_default(Spec0, available, true, Available),
         require_boolean(Available, available),
+        dict_default(Spec0, activation, relevant, Activation),
+        require_activation(Activation),
         dict_default(Spec0, aliases, [], Aliases0),
         normalize_aliases(Aliases0, Aliases),
         dict_default(Spec0, triggers, [], Triggers0),
@@ -1377,6 +1471,7 @@ normalize_unit_spec(Spec0, Spec) :-
                            category:Category,
                            description:Description,
                            available:Available,
+                           activation:Activation,
                            aliases:Aliases,
                            triggers:Triggers,
                            requires:Requires,
@@ -1399,6 +1494,11 @@ require_matching_kind(Expected, Actual, Unit) :-
     throw(prompt_compiler_fault(unit_kind_mismatch(Unit,
                                                   Expected,
                                                   Actual))).
+
+require_activation(relevant) :- !.
+require_activation(always) :- !.
+require_activation(Activation) :-
+    throw(prompt_compiler_fault(invalid_activation(Activation))).
 
 normalize_unit_identity(Unit, Unit) :-
     ground(Unit),
