@@ -123,7 +123,6 @@ subagent_delegation_options(Options0, Outcome) :-
     ;   Outcome = error(tool_error{
                             phase:invoke,
                             kind:invalid_completion_options,
-                            options:Options0,
                             message:"subagent completion options must be a list"})
     ).
 
@@ -153,13 +152,11 @@ subagent_role_values([Role0], Outcome) :-
     ;   Outcome = error(tool_error{
                             phase:invoke,
                             kind:invalid_subagent_role,
-                            role:Role0,
                             message:"subagent role must be a bounded identifier"})
     ).
-subagent_role_values(Roles, error(Error)) :-
+subagent_role_values(_, error(Error)) :-
     Error = tool_error{phase:invoke,
                        kind:duplicate_subagent_role,
-                       roles:Roles,
                        message:"subagent role may be configured only once"}.
 
 subagent_skill_option(Options, Outcome) :-
@@ -177,13 +174,11 @@ subagent_skill_values([Skills0], Outcome) :-
     ;   Outcome = error(tool_error{
                             phase:invoke,
                             kind:invalid_subagent_skills,
-                            skills:Skills0,
                             message:"explicit subagent skills must be bounded identifiers"})
     ).
-subagent_skill_values(SkillOptions, error(Error)) :-
+subagent_skill_values(_, error(Error)) :-
     Error = tool_error{phase:invoke,
                        kind:duplicate_explicit_skills,
-                       values:SkillOptions,
                        message:"explicit subagent skills may be configured only once"}.
 
 normalize_delegation_name(Value, Name) :-
@@ -228,22 +223,29 @@ subagent_after_spawn(ok(Child), Runtime, Parent, ChildCapabilities, Context,
                              Child,
                              ChildCapabilities,
                              Options0,
-                             OptionsOutcome),
+                             OptionsOutcome0),
+    delegated_options_outcome(OptionsOutcome0,
+                              Delegation,
+                              OptionsOutcome),
     subagent_after_options(OptionsOutcome,
                            Runtime,
                            Parent,
                            Child,
                            Context,
-                           Delegation,
                            Query,
                            Envelope).
 
-subagent_after_options(error(Error), Runtime, Parent, Child, _, Delegation, _,
-                       Envelope) :-
+delegated_options_outcome(ok(Options), Delegation,
+                          ok(delegated(Options, Delegation))) :- !.
+delegated_options_outcome(error(Error), Delegation,
+                          error(delegated(Error, Delegation))).
+
+subagent_after_options(error(delegated(Error, Delegation)),
+                       Runtime, Parent, Child, _, _, Envelope) :-
     subagent_after_call(error(Error), Runtime, Parent, Child, Delegation,
                         Envelope).
-subagent_after_options(ok(Options), Runtime, Parent, Child, Context, Delegation,
-                       Query, Envelope) :-
+subagent_after_options(ok(delegated(Options, Delegation)),
+                       Runtime, Parent, Child, Context, Query, Envelope) :-
     Handler = rlm_subagent:subagent_completion_worker(Runtime,
                                                       Parent,
                                                       Child,
