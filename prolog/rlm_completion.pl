@@ -1180,6 +1180,7 @@ budget_usage_check(Budget, Usage, Outcome) :-
                                          kind:model_calls_exceeded,
                                          used:Usage.model_calls,
                                          limit:Budget.max_model_calls,
+                                         usage:Usage,
                                          message:"model-call budget exceeded"})
     ;   Usage.tokens_known == true,
         Usage.total_tokens > Budget.max_total_tokens
@@ -1187,6 +1188,7 @@ budget_usage_check(Budget, Usage, Outcome) :-
                                          kind:token_budget_exceeded,
                                          used:Usage.total_tokens,
                                          limit:Budget.max_total_tokens,
+                                         usage:Usage,
                                          message:"token budget exceeded"})
     ;   Usage.cost_known == true,
         Usage.cost_usd > Budget.max_cost_usd
@@ -1194,6 +1196,7 @@ budget_usage_check(Budget, Usage, Outcome) :-
                                          kind:cost_budget_exceeded,
                                          used:Usage.cost_usd,
                                          limit:Budget.max_cost_usd,
+                                         usage:Usage,
                                          message:"cost budget exceeded"})
     ;   Outcome = ok
     ).
