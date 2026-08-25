@@ -234,7 +234,7 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                              Query,
                              ContextRef,
                              ProviderName,
-                             Provider,
+                             provider_context(SkillMessages, Provider),
                              Capabilities,
                              ChildCapabilities,
                              RuntimeTools,
