@@ -1,0 +1,70 @@
+#+title: RAGE record for issue 206 closed prompt-command execution
+
+* Scope
+- Issue :: #206
+- Parent :: #172
+- Starting main :: =8054606971ffbbb6aa9484b4e915caa4c655929b=
+- Branch :: =rage/206-prompt-command-runtime=
+- Ownership :: Generic Prolog-RLM prompt-command and typed-tool runtime only. No Agent Zero or AgentProlog product logic.
+
+* Bug / regression-first discovery
+Repository search on the starting SHA found that =rlm_prompt_command= already compiles the closed action =delegate_subagent= into =tool(rlm_subagent)=, while =rlm_subagent= already owns bounded child execution, child capability/authority possession, structured result envelopes, cancellation, usage/trace, and parent =child_result= propagation. Adaptive recursion also already knows the =delegated_subagent= route.
+
+The missing production seam was concrete: =prompt_command_compile/*= had no production consumer. The existing end-to-end subagent test manually destructured =Command.command = tool(Tool)= and manually called =tool_invoke/7=. Thus symbolic command compilation existed, and typed subagent execution existed, but host glue was required to connect them.
+
+* TDD red
+The first test-only head =01dc568c3e7f7c88e758c74bf2628d0159363612= added the missing =prompt_command_execute/6= contract and an unsupported-target rejection contract without runtime implementation.
+
+Exact-head CI discovered 877 deterministic tests: 875 passed and exactly two failed. Both failures were the intended absent predicate =prompt_command_execute/6=. No unrelated deterministic assertion failed. On the same head the credential-backed REAL OpenRouter job completed its core, structured-repair, benchmark, depth 0/1/2, and CLI smoke steps successfully.
+
+A second test-only commit =f106a78c6b3f86474ede93ca27a6d6fc5cee14f4= strengthened the contract before realization:
+- a real canonical =rlm_subagent= must execute through the command adapter and return its child envelope;
+- the parent must receive the existing canonical =child_result= through =agent_pump=;
+- changing the command target must fail before typed-tool dispatch;
+- changing the text while retaining the allowed target must fail compiler-fingerprint validation before dispatch.
+
+* Analyze
+The compiler already emits all data needed for the first runtime command: normalized text, closed target, KB provenance, and a SHA-256 fingerprint over the canonical command payload. No new selector, scheduler, authority system, or subagent runtime is required.
+
+The execution boundary therefore has two independent checks:
+1. command integrity/allow-listing, owned by =rlm_prompt_command=;
+2. execution permission/effect/limits, owned by =rlm_tool= and the registered canonical tool handler.
+
+A valid compiler fingerprint proves only that the closed command payload has not been changed. It is not execution authority. A fingerprint-valid command still requires the caller's normal tool capability and whatever authority/effect policy the canonical tool runtime requires.
+
+* Design
+Add =prompt_command_execute/6= to =rlm_prompt_command=.
+
+For the current closed vocabulary:
+- accept only ground =prompt_command{...}= data;
+- accept only the current compiled target =tool(rlm_subagent)=;
+- remove =fingerprint= and recompute the canonical compiler fingerprint over the remaining payload;
+- reject target substitution before dispatch;
+- reject payload tampering when the fingerprint no longer matches;
+- derive the closed typed invocation =json{query:Command.text}=;
+- delegate execution unchanged to =rlm_tool:tool_invoke/7=.
+
+Pre-dispatch rejection returns a small =prompt_command_trace= with =status:command_rejected=. Successfully admitted commands return the canonical tool trace unchanged.
+
+* Adversarial review
+- Do not meta-call =Command.command= or any model/KB term.
+- Do not make =tool(Name)= a generic executable KB vocabulary. The first adapter remains exactly =rlm_subagent=.
+- Check target substitution even though it also invalidates the fingerprint, so an unsupported target has an explicit structural failure and never reaches registry lookup.
+- Check fingerprint after the allow-list so an attacker cannot retain =rlm_subagent= while replacing the query text or injecting extra command fields.
+- Do not treat the compiler fingerprint as authority. Capabilities, authority, effects, approval, tool limits, cancellation and async scheduling remain in =rlm_tool=/registered handlers.
+- Do not bypass =tool_invoke/7= with a direct subagent handler call.
+- Do not add #175 deadline semantics in this slice.
+- Do not duplicate the prompt/skill selection work owned by the compiler or the active #122 transaction.
+
+* Decision
+GO. The design closes a demonstrated missing generic-runtime seam by composing two already-canonical boundaries. It reduces host-language/manual glue while preserving the separation between symbolic command integrity and runtime execution authority.
+
+* Realize
+Implementation head before this record: =ac79a8c545d9bef541f329099347bb5fde3b7d63=.
+
+=rlm_prompt_command= now exports =prompt_command_execute/6=, validates closed command data, enforces the fixed =rlm_subagent= target, authenticates the compiler payload fingerprint, projects only =json{query:Text}=, and delegates to =rlm_tool:tool_invoke/7=. The existing compiler now shares one =command_fingerprint/2= implementation with execution validation.
+
+No changes were made to =rlm_tool=, =rlm_subagent=, =rlm_agent=, authority/effect policy, provider code, recursion policy, or downstream product adapters.
+
+* Verify
+Final exact-head verification is intentionally pending until this RAGE record itself is committed, because any new branch head invalidates earlier candidate-head evidence. Required final lanes remain CI (deterministic plus REAL OpenRouter), Paid OpenRouter, Nix flake, Tree-sitter FFI, and Clean SWI pack install. Review/discussion state and current =main= must also be re-read before promotion or merge.
