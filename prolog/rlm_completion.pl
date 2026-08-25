@@ -300,7 +300,10 @@ completion_after_recursive_validation(ok(Stats),
     bound_plan_model_tokens(Planner.plan,
                             PlanModelCalls,
                             RemainingTokens,
-                            BoundedPlan),
+                            TokenBoundedPlan),
+    enforce_plan_reasoning_options(Options,
+                                   TokenBoundedPlan,
+                                   BoundedPlan),
     plan_budget(Budget, RemainingCalls, PlanBudget),
     context_runtime_options(Options, ContextOptions),
     RuntimeOptions = [ providers([provider_ref(ProviderName, Provider)]),
@@ -1416,11 +1419,87 @@ planner_token_limit(Options, Limit) :-
 
 planner_request_options(Options, TokenLimit, RequestOptions) :-
     option_value(planner_temperature, Options, 0, Temperature),
-    RequestOptions = _{max_tokens:TokenLimit, temperature:Temperature}.
+    Base = _{max_tokens:TokenLimit, temperature:Temperature},
+    planner_reasoning_effort(Options, Effort),
+    request_options_reasoning(Effort, Base, RequestOptions).
 
 model_request_options(Options, TokenLimit, RequestOptions) :-
     option_value(temperature, Options, 0, Temperature),
-    RequestOptions = _{max_tokens:TokenLimit, temperature:Temperature}.
+    Base = _{max_tokens:TokenLimit, temperature:Temperature},
+    completion_reasoning_effort(Options, Effort),
+    request_options_reasoning(Effort, Base, RequestOptions).
+
+completion_reasoning_effort(Options, Effort) :-
+    option_value(reasoning_effort, Options, unspecified, Raw),
+    normalize_optional_reasoning_effort(Raw, Effort).
+
+planner_reasoning_effort(Options, Effort) :-
+    option_value(planner_reasoning_effort, Options, inherit, Raw),
+    (   Raw == inherit
+    ->  completion_reasoning_effort(Options, Effort)
+    ;   normalize_reasoning_effort(Raw, Effort)
+    ).
+
+normalize_optional_reasoning_effort(unspecified, unspecified) :-
+    !.
+normalize_optional_reasoning_effort(Raw, Effort) :-
+    normalize_reasoning_effort(Raw, Effort).
+
+normalize_reasoning_effort(Raw, Effort) :-
+    reasoning_effort_atom(Raw, Candidate),
+    (   memberchk(Candidate, [none,minimal,low,medium,high,xhigh,max])
+    ->  Effort = Candidate
+    ;   throw(completion_fault(invalid_reasoning_effort(Raw)))
+    ).
+
+reasoning_effort_atom(Value, Effort) :-
+    atom(Value),
+    !,
+    downcase_atom(Value, Effort).
+reasoning_effort_atom(Value, Effort) :-
+    string(Value),
+    !,
+    string_lower(Value, Lower),
+    atom_string(Effort, Lower).
+reasoning_effort_atom(Value, _) :-
+    throw(completion_fault(invalid_reasoning_effort(Value))).
+
+request_options_reasoning(unspecified, Options, Options) :-
+    !.
+request_options_reasoning(Effort, Options0, Options) :-
+    put_dict(reasoning, Options0, _{effort:Effort}, Options).
+
+enforce_plan_reasoning_options(Options, Plan0, Plan) :-
+    completion_reasoning_effort(Options, Effort),
+    enforce_plan_reasoning_effort(Effort, Plan0, Plan).
+
+enforce_plan_reasoning_effort(unspecified, Plan, Plan) :-
+    !.
+enforce_plan_reasoning_effort(Effort, plan(Steps0), plan(Steps)) :-
+    maplist(enforce_step_reasoning_effort(Effort), Steps0, Steps).
+
+enforce_step_reasoning_effort(Effort,
+                              model(Provider, Prompt, RequestOptions0, Bind),
+                              model(Provider, Prompt, RequestOptions, Bind)) :-
+    !,
+    put_dict(reasoning,
+             RequestOptions0,
+             _{effort:Effort},
+             RequestOptions).
+enforce_step_reasoning_effort(Effort, rlm(Plan0, Bind), rlm(Plan, Bind)) :-
+    !,
+    enforce_plan_reasoning_effort(Effort, Plan0, Plan).
+enforce_step_reasoning_effort(Effort,
+                              parallel(Plans0, Bind),
+                              parallel(Plans, Bind)) :-
+    !,
+    maplist(enforce_plan_reasoning_effort(Effort), Plans0, Plans).
+enforce_step_reasoning_effort(Effort,
+                              retry(Attempts, Plan0, Bind),
+                              retry(Attempts, Plan, Bind)) :-
+    !,
+    enforce_plan_reasoning_effort(Effort, Plan0, Plan).
+enforce_step_reasoning_effort(_, Step, Step).
 
 completion_budget(Options, Budget) :-
     default_completion_budget(Default),
