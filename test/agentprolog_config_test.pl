@@ -79,8 +79,9 @@ user_config_is_executable_prolog_(Root) :-
                ":- dynamic loaded_marker/1.\n:- initialization(assertz(loaded_marker(ok))).\nhelper_model(\"rule/model\").\nsetting(model, Model) :- helper_model(Model).\n"),
     agentprolog_config_resolve(_{user_path:Path}, Outcome),
     require_ok(Outcome, Resolution),
+    assertion(ground(Resolution)),
     assertion(Resolution.effective.settings.model == "rule/model"),
-    assertion(Resolution.sources = [Source]),
+    Resolution.sources = [Source],
     Module = Source.module,
     assertion(Module \== null),
     assertion(call(Module:loaded_marker(ok))),
@@ -119,6 +120,8 @@ prolog_and_json_normalize_to_same_effective_config_(Root) :-
     require_ok(PrologOutcome, PrologResolution),
     agentprolog_config_resolve(_{user_path:JsonPath}, JsonOutcome),
     require_ok(JsonOutcome, JsonResolution),
+    assertion(ground(PrologResolution)),
+    assertion(ground(JsonResolution)),
     assertion(PrologResolution.effective == JsonResolution.effective).
 
 test(prolog_json_handler_loads_then_allows_rule_override) :-
@@ -146,8 +149,9 @@ json_only_xdg_config_uses_same_runtime_(Root) :-
                           "{\"model\":\"json-only/model\"}\n"),
                agentprolog_config_resolve(_{}, Outcome),
                require_ok(Outcome, Resolution),
+               assertion(ground(Resolution)),
                assertion(Resolution.effective.settings.model == "json-only/model"),
-               assertion(Resolution.sources = [Source]),
+               Resolution.sources = [Source],
                assertion(Source.format == json),
                assertion(Source.module == null)
              )).
@@ -166,8 +170,9 @@ untrusted_project_config_is_discovered_but_not_executed_(Root) :-
                           trusted:false}},
     agentprolog_config_resolve(Context, Outcome),
     require_ok(Outcome, Resolution),
+    assertion(ground(Resolution)),
     assertion(Resolution.effective.settings.model == "openrouter/free"),
-    assertion(Resolution.sources = [ProjectSource]),
+    Resolution.sources = [ProjectSource],
     assertion(ProjectSource.status == blocked_untrusted),
     assertion(ProjectSource.project_identity == ProjectIdentity),
     assertion(ProjectSource.module == null).
@@ -188,8 +193,9 @@ trusted_project_config_executes_and_overlays_user_(Root) :-
                           trusted:true}},
     agentprolog_config_resolve(Context, Outcome),
     require_ok(Outcome, Resolution),
+    assertion(ground(Resolution)),
     assertion(Resolution.effective.settings.model == "project/model"),
-    assertion(Resolution.sources = [UserSource, ProjectSource]),
+    Resolution.sources = [UserSource, ProjectSource],
     assertion(UserSource.scope == user),
     assertion(ProjectSource.scope == project),
     assertion(ProjectSource.status == loaded),
@@ -210,8 +216,9 @@ trusted_project_prolog_shadows_json_deterministically_(Root) :-
                           trusted:true}},
     agentprolog_config_resolve(Context, Outcome),
     require_ok(Outcome, Resolution),
+    assertion(ground(Resolution)),
     assertion(Resolution.effective.settings.model == "prolog/project"),
-    assertion(Resolution.sources = [ProjectSource]),
+    Resolution.sources = [ProjectSource],
     assertion(ProjectSource.format == prolog),
     assertion(ProjectSource.shadowed == [JsonPath]).
 
@@ -222,7 +229,8 @@ secret_settings_are_rejected_from_canonical_projection_(Root) :-
     directory_file_path(Root, 'config.prolog', Path),
     write_text(Path, "setting(openrouter_api_key, \"nope\").\n"),
     agentprolog_config_load_file(Path, prolog, Outcome),
-    assertion(Outcome = error(Error)),
+    Outcome = error(Error),
+    assertion(ground(Outcome)),
     assertion(Error.kind == secret_settings_forbidden).
 
 test(explicit_reload_activates_new_isolated_generation) :-
@@ -246,7 +254,7 @@ explicit_reload_activates_new_isolated_generation_(Root) :-
     assertion(call(Second.module:new_helper)),
     agentprolog_config_resolve(_{user_path:Path}, ResolveOutcome),
     require_ok(ResolveOutcome, Resolution),
-    assertion(Resolution.sources = [Active]),
+    Resolution.sources = [Active],
     assertion(Active.module == Second.module),
     assertion(Active.generation == Second.generation),
     assertion(Resolution.effective.settings.model == "second/model").
@@ -264,7 +272,7 @@ failed_reload_keeps_last_active_projection_(Root) :-
     assertion(ReloadOutcome = error(_)),
     agentprolog_config_resolve(_{user_path:Path}, ResolveOutcome),
     require_ok(ResolveOutcome, Resolution),
-    assertion(Resolution.sources = [Active]),
+    Resolution.sources = [Active],
     assertion(Active.module == First.module),
     assertion(Active.generation == First.generation),
     assertion(Resolution.effective.settings.model == "good/model").

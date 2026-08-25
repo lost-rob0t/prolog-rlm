@@ -56,10 +56,21 @@ this module are replaced through a temporary file and forced to POSIX mode
 :- use_module(library(filesex)).
 :- use_module(library(http/json)).
 :- use_module(library(lists)).
+:- use_module(library(readutil), [read_file_to_string/3]).
 :- use_module(library(uuid)).
 
 :- dynamic config_generation_counter/1.
 :- dynamic active_config_source/5.
+:- thread_local config_load_watch/1.
+:- thread_local config_load_diagnostics/3.
+
+:- multifile user:message_hook/3.
+
+user:message_hook(load_file_errors(Source, Errors, Warnings), _, _) :-
+    agentprolog_config:record_config_load_diagnostics(Source,
+                                                      Errors,
+                                                      Warnings),
+    fail.
 
 config_generation_counter(0).
 
@@ -92,17 +103,17 @@ agentprolog_config_defaults(Config) :-
     atom_string(StoreAtom, Store),
     Config = agentprolog_config{
                  schema_version:1,
-                 settings:_{provider:"openrouter",
+                 settings:config_section{provider:"openrouter",
                             model:"openrouter/free",
                             history_mode:"lossless_rlm",
                             compaction:false,
                             persist_sessions:true,
                             conversation_store:Store},
-                 extensions:_{},
-                 tools:_{},
-                 detectors:_{},
-                 prompt:_{},
-                 frontend:_{}
+                 extensions:config_section{},
+                 tools:config_section{},
+                 detectors:config_section{},
+                 prompt:config_section{},
+                 frontend:config_section{}
              }.
 
 /* Public lifecycle ---------------------------------------------------- */
@@ -254,19 +265,42 @@ load_candidate(json, Path, _, null, Patch) :-
 load_candidate(prolog, Path, Generation, Module, Patch) :-
     fresh_config_module(Generation, Module),
     synthetic_source_id(Path, Generation, SourceId),
+    read_file_to_string(Path, SourceText, [encoding(utf8)]),
     setup_call_cleanup(
-        open(Path, read, Stream, [encoding(utf8)]),
-        catch(load_files(SourceId,
-                         [ stream(Stream),
-                           module(Module),
-                           check_script(false),
-                           derived_from(Path),
-                           silent(true)
-                         ]),
-              Exception,
-              throw(config_fault(prolog_load_failed(Path, Exception)))),
+        open_string(SourceText, Stream),
+        setup_call_cleanup(
+            assertz(config_load_watch(SourceId)),
+            ( catch(load_files(Module:SourceId,
+                               [ stream(Stream),
+                                 check_script(false),
+                                 derived_from(Path),
+                                 silent(true)
+                               ]),
+                    Exception,
+                    throw(config_fault(prolog_load_failed(Path,
+                                                          Exception)))),
+              reject_config_load_errors(Path, SourceId)
+            ),
+            ( retractall(config_load_watch(SourceId)),
+              retractall(config_load_diagnostics(SourceId, _, _))
+            )),
         close(Stream)),
     collect_prolog_patch(Module, Path, Patch).
+
+record_config_load_diagnostics(Source, Errors, Warnings) :-
+    config_load_watch(Source),
+    assertz(config_load_diagnostics(Source, Errors, Warnings)).
+
+reject_config_load_errors(Path, Source) :-
+    findall(Errors,
+            config_load_diagnostics(Source, Errors, _),
+            ErrorCounts),
+    sum_list(ErrorCounts, ErrorCount),
+    (   ErrorCount =:= 0
+    ->  true
+    ;   throw(config_fault(prolog_load_failed(Path,
+                                              syntax_errors(ErrorCount))))
+    ).
 
 fresh_config_module(Generation, Module) :-
     uuid(UUID, [version(4)]),
@@ -363,7 +397,7 @@ include_json_patch(ConfigPath, Include0, Patch) :-
 
 normalize_context(Context0, Context) :-
     (   var(Context0)
-    ->  Raw = _{}
+    ->  Raw = config_context_input{}
     ;   Raw = Context0
     ),
     require_dict(config_context, Raw),
@@ -540,12 +574,12 @@ source_list(User, Project, Sources) :-
 /* Canonical ordinary-settings model ---------------------------------- */
 
 empty_patch(agentprolog_config{schema_version:1,
-                               settings:_{},
-                               extensions:_{},
-                               tools:_{},
-                               detectors:_{},
-                               prompt:_{},
-                               frontend:_{}}).
+                               settings:config_section{},
+                               extensions:config_section{},
+                               tools:config_section{},
+                               detectors:config_section{},
+                               prompt:config_section{},
+                               frontend:config_section{}}).
 
 normalize_patch(Value0, Patch) :-
     require_dict(config, Value0),
@@ -596,13 +630,13 @@ allowed_config_keys(Config) :-
     ).
 
 normalize_section_dict(Config, Name, Value) :-
-    dict_default(Config, Name, _{}, Raw),
+    dict_default(Config, Name, config_section{}, Raw),
     normalize_dict_data(Raw, Value).
 
 section_dict(Config, Name, Value) :-
     (   get_dict(Name, Config, Existing)
     ->  Value = Existing
-    ;   Value = _{}
+    ;   Value = config_section{}
     ).
 
 normalize_section(Name0, Name) :-
@@ -692,7 +726,7 @@ normalize_dict_data(Value0, Value) :-
     require_dict(config_section, Value0),
     dict_pairs(Value0, _, Pairs0),
     maplist(normalize_pair, Pairs0, Pairs),
-    dict_pairs(Value, _, Pairs).
+    dict_pairs(Value, config_section, Pairs).
 
 normalize_pair(Key0-Value0, Key-Value) :-
     normalize_key(Key0, Key),
