@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - fix/191-capability-filtered-tool-schemas
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -31,43 +30,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('prolog/rlm_completion.pl')
-          text = path.read_text()
-          old = '''        tool_registry_runtime_tools(Registry,
-                                    Capabilities,
-                                    InvocationOptions,
-                                    RegistryTools),
-        tool_discover(Registry, Schemas)
-    ),
-    append(RegistryTools, DirectTools, Tools).
-
-tool_invocation_options(Options, InvocationOptions) :-
-'''
-          new = '''        tool_registry_runtime_tools(Registry,
-                                    Capabilities,
-                                    InvocationOptions,
-                                    RegistryTools),
-        tool_discover(Registry, DiscoveredSchemas),
-        include(tool_schema_capability_allowed(Capabilities),
-                DiscoveredSchemas,
-                Schemas)
-    ),
-    append(RegistryTools, DirectTools, Tools).
-
-tool_schema_capability_allowed(Capabilities, Schema) :-
-    is_dict(Schema),
-    get_dict(capability, Schema, Capability),
-    capability_allowed(Capabilities, Capability).
-
-tool_invocation_options(Options, InvocationOptions) :-
-'''
-          if old not in text:
-              raise SystemExit('expected runtime_tools block not found')
-          path.write_text(text.replace(old, new, 1))
-          PY
+          python3 -c 'from pathlib import Path; p=Path("prolog/rlm_completion.pl"); s=p.read_text(); old="        tool_discover(Registry, Schemas)\n    ),\n    append(RegistryTools, DirectTools, Tools).\n\ntool_invocation_options(Options, InvocationOptions) :-"; new="        tool_discover(Registry, DiscoveredSchemas),\n        include(tool_schema_capability_allowed(Capabilities),\n                DiscoveredSchemas,\n                Schemas)\n    ),\n    append(RegistryTools, DirectTools, Tools).\n\ntool_schema_capability_allowed(Capabilities, Schema) :-\n    is_dict(Schema),\n    get_dict(capability, Schema, Capability),\n    capability_allowed(Capabilities, Capability).\n\ntool_invocation_options(Options, InvocationOptions) :-"; assert old in s; p.write_text(s.replace(old, new, 1))'
 
       - name: Run focused regression and completion tests
         shell: bash
