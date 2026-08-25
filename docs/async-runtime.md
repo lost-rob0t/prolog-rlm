@@ -167,7 +167,7 @@ The core completion/provider/chain, tool/MCP, agent, graph, and pending-authorit
 
 - concrete process/test/network tool surfaces and their async equivalents under #49/#50;
 - sync/async equivalence coverage for those future blocking-capable surfaces;
-- downstream `agentProlog/` approval/diff presentation and proof that the eventual TUI remains interactive while operations are active.
+- downstream AgentProlog approval/diff presentation and proof that downstream clients remain interactive while operations are active.
 
 Pure or immediate predicates should not be forced through Futures merely for API symmetry.
 
