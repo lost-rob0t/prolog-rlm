@@ -1,0 +1,51 @@
+#+title: RAGE closure record for issue 200 permanent RLM context
+
+* Scope
+- Issue :: #200
+- Approved design :: #183
+- Provider-surface parent :: #176
+- Starting main :: =2ceba4c0f4a64e95233849a92def6e4fbf95b8b7=
+- Defect :: default RLM operating skills are compiled into the root planner system message, but model-selected internal =model(...)= steps are dispatched with a fresh user-only request and therefore lose the permanent operating contract.
+
+* Analyze
+Current =rlm_completion= compiles the default skills through =rlm_prompt_compiler= and passes the rendered message only to the root planner. After plan validation it passes the ordinary provider into =rlm_plan=. Current =rlm_plan= constructs each internal provider request as a one-user-message =model_request= and calls =rlm_chain:model_complete_execute/3=. Nested =rlm(...)=, =parallel(...)= and =retry(...)= all reuse the same provider runtime, so the missing seam is provider projection, not another skill selector.
+
+Downstream inspection found no ownership conflict: active A0 Symbolics PR #51 owns Agent Zero runtime-mode composition, while active AgentProlog PR #8 owns the DeepSeek Harness AgentFactory. Neither owns this generic provider-context contract.
+
+* TDD contract
+The first branch commit =6609e03a66916aadc8891c4dc0eaa59781fbc45e= adds deterministic tests for a host-owned provider-context projection. The test calls a projection predicate absent on the starting SHA and therefore encodes the missing contract before implementation. No executable CI result attached to that intermediate head before realization, so no red CI run is claimed.
+
+Required behavior:
+- prepend already-compiled host system messages exactly once;
+- preserve the internal user message and request options;
+- an empty prefix preserves the original request;
+- raw standalone =llm_query/3= stays raw;
+- model-produced plan data cannot select or replace the wrapper;
+- visibility does not grant capabilities, authority, handlers or effects.
+
+* Design
+Introduce =provider_context(Messages, Provider)= as a trusted internal provider wrapper in =rlm_chain=. The wrapper validates that the prefix is a ground list of system messages, prepends it to the request messages, then delegates through the same canonical =model_complete_execute/3= path.
+
+=rlm_completion= continues to own skill selection/packing. It gives the root planner the ordinary provider plus its compiled messages, then gives plan execution =provider_context(SkillMessages, Provider)=. =rlm_plan= remains unchanged. Because nested/retry/parallel plans reuse the provider mapping, permanent context propagates without a second compiler, hidden thread state, or per-node re-selection.
+
+* Adversarial review
+- Do not recompile skills in =rlm_chain= or =rlm_plan=.
+- Do not accept user/model plan fields as the provider prefix.
+- Reject malformed/non-system provider-context prefixes structurally.
+- Do not mutate provider credentials/configuration.
+- Preserve the underlying provider dispatch and accounting path.
+- Empty trusted projection is identity, preserving =skill_mode(off)= behavior.
+- Root planner does not receive duplicate context because it uses the unwrapped provider; only plan execution receives the wrapper.
+- Nested and retry execution cannot accumulate wrappers because the runtime mapping is constructed once per completion.
+
+* Decision
+GO. This is the smallest implementation inside explicitly approved #183: compiler ownership stays in =rlm_completion=, provider dispatch stays canonical, and =rlm_plan= remains renderer/policy neutral.
+
+* Realize
+- TDD commit :: =6609e03a66916aadc8891c4dc0eaa59781fbc45e=
+- Provider wrapper commit :: =4d31151182485de17fdec2de85cae1c6cffaa561=
+- Completion wiring commit :: =2688570bd88d5e6822a32959d571eb6f261e243a=
+- PR :: #201
+
+* Verify
+Exact-head GitHub Actions is authoritative because this connector-authored run cannot execute the repository locally. Static load reached green on the final implementation head before this record was written. Required final-head lanes are CI, Clean SWI pack install, Tree-sitter FFI, Nix flake, and Paid OpenRouter. Do not merge until every required lane is successful and review/thread state is clear.
