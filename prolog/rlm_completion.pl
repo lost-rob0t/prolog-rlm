@@ -1694,9 +1694,17 @@ runtime_tools(Options, Capabilities, Tools, Schemas) :-
                                     Capabilities,
                                     InvocationOptions,
                                     RegistryTools),
-        tool_discover(Registry, Schemas)
+        tool_discover(Registry, DiscoveredSchemas),
+        include(tool_schema_capability_allowed(Capabilities),
+                DiscoveredSchemas,
+                Schemas)
     ),
     append(RegistryTools, DirectTools, Tools).
+
+tool_schema_capability_allowed(Capabilities, Schema) :-
+    is_dict(Schema),
+    get_dict(capability, Schema, Capability),
+    capability_allowed(Capabilities, Capability).
 
 tool_invocation_options(Options, InvocationOptions) :-
     ToolMetadata = [authority_context, trace_id, session_id, runtime_id,
