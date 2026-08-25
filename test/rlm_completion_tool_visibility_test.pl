@@ -34,6 +34,23 @@ planner_request_prompt(Request, Prompt) :-
     get_dict(role, Message, user),
     get_dict(content, Message, Prompt).
 
+planner_schema_projection_contract(Request,
+                                   RequiredSentinel,
+                                   HiddenSentinel,
+                                   Outcome) :-
+    planner_request_prompt(Request, Prompt),
+    (   sub_string(Prompt, _, _, _, RequiredSentinel),
+        \+ sub_string(Prompt, _, _, _, HiddenSentinel)
+    ->  Outcome = ok
+    ;   Outcome = error(tool_projection_error{
+                            phase:planner_projection,
+                            kind:raw_registry_visibility,
+                            required:RequiredSentinel,
+                            hidden:HiddenSentinel,
+                            message:"root planner tool schemas bypass contextual prompt compilation"
+                        })
+    ).
+
 test(planner_sees_only_capability_allowed_registry_schemas,
      [setup(completion_test_support:reset_calls)]) :-
     tool_registry_create(Registry),
@@ -65,6 +82,41 @@ test(planner_sees_only_capability_allowed_registry_schemas,
                                "allowed_research_tool")),
           assertion(\+ sub_string(Prompt, _, _, _,
                                   "denied_admin_tool"))
+        ),
+        tool_registry_destroy(Registry)).
+
+test(root_planner_projection_contract_detects_raw_registry_visibility,
+     [setup(completion_test_support:reset_calls)]) :-
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        ( register_fixture_tool(Registry,
+                                weather_lookup,
+                                "WEATHER_SCHEMA_SENTINEL_176"),
+          register_fixture_tool(Registry,
+                                unrelated_admin_export,
+                                "UNRELATED_SCHEMA_SENTINEL_176")
+        ),
+        ( rlm_completion(
+              "use weather_lookup for the weather lookup",
+              text("opaque context"),
+              [ planner_handler(completion_test_support:capture_planner),
+                tool_registry(Registry),
+                capabilities([tool(weather_lookup),
+                              tool(unrelated_admin_export)]),
+                child_capabilities([])
+              ],
+              CompletionOutcome),
+          assertion(CompletionOutcome = ok(_)),
+          completion_test_support:last_planner_request(Request),
+          planner_schema_projection_contract(
+              Request,
+              "WEATHER_SCHEMA_SENTINEL_176",
+              "UNRELATED_SCHEMA_SENTINEL_176",
+              ProjectionOutcome),
+          assertion(ProjectionOutcome = error(ProjectionError)),
+          assertion(get_dict(kind,
+                             ProjectionError,
+                             raw_registry_visibility))
         ),
         tool_registry_destroy(Registry)).
 
