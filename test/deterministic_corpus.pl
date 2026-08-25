@@ -101,6 +101,8 @@ corpus_entry('rlm_tool_mcp_scheduler_test.pl',
 corpus_entry('rlm_completion_test.pl', include(rlm_completion)).
 corpus_entry('rlm_completion_hardening_test.pl',
              include(rlm_completion_hardening)).
+corpus_entry('rlm_completion_tool_visibility_test.pl',
+             include(rlm_completion_tool_visibility)).
 corpus_entry('rlm_nested_usage_test.pl', include(rlm_nested_usage)).
 corpus_entry('rlm_nested_trajectory_test.pl',
              include(rlm_nested_trajectory)).
