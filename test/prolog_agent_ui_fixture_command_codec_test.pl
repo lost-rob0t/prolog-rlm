@@ -1,7 +1,7 @@
 :- begin_tests(prolog_agent_ui_fixture_command_codec).
 
-:- use_module('../agentProlog/prolog/prolog_agent_ui_v1').
-:- use_module('../agentProlog/prolog/prolog_agent_ui_fixture').
+:- use_module('../prolog/prolog_agent_ui_v1').
+:- use_module('support/prolog_agent_ui_fixture').
 
 test(decoded_approval_command_produces_encodable_frames) :-
     ui_v1_command_frame("fixture_session_1", "req_codec_1",
