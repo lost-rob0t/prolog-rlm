@@ -460,7 +460,14 @@ test(token_budget_rejects_reported_overage,
     expect_error(Outcome, Error),
     assertion(Error.kind == token_budget_exceeded),
     assertion(Error.used =:= 60),
-    assertion(Error.limit =:= 10).
+    assertion(Error.limit =:= 10),
+    assertion(Error.usage.model_calls =:= 1),
+    assertion(Error.usage.prompt_tokens =:= 40),
+    assertion(Error.usage.completion_tokens =:= 20),
+    assertion(Error.usage.total_tokens =:= 60),
+    assertion(Error.usage.cost_usd =:= 0.0),
+    assertion(Error.usage.tokens_known == true),
+    assertion(Error.usage.cost_known == true).
 
 test(cost_budget_rejects_reported_overage,
      [setup(completion_test_support:reset_calls)]) :-
@@ -472,7 +479,12 @@ test(cost_budget_rejects_reported_overage,
     expect_error(Outcome, Error),
     assertion(Error.kind == cost_budget_exceeded),
     assertion(Error.used =:= 0.5),
-    assertion(Error.limit =:= 0.1).
+    assertion(Error.limit =:= 0.1),
+    assertion(Error.usage.model_calls =:= 1),
+    assertion(Error.usage.total_tokens =:= 3),
+    assertion(Error.usage.cost_usd =:= 0.5),
+    assertion(Error.usage.tokens_known == true),
+    assertion(Error.usage.cost_known == true).
 
 test(llm_query_supports_bounded_injected_model,
      [setup(completion_test_support:reset_calls)]) :-
