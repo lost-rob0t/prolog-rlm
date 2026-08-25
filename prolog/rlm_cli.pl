@@ -53,13 +53,14 @@ cli_dispatch([], Session) :-
     demo_session(all, Options, Session).
 cli_dispatch([help|_], Session) :-
     !,
-    default_cli_options(Options),
-    cli_usage(Usage),
-    Session = cli_session{command:help,
-                          status:pass,
-                          summary:Usage,
-                          payload:_{usage:Usage},
-                          output:Options}.
+    help_session(help, Session).
+cli_dispatch(['--help'|_], Session) :-
+    !,
+    help_session(help, Session).
+cli_dispatch([Command|Rest], Session) :-
+    cli_help_scope(Command, Rest, Scope),
+    !,
+    help_session(help(Scope), Session).
 cli_dispatch([demo|Rest], Session) :-
     !,
     parse_cli_options(Rest, Options, Positionals),
@@ -94,6 +95,25 @@ cli_dispatch(['effect-store',migrate|Rest], Session) :-
     effect_store_migration_session(Rest, Session).
 cli_dispatch([Command|_], _) :-
     throw(cli_fault(unknown_command(Command))).
+
+help_session(Command, Session) :-
+    default_cli_options(Options),
+    cli_usage(Usage),
+    Session = cli_session{command:Command,
+                          status:pass,
+                          summary:Usage,
+                          payload:_{usage:Usage},
+                          output:Options}.
+
+cli_help_scope('effect-store', [migrate|Rest], effect_store_migrate) :-
+    memberchk('--help', Rest),
+    !.
+cli_help_scope('effect-store', Rest, 'effect-store') :-
+    memberchk('--help', Rest),
+    !.
+cli_help_scope(Command, Rest, Command) :-
+    memberchk(Command, [demo,agent,graph,mcp,direct,rlm,'trace-view']),
+    memberchk('--help', Rest).
 
 shortcut_demo(Name, Rest, Session) :-
     parse_cli_options(Rest, Options, Positionals),
