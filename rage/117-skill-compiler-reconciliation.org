@@ -38,3 +38,19 @@
 - #176/#183 retain broader unified provider projection for tools/MCP and
   RLM-internal leaf/repair calls. This slice proves canonical root planner and
   child completion projection without inventing a second compiler.
+
+* Current-main reconciliation
+- Candidate before reconciliation :: =dd8105be6eb8cc173f607fb84c984990f7c1e368=
+- Advanced base :: =origin/main@30c620bae7ef6d4c21a98ffdf17bb969b2686638=
+- Pull-request failure :: CI run =32816525449= failed only the newly registered
+  planner visibility regression; the corresponding push run passed because it
+  did not test the pull-request merge result.
+- Red evidence :: after merging current =main=, the runtime correctly emitted a
+  system skill message followed by a user prompt containing only the allowed
+  schema, but the regression helper incorrectly required the user message to
+  be first.
+- Fix :: select the user message by its role instead of its position; this
+  preserves the issue #191 capability filter and the issue #117 system-message
+  projection contract.
+- Green evidence :: focused planner visibility test passes 1/1 after the
+  reconciliation edit.
