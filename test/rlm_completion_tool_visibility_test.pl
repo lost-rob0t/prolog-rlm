@@ -28,6 +28,11 @@ register_fixture_tool(Registry, Name, Description) :-
                   plunit_rlm_completion_tool_visibility:fixture_handler,
                   ok(_)).
 
+planner_request_prompt(Request, Prompt) :-
+    get_dict(messages, Request, [Message|_]),
+    get_dict(role, Message, user),
+    get_dict(content, Message, Prompt).
+
 test(planner_sees_only_capability_allowed_registry_schemas,
      [setup(completion_test_support:reset_calls)]) :-
     tool_registry_create(Registry),
@@ -50,7 +55,7 @@ test(planner_sees_only_capability_allowed_registry_schemas,
               Outcome),
           assertion(Outcome = ok(_)),
           completion_test_support:last_planner_request(Request),
-          get_dict(prompt, Request, Prompt),
+          planner_request_prompt(Request, Prompt),
           assertion(sub_string(Prompt, _, _, _,
                                "ALLOWED_SCHEMA_SENTINEL_191")),
           assertion(\+ sub_string(Prompt, _, _, _,
