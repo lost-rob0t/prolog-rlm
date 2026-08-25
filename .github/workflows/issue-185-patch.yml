@@ -1,0 +1,66 @@
+name: Issue 185 reasoning patch
+
+on:
+  push:
+    branches:
+      - fix/185-reasoning-effort
+    paths:
+      - '.github/workflows/issue-185-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Apply issue 185 patch
+        run: python3 .github/patches/issue-185.py
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends swi-prolog-nox
+          swipl --version
+
+      - name: Run focused reasoning tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          swipl -q -s test/rlm_completion_test.pl -g 'run_tests,halt'
+          swipl -q -s test/rlm_cli_test.pl -g 'run_tests,halt'
+
+      - name: Run runtime load checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          swipl -q -s test/check_runtime.pl
+          swipl -q -s test/load_all.pl
+          git diff --check
+
+      - name: Commit verified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'issue-185-patch[bot]'
+          git config user.email 'issue-185-patch@users.noreply.github.com'
+          git add \
+            prolog/rlm_completion.pl \
+            prolog/rlm_cli.pl \
+            test/support/completion_test_support.pl \
+            test/rlm_completion_test.pl \
+            test/rlm_cli_test.pl \
+            docs/completion-runtime.md
+          git diff --cached --quiet && {
+            echo 'Patch produced no changes.' >&2
+            exit 1
+          }
+          git commit -m 'fix: propagate reasoning effort through completion runtime'
+          git push origin HEAD:fix/185-reasoning-effort
