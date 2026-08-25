@@ -113,7 +113,7 @@ test(root_planner_projection_contract_detects_raw_registry_visibility,
               "WEATHER_SCHEMA_SENTINEL_176",
               "UNRELATED_SCHEMA_SENTINEL_176",
               ProjectionOutcome),
-          assertion(ProjectionOutcome = error(ProjectionError)),
+          ProjectionOutcome = error(ProjectionError),
           assertion(get_dict(kind,
                              ProjectionError,
                              raw_registry_visibility))
