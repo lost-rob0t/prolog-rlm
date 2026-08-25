@@ -1,5 +1,6 @@
 :- module(rlm_subagent,
           [ rlm_subagent_register/7,
+            rlm_subagent_register_command/8,
             rlm_subagent_handler/7
           ]).
 
@@ -11,17 +12,46 @@ child capability ceiling, context and completion options. Model/KB data only
 supplies the subquery string; it cannot choose a callable, widen capabilities,
 or replace host-owned completion budgets. Trusted completion options may carry
 host-selected explicit skills and generic subagent role metadata; these remain
-inert delegation provenance and never grant capability or authority. After
-spawn, the logical child owns the effective completion capabilities and tool
-authority context. Recursive `rlm(...)` plans remain bounded by the completion
-budget; registering the parent-bound `rlm_subagent` tool in its own child
-ceiling fails closed until a depth-aware recursive binding exists.
+inert delegation provenance and never grant capability or authority. A
+compiler-authenticated prompt command may supply the same role/skill intent
+through `rlm_subagent_register_command/8`; that adapter rejects a second
+host-side delegation policy and still registers this exact canonical tool.
+After spawn, the logical child owns the effective completion capabilities and
+tool authority context. Recursive `rlm(...)` plans remain bounded by the
+completion budget; registering the parent-bound `rlm_subagent` tool in its own
+child ceiling fails closed until a depth-aware recursive binding exists.
 */
 
 :- use_module(rlm_agent).
 :- use_module(rlm_completion).
+:- use_module(rlm_prompt_command, [prompt_command_subagent_options/3]).
 :- use_module(rlm_tool).
 :- use_module(library(apply), [exclude/3]).
+
+rlm_subagent_register_command(Registry, Runtime, Parent, ChildCapabilities,
+                              Context, CompletionOptions, Command, Outcome) :-
+    prompt_command_subagent_options(Command,
+                                    CompletionOptions,
+                                    OptionsOutcome),
+    subagent_register_command_options(OptionsOutcome,
+                                      Registry,
+                                      Runtime,
+                                      Parent,
+                                      ChildCapabilities,
+                                      Context,
+                                      Outcome).
+
+subagent_register_command_options(error(Error), _, _, _, _, _, error(Error)) :-
+    !.
+subagent_register_command_options(ok(Options), Registry, Runtime, Parent,
+                                  ChildCapabilities, Context, Outcome) :-
+    rlm_subagent_register(Registry,
+                          Runtime,
+                          Parent,
+                          ChildCapabilities,
+                          Context,
+                          Options,
+                          Outcome).
 
 rlm_subagent_register(Registry, Runtime, Parent, ChildCapabilities0,
                       Context, CompletionOptions, Outcome) :-
@@ -132,11 +162,24 @@ subagent_delegation_after_role(ok(Role), Options0, Outcome) :-
     subagent_delegation_after_skills(SkillsOutcome, Role, Options0, Outcome).
 
 subagent_delegation_after_skills(error(Error), _, _, error(Error)) :- !.
-subagent_delegation_after_skills(ok(Skills), Role, Options0, ok(Prepared)) :-
-    exclude(option_named(subagent_role), Options0, CompletionOptions),
+subagent_delegation_after_skills(ok(Skills), Role, Options0, Outcome) :-
+    subagent_source_option(Options0, SourceOutcome),
+    subagent_delegation_after_source(SourceOutcome,
+                                     Role,
+                                     Skills,
+                                     Options0,
+                                     Outcome).
+
+subagent_delegation_after_source(error(Error), _, _, _, error(Error)) :- !.
+subagent_delegation_after_source(ok(Source), Role, Skills, Options0,
+                                 ok(Prepared)) :-
+    exclude(option_named(subagent_role), Options0, Options1),
+    exclude(option_named(subagent_delegation_source),
+            Options1,
+            CompletionOptions),
     Delegation = delegation{role:Role,
                             skills:Skills,
-                            source:trusted_host},
+                            source:Source},
     Prepared = delegation_options{delegation:Delegation,
                                   completion_options:CompletionOptions}.
 
@@ -147,7 +190,7 @@ subagent_role_option(Options, Outcome) :-
 subagent_role_values([], ok(none)) :- !.
 subagent_role_values([Role0], Outcome) :-
     !,
-    (   normalize_delegation_name(Role0, Role)
+    (   normalize_delegation_name(Role0, Role), Role \== none
     ->  Outcome = ok(Role)
     ;   Outcome = error(tool_error{
                             phase:invoke,
@@ -169,17 +212,74 @@ subagent_skill_values([Skills0], Outcome) :-
     (   is_list(Skills0),
         length(Skills0, Count),
         Count =< 64,
-        maplist(normalize_delegation_name, Skills0, Skills)
+        maplist(normalize_delegation_name, Skills0, Skills),
+        sort(Skills, UniqueSkills),
+        length(UniqueSkills, Count)
     ->  Outcome = ok(Skills)
     ;   Outcome = error(tool_error{
                             phase:invoke,
                             kind:invalid_subagent_skills,
-                            message:"explicit subagent skills must be bounded identifiers"})
+                            message:"explicit subagent skills must be bounded unique identifiers"})
     ).
 subagent_skill_values(_, error(Error)) :-
     Error = tool_error{phase:invoke,
                        kind:duplicate_explicit_skills,
                        message:"explicit subagent skills may be configured only once"}.
+
+subagent_source_option(Options, Outcome) :-
+    findall(Source,
+            member(subagent_delegation_source(Source), Options),
+            Sources),
+    subagent_source_values(Sources, Outcome).
+
+subagent_source_values([], ok(trusted_host)) :- !.
+subagent_source_values([Source], Outcome) :-
+    !,
+    (   valid_delegation_source(Source)
+    ->  Outcome = ok(Source)
+    ;   Outcome = error(tool_error{
+                            phase:invoke,
+                            kind:invalid_delegation_source,
+                            message:"delegation source must be bounded trusted provenance data"})
+    ).
+subagent_source_values(_, error(Error)) :-
+    Error = tool_error{phase:invoke,
+                       kind:duplicate_delegation_source,
+                       message:"delegation source may be configured only once"}.
+
+valid_delegation_source(trusted_host) :- !.
+valid_delegation_source(Source) :-
+    is_dict(Source, delegation_source),
+    ground(Source),
+    dict_pairs(Source, delegation_source, Pairs),
+    findall(Key, member(Key-_, Pairs), Keys0),
+    sort(Keys0, Keys),
+    Keys == [fingerprint,kind,prompt_id],
+    get_dict(kind, Source, prompt_command),
+    get_dict(prompt_id, Source, PromptId),
+    valid_delegation_prompt_id(PromptId),
+    get_dict(fingerprint, Source, Fingerprint),
+    valid_delegation_fingerprint(Fingerprint).
+
+valid_delegation_prompt_id(Value) :-
+    atom(Value),
+    atom_length(Value, Length),
+    between(1, 128, Length),
+    !.
+valid_delegation_prompt_id(Value) :-
+    string(Value),
+    string_length(Value, Length),
+    between(1, 128, Length),
+    !.
+valid_delegation_prompt_id(Value) :- number(Value).
+
+valid_delegation_fingerprint(Fingerprint) :-
+    atom(Fingerprint),
+    atom_length(Fingerprint, 64),
+    atom_chars(Fingerprint, Chars),
+    maplist(hex_char, Chars).
+
+hex_char(Char) :- char_type(Char, xdigit(_)).
 
 normalize_delegation_name(Value, Name) :-
     atom(Value),

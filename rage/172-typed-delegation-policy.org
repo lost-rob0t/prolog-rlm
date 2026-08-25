@@ -1,0 +1,140 @@
+#+title: RAGE — #172 typed skill-aware delegation policy
+#+property: issue 172
+
+* Scope
+Advance #172 inside the existing generic runtime only. This slice binds trusted
+KB command policy to the canonical =rlm_subagent= registration path. It does not
+add a scheduler, a second prompt/skill compiler, product personas, capability or
+authority grants, or #175 deadline semantics.
+
+Starting executable base was =8054606971ffbbb6aa9484b4e915caa4c655929b=.
+During the TDD run, #206/#207 landed on =main= and added the canonical closed
+=prompt_command_execute/6= executor. The branch was reconciled onto that newer
+base =36cb418b833c77e24438fa94e596062a90088fa3= before realization, and the
+slice was redesigned to consume #207 rather than duplicate it.
+
+* BUG/REGRESSION / TDD contract
+The observed gap after #203/#204 and #206/#207 was not child supervision or
+command execution: those were already canonical. The missing contract was that
+trusted symbolic command policy could not select a generic child role/skill and
+carry that provenance through the existing command -> tool -> subagent path.
+
+The test-only head =c822204f3a1d39575dd25570e9a8262d76978f9c= established the
+falsifiable contract first. Its deterministic CI discovered 880 tests, passed
+875, and failed exactly the five deliberately absent behaviors:
+
+- compile optional =prompt_role/2= + =prompt_skill/2= into fingerprinted policy;
+- reject ambiguous role policy;
+- expose a trusted compiled-command -> subagent-options bridge;
+- reject policy tampering by compiler fingerprint;
+- register the canonical subagent from the compiled policy and prove the exact
+  child provider request contains the selected =rlm-facts= instruction body.
+
+No unrelated deterministic regression was observed on that red head.
+
+* Analysis / research
+Current source established these ownership boundaries:
+
+- =rlm_prompt_command= already owns the closed KB binding vocabulary and, after
+  #207, compiler-authenticated execution of =tool(rlm_subagent)= through
+  =rlm_tool=;
+- =rlm_subagent= already owns supervised child spawn, capability/authority
+  narrowing, cancellation, usage/result/trace envelopes, and parent
+  =child_result= propagation;
+- =rlm_completion= + =rlm_prompt_compiler= already own actual skill admission,
+  dependency/context packing, provider visibility and exact prompt rendering;
+- #203/#204 already proved host-selected =explicit_skills= and generic
+  =subagent_role= reach the child without widening capability or authority.
+
+Therefore =prompt_skill/2= in this slice is selection *intent*, not a second
+skill loader/compiler: the child =rlm_prompt_compiler= remains authoritative for
+whether the named skill exists, is admissible, fits policy/budget and becomes
+provider-visible.
+
+* Design
+1. Extend the closed prompt-command record vocabulary with optional
+   =prompt_role(Id, Role)= and =prompt_skill(Id, Skill)= facts.
+2. Normalize only bounded generic identifiers and compile them into inert
+   =delegation_policy{role,skills,provenance}= data.
+3. Include that policy inside the existing command SHA-256 fingerprint. Preserve
+   the legacy command shape when no role/skill policy exists.
+4. Add =prompt_command_subagent_options/3= as a trusted adapter. It first reuses
+   #207 command/fingerprint validation, rejects any second host role/skill/source
+   policy, and projects only inert subagent options.
+5. Add =rlm_subagent_register_command/8= as a thin registration adapter to the
+   existing =rlm_subagent_register/7=; it creates no scheduler or execution path.
+6. Preserve model-visible =rlm_subagent= arguments as query-only.
+7. Carry bounded command provenance as =subagent_delegation_source/1=, while
+   preserving =trusted_host= as the default for the existing direct API.
+8. Strip role/source provenance before child completion; retain
+   =explicit_skills/1= so the canonical child prompt compiler can admit/render it.
+
+* Adversarial review
+The design was checked against the repository security/architecture invariants:
+
+- *forged command/tool*: #207 still restricts execution to the closed
+  =tool(rlm_subagent)= target and validates command fingerprint;
+- *policy tamper*: changing role/skills without updating the fingerprint is
+  rejected before registration;
+- *dual authority*: =subagent_role=, =explicit_skills= or delegation-source
+  options supplied alongside compiled command policy are rejected rather than
+  silently overridden;
+- *capability/authority widening*: policy contains no capability or authority
+  field; child capabilities still pass through =capabilities_narrow/3= and child
+  authority remains inherited/narrowing-only;
+- *arbitrary callables*: role/skill/source are bounded inert data and are never
+  meta-called;
+- *provider/context bypass*: selected skill names still pass through
+  =rlm_completion= / =rlm_prompt_compiler= and normal provider/context budgets;
+- *provenance injection*: command-derived delegation source is closed and
+  bounded, with a 64-hex compiler fingerprint and bounded prompt identity;
+- *recursive escape*: this slice does not alter the existing fail-closed rule
+  preventing =tool(rlm_subagent)= from appearing in an unbounded child ceiling.
+
+Decision: *GO* within this architecture. Do not fold #175 deadline policy or a
+new recursive binding into this slice.
+
+* Realization
+Branch: =rage/172-typed-delegation-policy=
+PR: #209
+
+Key implementation heads:
+
+- =c251791d419fd4d85d57bc04d7358bb34de88219= — compile/authenticate trusted
+  delegation policy and reject conflicting policy sources;
+- =a72dd304108d15ae3d08b5c8222639ec85eba76c= — canonical subagent registration
+  adapter plus bounded delegation-source provenance;
+- =9e933e3555d42757c921d68f149cb159eb95da70= — fix SWI hexadecimal character
+  validation after exact-head CI exposed the incorrect atomic =xdigit= use.
+
+The first implementation head was intentionally not treated as green: exact
+CI passed 883/884 tests and failed only the end-to-end child handoff. Research
+against SWI character-type semantics showed that hexadecimal classification is
+=xdigit(Weight)=, not atomic =xdigit=. The validator was corrected rather than
+weakening/removing the provenance assertion.
+
+* Verification
+Exact implementation head =9e933e3555d42757c921d68f149cb159eb95da70= passed:
+
+- deterministic unit/load gate: 884/884, with runner-integrity checks;
+- deterministic benchmark/conformance suite;
+- deterministic deep-recursion experiment;
+- CLI JSON/demo/trace and persistence/artifact handoff gates;
+- credential-backed REAL OpenRouter core, structured repair, benchmark,
+  depth-0/1/2 recursion and CLI smoke;
+- Paid OpenRouter workflow;
+- Nix flake workflow;
+- Tree-sitter FFI workflow;
+- clean SWI pack install workflow.
+
+Because this RAGE record itself changes the candidate head, those results are
+implementation evidence, not the final merge gate. The complete required matrix
+must be green again on the exact documentation-bearing head before promotion or
+merge.
+
+* Reconciliation target
+After merge, update #172 to mark the typed policy -> canonical command executor
+-> canonical subagent -> selected child context path landed. Keep any genuinely
+remaining #172 acceptance items open, especially broader automatic recursion
+policy or depth-aware recursive delegation if current executable evidence still
+does not satisfy them. #175 remains a separate active transaction.

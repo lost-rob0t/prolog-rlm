@@ -26,6 +26,14 @@ unknown_command(Compiled) :-
                prompt_action(short_unknown, delegate_subagent)],
     prompt_command_compile(Records, unknown, ok(Compiled)).
 
+skill_role_records([
+    prompt(short_unknown, "Need evidence."),
+    prompt_trigger(short_unknown, unknown),
+    prompt_action(short_unknown, delegate_subagent),
+    prompt_role(short_unknown, reviewer),
+    prompt_skill(short_unknown, 'rlm-facts')
+]).
+
 test(short_prompt_unknown_binds_canonical_subagent_command) :-
     unknown_command(Compiled),
     assertion(Compiled.prompt_id == short_unknown),
@@ -138,6 +146,99 @@ test(arbitrary_callable_action_is_rejected) :-
 test(action_vocabulary_is_closed) :-
     prompt_command_action(delegate_subagent, tool(rlm_subagent)),
     \+ prompt_command_action(call(foo), _).
+
+test(delegation_policy_compiles_role_and_skill_into_fingerprint) :-
+    skill_role_records(Records),
+    prompt_command_compile(Records, unknown, ok(Compiled)),
+    Policy = Compiled.delegation_policy,
+    assertion(Policy.role == reviewer),
+    assertion(Policy.skills == ['rlm-facts']),
+    assertion(Policy.provenance == kb(short_unknown)),
+    assertion(atom(Compiled.fingerprint)).
+
+test(duplicate_delegation_role_fails_closed) :-
+    Records = [prompt(short_unknown, "Need evidence."),
+               prompt_trigger(short_unknown, unknown),
+               prompt_action(short_unknown, delegate_subagent),
+               prompt_role(short_unknown, reviewer),
+               prompt_role(short_unknown, researcher)],
+    prompt_command_compile(Records, unknown, error(Error)),
+    assertion(Error.kind == ambiguous_delegation_role).
+
+test(compiled_policy_rejects_conflicting_host_delegation_options) :-
+    skill_role_records(Records),
+    prompt_command_compile(Records, unknown, ok(Compiled)),
+    prompt_command_subagent_options(
+        Compiled,
+        [subagent_role(researcher)],
+        error(Error)),
+    assertion(Error.kind == delegation_policy_conflict).
+
+test(tampered_compiled_policy_is_rejected_before_registration) :-
+    skill_role_records(Records),
+    prompt_command_compile(Records, unknown, ok(Compiled)),
+    put_dict(delegation_policy,
+             Compiled,
+             delegation_policy{role:researcher,
+                               skills:['rlm-facts'],
+                               provenance:kb(short_unknown)},
+             Tampered),
+    prompt_command_subagent_options(Tampered, [], error(Error)),
+    assertion(Error.kind == invalid_fingerprint).
+
+test(compiled_policy_drives_canonical_subagent_and_child_prompt,
+     [setup(completion_test_support:reset_calls)]) :-
+    Caps = [tool(rlm_subagent), rlm, model(openrouter)],
+    ChildCaps = [rlm, model(openrouter)],
+    agent_runtime_create([root_capabilities(Caps), max_agents(3)], Runtime),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( agent_spawn(Runtime, none, agent_spec(parent), Caps, ok(Parent)),
+          skill_role_records(Records),
+          prompt_command_compile(Records, unknown, ok(Compiled)),
+          BaseOptions = [planner_handler(completion_test_support:capture_planner),
+                         capabilities(ChildCaps),
+                         child_capabilities(ChildCaps),
+                         disabled_skills(['rlm-operate',
+                                          'rlm-recurse',
+                                          'rlm-constraints'])],
+          rlm_subagent_register_command(Registry,
+                                        Runtime,
+                                        Parent,
+                                        ChildCaps,
+                                        text("bounded evidence"),
+                                        BaseOptions,
+                                        Compiled,
+                                        ok(_)),
+          prompt_command_execute(Compiled, Registry, Caps, [],
+                                 ok(Execution), _),
+          Envelope = Execution.value,
+          assertion(Envelope.status == completed),
+          assertion(Envelope.delegation.role == reviewer),
+          assertion(Envelope.delegation.skills == ['rlm-facts']),
+          Source = Envelope.delegation.source,
+          assertion(Source.kind == prompt_command),
+          assertion(Source.prompt_id == short_unknown),
+          assertion(Source.fingerprint == Compiled.fingerprint),
+          completion_test_support:last_planner_request(Request),
+          Request.messages = [System, User],
+          assertion(System.role == system),
+          assertion(User.role == user),
+          assertion(sub_string(System.content, _, _, _, "RLM_FACTS_BODY")),
+          assertion(\+ sub_string(System.content, _, _, _,
+                                  "RLM_OPERATE_BODY")),
+          assertion(\+ sub_string(System.content, _, _, _,
+                                  "RLM_RECURSE_BODY")),
+          assertion(\+ sub_string(System.content, _, _, _,
+                                  "RLM_CONSTRAINTS_BODY")),
+          Child = Envelope.correlation.child,
+          agent_status(Runtime, Child, ok(ChildStatus)),
+          assertion(ChildStatus.capabilities == ChildCaps)
+        ),
+        ( tool_registry_destroy(Registry),
+          agent_runtime_destroy(Runtime)
+        )).
 
 pump_until_child_result(_, _, _, Attempts) :-
     Attempts =< 0,
