@@ -1,8 +1,8 @@
 :- begin_tests(prolog_agent_ui_v1).
 
-:- use_module('../agentProlog/prolog/prolog_agent_ui_v1').
-:- use_module('../agentProlog/prolog/prolog_agent_ui_facade').
-:- use_module('../agentProlog/prolog/prolog_agent_ui_fixture').
+:- use_module('../prolog/prolog_agent_ui_v1').
+:- use_module('../prolog/prolog_agent_ui_facade').
+:- use_module('support/prolog_agent_ui_fixture').
 :- use_module(library(readutil)).
 :- use_module(library(process)).
 
@@ -204,7 +204,7 @@ test(stdio_fixture_server_smoke) :-
                             optional_capabilities:[]}},
     ui_v1_encode_frame(Negotiate, ok(Line)),
     process_create(path(swipl),
-                   ['-q','-s','agentProlog/bin/prolog-agent-ui-fixture.pl'],
+                   ['-q','-s','test/support/prolog-agent-ui-fixture.pl'],
                    [ stdin(pipe(In)),
                      stdout(pipe(Out)),
                      stderr(pipe(Err)),
@@ -229,7 +229,7 @@ test(stdio_fixture_server_smoke) :-
 
 read_golden_frames(Frames) :-
     setup_call_cleanup(
-        open('agentProlog/fixtures/prolog_agent_ui_v1_session.ndjson',
+        open('test/fixtures/prolog_agent_ui_v1_session.ndjson',
              read, Stream, [encoding(utf8)]),
         read_frame_lines(Stream, Frames),
         close(Stream)).
