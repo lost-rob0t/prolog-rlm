@@ -51,6 +51,18 @@ planner_schema_projection_contract(Request,
                         })
     ).
 
+prompt_compile_mode_contract(CompletionOutcome, Outcome) :-
+    (   CompletionOutcome = error(Error),
+        is_dict(Error),
+        get_dict(kind, Error, invalid_prompt_compile_mode)
+    ->  Outcome = ok
+    ;   Outcome = error(tool_projection_error{
+                            phase:planner_projection,
+                            kind:invalid_prompt_compile_mode_ignored,
+                            message:"invalid trusted prompt_compile_mode did not fail closed"
+                        })
+    ).
+
 test(planner_sees_only_capability_allowed_registry_schemas,
      [setup(completion_test_support:reset_calls)]) :-
     tool_registry_create(Registry),
@@ -119,6 +131,31 @@ test(root_planner_projection_contract_detects_raw_registry_visibility,
           assertion(get_dict(kind,
                              ProjectionError,
                              raw_registry_visibility))
+        ),
+        tool_registry_destroy(Registry)).
+
+test(invalid_prompt_compile_mode_contract_is_explicit,
+     [setup(completion_test_support:reset_calls)]) :-
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        register_fixture_tool(Registry,
+                              weather_lookup,
+                              "WEATHER_SCHEMA_SENTINEL_176"),
+        ( rlm_completion(
+              "use weather_lookup",
+              text("opaque context"),
+              [ planner_handler(completion_test_support:capture_planner),
+                tool_registry(Registry),
+                prompt_compile_mode(garbage_mode),
+                capabilities([tool(weather_lookup)]),
+                child_capabilities([])
+              ],
+              CompletionOutcome),
+          prompt_compile_mode_contract(CompletionOutcome, ContractOutcome),
+          ContractOutcome = error(ContractError),
+          assertion(get_dict(kind,
+                             ContractError,
+                             invalid_prompt_compile_mode_ignored))
         ),
         tool_registry_destroy(Registry)).
 
