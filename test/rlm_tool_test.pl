@@ -10,6 +10,12 @@ setup_registry(Registry) :-
 cleanup_registry(Registry) :-
     tool_registry_destroy(Registry).
 
+bounded_echo(Args, json{seen:Args.value}) :-
+    tool_test_support:counting_tool(Args, _).
+
+bounded_zero_result(Args, json{seen:0}) :-
+    tool_test_support:counting_tool(Args, _).
+
 test(capabilities_normalize_and_deduplicate) :-
     capabilities_normalize([tool(alpha), context(search), tool(alpha)],
                            ok(Caps)),
@@ -131,6 +137,210 @@ test(malformed_arguments_win_before_capability_denial) :-
         ),
         cleanup_registry(Registry)).
 
+test(exclusive_minimum_rejects_boundary_before_handler) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( tool_test_support:reset_invocations,
+          numeric_argument_schema(bounded_number,
+                                  _{type:number, exclusiveMinimum:0},
+                                  Schema),
+          tool_register(Registry, Schema,
+                        plunit_rlm_tool:bounded_echo,
+                        ok(_)),
+          tool_invoke(Registry,
+                      [tool(bounded_number)],
+                      bounded_number,
+                      json{value:0},
+                      [],
+                      error(Error),
+                      Trace),
+          tool_test_support:invocation_count(Count),
+          assertion(Error.kind == schema_validation_failed),
+          assertion(Error.detail ==
+                    numeric_bound_violation(args-value,
+                                            exclusiveMinimum,
+                                            0,
+                                            0)),
+          assertion(Trace.status == malformed_args),
+          assertion(Count =:= 0)
+        ),
+        cleanup_registry(Registry)).
+
+test(exclusive_minimum_rejects_negative_before_handler) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( tool_test_support:reset_invocations,
+          numeric_argument_schema(bounded_number_negative,
+                                  _{type:number, exclusiveMinimum:0},
+                                  Schema),
+          tool_register(Registry, Schema,
+                        plunit_rlm_tool:bounded_echo,
+                        ok(_)),
+          tool_invoke(Registry,
+                      [tool(bounded_number_negative)],
+                      bounded_number_negative,
+                      json{value: -1},
+                      [],
+                      error(Error),
+                      _Trace),
+          tool_test_support:invocation_count(Count),
+          assertion(Error.kind == schema_validation_failed),
+          assertion(Count =:= 0)
+        ),
+        cleanup_registry(Registry)).
+
+test(exclusive_minimum_accepts_positive_value) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( tool_test_support:reset_invocations,
+          numeric_argument_schema(bounded_number_positive,
+                                  _{type:number, exclusiveMinimum:0},
+                                  Schema),
+          tool_register(Registry, Schema,
+                        plunit_rlm_tool:bounded_echo,
+                        ok(_)),
+          tool_invoke(Registry,
+                      [tool(bounded_number_positive)],
+                      bounded_number_positive,
+                      json{value:1},
+                      [],
+                      ok(Execution),
+                      Trace),
+          tool_test_support:invocation_count(Count),
+          assertion(Execution.value.seen =:= 1),
+          assertion(Trace.status == ok),
+          assertion(Count =:= 1)
+        ),
+        cleanup_registry(Registry)).
+
+test(integer_minimum_and_maximum_are_enforced) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( tool_test_support:reset_invocations,
+          numeric_argument_schema(bounded_integer,
+                                  _{type:integer, minimum:1, maximum:32},
+                                  Schema),
+          tool_register(Registry, Schema,
+                        plunit_rlm_tool:bounded_echo,
+                        ok(_)),
+          tool_invoke(Registry,
+                      [tool(bounded_integer)],
+                      bounded_integer,
+                      json{value:0},
+                      [],
+                      error(LowError),
+                      _),
+          assertion(LowError.detail ==
+                    numeric_bound_violation(args-value, minimum, 1, 0)),
+          tool_invoke(Registry,
+                      [tool(bounded_integer)],
+                      bounded_integer,
+                      json{value:33},
+                      [],
+                      error(HighError),
+                      _),
+          assertion(HighError.detail ==
+                    numeric_bound_violation(args-value, maximum, 32, 33)),
+          tool_invoke(Registry,
+                      [tool(bounded_integer)],
+                      bounded_integer,
+                      json{value:32},
+                      [],
+                      ok(_),
+                      _),
+          tool_test_support:invocation_count(Count),
+          assertion(Count =:= 1)
+        ),
+        cleanup_registry(Registry)).
+
+test(exclusive_maximum_rejects_exact_boundary) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( tool_test_support:reset_invocations,
+          numeric_argument_schema(exclusive_upper,
+                                  _{type:number, exclusiveMaximum:10},
+                                  Schema),
+          tool_register(Registry, Schema,
+                        plunit_rlm_tool:bounded_echo,
+                        ok(_)),
+          tool_invoke(Registry,
+                      [tool(exclusive_upper)],
+                      exclusive_upper,
+                      json{value:10},
+                      [],
+                      error(Error),
+                      _),
+          assertion(Error.detail ==
+                    numeric_bound_violation(args-value,
+                                            exclusiveMaximum,
+                                            10,
+                                            10)),
+          tool_test_support:invocation_count(Count),
+          assertion(Count =:= 0)
+        ),
+        cleanup_registry(Registry)).
+
+test(malformed_numeric_bound_is_rejected_at_registration) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( numeric_argument_schema(malformed_bound,
+                                  _{type:number, minimum:"zero"},
+                                  Schema),
+          tool_register(Registry, Schema,
+                        plunit_rlm_tool:bounded_echo,
+                        error(Error)),
+          assertion(Error.kind == invalid_tool_operation),
+          assertion(Error.detail == invalid_numeric_bound(minimum, "zero"))
+        ),
+        cleanup_registry(Registry)).
+
+test(contradictory_numeric_bounds_are_rejected_at_registration) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( numeric_argument_schema(empty_interval,
+                                  _{type:number,
+                                    exclusiveMinimum:10,
+                                    maximum:10},
+                                  Schema),
+          tool_register(Registry, Schema,
+                        plunit_rlm_tool:bounded_echo,
+                        error(Error)),
+          assertion(Error.kind == invalid_tool_operation),
+          assertion(Error.detail ==
+                    contradictory_numeric_bounds(exclusiveMinimum,
+                                                 10,
+                                                 maximum,
+                                                 10))
+        ),
+        cleanup_registry(Registry)).
+
+test(result_schema_enforces_numeric_bounds) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( tool_test_support:reset_invocations,
+          numeric_result_schema(bounded_result, Schema),
+          tool_register(Registry, Schema,
+                        plunit_rlm_tool:bounded_zero_result,
+                        ok(_)),
+          tool_invoke(Registry,
+                      [tool(bounded_result)],
+                      bounded_result,
+                      json{value:1},
+                      [],
+                      error(Error),
+                      Trace),
+          tool_test_support:invocation_count(Count),
+          assertion(Error.kind == schema_validation_failed),
+          assertion(Error.detail ==
+                    numeric_bound_violation(result-seen,
+                                            exclusiveMinimum,
+                                            0,
+                                            0)),
+          assertion(Trace.status == invalid_result),
+          assertion(Count =:= 1)
+        ),
+        cleanup_registry(Registry)).
+
 test(tool_timeout_is_structured) :-
     setup_call_cleanup(
         setup_registry(Registry),
@@ -248,6 +458,37 @@ counting_schema(
                          required:[seen],
                          additional_properties:false,
                          properties:_{seen:_{type:integer}}},
+                limits:_{time_limit:1.0, max_output_bytes:1024}}).
+
+numeric_argument_schema(Name, ValueSchema,
+    tool_schema{name:Name,
+                description:"numeric bound fixture",
+                capability:tool(Name),
+                effect:read,
+                arguments:_{type:object,
+                            required:[value],
+                            additional_properties:false,
+                            properties:_{value:ValueSchema}},
+                result:_{type:object,
+                         required:[seen],
+                         additional_properties:false,
+                         properties:_{seen:_{type:number}}},
+                limits:_{time_limit:1.0, max_output_bytes:1024}}).
+
+numeric_result_schema(Name,
+    tool_schema{name:Name,
+                description:"numeric result bound fixture",
+                capability:tool(Name),
+                effect:read,
+                arguments:_{type:object,
+                            required:[value],
+                            additional_properties:false,
+                            properties:_{value:_{type:number}}},
+                result:_{type:object,
+                         required:[seen],
+                         additional_properties:false,
+                         properties:_{seen:_{type:number,
+                                            exclusiveMinimum:0}}},
                 limits:_{time_limit:1.0, max_output_bytes:1024}}).
 
 slow_schema(
