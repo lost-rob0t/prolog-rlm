@@ -34,35 +34,6 @@ planner_request_prompt(Request, Prompt) :-
     get_dict(role, Message, user),
     get_dict(content, Message, Prompt).
 
-planner_schema_projection_contract(Request,
-                                   RequiredSentinel,
-                                   HiddenSentinel,
-                                   Outcome) :-
-    planner_request_prompt(Request, Prompt),
-    (   sub_string(Prompt, _, _, _, RequiredSentinel),
-        \+ sub_string(Prompt, _, _, _, HiddenSentinel)
-    ->  Outcome = ok
-    ;   Outcome = error(tool_projection_error{
-                            phase:planner_projection,
-                            kind:raw_registry_visibility,
-                            required:RequiredSentinel,
-                            hidden:HiddenSentinel,
-                            message:"root planner tool schemas bypass contextual prompt compilation"
-                        })
-    ).
-
-prompt_compile_mode_contract(CompletionOutcome, Outcome) :-
-    (   CompletionOutcome = error(Error),
-        is_dict(Error),
-        get_dict(kind, Error, invalid_prompt_compile_mode)
-    ->  Outcome = ok
-    ;   Outcome = error(tool_projection_error{
-                            phase:planner_projection,
-                            kind:invalid_prompt_compile_mode_ignored,
-                            message:"invalid trusted prompt_compile_mode did not fail closed"
-                        })
-    ).
-
 test(planner_sees_only_capability_allowed_registry_schemas,
      [setup(completion_test_support:reset_calls)]) :-
     tool_registry_create(Registry),
@@ -98,7 +69,7 @@ test(planner_sees_only_capability_allowed_registry_schemas,
         ),
         tool_registry_destroy(Registry)).
 
-test(root_planner_projection_contract_detects_raw_registry_visibility,
+test(root_planner_uses_compiled_tool_projection,
      [setup(completion_test_support:reset_calls)]) :-
     tool_registry_create(Registry),
     setup_call_cleanup(
@@ -122,19 +93,51 @@ test(root_planner_projection_contract_detects_raw_registry_visibility,
               CompletionOutcome),
           assertion(CompletionOutcome = ok(_)),
           completion_test_support:last_planner_request(Request),
-          planner_schema_projection_contract(
-              Request,
-              "WEATHER_SCHEMA_SENTINEL_176",
-              "UNRELATED_SCHEMA_SENTINEL_176",
-              ProjectionOutcome),
-          ProjectionOutcome = error(ProjectionError),
-          assertion(get_dict(kind,
-                             ProjectionError,
-                             raw_registry_visibility))
+          planner_request_prompt(Request, Prompt),
+          assertion(sub_string(Prompt, _, _, _,
+                               "WEATHER_SCHEMA_SENTINEL_176")),
+          assertion(\+ sub_string(Prompt, _, _, _,
+                                  "UNRELATED_SCHEMA_SENTINEL_176")),
+          assertion(sub_string(Prompt, _, _, _,
+                               "Active tool schemas:")),
+          assertion(\+ sub_string(Prompt, _, _, _,
+                                  "Registered tool schemas:"))
         ),
         tool_registry_destroy(Registry)).
 
-test(invalid_prompt_compile_mode_contract_is_explicit,
+test(all_tools_mode_preserves_compatibility_projection,
+     [setup(completion_test_support:reset_calls)]) :-
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        ( register_fixture_tool(Registry,
+                                weather_lookup,
+                                "WEATHER_SCHEMA_SENTINEL_ALL"),
+          register_fixture_tool(Registry,
+                                unrelated_admin_export,
+                                "UNRELATED_SCHEMA_SENTINEL_ALL")
+        ),
+        ( rlm_completion(
+              "query unrelated to either registered tool",
+              text("opaque context"),
+              [ planner_handler(completion_test_support:capture_planner),
+                tool_registry(Registry),
+                prompt_compile_mode(all_tools),
+                capabilities([tool(weather_lookup),
+                              tool(unrelated_admin_export)]),
+                child_capabilities([])
+              ],
+              CompletionOutcome),
+          assertion(CompletionOutcome = ok(_)),
+          completion_test_support:last_planner_request(Request),
+          planner_request_prompt(Request, Prompt),
+          assertion(sub_string(Prompt, _, _, _,
+                               "WEATHER_SCHEMA_SENTINEL_ALL")),
+          assertion(sub_string(Prompt, _, _, _,
+                               "UNRELATED_SCHEMA_SENTINEL_ALL"))
+        ),
+        tool_registry_destroy(Registry)).
+
+test(invalid_prompt_compile_mode_fails_closed_before_planner,
      [setup(completion_test_support:reset_calls)]) :-
     tool_registry_create(Registry),
     setup_call_cleanup(
@@ -151,11 +154,12 @@ test(invalid_prompt_compile_mode_contract_is_explicit,
                 child_capabilities([])
               ],
               CompletionOutcome),
-          prompt_compile_mode_contract(CompletionOutcome, ContractOutcome),
-          ContractOutcome = error(ContractError),
-          assertion(get_dict(kind,
-                             ContractError,
-                             invalid_prompt_compile_mode_ignored))
+          CompletionOutcome = error(Error),
+          assertion(get_dict(kind, Error, invalid_prompt_compile_mode)),
+          assertion(get_dict(mode, Error, garbage_mode)),
+          completion_test_support:planner_calls(PlannerCalls),
+          assertion(PlannerCalls =:= 0),
+          assertion(\+ completion_test_support:last_planner_request(_))
         ),
         tool_registry_destroy(Registry)).
 
