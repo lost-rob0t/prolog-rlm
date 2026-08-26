@@ -1960,22 +1960,22 @@ validate_type(Type, _, Value, Path) :-
     throw(tool_fault(schema_type_mismatch(Path, Type, Value))).
 
 validate_numeric_value_bounds(Schema, Value, Path) :-
-    validate_numeric_value_bound(Schema, minimum, Value >=, Value, Path),
-    validate_numeric_value_bound(Schema, maximum, Value =<, Value, Path),
-    validate_numeric_value_bound(Schema, exclusiveMinimum, Value >, Value, Path),
-    validate_numeric_value_bound(Schema, exclusiveMaximum, Value <, Value, Path).
+    validate_numeric_value_bound(Schema, minimum, Value, Path),
+    validate_numeric_value_bound(Schema, maximum, Value, Path),
+    validate_numeric_value_bound(Schema, exclusiveMinimum, Value, Path),
+    validate_numeric_value_bound(Schema, exclusiveMaximum, Value, Path).
 
-validate_numeric_value_bound(Schema, Key, Comparator, Value, Path) :-
+validate_numeric_value_bound(Schema, Key, Value, Path) :-
     (   get_dict(Key, Schema, Bound)
-    ->  numeric_bound_holds(Comparator, Value, Bound, Key, Path)
+    ->  validate_numeric_bound(Key, Value, Bound, Path)
     ;   true
     ).
 
-numeric_bound_holds(Comparator, Value, Bound, _, _) :-
-    Goal =.. [Comparator, Value, Bound],
-    call(Goal),
-    !.
-numeric_bound_holds(_, Value, Bound, Key, Path) :-
+validate_numeric_bound(minimum, Value, Bound, _) :- Value >= Bound, !.
+validate_numeric_bound(maximum, Value, Bound, _) :- Value =< Bound, !.
+validate_numeric_bound(exclusiveMinimum, Value, Bound, _) :- Value > Bound, !.
+validate_numeric_bound(exclusiveMaximum, Value, Bound, _) :- Value < Bound, !.
+validate_numeric_bound(Key, Value, Bound, Path) :-
     throw(tool_fault(numeric_bound_violation(Path, Key, Bound, Value))).
 
 validate_list_items([], _, _, _).
