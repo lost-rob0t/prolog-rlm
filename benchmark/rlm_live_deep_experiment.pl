@@ -10,7 +10,8 @@
 This is the reasoning benchmark. It deliberately does not inject a fixed plan.
 The root planner receives the normal minimal rlm_completion runtime contract and
 a hard closed CSP query. Correctness is decided by the trusted Prolog oracle in
-rlm_constraint_problem, never by model self-report or a magic output token.
+rlm_constraint_problem and routed through the production Frozen Spec / Verify
+path, never by model self-report or a magic output token.
 
 Two lanes are compared at recursion ceilings 0/1/2:
 
@@ -24,6 +25,7 @@ The former token-echo depth test survives as rlm_live_deep_smoke.
 :- use_module('../prolog/rlm_chain').
 :- use_module('../prolog/rlm_benchmark').
 :- use_module('rlm_constraint_problem').
+:- use_module('rlm_constraint_verify').
 
 live_deep_experiment_benchmark(Report) :-
     require_openrouter_credential,
@@ -106,6 +108,7 @@ constraint_outcome_case(Lane,
     result_selected_model(Result, SelectedModel),
     usage_metrics(Result.usage, LatencyMs, ActualDepth, Metrics),
     format(atom(Name), '~w_depth_~d', [Lane, RequestedDepth]),
+    output_present(TextOutcome, OutputPresent),
     put_dict(_{lane:Lane,
                requested_model:Model,
                selected_model:SelectedModel,
@@ -118,9 +121,7 @@ constraint_outcome_case(Lane,
                planner_instruction:Lane,
                final_output_present:OutputPresent},
              VerificationDetails,
-             Details0),
-    output_present(TextOutcome, OutputPresent),
-    put_dict(final_output_present, Details0, OutputPresent, Details),
+             Details),
     benchmark_case(Name,
                    constraint_reasoning,
                    Status,
@@ -154,7 +155,7 @@ constraint_outcome_case(Lane,
 
 verify_response_text(ok(Text), Verification) :-
     !,
-    constraint_verify_text(Text, Verification).
+    constraint_verify_text_via_spec(Text, Verification).
 verify_response_text(error(Error), error(Error)).
 
 result_response_text(Value, ok(Text)) :-
