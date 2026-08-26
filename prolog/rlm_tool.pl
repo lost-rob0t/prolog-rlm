@@ -1510,7 +1510,8 @@ metadata_context(Current, session(Session)) :-
     is_dict(Current),
     get_dict(session_id, Current, Session),
     Session \== none,
-    !.
+    !,
+    Context = session(Session).
 metadata_context(Current, agent(Runtime, Agent)) :-
     is_dict(Current),
     get_dict(runtime_id, Current, Runtime),
@@ -1824,6 +1825,12 @@ validate_schema_definition(Schema) :-
     ;   throw(tool_fault(invalid_schema(Schema)))
     ).
 
+validate_schema_definition_type(integer, Schema) :-
+    !,
+    validate_numeric_schema_definition(Schema).
+validate_schema_definition_type(number, Schema) :-
+    !,
+    validate_numeric_schema_definition(Schema).
 validate_schema_definition_type(object, Schema) :-
     !,
     validate_object_schema_properties(Schema),
@@ -1841,6 +1848,54 @@ validate_schema_definition_type(array, Schema) :-
     ;   true
     ).
 validate_schema_definition_type(_, _).
+
+validate_numeric_schema_definition(Schema) :-
+    numeric_bound_keys(Keys),
+    maplist(validate_numeric_bound_definition(Schema), Keys),
+    numeric_bounds(Schema, [minimum, exclusiveMinimum], LowerBounds),
+    numeric_bounds(Schema, [maximum, exclusiveMaximum], UpperBounds),
+    validate_numeric_intervals(LowerBounds, UpperBounds).
+
+numeric_bound_keys([minimum, maximum, exclusiveMinimum, exclusiveMaximum]).
+
+validate_numeric_bound_definition(Schema, Key) :-
+    (   get_dict(Key, Schema, Bound)
+    ->  ( number(Bound)
+        -> true
+        ;  throw(tool_fault(invalid_numeric_bound(Key, Bound)))
+        )
+    ;   true
+    ).
+
+numeric_bounds(_, [], []).
+numeric_bounds(Schema, [Key|Keys], Bounds) :-
+    (   get_dict(Key, Schema, Value)
+    ->  Bounds = [bound(Key, Value)|Rest]
+    ;   Bounds = Rest
+    ),
+    numeric_bounds(Schema, Keys, Rest).
+
+validate_numeric_intervals([], _).
+validate_numeric_intervals([Lower|Lowers], Uppers) :-
+    maplist(validate_numeric_interval(Lower), Uppers),
+    validate_numeric_intervals(Lowers, Uppers).
+
+validate_numeric_interval(bound(LowerKey, Lower), bound(UpperKey, Upper)) :-
+    numeric_interval_nonempty(LowerKey, Lower, UpperKey, Upper),
+    !.
+validate_numeric_interval(bound(LowerKey, Lower), bound(UpperKey, Upper)) :-
+    throw(tool_fault(contradictory_numeric_bounds(LowerKey,
+                                                  Lower,
+                                                  UpperKey,
+                                                  Upper))).
+
+numeric_interval_nonempty(minimum, Lower, maximum, Upper) :- Lower =< Upper.
+numeric_interval_nonempty(minimum, Lower, exclusiveMaximum, Upper) :-
+    Lower < Upper.
+numeric_interval_nonempty(exclusiveMinimum, Lower, maximum, Upper) :-
+    Lower < Upper.
+numeric_interval_nonempty(exclusiveMinimum, Lower, exclusiveMaximum, Upper) :-
+    Lower < Upper.
 
 validate_object_schema_properties(Schema) :-
     (   get_dict(properties, Schema, Properties)
@@ -1874,8 +1929,14 @@ validate_schema_value(Schema, Value, Path) :-
 
 validate_type(any, _, _, _) :- !.
 validate_type(string, _, Value, _) :- text_string(Value, _), !.
-validate_type(integer, _, Value, _) :- integer(Value), !.
-validate_type(number, _, Value, _) :- number(Value), !.
+validate_type(integer, Schema, Value, Path) :-
+    integer(Value),
+    !,
+    validate_numeric_value_bounds(Schema, Value, Path).
+validate_type(number, Schema, Value, Path) :-
+    number(Value),
+    !,
+    validate_numeric_value_bounds(Schema, Value, Path).
 validate_type(boolean, _, Value, _) :- memberchk(Value, [true,false]), !.
 validate_type(list, Schema, Value, Path) :-
     is_list(Value),
@@ -1897,6 +1958,25 @@ validate_type(object, Schema, Value, Path) :-
     validate_object(Schema, Value, Path).
 validate_type(Type, _, Value, Path) :-
     throw(tool_fault(schema_type_mismatch(Path, Type, Value))).
+
+validate_numeric_value_bounds(Schema, Value, Path) :-
+    validate_numeric_value_bound(Schema, minimum, Value >=, Value, Path),
+    validate_numeric_value_bound(Schema, maximum, Value =<, Value, Path),
+    validate_numeric_value_bound(Schema, exclusiveMinimum, Value >, Value, Path),
+    validate_numeric_value_bound(Schema, exclusiveMaximum, Value <, Value, Path).
+
+validate_numeric_value_bound(Schema, Key, Comparator, Value, Path) :-
+    (   get_dict(Key, Schema, Bound)
+    ->  numeric_bound_holds(Comparator, Value, Bound, Key, Path)
+    ;   true
+    ).
+
+numeric_bound_holds(Comparator, Value, Bound, _, _) :-
+    Goal =.. [Comparator, Value, Bound],
+    call(Goal),
+    !.
+numeric_bound_holds(_, Value, Bound, Key, Path) :-
+    throw(tool_fault(numeric_bound_violation(Path, Key, Bound, Value))).
 
 validate_list_items([], _, _, _).
 validate_list_items([Value|Values], Schema, Path, Index) :-
