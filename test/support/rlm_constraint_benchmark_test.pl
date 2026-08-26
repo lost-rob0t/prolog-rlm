@@ -2,6 +2,8 @@
 
 :- use_module(library(http/json)).
 :- use_module('../../benchmark/rlm_constraint_problem').
+:- use_module('../../benchmark/rlm_constraint_verify').
+:- use_module('../../benchmark/rlm_live_deep_experiment').
 
 known_solution_json(Json) :-
     constraint_known_solution(Solution),
@@ -40,6 +42,15 @@ test(known_solution_json_passes_parser_and_verifier) :-
     constraint_verify_text(Json, ok(Report)),
     assertion(Report.status == passed).
 
+test(known_solution_passes_production_spec_verify_path) :-
+    known_solution_json(Json),
+    constraint_verify_text_via_spec(Json, ok(Report)),
+    assertion(Report.status == passed),
+    assertion(Report.oracle_status == passed),
+    assertion(Report.requirement_status == passed),
+    assertion(Report.violations == []),
+    assertion(Report.spec_ref.series == live_constraint_benchmark).
+
 test(single_field_mutation_is_rejected_with_constraint_ids) :-
     constraint_known_solution(Solution),
     mutate_task_slot(Solution, alpha, 8, Mutated),
@@ -47,6 +58,17 @@ test(single_field_mutation_is_rejected_with_constraint_ids) :-
     assertion(Report.status == rejected),
     assertion(member(slots_all_distinct, Report.violations)),
     assertion(member(s1_alpha_beta_sum_9, Report.violations)).
+
+test(mutated_solution_is_rejected_by_spec_verify_path) :-
+    constraint_known_solution(Solution),
+    mutate_task_slot(Solution, alpha, 8, Mutated),
+    with_output_to(string(Json),
+                   json_write_dict(current_output, Mutated, [width(0)])),
+    constraint_verify_text_via_spec(Json, ok(Report)),
+    assertion(Report.status == rejected),
+    assertion(Report.oracle_status == rejected),
+    assertion(Report.requirement_status == failed),
+    assertion(member(slots_all_distinct, Report.violations)).
 
 test(incomplete_assignment_fails_shape_validation) :-
     constraint_known_solution(Solution),
@@ -63,12 +85,14 @@ test(duplicate_domain_value_is_not_accepted) :-
 
 test(malformed_output_fails_safely) :-
     constraint_verify_text("definitely not json", error(Error)),
-    assertion(Error.phase == parse).
+    assertion(Error.phase == parse),
+    constraint_verify_text_via_spec("definitely not json", error(PipelineError)),
+    assertion(PipelineError.phase == spec_verify).
 
 test(prose_wrapped_json_is_normalized_but_correctness_is_still_verified) :-
     known_solution_json(Json),
     format(string(Wrapped), "answer follows: ~s end", [Json]),
-    constraint_verify_text(Wrapped, ok(Report)),
+    constraint_verify_text_via_spec(Wrapped, ok(Report)),
     assertion(Report.status == passed).
 
 test(benchmark_status_comes_from_verification_not_magic_token) :-
@@ -77,14 +101,19 @@ test(benchmark_status_comes_from_verification_not_magic_token) :-
     with_output_to(string(Json),
                    json_write_dict(current_output, Mutated, [width(0)])),
     string_concat("LIVE_DEEP_OK ", Json, Text),
-    constraint_verify_text(Text, Verification),
+    constraint_verify_text_via_spec(Text, Verification),
     constraint_verification_status(Verification, Status, Quality, Details),
     assertion(Status == fail),
     assertion(Quality =:= 0.0),
     assertion(Details.verification_status == rejected).
 
-test(guidance_is_depth_aware_and_problem_specific_downstream_text) :-
-    constraint_guidance(2, Guidance),
+test(core_minimal_lane_adds_no_benchmark_specific_planner_instruction) :-
+    benchmark_lane_instruction(core_minimal, 2, Options),
+    assertion(Options == []).
+
+test(guided_lane_is_explicitly_downstream_owned) :-
+    benchmark_lane_instruction(harness_guided, 2, Options),
+    assertion(Options = [planner_instruction(Guidance)]),
     assertion(sub_string(Guidance, _, _, _, "depth 2")),
     assertion(sub_string(Guidance, _, _, _, "slot system first")).
 
