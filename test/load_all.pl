@@ -28,6 +28,7 @@
 :- use_module('../prolog/rlm_verify', []).
 :- use_module('../prolog/rlm_spec_workflow', []).
 :- use_module('../prolog/rlm_project_source', []).
+:- use_module('../prolog/rlm_runtime_status', []).
 :- use_module('../prolog/prolog_agent_ui_v1', []).
 :- use_module('../prolog/prolog_agent_ui_facade', []).
 
@@ -45,6 +46,7 @@ main(_) :-
         rlm_verify:rlm_verify_ready,
         rlm_spec_workflow:rlm_spec_workflow_ready,
         rlm_project_source:rlm_project_source_ready,
+        rlm_runtime_status:rlm_runtime_status_ready,
         prolog_agent_ui_v1:ui_v1_ready,
         prolog_agent_ui_facade:ui_facade_ready
     ->  halt
