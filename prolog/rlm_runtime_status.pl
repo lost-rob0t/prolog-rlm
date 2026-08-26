@@ -1,5 +1,6 @@
 :- module(rlm_runtime_status,
-          [ runtime_status/4,
+          [ rlm_runtime_status_ready/0,
+            runtime_status/4,
             runtime_status_line/2
           ]).
 
@@ -15,6 +16,8 @@ one bounded context is currently active, so context percentage is accepted only
 from an explicit current-context observation.  Unknown capacity stays unknown;
 renderers must not guess it from cumulative usage.
 */
+
+rlm_runtime_status_ready.
 
 runtime_status(Model0, Usage, Context, Status) :-
     model_text(Model0, Model),
