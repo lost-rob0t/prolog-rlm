@@ -164,6 +164,9 @@
             trace_view/2,
             trace_view_file/3,
             trace_encode/2,
+            rlm_runtime_status_ready/0,
+            runtime_status/4,
+            runtime_status_line/2,
             cli_run/2,
             cli_usage/1
           ]).
@@ -407,6 +410,11 @@ latency is represented by a deferred pending-operation Future; no shared
                 trace_view_file/3,
                 trace_encode/2
               ]).
+:- use_module(rlm_runtime_status,
+              [ rlm_runtime_status_ready/0,
+                runtime_status/4,
+                runtime_status_line/2
+              ]).
 :- use_module(rlm_cli,
               [ rlm_cli_ready/0,
                 cli_run/2,
@@ -444,6 +452,7 @@ rlm_ready :-
     rlm_benchmark:rlm_benchmark_ready,
     rlm_demo:rlm_demo_ready,
     rlm_trace:rlm_trace_ready,
+    rlm_runtime_status:rlm_runtime_status_ready,
     rlm_cli:rlm_cli_ready,
     rlm_mcp:rlm_mcp_ready,
     rlm_mcp_server:mcp_server_definitions(_).
