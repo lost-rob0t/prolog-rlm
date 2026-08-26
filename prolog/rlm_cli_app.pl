@@ -14,8 +14,8 @@ DeepSeek Harness used strictly as a renderer/workspace over
 tool runtime, history authority, compactor, subagent runtime, or verifier.
 */
 
-:- use_module(library(filesex), [absolute_file_name/3]).
 :- use_module(rlm_cli, []).
+:- use_module(rlm_trace, []).
 
 cli_run([run,'--help'|_], Outcome) :-
     !,
@@ -56,7 +56,7 @@ relabel_run_outcome(error(Error), error(Error)).
 
 help_outcome(Scope, ok(Session)) :-
     cli_usage(Usage),
-    rlm_cli:default_cli_options(Output),
+    app_output(Output),
     Session = cli_session{command:help(Scope),
                           status:pass,
                           summary:Usage,
@@ -66,7 +66,7 @@ help_outcome(Scope, ok(Session)) :-
 ide_outcome(Rest, Outcome) :-
     catch(( ide_project(Rest, Project),
             ide_launch_spec(Project, Spec),
-            rlm_cli:default_cli_options(Output),
+            app_output(Output),
             format(string(Summary),
                    'DeepSeek Harness IDE contract ready for ~s; adapter wiring pending on #231~n',
                    [Spec.project_root]),
@@ -79,7 +79,7 @@ ide_outcome(Rest, Outcome) :-
             Outcome = ok(Session)
           ),
           Exception,
-          rlm_cli:cli_exception(Exception, Outcome)).
+          app_exception(Exception, Outcome)).
 
 ide_project([], '.') :- !.
 ide_project([Project], Project) :- !.
@@ -87,7 +87,8 @@ ide_project(Values, _) :-
     throw(cli_fault(too_many_arguments(project, Values))).
 
 ide_launch_spec(Project0, Spec) :-
-    absolute_file_name(Project0,
+    path_atom(Project0, ProjectArg),
+    absolute_file_name(ProjectArg,
                        Project,
                        [ file_type(directory),
                          access(read),
@@ -110,6 +111,12 @@ ide_launch_spec(Project0, Spec) :-
            }.
 ide_launch_spec(Project, _) :-
     throw(cli_fault(invalid_project_directory(Project))).
+
+path_atom(Value, Value) :- atom(Value), !.
+path_atom(Value, Atom) :- string(Value), !, atom_string(Atom, Value).
+path_atom(Value, _) :- throw(cli_fault(invalid_project_directory(Value))).
+
+app_output(_{json:false, view:false}).
 
 emit_session(Session) :-
     (   Session.command == ide
@@ -142,3 +149,14 @@ cli_usage(Usage) :-
         CoreUsage
     ],
     atomics_to_string(Lines, "\n", Usage).
+
+app_exception(cli_fault(Detail), error(Error)) :-
+    !,
+    Error = cli_error{kind:invalid_cli_request,
+                      detail:Detail,
+                      message:"prolog-rlm reference CLI rejected the request"}.
+app_exception(Exception, error(Error)) :-
+    term_string(Exception, Safe, [quoted(true), numbervars(true)]),
+    Error = cli_error{kind:exception,
+                      exception:Safe,
+                      message:"prolog-rlm reference CLI raised an exception"}.
