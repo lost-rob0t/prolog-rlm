@@ -3,6 +3,7 @@
 :- use_module(rlm_conformance).
 :- use_module(rlm_live_benchmark).
 :- use_module(rlm_live_deep_experiment).
+:- use_module(rlm_live_deep_smoke).
 :- use_module('../prolog/rlm_benchmark').
 :- use_module('../prolog/rlm_deep_experiment').
 
@@ -26,9 +27,11 @@ parse_args(['deep-experiment'], deep_experiment, stdout) :- !.
 parse_args(['deep-experiment', Output], deep_experiment, Output) :- !.
 parse_args(['deep-integration'], deep_integration, stdout) :- !.
 parse_args(['deep-integration', Output], deep_integration, Output) :- !.
+parse_args(['deep-smoke'], deep_smoke, stdout) :- !.
+parse_args(['deep-smoke', Output], deep_smoke, Output) :- !.
 parse_args(Args, _, _) :-
     format(user_error,
-           'usage: swipl -q -s benchmark/run.pl -- (deterministic|integration|deep-experiment|deep-integration) [report.json]~nreceived: ~q~n',
+           'usage: swipl -q -s benchmark/run.pl -- (deterministic|integration|deep-experiment|deep-integration|deep-smoke) [report.json]~nreceived: ~q~n',
            [Args]),
     halt(2).
 
@@ -42,6 +45,8 @@ run_mode(deep_experiment, Report) :-
     Report = Result.report.
 run_mode(deep_integration, Report) :-
     live_deep_experiment_benchmark(Report).
+run_mode(deep_smoke, Report) :-
+    live_deep_smoke_benchmark(Report).
 
 require_deep_experiment(ok(Result), Result) :- !.
 require_deep_experiment(error(Error), _) :-
