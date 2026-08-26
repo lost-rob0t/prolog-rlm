@@ -8,6 +8,8 @@ These instructions apply to the entire repository unless a more specific nested 
 
 Do not turn core into a coding-agent product, a concrete tool catalog, or an ambient shell/network/filesystem runtime.
 
+The repository may ship one reference application composition: the `prolog-rlm` CLI. The CLI may compose public library modules and launch presentation clients, but reusable runtime behavior must remain independently consumable by other harnesses. DeepSeek Harness is the reference IDE shell only; it does not own context compilation, provider/model execution, tools, authority, history, compaction, recursion/subagents, project knowledge, retrieval, verification, or repair semantics.
+
 ## Before changing code
 
 1. Start from the latest `main` and inspect the actual repository state before trusting old prompts or issue text.
@@ -77,11 +79,17 @@ Never silently migrate a non-empty legacy effect journal.
 
 Legacy PR-#78 journals require the explicit offline migration flow documented in `docs/effect-migration.md`. Migration must remain non-effectful: it must not submit, cancel, or reconcile provider work, and it must never guess unresolved adapter identity. In-place replacement requires the documented verified backup behavior.
 
-## Downstream AgentProlog roadmap discipline
+## Reference harness discipline
 
-`docs/prolog-agent-roadmap.md` tracks the runtime dependencies and public contracts needed by the standalone `lost-rob0t/agentProlog` coding-agent product. `prolog-rlm` remains the reusable runtime; coding-agent UX, concrete project workflows, and product composition belong in downstream product repositories or companion external tool packages, not under a nested product harness in this repository.
+`prolog-rlm` stays a library first. The only bundled application harness is the `prolog-rlm` CLI. Coding/project capabilities required by that harness must be exposed through reusable library APIs rather than hidden inside CLI or renderer code.
 
-When a PR changes AgentProlog readiness, dependencies, milestone status, tool availability, approval behavior, project policy, or frontend-facing runtime contracts, update the roadmap in the same PR. Do not mark a phase complete from worker prose alone: reconcile it with merged code, tests, docs, and required CI evidence.
+The reference IDE uses the official DeepSeek Harness UI/workspace through the canonical `prolog_agent_ui_v1` frontend boundary. DSH is a projection/client: it may render canonical snapshots/events and send explicit commands, but it may not become a second agent loop, prompt/context compiler, provider path, tool executor, approval authority, history store, compactor, subagent runtime, project-state authority, retrieval planner, verifier, or repair loop. If the IDE needs semantics missing from `prolog_agent_ui_v1`, fix or version the protocol/facade instead of importing runtime internals into the adapter.
+
+The reference CLI must retain a one-shot/headless path in addition to the IDE path. Runtime status exposed to any frontend is canonical Prolog data and includes model identity, token input/output counters, and context occupancy percentage when the context capacity is actually known. Unknown capacity remains unknown; a renderer must not infer it from cumulative token usage.
+
+Do not add a nested AgentProlog product harness to this repository. Other harnesses, editor integrations, and products remain free to consume the same public library and frontend protocol.
+
+When a PR changes reference-harness readiness, dependencies, tool availability, approval behavior, project policy, frontend-facing runtime contracts, or the project/self-hosting roadmap, update the relevant docs and GitHub issues in the same PR. Do not mark a phase complete from worker prose alone: reconcile it with merged code, tests, docs, and required CI evidence.
 
 When changing TODO/roadmap status or completing a slice, reconcile the related GitHub parent/child issue bodies and state in the same slice. Remove stale completion/blocker prose. GitHub state, TODO state, roadmap state, and merged implementation evidence must not knowingly diverge.
 
@@ -114,7 +122,7 @@ Do not edit CI to hide a product failure, remove a required gate, or convert a f
 - Keep commits reviewable and semantically coherent.
 - Do not rewrite `main` or force-push shared history.
 - Never commit credentials, provider secrets, generated private data, or local environment artifacts.
-- Update docs when public behavior, guarantees, migration requirements, operator workflow, or AgentProlog roadmap status changes.
+- Update docs when public behavior, guarantees, migration requirements, operator workflow, reference-harness readiness, or roadmap status changes.
 - PR descriptions must state the runtime invariant implemented, important non-goals, tests/evidence, and remaining follow-up scope.
 - Do not close a parent issue merely because a substrate landed if canonical adoption remains unfinished.
 - If the task explicitly says to merge on green, merge only the exact reviewed head after all required deterministic and live gates are green and review blockers are resolved. Otherwise stop at the requested branch/PR boundary.
