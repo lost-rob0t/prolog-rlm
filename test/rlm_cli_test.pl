@@ -1,6 +1,7 @@
 :- begin_tests(rlm_cli).
 
 :- use_module('../prolog/rlm_cli').
+:- use_module('../prolog/rlm_runtime_status').
 :- use_module('../prolog/rlm_trace').
 
 session_passes(Args, Session) :-
@@ -144,13 +145,33 @@ test(rlm_long_help_is_a_valid_non_provider_session) :-
     assertion(sub_string(Session.summary, _, _, _, "prolog-rlm rlm QUERY")),
     assertion(is_dict(Session.output)).
 
+test(run_long_help_is_a_valid_non_provider_session) :-
+    cli_run([run,'--help'], ok(Session)),
+    assertion(Session.status == pass),
+    assertion(Session.command == help(run)),
+    assertion(sub_string(Session.summary, _, _, _, "prolog-rlm run TASK")),
+    assertion(is_dict(Session.output)).
+
+test(ide_long_help_is_a_valid_non_provider_session) :-
+    cli_run([ide,'--help'], ok(Session)),
+    assertion(Session.status == pass),
+    assertion(Session.command == help(ide)),
+    assertion(sub_string(Session.summary, _, _, _, "prolog-rlm ide [PROJECT]")),
+    assertion(is_dict(Session.output)).
+
 test(long_help_execute_paths_exit_zero) :-
     with_output_to(string(_GlobalOutput),
                    cli_execute(['--help'], GlobalExit)),
     with_output_to(string(_RlmOutput),
                    cli_execute([rlm,'--help'], RlmExit)),
+    with_output_to(string(_RunOutput),
+                   cli_execute([run,'--help'], RunExit)),
+    with_output_to(string(_IdeOutput),
+                   cli_execute([ide,'--help'], IdeExit)),
     assertion(GlobalExit =:= 0),
-    assertion(RlmExit =:= 0).
+    assertion(RlmExit =:= 0),
+    assertion(RunExit =:= 0),
+    assertion(IdeExit =:= 0).
 
 test(unknown_command_with_help_remains_unknown) :-
     cli_run([wat,'--help'], error(Error)),
@@ -182,5 +203,28 @@ test(help_documents_reasoning_controls) :-
     cli_usage(Usage),
     assertion(sub_string(Usage, _, _, _, "--reasoning-effort")),
     assertion(sub_string(Usage, _, _, _, "--planner-reasoning-effort")).
+
+test(runtime_status_projects_model_token_io_and_context_percent) :-
+    Usage = usage_summary{prompt_tokens:12000,
+                          completion_tokens:2000},
+    runtime_status('qwen3-32b', Usage, context(12288, 32768), Status),
+    assertion(Status.model == "qwen3-32b"),
+    assertion(Status.input_tokens =:= 12000),
+    assertion(Status.output_tokens =:= 2000),
+    assertion(Status.context_tokens =:= 12288),
+    assertion(Status.context_window =:= 32768),
+    assertion(Status.context_percent =:= 38),
+    runtime_status_line(Status, Line),
+    assertion(Line == "qwen3-32b · in 12000 · out 2000 · ctx 38%").
+
+test(runtime_status_never_guesses_unknown_context_capacity) :-
+    Usage = usage_summary{prompt_tokens:321,
+                          completion_tokens:45},
+    runtime_status("model-x", Usage, unknown, Status),
+    assertion(Status.context_tokens == unknown),
+    assertion(Status.context_window == unknown),
+    assertion(Status.context_percent == unknown),
+    runtime_status_line(Status, Line),
+    assertion(Line == "model-x · in 321 · out 45 · ctx ?").
 
 :- end_tests(rlm_cli).
