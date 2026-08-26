@@ -6,7 +6,7 @@
 
 - model output may select a registered tool name, but never supplies a callable;
 - every tool declares exactly one `tool(Name)` capability;
-- invocation checks capability authorization before argument validation or handler execution;
+- invocation validates arguments before capability authorization, authority/effect admission, or handler execution, so malformed inputs fail at the canonical schema boundary even when the requested capability is absent;
 - child capability sets are narrowing-only with `capabilities_narrow/3`;
 - arguments and normalized results are checked against the registered schema;
 - per-tool wall-time and output-byte ceilings are enforced;
@@ -44,7 +44,19 @@ tool_schema{
 }
 ```
 
-The initial schema vocabulary supports `any`, `string`, `integer`, `number`, `boolean`, `list`, and `object`, including required object fields and `additional_properties:false`.
+The schema vocabulary supports `any`, `string`, `integer`, `number`, `boolean`, `list`, `array`, and `object`, including required object fields and `additional_properties:false`.
+
+For `integer` and `number` schemas, the runtime supports the numeric bounds `minimum`, `maximum`, `exclusiveMinimum`, and `exclusiveMaximum`. Bounds are enforced for both arguments and results. Bound metadata must itself be numeric, and an empty or contradictory interval is rejected when the tool is registered instead of becoming a misleading provider-visible contract.
+
+Examples:
+
+```prolog
+_{type:integer, minimum:1, maximum:32}
+_{type:number, exclusiveMinimum:0}
+_{type:number, minimum:0, exclusiveMaximum:1.0}
+```
+
+A bound violation is reported through the existing structured schema failure envelope (`phase:schema`, `kind:schema_validation_failed`) and preserves the nested value path. Invalid arguments never reach capability/authority/effect admission or the trusted handler. Result-bound violations are likewise rejected before an `ok(...)` tool result is returned.
 
 ## Invocation
 
@@ -60,7 +72,7 @@ The initial schema vocabulary supports `any`, `string`, `integer`, `number`, `bo
 
 An allowed success returns `ok(tool_execution{value:Value, trace:Trace})`.
 
-Capability denial, malformed arguments, handler failure/exception, timeout, invalid result shape, oversized result, unknown tool, and stale registry are structured failures. A denied call does not enter the handler.
+Capability denial, malformed arguments, handler failure/exception, timeout, invalid result shape, oversized result, unknown tool, and stale registry are structured failures. A denied or schema-invalid call does not enter the handler.
 
 Call options may tighten a registered `time_limit` or `max_output_bytes`; they cannot widen the registered ceiling.
 
@@ -104,4 +116,4 @@ tool_registry_runtime_tools(
 
 The typed plan is validated for `tool(project_read)` before execution. The registry adapter independently rechecks the same capability at invocation time. Successful plan tool results include non-secret authorization/status metadata, and the plan trajectory records the `tool(project_read)` transition.
 
-Deterministic CI covers allow/deny behavior, pre-invocation denial, narrowing, malformed arguments, timeout, oversized output, project-root confinement, discovery, and typed-plan execution. Trusted same-repository CI additionally asks a real OpenRouter model to select the project-read plan and executes the actual registered tool.
+Deterministic CI covers allow/deny behavior, pre-invocation denial, narrowing, malformed arguments, numeric schema bounds, timeout, oversized output, project-root confinement, discovery, and typed-plan execution. Trusted same-repository CI additionally asks a real OpenRouter model to select the project-read plan and executes the actual registered tool.
