@@ -1,6 +1,7 @@
 :- begin_tests(rlm_cli).
 
 :- use_module('../prolog/rlm_cli').
+:- use_module('../prolog/rlm_cli_app', []).
 :- use_module('../prolog/rlm_runtime_status').
 :- use_module('../prolog/rlm_trace').
 
@@ -146,18 +147,30 @@ test(rlm_long_help_is_a_valid_non_provider_session) :-
     assertion(is_dict(Session.output)).
 
 test(run_long_help_is_a_valid_non_provider_session) :-
-    cli_run([run,'--help'], ok(Session)),
+    rlm_cli_app:cli_run([run,'--help'], ok(Session)),
     assertion(Session.status == pass),
     assertion(Session.command == help(run)),
     assertion(sub_string(Session.summary, _, _, _, "prolog-rlm run TASK")),
     assertion(is_dict(Session.output)).
 
 test(ide_long_help_is_a_valid_non_provider_session) :-
-    cli_run([ide,'--help'], ok(Session)),
+    rlm_cli_app:cli_run([ide,'--help'], ok(Session)),
     assertion(Session.status == pass),
     assertion(Session.command == help(ide)),
     assertion(sub_string(Session.summary, _, _, _, "prolog-rlm ide [PROJECT]")),
     assertion(is_dict(Session.output)).
+
+test(ide_contract_keeps_dsh_renderer_only) :-
+    rlm_cli_app:ide_launch_spec('.', Spec),
+    assertion(Spec.renderer == deepseek_harness),
+    assertion(Spec.protocol == prolog_agent_ui_v1),
+    assertion(Spec.semantic_runtime == prolog_rlm),
+    assertion(Spec.dsh_agent_loop == false),
+    assertion(Spec.dsh_context_compiler == false),
+    assertion(Spec.dsh_provider_runtime == false),
+    assertion(Spec.dsh_tool_runtime == false),
+    assertion(Spec.dsh_compaction == false),
+    assertion(Spec.dsh_history_authority == false).
 
 test(long_help_execute_paths_exit_zero) :-
     with_output_to(string(_GlobalOutput),
@@ -165,9 +178,9 @@ test(long_help_execute_paths_exit_zero) :-
     with_output_to(string(_RlmOutput),
                    cli_execute([rlm,'--help'], RlmExit)),
     with_output_to(string(_RunOutput),
-                   cli_execute([run,'--help'], RunExit)),
+                   rlm_cli_app:cli_execute([run,'--help'], RunExit)),
     with_output_to(string(_IdeOutput),
-                   cli_execute([ide,'--help'], IdeExit)),
+                   rlm_cli_app:cli_execute([ide,'--help'], IdeExit)),
     assertion(GlobalExit =:= 0),
     assertion(RlmExit =:= 0),
     assertion(RunExit =:= 0),
