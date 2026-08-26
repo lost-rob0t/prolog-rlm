@@ -3,6 +3,7 @@
 
 :- use_module('../prolog/rlm').
 :- use_module('../prolog/rlm_context_budget', []).
+:- use_module('../prolog/rlm_context_mount', []).
 :- use_module('../prolog/rlm_conversation', []).
 :- use_module('../prolog/rlm_conversation_warm', []).
 :- use_module('../prolog/rlm_conversation_runtime', []).
@@ -34,6 +35,7 @@
 main(_) :-
     (   rlm:rlm_ready,
         rlm_context_budget:rlm_context_budget_ready,
+        rlm_context_mount:rlm_context_mount_ready,
         rlm_conversation:rlm_conversation_ready,
         rlm_conversation_warm:rlm_conversation_warm_ready,
         rlm_conversation_runtime:rlm_conversation_runtime_ready,
