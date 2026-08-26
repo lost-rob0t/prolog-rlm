@@ -1510,8 +1510,7 @@ metadata_context(Current, session(Session)) :-
     is_dict(Current),
     get_dict(session_id, Current, Session),
     Session \== none,
-    !,
-    Context = session(Session).
+    !.
 metadata_context(Current, agent(Runtime, Agent)) :-
     is_dict(Current),
     get_dict(runtime_id, Current, Runtime),
