@@ -204,10 +204,16 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                                Options,
                                Budget,
                                SkillMessages),
-    runtime_tools(Options,
-                  Capabilities,
-                  RuntimeTools,
-                  ToolSchemas),
+    runtime_tool_bindings(Options,
+                          Capabilities,
+                          RuntimeTools,
+                          Registry),
+    provider_tool_projection(Query,
+                             Registry,
+                             Capabilities,
+                             Options,
+                             Budget,
+                             ToolSchemas),
     planner_prompt(Query,
                    MetadataRef.metadata,
                    Capabilities,
@@ -406,8 +412,8 @@ select_skill_units(PromptCatalog,
                                          UnitOutcome),
     require_skill_units(UnitOutcome, Units0),
     maplist(enable_explicit_skill(SelectedNames), Units0, Units),
-    maplist(register_prompt_unit(PromptCatalog), Units),
     skill_compile_input(Query, SelectedNames, DeniedNames, Input),
+    maplist(register_prompt_unit(PromptCatalog), Units),
     rlm_prompt_compiler:prompt_compile(
         PromptCatalog,
         Input,
@@ -1641,7 +1647,7 @@ Goal: ~s\n\
 Context metadata: ~q\n\
 Root capabilities: ~q\n\
 Child capabilities: ~q\n\
-Registered tool schemas: ~q\n\
+Active tool schemas: ~q\n\
 Recursive decomposition is optional. An rlm step contains a nested typed plan, and that child may use only child capabilities.\n\
 ~s",
            [Query,
@@ -1683,7 +1689,7 @@ require_capabilities(ok(Capabilities), Capabilities) :- !.
 require_capabilities(error(Error), _) :-
     throw(completion_fault(capability_error(Error))).
 
-runtime_tools(Options, Capabilities, Tools, Schemas) :-
+runtime_tool_bindings(Options, Capabilities, Tools, Registry) :-
     option_value(tools, Options, [], DirectTools),
     (   is_list(DirectTools)
     ->  true
@@ -1691,23 +1697,73 @@ runtime_tools(Options, Capabilities, Tools, Schemas) :-
     ),
     option_value(tool_registry, Options, none, Registry),
     (   Registry == none
-    ->  RegistryTools = [], Schemas = []
+    ->  RegistryTools = []
     ;   tool_invocation_options(Options, InvocationOptions),
         tool_registry_runtime_tools(Registry,
                                     Capabilities,
                                     InvocationOptions,
-                                    RegistryTools),
-        tool_discover(Registry, DiscoveredSchemas),
-        include(tool_schema_capability_allowed(Capabilities),
-                DiscoveredSchemas,
-                Schemas)
+                                    RegistryTools)
     ),
     append(RegistryTools, DirectTools, Tools).
 
-tool_schema_capability_allowed(Capabilities, Schema) :-
-    is_dict(Schema),
-    get_dict(capability, Schema, Capability),
-    capability_allowed(Capabilities, Capability).
+provider_tool_projection(_, none, _, Options, _, []) :-
+    !,
+    prompt_compile_mode_options(Options, _).
+provider_tool_projection(Query,
+                         Registry,
+                         Capabilities,
+                         Options,
+                         Budget,
+                         ToolSchemas) :-
+    prompt_compile_mode_options(Options, ModeOptions),
+    setup_call_cleanup(
+        rlm_prompt_compiler:prompt_catalog_create(Catalog),
+        compile_registry_tool_projection(Catalog,
+                                         Registry,
+                                         Query,
+                                         Capabilities,
+                                         ModeOptions,
+                                         Budget,
+                                         ToolSchemas),
+        rlm_prompt_compiler:prompt_catalog_destroy(Catalog)).
+
+prompt_compile_mode_options(Options, []) :-
+    option_value(prompt_compile_mode, Options, compiled, compiled),
+    !.
+prompt_compile_mode_options(Options, [mode(all_tools)]) :-
+    option_value(prompt_compile_mode, Options, compiled, all_tools),
+    !.
+prompt_compile_mode_options(Options, _) :-
+    option_value(prompt_compile_mode, Options, compiled, Mode),
+    throw(completion_fault(invalid_prompt_compile_mode(Mode))).
+
+compile_registry_tool_projection(Catalog,
+                                 Registry,
+                                 Query,
+                                 Capabilities,
+                                 ModeOptions,
+                                 Budget,
+                                 ToolSchemas) :-
+    rlm_prompt_compiler:prompt_catalog_register_tool_registry(
+        Catalog,
+        Registry,
+        [],
+        ImportOutcome),
+    require_tool_catalog_import(ImportOutcome),
+    completion_skill_context_policy(Budget, Policy),
+    append([capabilities(Capabilities), policy(Policy)],
+           ModeOptions,
+           CompileOptions),
+    rlm_prompt_compiler:prompt_compile(Catalog,
+                                       Query,
+                                       CompileOptions,
+                                       CompileOutcome),
+    require_prompt_compile(CompileOutcome, Compiled),
+    rlm_prompt_compiler:prompt_compiler_tool_schemas(Compiled, ToolSchemas).
+
+require_tool_catalog_import(ok(_)) :- !.
+require_tool_catalog_import(error(Error)) :-
+    throw(completion_fault(tool_catalog_import_failed(Error))).
 
 tool_invocation_options(Options, InvocationOptions) :-
     ToolMetadata = [authority_context, trace_id, session_id, runtime_id,
@@ -1992,6 +2048,14 @@ completion_exception(error(rlm_cancelled(Token), _),
                                             kind:cancelled,
                                             token:Token,
                                             message:"completion cancelled"})) :-
+    !.
+completion_exception(completion_fault(invalid_prompt_compile_mode(Mode)),
+                     error(completion_error{
+                               phase:prompt_compile,
+                               kind:invalid_prompt_compile_mode,
+                               mode:Mode,
+                               message:"invalid trusted prompt_compile_mode"
+                           })) :-
     !.
 completion_exception(completion_fault(Fault),
                      error(completion_error{phase:runtime,
