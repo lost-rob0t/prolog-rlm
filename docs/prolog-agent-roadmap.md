@@ -30,7 +30,8 @@ Already available in core and the downstream application boundary:
 - a project-KB observation boundary that lets future planners and verifiers consume the same semantic project state without teaching either layer to parse source code;
 - the #94 direct generic SWI-Prolog <-> Tree-sitter C FFI, with owned native handles, generic grammar loading, and multi-grammar parsing mechanics;
 - the #95 declarative Project/File/Language and Tree-sitter grammar registry, with explicit language evidence, parser selection, versioned grammar identity/provenance, and separate trusted native activation over #94;
-- `prolog_agent_ui_v1`, a renderer-independent application boundary with bounded snapshots, ordered semantic events, explicit correlated commands, capability negotiation, deterministic replay, reconnect semantics, NDJSON framing, a child-process fixture server, and polyglot golden fixtures.
+- `prolog_agent_ui_v1`, a renderer-independent application boundary with bounded snapshots, ordered semantic events, explicit correlated commands, capability negotiation, deterministic replay, reconnect semantics, NDJSON framing, a child-process fixture server, and polyglot golden fixtures;
+- on the #176/#216 candidate path, root-planner tool-schema visibility is compiled by the canonical `rlm_prompt_compiler` while trusted executable bindings remain separate for capability, authority, and effect enforcement.
 
 Still missing for a useful coding agent:
 
@@ -41,7 +42,7 @@ Still missing for a useful coding agent:
 - TaskIR/context/result-acceptance integration around the Frozen Spec substrate from #56 and #68-#71;
 - a headless coding loop that wires project inspection, edits, re-indexing, verification, and repair to those shared runtime concepts;
 - nonblocking approval/diff handling wired from the real coding workflow into the UI facade;
-- provider-bound adoption of the one prompt compiler for skills, tools, MCP metadata, project instructions, and managed context;
+- remaining provider-bound prompt-compiler adoption beyond the #216 root-planner local-tool slice, especially MCP metadata, project instructions, managed-context composition, and projection observability tracked by #176/#183;
 - project instructions/context discovery for coding work;
 - downstream product clients and editor integrations over the stable frontend boundary.
 
@@ -142,7 +143,7 @@ Land the scoped-state work in #74 through #77 far enough for a coding frontend t
 
 It must not persist `allow_session`, silently promote permissions to `dangerous`, or auto-execute arbitrary project Prolog files.
 
-The symbolic prompt compiler is the sole owner of skill, instruction, tool, and MCP provider-context selection and bounded packing. The `SKILL.md` layer only discovers and normalizes inert packages into prompt units; provider-bound adoption and permanent RLM operating context remain tracked by #176 and #183.
+The symbolic prompt compiler is the sole owner of skill, instruction, tool, and MCP provider-context selection and bounded packing. The `SKILL.md` layer only discovers and normalizes inert packages into prompt units. The #216 slice wires compiler-active local tool schemas into the exact root-planner request without changing trusted executable bindings; #176/#183 retain the broader MCP, project-instruction, managed-context, observability, and permanent-context acceptance work.
 
 Project instructions should enter the coding context with provenance. Repository instructions, current source/tests, operator requirements, skill instructions, and model inference are not the same kind of evidence.
 
@@ -272,6 +273,7 @@ Current core and product issues that materially affect the roadmap:
 - #74-#77: durable project state, instructions, and bounded persistent authorization.
 - #93/#96-#99: #94/#95 are the direct parser and declarative source-registry substrate; the remaining child issues are required before the canonical project parser/indexer and project KB are complete.
 - #101/#117/#173/#183: standard skill packages normalize into the one prompt compiler; permanent operating context and exact provider-bound adoption remain explicit follow-up scope.
+- #176: #216 supplies the root-planner local-tool schema projection through the canonical compiler while preserving separate trusted execution bindings; MCP/project-instruction/managed-context adoption and projection observability remain open.
 - #109: the renderer-independent `prolog_agent_ui_v1` protocol/replay foundation is landed in core; concrete renderer/product work is downstream.
 - #184: approved plugin-only DeepSeek Harness architecture; implementation starts from the cleaned runtime boundary rather than reviving PR #125 or a nested harness.
 - #186: removes legacy nested harnesses and restores the runtime-only repository boundary before #184 implementation.
