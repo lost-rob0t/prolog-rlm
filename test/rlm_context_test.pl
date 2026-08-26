@@ -1,6 +1,8 @@
 :- begin_tests(rlm_context).
 
+:- use_module('../prolog/rlm_artifact').
 :- use_module('../prolog/rlm_context').
+:- use_module('../prolog/rlm_context_mount').
 
 test(large_text_stays_opaque_and_is_queryable) :-
     make_large_text(Text),
@@ -131,6 +133,82 @@ test(backend_declares_no_filesystem_or_network_capability) :-
     assertion(Caps.filesystem == false),
     assertion(Caps.network == false),
     assertion(Caps.persistent == false).
+
+test(persistent_mount_defaults_opaque_and_redacts_source) :-
+    setup_call_cleanup(
+        artifact_store_open(memory, ok(Store)),
+        ( context_mount(Store,
+                        project_rules,
+                        text("SECRET-CONTEXT-BYTES"),
+                        [lifetime(persistent),scope(project(demo))],
+                        ok(Binding)),
+          assertion(Binding.mount.visibility == opaque),
+          context_mount_metadata(Store,
+                                 project_rules,
+                                 project(demo),
+                                 ok(Metadata)),
+          assertion(\+ get_dict(source, Metadata, _)),
+          context_mount_prompt(Store,
+                               project_rules,
+                               project(demo),
+                               [],
+                               error(PromptError)),
+          assertion(PromptError.operation == prompt)
+        ),
+        ( context_mount_runtime_reset,
+          artifact_store_close(Store, _)
+        )).
+
+test(prompt_visible_mount_projection_is_explicit_and_bounded) :-
+    setup_call_cleanup(
+        artifact_store_open(memory, ok(Store)),
+        ( context_mount(Store,
+                        prompt_rules,
+                        text("0123456789ABCDEFGHIJ"),
+                        [ lifetime(persistent),
+                          scope(project(demo)),
+                          visibility(prompt)
+                        ],
+                        ok(_)),
+          context_mount_prompt(Store,
+                               prompt_rules,
+                               project(demo),
+                               [max_chars(10)],
+                               ok(Projection)),
+          assertion(Projection.text == "0123456789"),
+          assertion(Projection.truncated == true)
+        ),
+        ( context_mount_runtime_reset,
+          artifact_store_close(Store, _)
+        )).
+
+test(persistent_mount_is_idempotent_versions_changes_and_tombstones) :-
+    setup_call_cleanup(
+        artifact_store_open(memory, ok(Store)),
+        ( Options = [lifetime(persistent),scope(project(demo))],
+          context_mount(Store, rules, text("same"), Options, ok(First)),
+          context_mount(Store, rules, text("same"), Options, ok(Second)),
+          assertion(First.mount.artifact_ref == Second.mount.artifact_ref),
+          assertion(Second.mount.version =:= 1),
+          context_mount(Store, rules, text("changed"), Options, ok(Third)),
+          assertion(Third.mount.version =:= 2),
+          assertion(Third.mount.source_fingerprint \==
+                    First.mount.source_fingerprint),
+          context_mount_unmount(Store,
+                                rules,
+                                project(demo),
+                                ok(Unmounted)),
+          assertion(Unmounted.state == unmounted),
+          context_mount_resolve(Store,
+                                rules,
+                                project(demo),
+                                [],
+                                error(ResolveError)),
+          assertion(ResolveError.operation == resolve)
+        ),
+        ( context_mount_runtime_reset,
+          artifact_store_close(Store, _)
+        )).
 
 make_large_text(Text) :-
     findall(Line,
