@@ -17,7 +17,17 @@ default_completion_budget(-Budget).
 
 ## Execution contract
 
-The root planner receives the user goal plus context metadata/handle information, capability declarations, and registered tool schemas. It does not receive the full opaque context implicitly. Its output must parse as the typed plan AST used by `rlm_plan`.
+The root planner receives the user goal plus context metadata/handle information, capability declarations, and **compiler-active tool schemas**. It does not receive the full opaque context implicitly. Its output must parse as the typed plan AST used by `rlm_plan`.
+
+Tool possession and provider-visible tool schemas are deliberately separate. `rlm_completion` keeps the complete capability-filtered trusted runtime bindings for execution, authority, and effect mediation. Registry schemas are imported as inert declarative units into an ephemeral `rlm_prompt_compiler` catalog; the compiler decides which schemas are visible to the root planner. Hiding a schema does not unregister a tool, and exposing a schema does not grant capability or authority.
+
+The trusted host option `prompt_compile_mode/1` controls this projection:
+
+- `prompt_compile_mode(compiled)` is the default and exposes only compiler-active schemas after contextual selection and final packing;
+- `prompt_compile_mode(all_tools)` preserves compatibility visibility while still going through the same prompt-compiler projection path;
+- any other value fails closed as `completion_error{phase:prompt_compile,kind:invalid_prompt_compile_mode,...}` before planner dispatch.
+
+The temporary compiler catalog is always destroyed during cleanup. Tool handlers/callables never enter prompt-compiler data.
 
 The supervisor then:
 
