@@ -126,8 +126,8 @@ test(unknown_information_uses_available_typed_tool_without_spoon_fed_plan) :-
 test(decomposable_task_chooses_bounded_recursion_without_spoon_fed_plan) :-
     require_live_behavior_credential,
     Context = terms([
-        "evidence_stream_alpha(code=RLM_EVID_ALPHA_7Q9X,confidence=high)",
-        "evidence_stream_beta(code=RLM_EVID_BETA_4M2K,confidence=high)"
+        "stream=alpha token=RLM_EVID_ALPHA_7Q9X observation='checksum unresolved; signature verified' rule='unresolved checksum means verdict RLM_VERDICT_REVIEW'",
+        "stream=beta token=RLM_EVID_BETA_4M2K observation='checksum verified; signature verified' rule='both verified means verdict RLM_VERDICT_CLEAR'"
     ]),
     live_behavior_common_options(
         [rlm, context(peek), model(openrouter)],
@@ -135,7 +135,7 @@ test(decomposable_task_chooses_bounded_recursion_without_spoon_fed_plan) :-
         [],
         Options),
     rlm_completion(
-        "The opaque context contains exactly two independent evidence records. Investigate each record as a separate subproblem before synthesizing them. Produce one concise synthesis that reports the exact code from each evidence stream and distinguishes the streams. Choose the appropriate bounded runtime strategy yourself and combine only evidence you actually obtain.",
+        "The opaque context contains exactly two independent evidence records. Investigate and interpret each record as a separate subproblem under the rule contained in that record before synthesizing them. Produce one concise synthesis that reports each stream's exact token and derived verdict. Choose the appropriate bounded runtime strategy yourself and combine only evidence and verdicts actually produced by the separate investigations.",
         Context,
         Options,
         Outcome),
@@ -146,7 +146,9 @@ test(decomposable_task_chooses_bounded_recursion_without_spoon_fed_plan) :-
     assertion(Result.usage.model_calls >= 2),
     assertion(Result.usage.model_calls =< 6),
     assertion(result_value_contains(Result, "RLM_EVID_ALPHA_7Q9X")),
+    assertion(result_value_contains(Result, "RLM_VERDICT_REVIEW")),
     assertion(result_value_contains(Result, "RLM_EVID_BETA_4M2K")),
+    assertion(result_value_contains(Result, "RLM_VERDICT_CLEAR")),
     format('operator_behavior_decomposable_recursion_used: true~n', []).
 
 :- end_tests(live_rlm_operator_behavior_openrouter).
