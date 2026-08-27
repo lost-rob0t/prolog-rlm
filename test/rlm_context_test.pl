@@ -144,22 +144,26 @@ test(persistent_mount_cache_is_partitioned_by_artifact_store) :-
                         rules,
                         text("STORE-A-CONTEXT"),
                         Options,
-                        ok(BindingA)),
+                        MountAOutcome),
+          expect_ok(mount_a, MountAOutcome, BindingA),
           context_mount(StoreB,
                         rules,
                         text("STORE-B-CONTEXT"),
                         Options,
-                        ok(BindingB)),
+                        MountBOutcome),
+          expect_ok(mount_b, MountBOutcome, BindingB),
           context_slice(BindingA.context_ref.handle,
                         0,
                         64,
                         [],
-                        ok(SliceA)),
+                        SliceAOutcome),
+          expect_ok(slice_a, SliceAOutcome, SliceA),
           context_slice(BindingB.context_ref.handle,
                         0,
                         64,
                         [],
-                        ok(SliceB)),
+                        SliceBOutcome),
+          expect_ok(slice_b, SliceBOutcome, SliceB),
           assertion(SliceA.value == "STORE-A-CONTEXT"),
           assertion(SliceB.value == "STORE-B-CONTEXT"),
           assertion(BindingA.context_ref.handle \==
@@ -169,6 +173,10 @@ test(persistent_mount_cache_is_partitioned_by_artifact_store) :-
           artifact_store_close(StoreA, _),
           artifact_store_close(StoreB, _)
         )).
+
+expect_ok(_, ok(Value), Value) :- !.
+expect_ok(Stage, Outcome, _) :-
+    throw(error(unexpected_context_mount_outcome(Stage, Outcome), _)).
 
 make_large_text(Text) :-
     findall(Line,
