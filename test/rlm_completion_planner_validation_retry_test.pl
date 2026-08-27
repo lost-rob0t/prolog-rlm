@@ -1,6 +1,7 @@
 :- begin_tests(rlm_completion_planner_validation_retry).
 
 :- use_module('../prolog/rlm_completion').
+:- use_module('../prolog/rlm_tool').
 
 :- dynamic planner_call_count/1.
 :- dynamic model_call_count/1.
@@ -74,6 +75,38 @@ invalid_direct_then_direct_planner(Request, ok(Response)) :-
             "{\"mode\":\"direct\",\"answer\":\"direct-after-repair\"}",
             Response)
     ).
+
+envelope_hop_then_valid_planner(Request, ok(Output)) :-
+    bump_count(planner_call_count, Call),
+    assertz(planner_request(Call, Request)),
+    (   Call =:= 1
+    ->  Plan = plan([tool(retry_evidence, literal(_{}), evidence),
+                     final(field(var(evidence), content))])
+    ;   Plan = plan([tool(retry_evidence, literal(_{}), evidence),
+                     final(field(field(var(evidence), value), content))])
+    ),
+    planner_output(Plan, Output).
+
+retry_evidence_schema(
+    tool_schema{
+        name:retry_evidence,
+        description:"Bind one fixed evidence object for retry fixtures",
+        capability:tool(retry_evidence),
+        effect:read,
+        arguments:_{type:object, additional_properties:false, properties:_{}} ,
+        result:_{type:object},
+        limits:tool_limits{time_limit:1.0, max_output_bytes:4096}
+    }).
+
+retry_evidence(_, _{content:"ENVELOPE_VALUE_OK"}).
+
+direct_value(_, _{content:"DIRECT_FIELD_OK"}).
+
+direct_tool_field_planner(_, ok(Output)) :-
+    bump_count(planner_call_count, _),
+    Plan = plan([tool(direct_value, literal(_{}), evidence),
+                 final(field(var(evidence), content))]),
+    planner_output(Plan, Output).
 
 fake_retry_response(Text,
                     model_response{provider:fake,
@@ -209,5 +242,58 @@ test(invalid_direct_envelope_repairs_to_direct_with_both_forms,
                             "UNIQUE_REJECTED_CANDIDATE")),
     string_length(Repair.content, Length),
     assertion(Length =< 1024).
+
+test(tool_envelope_field_hop_is_repairable_without_execution,
+     [setup(reset_retry_fixture)]) :-
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        ( retry_evidence_schema(Schema),
+          tool_register(Registry,
+                        Schema,
+                        plunit_rlm_completion_planner_validation_retry:retry_evidence,
+                        ok(_))
+        ),
+        ( retry_options(
+              plunit_rlm_completion_planner_validation_retry:envelope_hop_then_valid_planner,
+              [tool(retry_evidence)],
+              Base),
+          append([tool_registry(Registry)], Base, Options),
+          rlm_completion("compose a registry tool result field correctly",
+                         text("opaque context"),
+                         Options,
+                         Outcome),
+          Outcome = ok(Completion),
+          assertion(Completion.value == "ENVELOPE_VALUE_OK"),
+          assertion(Completion.plan \== none),
+          assertion(Completion.usage.model_calls =:= 2),
+          planner_call_count(PlannerCalls),
+          model_call_count(ModelCalls),
+          assertion(PlannerCalls =:= 2),
+          assertion(ModelCalls =:= 0),
+          planner_request(1, FirstRequest),
+          planner_request(2, SecondRequest),
+          append(FirstRequest.messages, [Repair], SecondRequest.messages),
+          assertion(sub_string(Repair.content, _, _, _,
+                               "tool_result_envelope_field(content,evidence)"))
+        ),
+        tool_registry_destroy(Registry)).
+
+test(direct_host_tools_are_exempt_from_envelope_field_rule,
+     [setup(reset_retry_fixture)]) :-
+    Direct = [ planner_handler(
+                   plunit_rlm_completion_planner_validation_retry:direct_tool_field_planner),
+               planner_attempts(1),
+               skill_mode(off),
+               capabilities([tool(direct_value)]),
+               child_capabilities([]),
+               tools([tool(direct_value,
+                           plunit_rlm_completion_planner_validation_retry:direct_value)])
+             ],
+    rlm_completion("compose a direct host tool result field",
+                   text("opaque context"),
+                   Direct,
+                   Outcome),
+    Outcome = ok(Completion),
+    assertion(Completion.value == "DIRECT_FIELD_OK").
 
 :- end_tests(rlm_completion_planner_validation_retry).
