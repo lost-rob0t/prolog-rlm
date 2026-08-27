@@ -130,8 +130,8 @@ test(decomposable_task_chooses_bounded_recursion_without_spoon_fed_plan) :-
         "evidence_stream_beta(code=RLM_EVID_BETA_4M2K,confidence=high)"
     ]),
     live_behavior_common_options(
-        [rlm, context(slice), model(openrouter)],
-        [context(slice), model(openrouter)],
+        [rlm, context(peek), model(openrouter)],
+        [context(peek), model(openrouter)],
         [],
         Options),
     rlm_completion(
