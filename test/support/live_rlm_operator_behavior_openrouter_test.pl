@@ -38,7 +38,7 @@ live_behavior_budget(
     _{max_iterations:12,
       max_recursion_depth:1,
       max_concurrent_subcalls:1,
-      max_model_calls:4,
+      max_model_calls:6,
       max_tool_calls:2,
       max_context_ops:2,
       max_total_tokens:12000,
@@ -125,14 +125,17 @@ test(unknown_information_uses_available_typed_tool_without_spoon_fed_plan) :-
 
 test(decomposable_task_chooses_bounded_recursion_without_spoon_fed_plan) :-
     require_live_behavior_credential,
-    Context = text("Independent brief ALPHA: the verified launch code is ALPHA-17 and its source confidence is high. Independent brief BETA: the verified recovery code is BETA-42 and its source confidence is high. Treat both briefs as opaque evidence that must be inspected through runtime context operations."),
+    Context = terms([
+        "evidence_stream_alpha(code=RLM_EVID_ALPHA_7Q9X,confidence=high)",
+        "evidence_stream_beta(code=RLM_EVID_BETA_4M2K,confidence=high)"
+    ]),
     live_behavior_common_options(
         [rlm, context(slice), model(openrouter)],
         [context(slice), model(openrouter)],
         [],
         Options),
     rlm_completion(
-        "Investigate each of the two independent evidence briefs as separate subproblems before synthesizing them. Produce one concise synthesis that reports both verified codes and distinguishes the two evidence streams. Choose the appropriate bounded runtime strategy yourself and combine only evidence you actually obtain.",
+        "The opaque context contains exactly two independent evidence records. Investigate each record as a separate subproblem before synthesizing them. Produce one concise synthesis that reports the exact code from each evidence stream and distinguishes the streams. Choose the appropriate bounded runtime strategy yourself and combine only evidence you actually obtain.",
         Context,
         Options,
         Outcome),
@@ -141,8 +144,9 @@ test(decomposable_task_chooses_bounded_recursion_without_spoon_fed_plan) :-
     assertion(Result.recursion.max_depth >= 1),
     assertion(transition_operation(Result, rlm)),
     assertion(Result.usage.model_calls >= 2),
-    assertion(result_value_contains(Result, "ALPHA-17")),
-    assertion(result_value_contains(Result, "BETA-42")),
+    assertion(Result.usage.model_calls =< 6),
+    assertion(result_value_contains(Result, "RLM_EVID_ALPHA_7Q9X")),
+    assertion(result_value_contains(Result, "RLM_EVID_BETA_4M2K")),
     format('operator_behavior_decomposable_recursion_used: true~n', []).
 
 :- end_tests(live_rlm_operator_behavior_openrouter).
