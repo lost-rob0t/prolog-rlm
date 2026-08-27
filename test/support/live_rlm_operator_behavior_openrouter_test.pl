@@ -43,7 +43,7 @@ live_behavior_budget(
       max_context_ops:2,
       max_total_tokens:12000,
       max_cost_usd:0.25,
-      max_output_bytes:32768,
+      max_output_bytes:65536,
       time_limit:150.0}).
 
 live_behavior_common_options(Capabilities, ChildCapabilities, Extra, Options) :-
