@@ -77,10 +77,12 @@ live_depth_budget(Depth,
                     max_model_calls:4,
                     max_tool_calls:0,
                     max_context_ops:0,
-                    max_total_tokens:3000,
+                    max_total_tokens:MaxTotalTokens,
                     max_cost_usd:0.25,
                     max_output_bytes:32768,
-                    time_limit:120.0}).
+                    time_limit:120.0}) :-
+    ExpectedProviderCalls is Depth+1,
+    MaxTotalTokens is ExpectedProviderCalls*2000.
 
 fixed_planner(Plan, _, ok(Output)) :-
     Output = planner_output{
