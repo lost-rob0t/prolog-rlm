@@ -236,11 +236,13 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                  Budget,
                  Token,
                  PlannerOutcome),
+    % Planner skills define the plan protocol; executed model steps produce the
+    % task result and must not inherit planner-only output instructions.
     completion_after_planner(PlannerOutcome,
                              Query,
                              ContextRef,
                              ProviderName,
-                             provider_context(SkillMessages, Provider),
+                             Provider,
                              Capabilities,
                              ChildCapabilities,
                              RuntimeTools,

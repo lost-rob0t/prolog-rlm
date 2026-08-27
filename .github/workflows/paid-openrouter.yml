@@ -59,7 +59,31 @@ jobs:
         run: swipl -q -s benchmark/run.pl -- integration "${RUNNER_TEMP}/prolog-rlm-openrouter-benchmark.json"
 
       - name: Run REAL depth 0/1/2 recursion experiment
-        run: swipl -q -s benchmark/run.pl -- deep-integration "${RUNNER_TEMP}/prolog-rlm-openrouter-deep.json"
+        shell: bash
+        run: |
+          set +e
+          report="${RUNNER_TEMP}/prolog-rlm-openrouter-deep.json"
+          swipl -q -s benchmark/run.pl -- deep-integration "$report" > /tmp/openrouter-deep.log 2>&1
+          status=$?
+          cat /tmp/openrouter-deep.log
+          if [ -f "$report" ]; then
+            cat "$report"
+          fi
+          if [ "$status" -eq 0 ]; then
+            grep -q '"suite":"deep_constraint_openrouter"' "$report" || status=1
+            grep -q '"case_count":6' "$report" || status=1
+            grep -q '"lane":"core_minimal"' "$report" || status=1
+            grep -q '"lane":"harness_guided"' "$report" || status=1
+            grep -q '"requested_recursion_depth":0' "$report" || status=1
+            grep -q '"requested_recursion_depth":1' "$report" || status=1
+            grep -q '"requested_recursion_depth":2' "$report" || status=1
+          fi
+          if [ "$status" -ne 0 ]; then
+            message="$(tail -n 80 /tmp/openrouter-deep.log | tr '\n' ' ')"
+            message="${message//'%'/'%25'}"
+            echo "::error title=REAL constraint recursion experiment failed::${message}"
+          fi
+          exit "$status"
 
       - name: Run one-command REAL RLM CLI smoke
         shell: bash

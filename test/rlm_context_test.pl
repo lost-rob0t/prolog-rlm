@@ -1,6 +1,9 @@
 :- begin_tests(rlm_context).
 
+:- use_module(library(thread)).
+:- use_module('../prolog/rlm_artifact').
 :- use_module('../prolog/rlm_context').
+:- use_module('../prolog/rlm_context_mount').
 
 test(large_text_stays_opaque_and_is_queryable) :-
     make_large_text(Text),
@@ -131,6 +134,187 @@ test(backend_declares_no_filesystem_or_network_capability) :-
     assertion(Caps.filesystem == false),
     assertion(Caps.network == false),
     assertion(Caps.persistent == false).
+
+test(public_projection_binds_artifact_value_before_field_access) :-
+    Artifact = rlm_artifact{
+                   value:artifact_data{
+                             name:demo,
+                             scope:project(demo),
+                             lifetime:persistent,
+                             visibility:opaque,
+                             state:mounted,
+                             source_kind:text,
+                             source_fingerprint:abc},
+                   ref:artifact_ref{namespace:[rlm,context_mount],
+                                    key:mount_demo,
+                                    version:1},
+                   version:1},
+    rlm_context_mount:public_from_artifact(Artifact, Public),
+    assertion(Public.name == demo),
+    assertion(Public.scope == project(demo)),
+    assertion(Public.artifact_ref == Artifact.ref),
+    assertion(Public.version =:= 1).
+
+test(persistent_mount_rehydrates_canonical_persisted_text_source) :-
+    setup_call_cleanup(
+        artifact_store_open(memory, ok(Store)),
+        ( Options = [lifetime(persistent), scope(project(demo))],
+          context_mount(Store,
+                        canonical_text,
+                        text("CANONICAL-PERSISTED-CONTEXT"),
+                        Options,
+                        ok(Binding)),
+          context_slice(Binding.context_ref.handle,
+                        0,
+                        64,
+                        [],
+                        ok(Slice)),
+          assertion(Slice.value == "CANONICAL-PERSISTED-CONTEXT")
+        ),
+        ( context_mount_runtime_reset,
+          artifact_store_close(Store, _)
+        )).
+
+test(persistent_mount_cache_is_partitioned_by_artifact_store) :-
+    setup_call_cleanup(
+        ( artifact_store_open(memory, ok(StoreA)),
+          artifact_store_open(memory, ok(StoreB))
+        ),
+        ( Options = [lifetime(persistent), scope(project(demo))],
+          context_mount(StoreA,
+                        rules,
+                        text("STORE-A-CONTEXT"),
+                        Options,
+                        MountAOutcome),
+          expect_ok(mount_a, MountAOutcome, BindingA),
+          context_mount(StoreB,
+                        rules,
+                        text("STORE-B-CONTEXT"),
+                        Options,
+                        MountBOutcome),
+          expect_ok(mount_b, MountBOutcome, BindingB),
+          context_slice(BindingA.context_ref.handle,
+                        0,
+                        64,
+                        [],
+                        SliceAOutcome),
+          expect_ok(slice_a, SliceAOutcome, SliceA),
+          context_slice(BindingB.context_ref.handle,
+                        0,
+                        64,
+                        [],
+                        SliceBOutcome),
+          expect_ok(slice_b, SliceBOutcome, SliceB),
+          assertion(SliceA.value == "STORE-A-CONTEXT"),
+          assertion(SliceB.value == "STORE-B-CONTEXT"),
+          assertion(BindingA.context_ref.handle \==
+                    BindingB.context_ref.handle)
+        ),
+        ( context_mount_runtime_reset,
+          artifact_store_close(StoreA, _),
+          artifact_store_close(StoreB, _)
+        )).
+
+test(concurrent_persistent_resolves_converge_on_live_winner) :-
+    setup_call_cleanup(
+        artifact_store_open(memory, ok(Store)),
+        ( Options = [lifetime(persistent), scope(project(demo))],
+          context_mount(Store,
+                        concurrent_rules,
+                        text("CONCURRENT-RESOLVE-CONTEXT"),
+                        Options,
+                        ok(_)),
+          context_mount_runtime_reset,
+          run_two_workers(concurrent_resolve_worker(Store),
+                          ResolveAOutcome,
+                          ResolveBOutcome),
+          expect_ok(resolve_a, ResolveAOutcome, ResolveA),
+          expect_ok(resolve_b, ResolveBOutcome, ResolveB),
+          assertion(ResolveA.context_ref.handle ==
+                    ResolveB.context_ref.handle),
+          context_slice(ResolveA.context_ref.handle,
+                        0,
+                        64,
+                        [],
+                        SliceAOutcome),
+          expect_ok(resolve_slice_a, SliceAOutcome, SliceA),
+          context_slice(ResolveB.context_ref.handle,
+                        0,
+                        64,
+                        [],
+                        SliceBOutcome),
+          expect_ok(resolve_slice_b, SliceBOutcome, SliceB),
+          assertion(SliceA.value == "CONCURRENT-RESOLVE-CONTEXT"),
+          assertion(SliceB.value == "CONCURRENT-RESOLVE-CONTEXT")
+        ),
+        ( context_mount_runtime_reset,
+          artifact_store_close(Store, _)
+        )).
+
+test(concurrent_identical_persistent_mounts_publish_once) :-
+    setup_call_cleanup(
+        artifact_store_open(memory, ok(Store)),
+        ( Options = [lifetime(persistent), scope(project(demo))],
+          run_two_workers(concurrent_mount_worker(Store, Options),
+                          MountAOutcome,
+                          MountBOutcome),
+          expect_ok(concurrent_mount_a, MountAOutcome, MountA),
+          expect_ok(concurrent_mount_b, MountBOutcome, MountB),
+          assertion(MountA.mount.artifact_ref ==
+                    MountB.mount.artifact_ref),
+          assertion(MountA.mount.version =:= 1),
+          assertion(MountB.mount.version =:= 1),
+          artifact_list(Store,
+                        [rlm,context_mount],
+                        [history(true)],
+                        ok(History)),
+          assertion(length(History, 1))
+        ),
+        ( context_mount_runtime_reset,
+          artifact_store_close(Store, _)
+        )).
+
+concurrent_resolve_worker(Store, Start, Done) :-
+    thread_get_message(Start, go),
+    context_mount_resolve(Store,
+                          concurrent_rules,
+                          project(demo),
+                          [],
+                          Outcome),
+    thread_send_message(Done, result(Outcome)).
+
+concurrent_mount_worker(Store, Options, Start, Done) :-
+    thread_get_message(Start, go),
+    context_mount(Store,
+                  concurrent_rules,
+                  text("CONCURRENT-MOUNT-CONTEXT"),
+                  Options,
+                  Outcome),
+    thread_send_message(Done, result(Outcome)).
+
+run_two_workers(Worker, OutcomeA, OutcomeB) :-
+    message_queue_create(Start),
+    message_queue_create(Done),
+    setup_call_cleanup(
+        ( thread_create(call(Worker, Start, Done), ThreadA, []),
+          thread_create(call(Worker, Start, Done), ThreadB, [])
+        ),
+        ( thread_send_message(Start, go),
+          thread_send_message(Start, go),
+          thread_get_message(Done, result(OutcomeA)),
+          thread_get_message(Done, result(OutcomeB)),
+          thread_join(ThreadA, StatusA),
+          thread_join(ThreadB, StatusB),
+          assertion(StatusA == true),
+          assertion(StatusB == true)
+        ),
+        ( message_queue_destroy(Start),
+          message_queue_destroy(Done)
+        )).
+
+expect_ok(_, ok(Value), Value) :- !.
+expect_ok(Stage, Outcome, _) :-
+    throw(error(unexpected_context_mount_outcome(Stage, Outcome), _)).
 
 make_large_text(Text) :-
     findall(Line,

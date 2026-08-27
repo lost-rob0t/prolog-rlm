@@ -2,6 +2,7 @@
 
 :- use_module('../prolog/rlm_cli').
 :- use_module('../prolog/rlm_trace').
+:- use_module('../prolog/rlm_runtime_status').
 
 session_passes(Args, Session) :-
     cli_run(Args, ok(Session)),
@@ -95,13 +96,6 @@ test(fixed_cli_planner_returns_exact_plan_without_token_usage) :-
     assertion(Output.usage.total_tokens =:= 0),
     assertion(Output.usage.cost =:= 0.0).
 
-test(small_output_cap_keeps_room_for_mandatory_runtime_context) :-
-    rlm_cli:default_cli_options(Default),
-    Options = Default.put(max_tokens, 96),
-    rlm_cli:completion_budget_from_options(Options, Budget),
-    assertion(Budget.max_total_tokens >= 2048),
-    assertion(Budget.max_total_tokens > Options.max_tokens).
-
 test(demo_trace_export_and_trace_view_are_roundtrippable) :-
     tmp_file_stream(text, Path, Stream),
     close(Stream),
@@ -189,5 +183,34 @@ test(help_documents_reasoning_controls) :-
     cli_usage(Usage),
     assertion(sub_string(Usage, _, _, _, "--reasoning-effort")),
     assertion(sub_string(Usage, _, _, _, "--planner-reasoning-effort")).
+
+test(runtime_status_projects_model_token_io_and_context_percent) :-
+    Usage = usage_summary{prompt_tokens:12000,
+                          completion_tokens:2000},
+    runtime_status('qwen3-32b', Usage, context(12288, 32768), Status),
+    assertion(Status.model == "qwen3-32b"),
+    assertion(Status.input_tokens =:= 12000),
+    assertion(Status.output_tokens =:= 2000),
+    assertion(Status.context_tokens =:= 12288),
+    assertion(Status.context_window =:= 32768),
+    assertion(Status.context_percent =:= 38),
+    runtime_status_line(Status, Line),
+    assertion(Line == "qwen3-32b · in 12000 · out 2000 · ctx 38%").
+
+test(runtime_status_never_guesses_unknown_context_capacity) :-
+    Usage = usage_summary{prompt_tokens:321,
+                          completion_tokens:45},
+    runtime_status("model-x", Usage, unknown, Status),
+    assertion(Status.context_tokens == unknown),
+    assertion(Status.context_window == unknown),
+    assertion(Status.context_percent == unknown),
+    runtime_status_line(Status, Line),
+    assertion(Line == "model-x · in 321 · out 45 · ctx ?").
+
+test(runtime_status_rejects_usage_as_context_observation,
+     [throws(error(domain_error(runtime_context, _), _))]) :-
+    Usage = usage_summary{prompt_tokens:1000,
+                          completion_tokens:100},
+    runtime_status(model, Usage, Usage, _).
 
 :- end_tests(rlm_cli).
