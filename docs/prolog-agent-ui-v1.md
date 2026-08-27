@@ -1,15 +1,15 @@
 # RLM frontend protocol v1
 
-`prolog_agent_ui_v1` is the reusable frontend boundary exported by `prolog-rlm` for downstream agent products, renderers, and editor integrations.
+`prolog_agent_ui_v1` is the reusable frontend boundary exported by `prolog-rlm` for bundled and external agent products, renderers, and editor integrations.
 
-The wire identifier remains `prolog_agent_ui_v1` for compatibility. Moving the implementation into core does not rename or version-bump the protocol.
+The wire identifier remains `prolog_agent_ui_v1` for compatibility. Shipping an in-repo AgentProlog application and reference harness does not rename or version-bump the reusable protocol.
 
 The protocol is deliberately smaller than the runtime. A frontend renders canonical state, sends explicit commands, and negotiates presentation capabilities. It does not execute tools, implement authority, rebuild session state from raw traces, or import runtime internals.
 
 ## Boundary
 
 ```text
-AgentProlog / DeepSeek Harness plugin / JS / CL / Nim / Emacs / Lem
+bundled AgentProlog / bundled DeepSeek TUI / JS / CL / Nim / Emacs / Lem
                               |
                               | prolog_agent_ui_v1
                               | snapshots + ordered events + commands
@@ -22,7 +22,7 @@ AgentProlog / DeepSeek Harness plugin / JS / CL / Nim / Emacs / Lem
 
 The runtime facade converts canonical agent/runtime events once into frontend-safe JSON values. Renderers should not independently translate low-level traces into domain state.
 
-No renderer or product harness is shipped under a nested `agentProlog/` directory in this repository. Product UX and concrete coding workflows live downstream and consume this boundary.
+This repository now also ships `agentProlog/` application composition and `harness/` frontend consumers. They consume this boundary exactly like external clients. Reusable `prolog/` protocol/runtime code must not import those product/frontend layers.
 
 ## Reference transport
 
@@ -34,6 +34,12 @@ The deterministic child-process fixture is test support:
 
 ```sh
 swipl -q -s test/support/prolog-agent-ui-fixture.pl
+```
+
+The bundled AgentProlog application also exposes a persistent protocol adapter:
+
+```sh
+nix run .#agentprolog-ui
 ```
 
 Write one client frame per line and read one or more server frames per line.
@@ -183,6 +189,14 @@ The immediate result carries the same `request_id`. Any semantic event caused by
 
 This is correlation only. The event still receives its own server sequence.
 
+Command names are application-level data inside the reusable envelope. The bundled AgentProlog adapter currently defines:
+
+- `run.submit` — start one canonical AgentProlog/RLM execution;
+- `session.poll` — inspect the state of the active asynchronous execution;
+- `session.cancel` — cancel the canonical `rlm_async` Future and linked child work.
+
+Those commands do not move execution semantics into the protocol module. Other products may define their own command vocabulary while preserving the same correlation and authority rules.
+
 ## Reconnect
 
 Reconnect is always:
@@ -196,6 +210,8 @@ negotiate
 A frontend never reconstructs canonical state from pretty logs or assumes its local projection is authoritative.
 
 The client may provide a previous cursor as reconnect metadata. The server may choose a canonical checkpoint older than that cursor. Overlapping events are safe because already-applied sequence numbers are ignored. Missing forward sequence numbers are not safe and produce a sequence-gap error.
+
+The first bundled `agentprolog-ui` adapter slice provides a fresh bounded snapshot at negotiation and a single active-run application session. Full durable reconnect/replay belongs to later work and must use canonical runtime state rather than frontend-local reconstruction.
 
 ## Extensions
 
@@ -239,10 +255,12 @@ Consumers should branch on `code`, not human prose.
 
 The PlUnit suite also generates 10,000 text deltas with semantic trace markers interleaved every 1,000 deltas. Replay must preserve marker order, retain the final verification event and reduce the stream into a bounded snapshot.
 
-## Downstream clients
+The bundled AgentProlog application adds deterministic product-level tests with deferred fake Futures so negotiation, request correlation, exactly-once terminal projection and cancellation can be proven without network/provider credentials.
 
-Standalone AgentProlog, the approved DeepSeek Harness plugin path, and other frontends should build against this boundary rather than importing runtime internals. If a downstream client needs hidden runtime knowledge to behave correctly, fix or explicitly version the protocol/facade instead of smuggling execution semantics into the renderer.
+## Clients
+
+The bundled AgentProlog application, bundled DeepSeek TUI, and external frontends should build against this boundary rather than importing runtime internals. If a client needs hidden runtime knowledge to behave correctly, fix or explicitly version the protocol/facade instead of smuggling execution semantics into the renderer.
 
 ## Non-goals for v1 foundation
 
-This layer does not define renderer layout, execute tools in a client, persist frontend-local preferences, expose raw authority handlers, select a product harness, or choose the final socket transport.
+This reusable layer does not define renderer layout, execute tools in a client, persist frontend-local preferences, expose raw authority handlers, choose the final socket transport, or make any bundled harness authoritative over the runtime.
