@@ -1,6 +1,8 @@
 :- begin_tests(rlm_context).
 
+:- use_module('../prolog/rlm_artifact').
 :- use_module('../prolog/rlm_context').
+:- use_module('../prolog/rlm_context_mount').
 
 test(large_text_stays_opaque_and_is_queryable) :-
     make_large_text(Text),
@@ -131,6 +133,42 @@ test(backend_declares_no_filesystem_or_network_capability) :-
     assertion(Caps.filesystem == false),
     assertion(Caps.network == false),
     assertion(Caps.persistent == false).
+
+test(persistent_mount_cache_is_partitioned_by_artifact_store) :-
+    setup_call_cleanup(
+        ( artifact_store_open(memory, ok(StoreA)),
+          artifact_store_open(memory, ok(StoreB))
+        ),
+        ( Options = [lifetime(persistent), scope(project(demo))],
+          context_mount(StoreA,
+                        rules,
+                        text("STORE-A-CONTEXT"),
+                        Options,
+                        ok(BindingA)),
+          context_mount(StoreB,
+                        rules,
+                        text("STORE-B-CONTEXT"),
+                        Options,
+                        ok(BindingB)),
+          context_slice(BindingA.context_ref.handle,
+                        0,
+                        64,
+                        [],
+                        ok(SliceA)),
+          context_slice(BindingB.context_ref.handle,
+                        0,
+                        64,
+                        [],
+                        ok(SliceB)),
+          assertion(SliceA.value == "STORE-A-CONTEXT"),
+          assertion(SliceB.value == "STORE-B-CONTEXT"),
+          assertion(BindingA.context_ref.handle \==
+                    BindingB.context_ref.handle)
+        ),
+        ( context_mount_runtime_reset,
+          artifact_store_close(StoreA, _),
+          artifact_store_close(StoreB, _)
+        )).
 
 make_large_text(Text) :-
     findall(Line,
