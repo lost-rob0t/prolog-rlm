@@ -92,11 +92,10 @@ direct_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
     provider_format(Options, ProviderName, Format),
     direct_capabilities(Options, Capabilities),
     direct_registry(Options, Registry),
-    direct_projection_options(Options, ProjectionOptions),
     provider_tool_projection(Query,
                              Registry,
                              Capabilities,
-                             ProjectionOptions,
+                             Options,
                              Budget,
                              RegistrySchemas),
     native_catalog(Capabilities,
@@ -166,14 +165,7 @@ direct_capabilities(Options, Capabilities) :-
     ; Outcome = error(Error), throw(direct_fault(Error))
     ).
 
-direct_projection_options(Options, Options) :-
-    member(Entry, Options),
-    nonvar(Entry),
-    functor(Entry, prompt_compile_mode, 1),
-    !.
-direct_projection_options(Options, [prompt_compile_mode(all_tools)|Options]).
-
-direct_skill_messages(_Query, Provider, Capabilities, Options, Budget, Messages) :-
+direct_skill_messages(Query, Provider, Capabilities, Options, Budget, Messages) :-
     option(explicit_skills, Options, [], Selected),
     (   Selected == []
     ->  Messages = []
@@ -183,7 +175,7 @@ direct_skill_messages(_Query, Provider, Capabilities, Options, Budget, Messages)
                                   phase:prompt_compile,
                                   kind:direct_skill_catalog_required,
                                   message:"direct explicit skills require a trusted non-default catalog"}))
-        ; completion_skill_messages("",
+        ; completion_skill_messages(Query,
                                     Provider,
                                     Capabilities,
                                     Options,

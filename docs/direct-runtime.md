@@ -348,25 +348,31 @@ remain single-shot provider calls without native schemas; plans use their typed
 step require a later shared session-executor integration and are not claimed by
 this slice.
 
-`rlm_direct` defaults to the capability-filtered `all_tools` profile because a
-stable bundle generally improves cross-request cache-hit percentage. Callers may
-opt into `prompt_compile_mode(compiled)` to minimize one cold request when cache
-reuse is not expected. Provider cache behavior remains provider/model-specific;
-core guarantees deterministic projection, while the credentialed 120B cache
-gate verifies actual provider-reported hits.
+`rlm_direct` defaults to `prompt_compile_mode(compiled)`, matching root
+completion. The canonical prompt compiler uses the current query, capability
+set, and context budget to select provider-visible registered tool schemas and
+skills. The selected bundle is compiled once per direct session and reused
+unchanged for every continuation in that session. Callers may explicitly choose
+`prompt_compile_mode(all_tools)` when a stable capability-filtered inventory is
+known to be cheaper across a warm workload; it is a compatibility/cache profile,
+not the normal contextual path.
 
-Explicit direct skills are compiled against a query-free activation input.
-Their trusted explicit set and stable always-on closure therefore stay in the
-cacheable prefix; changing user text cannot opportunistically add another
-query-triggered skill ahead of the dynamic task suffix.
+Explicit direct skills remain trusted forced selections, while the real query
+still participates in dependency and contextual activation. Identity and base
+runtime instructions remain the stable leading messages; compiler-selected
+skill context and the task follow them. Provider cache behavior remains
+provider/model-specific, so hosts should compare provider-reported cache tokens
+against total prompt tokens and cost rather than maximizing hit percentage in
+isolation.
 
-`test/rlm_direct_test.pl` recreates the all-mode compiler ten times across
-different query text and requires byte-identical native tools and explicit
-skill messages. The CI-only
+`test/rlm_direct_test.pl` recreates contextual compilation ten times for the
+same query and requires deterministic native tools and skill messages. It also
+changes the query and proves that relevant tools and skills can enter or leave
+the direct projection. The CI-only
 `test/live_compiler_cache_openrouter_test.pl` uses `openai/gpt-oss-120b` for ten
-fresh constructions and requires at least 80% of the nine warm requests to
-report cached native tokens or a response-cache source. It is intentionally not
-a local paid test.
+fresh constructions under an explicit `all_tools` cache profile and requires at
+least 80% of the nine warm requests to report cached native tokens or a
+response-cache source. It is intentionally not a local paid test.
 
 ## Rejected alternatives
 

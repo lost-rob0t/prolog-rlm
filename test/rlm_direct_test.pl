@@ -324,21 +324,24 @@ direct_skill_catalog(Catalog) :-
     directory_file_path(TestDirectory, 'fixtures/skills', Root),
     skill_catalog_load([skill_root(test,Root)], [], ok(Catalog)).
 
-cacheable_projection(Query, Registry, Catalog, Projection) :-
+compiled_projection(Query, Registry, Catalog, Projection) :-
     reset_direct(cache_probe),
-    direct_provider_options([context(peek),context(slice),context(search),
-                             tool(runtime_token),
-                             spec(catalog),spec(normalize),spec(freeze),
-                             spec(observe),spec(verify),plan(execute)],
-                            [ tool_registry(Registry),
-                              skill_catalog(Catalog),
-                              explicit_skills([tdd])
-                            ], Options),
-    rlm_direct(Query, text("dynamic context"), Options,
-               ok(_)),
+    Options = [ provider(provider(openai_compatible, [])),
+                provider_name(openai_compatible),
+                model_handler(plunit_rlm_direct:scripted_direct_model),
+                capabilities([tool(runtime_token)]),
+                tool_registry(Registry),
+                skill_catalog(Catalog),
+                explicit_skills([tdd])
+              ],
+    rlm_direct(Query, text("dynamic context"), Options, ok(_)),
     direct_request(1, Request),
     append(StaticMessages, [_DynamicTask], Request.messages),
-    Projection = cache_projection{tools:Request.options.tools,
+    (   get_dict(tools, Request.options, Tools)
+    ->  true
+    ;   Tools = []
+    ),
+    Projection = cache_projection{tools:Tools,
                                   messages:StaticMessages}.
 
 test(native_context_search_round_trip_returns_exact_final_text) :-
@@ -469,27 +472,47 @@ test(effectful_native_tool_needing_approval_terminates_without_mutation) :-
         ),
         cleanup_direct_effect_store(Store)).
 
-test(ten_fresh_compiler_runs_keep_tools_and_skills_cache_identical) :-
+test(ten_fresh_compiler_runs_are_deterministic_for_the_same_query) :-
     tool_registry_create(Registry),
     setup_call_cleanup(
         ( register_runtime_token(Registry),
           direct_skill_catalog(Catalog)
         ),
         ( findall(Projection,
-                  ( between(1,10,I),
-                    ( 0 is I mod 2
-                    -> Query = "stable cache profile"
-                    ;  Query = "diagnose a broken regression"
-                    ),
-                    cacheable_projection(Query, Registry, Catalog, Projection)
+                  ( between(1,10,_),
+                    compiled_projection("use runtime_token to diagnose a broken regression",
+                                        Registry, Catalog, Projection)
                   ),
                   Projections),
           sort(Projections, Unique),
           assertion(Unique = [_]),
           Projections = [First|_],
-          length(First.tools, 10),
+          length(First.tools, 1),
           term_string(First.messages, StaticText),
-          assertion(sub_string(StaticText, _, _, _, "TDD_SKILL_MARKER"))
+          assertion(sub_string(StaticText, _, _, _, "TDD_SKILL_MARKER")),
+          assertion(sub_string(StaticText, _, _, _, "DEBUG_SKILL_MARKER"))
+        ),
+        tool_registry_destroy(Registry)).
+
+test(default_direct_compilation_uses_query_context) :-
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        ( register_runtime_token(Registry),
+          direct_skill_catalog(Catalog)
+        ),
+        ( once(compiled_projection(
+                   "use runtime_token to diagnose a broken regression",
+                   Registry, Catalog, Relevant)),
+          once(compiled_projection("paint a watercolor landscape",
+                                   Registry, Catalog, Unrelated)),
+          length(Relevant.tools, 1),
+          assertion(Unrelated.tools == []),
+          term_string(Relevant.messages, RelevantText),
+          term_string(Unrelated.messages, UnrelatedText),
+          assertion(sub_string(RelevantText, _, _, _, "TDD_SKILL_MARKER")),
+          assertion(sub_string(RelevantText, _, _, _, "DEBUG_SKILL_MARKER")),
+          assertion(sub_string(UnrelatedText, _, _, _, "TDD_SKILL_MARKER")),
+          assertion(\+ sub_string(UnrelatedText, _, _, _, "DEBUG_SKILL_MARKER"))
         ),
         tool_registry_destroy(Registry)).
 

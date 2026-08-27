@@ -15,7 +15,7 @@
 :- prolog_load_context(directory, TestDirectory),
    assertz(cache_test_directory(TestDirectory)).
 
-test(ten_fresh_all_mode_compilations_report_provider_cache_hits) :-
+test(ten_fresh_explicit_all_tools_compilations_report_provider_cache_hits) :-
     require_cache_environment(Model, Key),
     cache_skill_catalog(SkillCatalog),
     tool_registry_create(ToolRegistry),
@@ -48,6 +48,7 @@ run_cache_turns(Turn, Last, Model, Key, SkillCatalog, ToolRegistry,
     Options = [provider(Provider),provider_name(openrouter),
                tool_registry(ToolRegistry),
                skill_catalog(SkillCatalog),explicit_skills([tdd]),
+               prompt_compile_mode(all_tools),
                capabilities(Capabilities),
                budget(_{max_model_calls:1,max_tool_calls:0,
                         max_context_ops:0,max_total_tokens:8192,
