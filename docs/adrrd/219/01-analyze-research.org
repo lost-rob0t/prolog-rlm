@@ -1,0 +1,37 @@
+#+title: #219 — Analyze / Research
+#+startup: overview
+
+* Current executable truth
+- No rlm_embedding on current main.
+- No rlm_retrieval on current main.
+- No retrieval_expert on current main.
+
+* Existing runtime ownership
+** rlm_chain
+Owns async-first / sync-await provider execution and provider(Name, Config).
+
+** rlm_openai_compatible
+Owns endpoint/model validation, env credentials, timeout/address-family handling, secret-safe exception normalization, and OpenAI-compatible HTTP transport.
+
+Conclusion: embeddings must reuse this stack rather than invent another credential/HTTP policy layer.
+
+** rlm_context
+Shows the trusted-adapter boundary: executable callbacks are process-local trusted registry state; serializable/model-visible state stays closed data; registration is availability, not authority.
+
+* Project/source dependency state
+- #94 SWI-Prolog <-> Tree-sitter C FFI — DONE
+- #95 Project/File/Language/grammar registry — DONE
+- #96 CST -> versioned Prolog syntax facts — OPEN
+- #97 Tree-sitter query/capture API — OPEN
+- #98 symbols/references/calls/imports/exports — OPEN
+- #99 incremental reparse + changed ranges + freshness — OPEN
+
+Project-structural retrieval is therefore not dependency-ready as the first #219 slice.
+
+* Freshness ownership
+#99 already owns current-vs-stale source generation and atomic publication semantics. #219 should later extend that path with lazy exact-hash validation, coherent snapshots, dirty/edit journaling, coalesced publication, harness write hints, optimistic concurrency, and exact-byte/hash revalidation before publish.
+
+Do not create a parallel source index.
+
+* Result
+The safest first vertical slice is provider-neutral embeddings only.
