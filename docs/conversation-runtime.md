@@ -71,6 +71,15 @@ context_policy{
 
 The effective ceiling is `min(max_context_tokens, provider_context_tokens)`. The synthetic cold-history boundary is a mandatory provider-visible context unit and is charged in the normal token ledger.
 
+Conversation packing bounds optional cold-message candidates with
+`max_cold_candidates/1` (default `256`). The guaranteed recent tail and
+source messages covered by selected warm units remain eligible; older
+non-warm messages outside that bounded candidate window stay behind the cold
+handle. This keeps context compilation linear in transcript size without
+creating one prompt-budget variable per historical message. Increase the
+candidate limit deliberately when a caller needs more recent cold material;
+use `context(search(...))` for authoritative retrieval of omitted history.
+
 ## Cold-history boundary
 
 Durable transcript messages are never edited to carry runtime instructions. When the projected conversation extends beyond `min_recent_turns`, `rlm_conversation_runtime` adds a synthetic mandatory `managed_cold_history_boundary` unit.
@@ -97,7 +106,6 @@ The complete transcript stays in durable storage behind a small opaque context h
 
 1. provider/model tokenizer registry and final rendered-request counting;
 2. prompt-compiler accounting for tools, MCP, skills, project instructions, and rendering overhead;
-3. bounded hot-candidate selection for very large histories;
-4. indexed cold-history retrieval;
-5. async managed-turn and streaming surfaces;
-6. bounded model-visible adapter metadata.
+3. indexed cold-history retrieval;
+4. async managed-turn and streaming surfaces;
+5. bounded model-visible adapter metadata.

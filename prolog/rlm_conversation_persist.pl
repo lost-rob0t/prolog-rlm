@@ -16,8 +16,10 @@
 
 :- persistent
        conversation_header_record(id:atom,
-                                  created_at:float,
-                                  metadata:any),
+                                   created_at:float,
+                                   metadata:any),
+       conversation_sequence_record(id:atom,
+                                    next_sequence:integer),
        conversation_message_record(conversation_id:atom,
                                    sequence:integer,
                                    message:any).
@@ -54,10 +56,11 @@ conversation_persist_create(Id, CreatedAt, Metadata) :-
                                                  Id),
                                context(rlm_conversation_persist,
                                        conversation_exists(Id))))
-               ;   assert_conversation_header_record(Id,
-                                                      CreatedAt,
-                                                      Metadata)
-               )).
+                ;   assert_conversation_header_record(Id,
+                                                       CreatedAt,
+                                                       Metadata),
+                    assert_conversation_sequence_record(Id, 1)
+                )).
 conversation_persist_create(_, _, Metadata) :-
     throw(error(instantiation_error,
                 context(rlm_conversation_persist,
@@ -91,27 +94,36 @@ conversation_persist_append(Id, BaseMessage, Message) :-
     ground(BaseMessage),
     !,
     with_mutex(rlm_conversation_persist,
-               (   conversation_header_record(Id, _, _)
-               ->  findall(Sequence,
-                           conversation_message_record(Id, Sequence, _),
-                           Sequences),
-                   next_sequence(Sequences, Sequence),
-                   Ref = conversation_message_ref{conversation_id:Id,
-                                                  sequence:Sequence},
+                (   conversation_header_record(Id, _, _)
+                ->  next_persist_sequence(Id, Sequence),
+                    Ref = conversation_message_ref{conversation_id:Id,
+                                                   sequence:Sequence},
                    put_dict(_{ref:Ref, sequence:Sequence},
                             BaseMessage,
                             Message),
                    assert_conversation_message_record(Id,
                                                       Sequence,
                                                       Message)
-               ;   throw(error(existence_error(conversation, Id),
+                ;   throw(error(existence_error(conversation, Id),
                                context(rlm_conversation_persist,
                                        unknown_conversation(Id))))
-               )).
+                )).
+
 conversation_persist_append(_, BaseMessage, _) :-
     throw(error(instantiation_error,
                 context(rlm_conversation_persist,
                         non_ground_message(BaseMessage)))).
+
+next_persist_sequence(Id, Sequence) :-
+    (   retract_conversation_sequence_record(Id, Next)
+    ->  Sequence = Next
+    ;   findall(Existing,
+                conversation_message_record(Id, Existing, _),
+                ExistingSequences),
+        next_sequence(ExistingSequences, Sequence)
+    ),
+    Following is Sequence+1,
+    assert_conversation_sequence_record(Id, Following).
 
 conversation_persist_get(Id, Sequence, Message) :-
     require_attached,

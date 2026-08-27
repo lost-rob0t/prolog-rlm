@@ -17,17 +17,51 @@ default_completion_budget(-Budget).
 
 ## Execution contract
 
-The root controller receives the user goal plus context metadata/handle information, capability declarations, and **compiler-active tool schemas**. It does not receive the full opaque context implicitly. Its output must be exactly one JSON root decision: the direct-answer envelope `{"mode":"direct","answer":"<nonempty final text>"}` or the typed plan AST shape used by `rlm_plan`.
+The root controller receives a task-first prompt containing the user goal, context metadata/handle information, capability declarations, and **compiler-active tool schemas**. It does not receive the full opaque context implicitly. Its output must be exactly one JSON root decision: the direct-answer envelope `{"mode":"direct","answer":"<nonempty final text>"}` or the typed plan AST shape used by `rlm_plan`.
 
 A direct answer must match the closed envelope exactly: the only fields are `mode` (literally `direct`) and a nonempty textual `answer`. Anything else fails closed as `completion_error{phase:planner,kind:plan_parse_failed,cause:plan_error{kind:invalid_root_decision,...}}`. Arbitrary prose is never a successful direct answer, a malformed typed plan is never accepted as one, and provider-native tool calls are neither plans nor answers. A valid typed plan always wins over the envelope fallback, so the plan protocol is unchanged for context retrieval, registered tools, model steps, and recursive plans.
 
 A valid direct envelope finishes immediately with exactly one root model call: no plan validation/execution, no plan transitions, empty bindings, zero recursion depth and recursive calls, and truthful usage/trajectory data (`plan:none`, trajectory reason `root model answered directly without plan execution`). The aggregate model-call, token, and cost budget check still applies before the result is returned. The default prompt and the mandatory `rlm-operate` skill instruct the root model to prefer direct completion whenever runtime operations add no value, and never to return a plan whose only purpose is passing the original goal to another model call.
 
-The default mandatory `rlm-operate` planner skill supplies the closed JSON
-envelopes needed to project the `query` and opaque `context` inputs, invoke an
-active tool by its exact schema name, and reference prior bindings. This
-protocol context is descriptive only: a listed JSON shape or provider-visible
-schema never grants the corresponding capability or installs a handler.
+The root prompt is task-first rather than plan-first. The model should solve the
+request from the task and active context before considering runtime operations.
+For managed conversations, the context compiler supplies the bounded warm/hot
+projection in the task framing while older transcript payload remains behind
+the opaque context handle. The model can therefore answer directly when the
+projection is sufficient, or choose a bounded retrieval plan when it is not.
+
+Evidence composition is supported across plan steps. A context or tool result
+may be bound first and then placed inside a ground JSON object or array used as
+the prompt of a later `model` step. The host serializes that value to JSON; it
+does not evaluate or execute any contained term. Since model steps bind a
+provider response envelope, a plan that needs the response text should finish
+with a field reference to `text`, for example:
+
+```json
+{"steps":[
+  {"op":"context","handle":{"ref":"input","name":"context"},"action":{"type":"search","pattern":"needle"},"bind":"evidence"},
+  {"op":"model","provider":"openrouter","prompt":{"task":"Extract the requested value.","evidence":{"ref":"var","name":"evidence"}},"options":{},"bind":"answer"},
+  {"op":"final","value":{"ref":"field","value":{"ref":"var","name":"answer"},"key":"text"}}
+]}
+```
+
+The closed operation vocabulary is `final`, `model`, `context`, `tool`,
+`parallel`, `retry`, `checkpoint`, and `rlm`; context actions are `peek`,
+`slice`, `search`, `partition`, `map`, and `reduce`. The top-level `steps`
+object is the plan. Plan parsing, structural validation, capability checks,
+budget checks, and execution are host-owned phases, so the model does not emit
+separate `plan` or `validate` operations and their documentation does not
+imply authorization.
+
+The default mandatory `rlm-operate` planner skill supplies the complete closed
+operation vocabulary: `final`, `model`, `context`, `tool`, `parallel`, `retry`,
+and `checkpoint`, with `rlm` documented separately for recursion. It supplies
+the JSON envelopes needed to project the `query` and opaque `context` inputs,
+invoke an active tool by its exact schema name, compose retrieved evidence into
+a later model prompt, and reference prior bindings. The host performs plan
+parsing and validation automatically before execution; neither validation nor
+the descriptive protocol context grants a capability or installs a handler.
+Provider-visible schemas remain separate from possession and authority.
 
 Tool possession and provider-visible tool schemas are deliberately separate. `rlm_completion` keeps the complete capability-filtered trusted runtime bindings for execution, authority, and effect mediation. Registry schemas are imported as inert declarative units into an ephemeral `rlm_prompt_compiler` catalog; the compiler decides which schemas are visible to the root planner. Hiding a schema does not unregister a tool, and exposing a schema does not grant capability or authority.
 
@@ -59,7 +93,7 @@ The supervisor then:
 1. parses the JSON root decision: a strict direct envelope finishes immediately (one model call, no plan execution), or a typed plan continues below;
 2. validates recursive depth, duplicate/cycle structure, and child capabilities;
 3. counts planned model calls and tightens their generation ceilings against the remaining token budget;
-4. executes context/model/tool operations through `rlm_plan`;
+4. executes context/model/tool and other closed plan operations through `rlm_plan`;
 5. aggregates visible provider usage and checks model-call, token, and cost ceilings;
 6. returns the final value, bindings, plan transitions, recursion statistics, and model trajectory.
 

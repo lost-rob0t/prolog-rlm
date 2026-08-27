@@ -2134,28 +2134,37 @@ response_summary(Response, ProviderFallback, Channel,
  * ---------------------------------------------------------------------- */
 
 planner_prompt(Query,
-                Metadata,
-                Capabilities,
-                ChildCapabilities,
-                ToolSchemas,
-                Options,
-                Prompt) :-
+                 Metadata,
+                 Capabilities,
+                 ChildCapabilities,
+                 ToolSchemas,
+                 Options,
+                 Prompt) :-
     option_value(planner_instruction, Options, "", Instruction0),
     text_string(Instruction0, Instruction),
     format(string(Prompt),
-           "You are the root controller for a bounded Recursive Language Model runtime.\n\
-Return ONLY one JSON object; no markdown. Choose exactly one root decision:\n\
-1. Direct answer when runtime operations add no value: {\"mode\":\"direct\",\"answer\":\"<nonempty final text>\"}. Prefer this whenever the goal can be answered now without context retrieval, tools, another model call, or recursion. Never return a plan whose only purpose is to pass the original goal to another model call.\n\
-2. Typed plan when runtime operations are needed: the top-level plan shape {\"steps\":[...]} with one final step last.\n\
-Any other output shape — prose, markdown, or a provider-native tool call — is rejected without execution.\n\
-The opaque context is available only through input name context. Do not invent context bytes from metadata.\n\
-Goal: ~s\n\
-Context metadata: ~q\n\
+           "You are the root answerer and controller for a bounded Recursive Language Model runtime.\n\
+Your first responsibility is to solve the user task below. Do not design a runtime plan unless runtime operations add no value to the answer.\n\
+TASK (authoritative user request):\n\
+~s\n\
+\n\
+DECISION ORDER:\n\
+1. If the task can be answered from the task text and active information already shown, answer directly with {\"mode\":\"direct\",\"answer\":\"<the exact final response requested by the user>\"}. The answer string must contain the requested final payload, not a discussion of this runtime and not a plan. This is the preferred path whenever runtime operations add no value.\n\
+2. Use a typed plan only when bounded context retrieval, an authorized tool, an additional model step, or useful recursive decomposition adds information or execution that you cannot provide directly. The top-level plan shape is {\"steps\":[...]} with one final step last.\n\
+\n\
+CONTEXT AND EVIDENCE:\n\
+The task text is not automatically a transcript dump. The context input is an opaque bounded source. Its metadata describes the source only and is never evidence. If older or omitted information matters, retrieve it with a context step using input name context. A retrieval plan should normally pass the bounded result to a model step for interpretation, or return it directly only when the user asked for the raw result. A model prompt may be a JSON object/list containing earlier bindings; the runtime serializes that ground evidence as JSON before dispatch.\n\
+\n\
+OUTPUT RULES:\n\
+Return ONLY one JSON object; no markdown, prose, or provider-native tool call. The only accepted root decisions are the direct envelope above or the typed plan above. Never return a plan whose only purpose is to pass the original task to another model call.\n\
+CLOSED RUNTIME VOCABULARY:\n\
+The typed plan can contain these closed operations when the corresponding capability is listed: final, model, context, tool, parallel, retry, checkpoint, and rlm. Context actions are peek, slice, search, partition, map, and reduce. The top-level {\"steps\":[...]} object is the plan itself; parsing, structural validation, capability checks, budget checks, and execution ordering are host operations performed automatically, not model-emitted ops.\n\
+Context metadata (descriptor only): ~q\n\
 Root capabilities: ~q\n\
 Child capabilities: ~q\n\
 Active tool schemas: ~q\n\
 Recursive decomposition is optional. An rlm step contains a nested typed plan, and that child may use only child capabilities.\n\
-~s",
+Additional host instruction: ~s",
            [Query,
             Metadata,
             Capabilities,
