@@ -2154,6 +2154,7 @@ DECISION ORDER:\n\
 \n\
 CONTEXT AND EVIDENCE:\n\
 The task text is not automatically a transcript dump. The context input is an opaque bounded source. Its metadata describes the source only and is never evidence. If older or omitted information matters, retrieve it with a context step using input name context. A retrieval plan should normally pass the bounded result to a model step for interpretation, or return it directly only when the user asked for the raw result. A model prompt may be a JSON object/list containing earlier bindings; the runtime serializes that ground evidence as JSON before dispatch.\n\
+For a JSON context search action use {\"type\":\"search\",\"pattern\":\"needle\"}; the field is pattern, not query.\n\
 \n\
 OUTPUT RULES:\n\
 Return ONLY one JSON object; no markdown, prose, or provider-native tool call. The only accepted root decisions are the direct envelope above or the typed plan above. Never return a plan whose only purpose is to pass the original task to another model call.\n\

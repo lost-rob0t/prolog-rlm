@@ -30,6 +30,8 @@ A typed plan is an ordered list of steps. Every step is one call to a closed run
   `{"op":"model","provider":"<granted-provider>","prompt":{"ref":"input","name":"query"},"options":{},"bind":"answer"}`
 - `context` — read a bounded projection of the opaque context bytes. The context is available only through the `context` input; never invent its bytes from metadata. Use exactly the action names and fields the runtime exposes.
   `{"op":"context","handle":{"ref":"input","name":"context"},"action":{"type":"slice","start":0,"length":1024},"bind":"evidence"}`
+  Search uses the `pattern` field, not `query`:
+  `{"op":"context","handle":{"ref":"input","name":"context"},"action":{"type":"search","pattern":"needle"},"bind":"evidence"}`
 - `tool` — invoke an active tool. `name` must exactly match an active tool schema and `args` must match that schema. Seeing a schema does not grant permission: call a tool only when its capability is listed. A successful tool step binds an envelope object whose `value` field holds the schema-conforming result, so select nested result fields through chained references. For example, to return a tool's `content` field as the final value:
    `{"op":"tool","name":"<active-tool-name>","args":{},"bind":"tool_result"}`
    `{"op":"final","value":{"ref":"field","value":{"ref":"field","value":{"ref":"var","name":"tool_result"},"key":"value"},"key":"content"}}`
