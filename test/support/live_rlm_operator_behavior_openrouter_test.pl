@@ -99,7 +99,7 @@ test(trivial_task_does_not_recurse_without_spoon_fed_plan) :-
         Options,
         Outcome),
     require_live_behavior_success(Outcome, Result),
-    assertion(Result.value == "RLM_TRIVIAL_OK"),
+    assertion(Result.value.text == "RLM_TRIVIAL_OK"),
     assertion(Result.recursion.recursive_calls =:= 0),
     assertion(\+ transition_operation(Result, rlm)),
     format('operator_behavior_trivial_no_recursion: true~n', []).
