@@ -15,8 +15,8 @@ path, never by model self-report or a magic output token.
 
 Two lanes are compared at recursion ceilings 0/1/2:
 
-  * core_minimal: no benchmark-specific planner instruction;
-  * harness_guided: downstream-only decomposition guidance.
+  * core_minimal: generic typed-plan contract only;
+  * harness_guided: the same contract plus downstream-only decomposition guidance.
 
 The former token-echo depth test survives as rlm_live_deep_smoke.
 */
@@ -69,10 +69,38 @@ live_constraint_case(Lane, Depth, Model, Provider, Case) :-
                             Outcome,
                             Case).
 
-benchmark_lane_instruction(core_minimal, _, []).
+benchmark_lane_instruction(core_minimal, Depth,
+                           [planner_instruction(Contract)]) :-
+    typed_plan_contract_instruction(Depth, Contract).
 benchmark_lane_instruction(harness_guided, Depth,
-                           [planner_instruction(Guidance)]) :-
-    constraint_guidance(Depth, Guidance).
+                           [planner_instruction(Instruction)]) :-
+    typed_plan_contract_instruction(Depth, Contract),
+    constraint_guidance(Depth, Guidance),
+    format(string(Instruction), '~s\n~s', [Contract, Guidance]).
+
+typed_plan_contract_instruction(Depth, Contract) :-
+    typed_plan_recursion_instruction(Depth, Recursion),
+    format(string(Contract),
+           "Typed-plan JSON contract (host-owned; this does not reveal the benchmark solution):\n\
+The planner response MUST be exactly one JSON object with a top-level \"steps\" array: {\"steps\":[...]}.\n\
+Do not wrap \"steps\" in \"plan\", \"goal\", \"answer\", or any other top-level key.\n\
+Every step is a JSON object with an \"op\" field.\n\
+To ask the configured provider to solve the original goal without copying the goal text, use this model-step shape:\n\
+{\"op\":\"model\",\"provider\":\"openrouter\",\"prompt\":{\"ref\":\"input\",\"name\":\"query\"},\"options\":{},\"bind\":\"answer\"}\n\
+A plan must contain exactly one final step and it must be last. To return that model response, use:\n\
+{\"op\":\"final\",\"value\":{\"ref\":\"var\",\"name\":\"answer\"}}\n\
+~s\n\
+The planner JSON is executable strategy only. Do NOT put the CSP assignment itself in the planner JSON; the host verifies the response produced by the executed model step.",
+           [Recursion]).
+
+typed_plan_recursion_instruction(0,
+    "Recursion is unavailable in this lane. Do not emit an \"rlm\" step.") :-
+    !.
+typed_plan_recursion_instruction(_, Instruction) :-
+    Instruction =
+"Recursion is available but optional. If you use it, the rlm step MUST have a nested plan object whose own top-level key is also \"steps\":\n\
+{\"op\":\"rlm\",\"plan\":{\"steps\":[...]},\"bind\":\"child\"}\n\
+Nested plans use the same closed typed-plan grammar and may use {\"ref\":\"input\",\"name\":\"query\"} in a model prompt. A nested plan must also end with exactly one final step.".
 
 lane_capabilities(0, [model(openrouter)]) :- !.
 lane_capabilities(_, [rlm,model(openrouter)]).
