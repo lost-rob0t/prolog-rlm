@@ -53,6 +53,115 @@ test(invalid_address_family_fails_before_network) :-
     assertion(get_dict(field, Error, address_family)),
     assertion(get_dict(response_received, Error, false)).
 
+test(auto_only_provider_normalizes_required_tool_choice_before_payload) :-
+    Tools = [tool_schema{type:function,
+                         function:tool_function{name:"lookup",
+                                                parameters:json_schema{type:object}}}],
+    Request0 = model_request{
+                   messages:[message{role:user, content:"lookup"}],
+                   options:generation_options{tools:Tools,
+                                              tool_choice:required}
+               },
+    Config = [tool_choice_modes([auto])],
+    rlm_chain:normalize_provider_request(openrouter,
+                                         Config,
+                                         Request0,
+                                         ok(Request)),
+    rlm_openai_compatible:request_payload(Request,
+                                          'vendor/model',
+                                          ok(Payload)),
+    get_dict(tool_choice, Payload, Effective),
+    get_dict(tools, Payload, OutboundTools),
+    assertion(Effective == auto),
+    assertion(OutboundTools == Tools).
+
+test(provider_profile_supporting_required_preserves_required) :-
+    Request0 = model_request{
+                   messages:[message{role:user, content:"lookup"}],
+                   options:generation_options{tool_choice:required}
+               },
+    Config = [tool_choice_modes([auto, required])],
+    rlm_chain:normalize_provider_request(openrouter,
+                                         Config,
+                                         Request0,
+                                         ok(Request)),
+    get_dict(options, Request, Options),
+    get_dict(tool_choice, Options, Effective),
+    assertion(Effective == required).
+
+test(provider_without_tool_choice_profile_preserves_current_behavior) :-
+    Request = model_request{
+                  messages:[message{role:user, content:"lookup"}],
+                  options:generation_options{tool_choice:required}
+              },
+    rlm_chain:normalize_provider_request(openrouter,
+                                         [],
+                                         Request,
+                                         ok(Normalized)),
+    assertion(Normalized == Request).
+
+test(malformed_tool_choice_profile_fails_before_dispatch) :-
+    Request = model_request{
+                  messages:[message{role:user, content:"lookup"}],
+                  options:generation_options{tool_choice:required}
+              },
+    Config = [credential(env('MUST_NOT_BE_RESOLVED')),
+              tool_choice_modes([auto, banana])],
+    rlm_chain:normalize_provider_request(openrouter,
+                                         Config,
+                                         Request,
+                                         error(Error)),
+    assertion(get_dict(kind, Error, configuration_error)),
+    assertion(get_dict(field, Error, tool_choice_modes)),
+    assertion(get_dict(response_received, Error, false)),
+    term_string(Error, ErrorText),
+    assertion(\+ sub_string(ErrorText, _, _, _, "MUST_NOT_BE_RESOLVED")).
+
+test(bare_tool_choice_profile_atom_is_rejected) :-
+    Request = model_request{
+                  messages:[message{role:user, content:"lookup"}],
+                  options:generation_options{tool_choice:required}
+              },
+    rlm_chain:normalize_provider_request(openrouter,
+                                         [tool_choice_modes],
+                                         Request,
+                                         error(Error)),
+    assertion(get_dict(kind, Error, configuration_error)),
+    assertion(get_dict(field, Error, tool_choice_modes)),
+    assertion(get_dict(response_received, Error, false)).
+
+test(stream_dispatch_uses_same_compatibility_normalization) :-
+    Provider = provider(openrouter,
+                        [ tool_choice_modes([auto, banana]),
+                          credential(env('MUST_NOT_BE_RESOLVED'))
+                        ]),
+    Request = model_request{
+                  messages:[message{role:user, content:"lookup"}],
+                  options:generation_options{tool_choice:required}
+              },
+    rlm_chain:model_stream_execute(Provider,
+                                   Request,
+                                   ignore_stream_event,
+                                   error(Error)),
+    assertion(get_dict(kind, Error, configuration_error)),
+    assertion(get_dict(field, Error, tool_choice_modes)),
+    assertion(get_dict(response_received, Error, false)).
+
+test(auto_only_profile_does_not_silently_weaken_specific_tool_choice) :-
+    Specific = tool_choice{type:function,
+                           function:tool_function{name:"lookup"}},
+    Request = model_request{
+                  messages:[message{role:user, content:"lookup"}],
+                  options:generation_options{tool_choice:Specific}
+              },
+    rlm_chain:normalize_provider_request(openrouter,
+                                         [tool_choice_modes([auto])],
+                                         Request,
+                                         error(Error)),
+    assertion(get_dict(kind, Error, capability_denied)),
+    assertion(get_dict(capability, Error, tool_choice)),
+    assertion(get_dict(response_received, Error, false)).
+
 test(provider_capabilities_are_explicit) :-
     assertion(provider_capability(openrouter, chat_completions)),
     assertion(provider_capability(openrouter, usage_metadata)),
@@ -248,5 +357,7 @@ test(provider_context_empty_prefix_preserves_request) :-
               },
     rlm_chain:provider_context_request([], Request, Projected),
     assertion(Projected == Request).
+
+ignore_stream_event(_).
 
 :- end_tests(rlm_chain).

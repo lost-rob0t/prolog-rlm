@@ -249,21 +249,30 @@ provider_context_system_message(Message) :-
 
 dispatch_provider(openrouter, Config, Request, Outcome) :-
     !,
-    rlm_openai_compatible:openai_compatible_complete(openrouter,
-                                                     Config,
-                                                     Request,
-                                                     Outcome).
+    dispatch_openai_compatible_complete(openrouter, Config, Request, Outcome).
 dispatch_provider(openai_compatible, Config, Request, Outcome) :-
     !,
-    rlm_openai_compatible:openai_compatible_complete(openai_compatible,
-                                                     Config,
-                                                     Request,
-                                                     Outcome).
+    dispatch_openai_compatible_complete(openai_compatible,
+                                        Config,
+                                        Request,
+                                        Outcome).
 dispatch_provider(Provider, _, _,
                   error(provider_error{provider:Provider,
                                        kind:capability_denied,
                                        capability:chat_completions,
                                        message:"provider does not implement chat completions"})).
+
+dispatch_openai_compatible_complete(Provider, Config, Request0, Outcome) :-
+    normalize_provider_request(Provider, Config, Request0, Normalization),
+    complete_normalized_request(Normalization, Provider, Config, Outcome).
+
+complete_normalized_request(error(Error), _, _, error(Error)) :-
+    !.
+complete_normalized_request(ok(Request), Provider, Config, Outcome) :-
+    rlm_openai_compatible:openai_compatible_complete(Provider,
+                                                     Config,
+                                                     Request,
+                                                     Outcome).
 
 %!  model_stream_execute(+Provider, +Request, +EventHandler, -Outcome) is det.
 %
@@ -281,24 +290,157 @@ model_stream_execute(Provider, _, _,
 
 dispatch_stream_provider(openrouter, Config, Request, EventHandler, Outcome) :-
     !,
-    rlm_openai_compatible:openai_compatible_stream(openrouter,
-                                                   Config,
-                                                   Request,
-                                                   EventHandler,
-                                                   Outcome).
+    dispatch_openai_compatible_stream(openrouter,
+                                      Config,
+                                      Request,
+                                      EventHandler,
+                                      Outcome).
 dispatch_stream_provider(openai_compatible, Config, Request, EventHandler,
                          Outcome) :-
     !,
-    rlm_openai_compatible:openai_compatible_stream(openai_compatible,
-                                                   Config,
-                                                   Request,
-                                                   EventHandler,
-                                                   Outcome).
+    dispatch_openai_compatible_stream(openai_compatible,
+                                      Config,
+                                      Request,
+                                      EventHandler,
+                                      Outcome).
 dispatch_stream_provider(Provider, _, _, _,
                          error(provider_error{provider:Provider,
                                               kind:capability_denied,
                                               capability:streaming,
                                               message:"provider does not implement streaming"})).
+
+dispatch_openai_compatible_stream(Provider,
+                                  Config,
+                                  Request0,
+                                  EventHandler,
+                                  Outcome) :-
+    normalize_provider_request(Provider, Config, Request0, Normalization),
+    stream_normalized_request(Normalization,
+                              Provider,
+                              Config,
+                              EventHandler,
+                              Outcome).
+
+stream_normalized_request(error(Error), _, _, _, error(Error)) :-
+    !.
+stream_normalized_request(ok(Request), Provider, Config, EventHandler,
+                          Outcome) :-
+    rlm_openai_compatible:openai_compatible_stream(Provider,
+                                                   Config,
+                                                   Request,
+                                                   EventHandler,
+                                                   Outcome).
+
+/* Provider/model request compatibility ---------------------------------- */
+
+%!  normalize_provider_request(+Provider,+Config,+Request,-Outcome) is det.
+%
+%   Apply trusted provider/model request restrictions before network dispatch.
+%   `tool_choice_modes/1` belongs to host-owned provider configuration; request
+%   data cannot select or widen it. Absence preserves historical behavior.
+%
+%   A provider restricted to `auto` may repair a simple `required` request to
+%   `auto`. Other unsupported modes, including a specific-function selector,
+%   fail explicitly rather than silently weakening the caller's intent.
+
+normalize_provider_request(Provider, Config, Request0, Outcome) :-
+    provider_tool_choice_modes(Provider, Config, ModesOutcome),
+    normalize_provider_request_modes(ModesOutcome,
+                                     Provider,
+                                     Request0,
+                                     Outcome).
+
+provider_tool_choice_modes(_, Config, ok(all)) :-
+    \+ is_list(Config),
+    !.
+provider_tool_choice_modes(Provider, Config, Outcome) :-
+    findall(Entry,
+            ( member(Entry, Config),
+              nonvar(Entry),
+              functor(Entry, tool_choice_modes, _)
+            ),
+            Entries),
+    tool_choice_modes_entries(Entries, Provider, Outcome).
+
+tool_choice_modes_entries([], _, ok(all)) :-
+    !.
+tool_choice_modes_entries([tool_choice_modes(Modes)], Provider, Outcome) :-
+    !,
+    validate_tool_choice_modes(Modes, Provider, Outcome).
+tool_choice_modes_entries(_, Provider, error(Error)) :-
+    tool_choice_modes_config_error(Provider,
+                                   "tool_choice_modes must appear once with one argument",
+                                   Error).
+
+validate_tool_choice_modes(Modes, _, ok(Normalized)) :-
+    is_list(Modes),
+    Modes \== [],
+    ground(Modes),
+    maplist(valid_tool_choice_mode, Modes),
+    sort(Modes, Normalized),
+    length(Modes, Count),
+    length(Normalized, Count),
+    !.
+validate_tool_choice_modes(_, Provider, error(Error)) :-
+    tool_choice_modes_config_error(Provider,
+                                   "tool_choice_modes must be a non-empty unique list of none, auto, and required",
+                                   Error).
+
+valid_tool_choice_mode(none).
+valid_tool_choice_mode(auto).
+valid_tool_choice_mode(required).
+
+tool_choice_modes_config_error(Provider, Message,
+                               provider_error{provider:Provider,
+                                              kind:configuration_error,
+                                              field:tool_choice_modes,
+                                              message:Message,
+                                              response_received:false}).
+
+normalize_provider_request_modes(error(Error), _, _, error(Error)) :-
+    !.
+normalize_provider_request_modes(ok(all), _, Request, ok(Request)) :-
+    !.
+normalize_provider_request_modes(ok(Modes), Provider, Request0, Outcome) :-
+    (   request_tool_choice(Request0, Requested)
+    ->  normalize_tool_choice(Requested, Modes, Provider, Request0, Outcome)
+    ;   Outcome = ok(Request0)
+    ).
+
+request_tool_choice(Request, ToolChoice) :-
+    is_dict(Request),
+    get_dict(options, Request, Options),
+    is_dict(Options),
+    get_dict(tool_choice, Options, ToolChoice).
+
+normalize_tool_choice(Requested, Modes, _, Request, ok(Request)) :-
+    simple_tool_choice_mode(Requested, Mode),
+    memberchk(Mode, Modes),
+    !.
+normalize_tool_choice(Requested, Modes, _, Request0, ok(Request)) :-
+    simple_tool_choice_mode(Requested, required),
+    memberchk(auto, Modes),
+    !,
+    get_dict(options, Request0, Options0),
+    put_dict(tool_choice, Options0, auto, Options),
+    put_dict(options, Request0, Options, Request).
+normalize_tool_choice(Requested, Modes, Provider, _, error(Error)) :-
+    Error = provider_error{provider:Provider,
+                           kind:capability_denied,
+                           capability:tool_choice,
+                           requested:Requested,
+                           supported:Modes,
+                           message:"requested tool_choice is not legal for the configured provider/model profile",
+                           response_received:false}.
+
+simple_tool_choice_mode(Value, Value) :-
+    atom(Value),
+    memberchk(Value, [none, auto, required]),
+    !.
+simple_tool_choice_mode(Value, Mode) :-
+    string(Value),
+    atom_string(Mode, Value),
+    memberchk(Mode, [none, auto, required]).
 
 %!  chain_invoke_execute(+ProviderSpec, +Request, +Options, -Outcome) is det.
 %
