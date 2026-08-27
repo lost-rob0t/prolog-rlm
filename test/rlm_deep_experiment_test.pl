@@ -3,6 +3,7 @@
 :- use_module('../prolog/rlm').
 :- use_module('../prolog/rlm_deep_experiment').
 :- use_module('../benchmark/rlm_live_deep_experiment').
+:- use_module(library(readutil)).
 
 :- dynamic planner_call_count/1.
 
@@ -255,6 +256,16 @@ test(live_depth_budgets_remain_finite) :-
              assertion(Budget.max_total_tokens > 0),
              assertion(Budget.max_total_tokens =< 12000)
            )).
+
+test(default_recurse_skill_requires_requested_provenance_in_synthesis) :-
+    source_file(plunit_rlm_deep_experiment:reset_planner_calls, Source),
+    file_directory_name(Source, TestDir),
+    directory_file_path(TestDir, '../skills/core/rlm-recurse/SKILL.md', SkillPath),
+    read_file_to_string(SkillPath, SkillText, []),
+    assertion(sub_string(SkillText, _, _, _,
+                         "preserve explicitly requested source/provenance identifiers")),
+    assertion(sub_string(SkillText, _, _, _,
+                         "final synthesis")).
 
 :- initialization(reset_planner_calls).
 
