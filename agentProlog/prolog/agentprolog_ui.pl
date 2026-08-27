@@ -14,6 +14,7 @@ by the canonical prolog-rlm async scheduler; the UI adapter keeps only the
 opaque Future needed to poll or cancel that run.
 */
 
+:- use_module(library(lists)).
 :- use_module(library(readutil)).
 :- use_module(library(uuid)).
 :- use_module(library(rlm_async)).
@@ -106,16 +107,17 @@ handle_command_(_, Frame, State, State, [Result], _) :-
 
 submit_run(Frame, State0, State, Frames, Submitter) :-
     (   State0.active == none
-    ->  true
+    ->  submit_run_idle(Frame, State0, State, Frames, Submitter)
     ;   ui_v1_result_frame(State0.session_id,
                            Frame.request_id,
                            "rejected",
                            _{code:"run_active"},
                            Result),
         State = State0,
-        Frames = [Result],
-        !
-    ),
+        Frames = [Result]
+    ).
+
+submit_run_idle(Frame, State0, State, [Result, Started], Submitter) :-
     submit_payload_argv(Frame.payload, AppArgv),
     uuid(UUID, [version(4)]),
     format(string(RunId), 'run_~w', [UUID]),
@@ -135,8 +137,7 @@ submit_run(Frame, State0, State, Frames, Submitter) :-
     Active = run{run_id:RunId,
                  request_id:Frame.request_id,
                  future:Future},
-    put_dict(active, State1, Active, State),
-    Frames = [Result, Started].
+    put_dict(active, State1, Active, State).
 
 poll_run(Frame, State0, State, Frames) :-
     (   State0.active == none
@@ -270,10 +271,7 @@ require_session(Frame, State) :-
 
 agentprolog_ui_server_loop(In, Out) :-
     agentprolog_ui_initial_state(State0),
-    setup_call_cleanup(
-        true,
-        server_loop(In, Out, State0),
-        cleanup_state(State0)).
+    server_loop(In, Out, State0).
 
 server_loop(In, Out, State0) :-
     read_line_to_string(In, Line),
