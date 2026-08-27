@@ -451,7 +451,11 @@ subagent_delegation_after_source(ok(Source), Role, Skills, Options0,
     exclude(option_named(subagent_role), Options0, Options1),
     exclude(option_named(subagent_delegation_source),
             Options1,
-            CompletionOptions),
+            Options2),
+    % A delegated child is never a root: drop any caller-provided scope and
+    % mark it delegated so the child planner call carries no root identity.
+    exclude(option_named(agent_scope), Options2, Options3),
+    CompletionOptions = [agent_scope(delegated)|Options3],
     Delegation = delegation{role:Role,
                             skills:Skills,
                             source:Source},

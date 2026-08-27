@@ -206,6 +206,7 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                                Options,
                                Budget,
                                SkillMessages),
+    agent_identity_message(Options, IdentityMessage),
     runtime_tool_bindings(Options,
                           Capabilities,
                           RuntimeTools,
@@ -223,7 +224,7 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                    ToolSchemas,
                    Options,
                    Prompt),
-    planner_messages(SkillMessages, Prompt, Messages),
+    planner_messages(IdentityMessage, SkillMessages, Prompt, Messages),
     planner_projection_options(Options, Messages, PlannerOptions),
     planner_attempts(Options, Attempts),
     planner_token_limit(Options, RequestedPlannerTokens),
@@ -538,9 +539,59 @@ require_prompt_render(error(Error), _) :-
 rendered_skill_messages("", []) :- !.
 rendered_skill_messages(Text, [message{role:system, content:Text}]).
 
-planner_messages([], Prompt, [message{role:user, content:Prompt}]).
-planner_messages([System], Prompt,
-                 [System, message{role:user, content:Prompt}]).
+planner_messages(none, [], Prompt, [message{role:user, content:Prompt}]) :- !.
+planner_messages(none, [System], Prompt,
+                 [System, message{role:user, content:Prompt}]) :- !.
+planner_messages(Identity, [], Prompt,
+                 [Identity, message{role:user, content:Prompt}]) :- !.
+planner_messages(Identity, [System], Prompt,
+                 [Identity, System, message{role:user, content:Prompt}]).
+
+% Root-only agent identity. Direct rlm_completion calls are roots and carry
+% an identity system message naming the embedding app (default: this
+% library). Delegated subagent children are structurally marked delegated by
+% rlm_subagent and never widen back to root identity. The message states the
+% identity boundary only; skills and active tool schemas stay the sole
+% protocol/content channels.
+agent_identity_message(Options, Message) :-
+    option_value(agent_scope, Options, root, Scope),
+    require_agent_scope(Scope),
+    option_value(agent_name, Options, 'prolog-rlm', Name),
+    require_agent_name(Name),
+    (   Scope == delegated
+    ->  Message = none
+    ;   root_identity_text(Name, Text),
+        Message = message{role:system, content:Text}
+    ).
+
+require_agent_scope(root) :- !.
+require_agent_scope(delegated) :- !.
+require_agent_scope(Scope) :-
+    throw(completion_fault(invalid_agent_scope(Scope))).
+
+require_agent_name(Name) :-
+    nonempty_name_text(Name),
+    !.
+require_agent_name(Name) :-
+    throw(completion_fault(invalid_agent_name(Name))).
+
+nonempty_name_text(Value) :-
+    atom(Value),
+    !,
+    Value \== ''.
+nonempty_name_text(Value) :-
+    string(Value),
+    Value \== "".
+
+root_identity_text(Name0, Text) :-
+    (   atom(Name0)
+    ->  Name = Name0
+    ;   atom_string(Name, Name0)
+    ),
+    format(string(Text),
+           "You are the root agent inside ~w.\n\
+This agent runs on the prolog-rlm runtime, a reusable bounded typed RLM library. Only the core context inputs and the tools your host granted are loaded for this call; nothing else is. Stay inside those boundaries.",
+           [Name]).
 
 planner_projection_options(Options0, Messages, Options) :-
     exclude(named_option(compiled_planner_messages), Options0, Rest),

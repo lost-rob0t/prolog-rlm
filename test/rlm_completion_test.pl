@@ -36,10 +36,16 @@ message_role(Message, Role) :-
     Role = Message.role.
 
 request_system_content(Request, Content) :-
-    Request.messages = [System, User],
+    Request.messages = [Identity, System, User],
+    assertion(Identity.role == system),
     assertion(System.role == system),
     assertion(User.role == user),
-    Content = System.content.
+    text_content(Identity.content, IdentityText),
+    text_content(System.content, SystemText),
+    atomics_to_string([IdentityText, SystemText], "\n", Content).
+
+text_content(Text, Text) :- string(Text), !.
+text_content(Atom, Text) :- atom(Atom), atom_string(Atom, Text).
 
 occurrence_count(Text, Needle, Count) :-
     findall(Start, sub_string(Text, Start, _, _, Needle), Starts),
@@ -173,7 +179,7 @@ test(root_prompt_offers_direct_answer_before_symbolic_plan,
     rlm_completion("ordinary unrelated task", text("ctx"), Options, Outcome),
     expect_ok(Outcome, _),
     completion_test_support:last_planner_request(Request),
-    Request.messages = [_, User],
+    Request.messages = [_, _, User],
     sub_string(User.content, DirectAt, _, _, "{\"mode\":\"direct\""),
     sub_string(User.content, PlanAt, _, _, "{\"steps\":[...]}"),
     assertion(DirectAt < PlanAt),
@@ -222,7 +228,7 @@ test(default_skills_reach_one_system_message_on_unrelated_input,
                          "{\"op\":\"tool\",\"name\":\"<active-tool-name>\",\"args\":")),
     assertion(sub_string(System, _, _, _,
                          "{\"ref\":\"field\",\"value\":")),
-    maplist(message_role, Request.messages, [system, user]).
+    maplist(message_role, Request.messages, [system, system, user]).
 
 test(natural_language_disable_cannot_remove_default_skills,
      [setup(completion_test_support:reset_calls)]) :-
@@ -237,14 +243,80 @@ test(natural_language_disable_cannot_remove_default_skills,
              assertion(sub_string(System, _, _, _, Marker))
            )).
 
-test(trusted_global_skill_opt_out_preserves_single_user_message,
+test(trusted_global_skill_opt_out_keeps_identity_system_only,
      [setup(completion_test_support:reset_calls)]) :-
     base_options(completion_test_support:capture_planner, Base),
     Options = [skill_mode(off)|Base],
     rlm_completion("plain", text("ctx"), Options, Outcome),
     expect_ok(Outcome, _),
     completion_test_support:last_planner_request(Request),
-    assertion(Request.messages = [message{role:user, content:_}]).
+    Request.messages = [Identity, User],
+    assertion(Identity.role == system),
+    assertion(sub_string(Identity.content, _, _, _,
+                         "root agent inside prolog-rlm")),
+    assertion(User.role == user),
+    assertion(\+ sub_string(Identity.content, _, _, _, "RLM_OPERATE_BODY")).
+
+test(root_call_carries_identity_system_before_skills,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Options),
+    rlm_completion("plain", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_planner_request(Request),
+    Request.messages = [Identity, Skills, User],
+    assertion(Identity.role == system),
+    assertion(sub_string(Identity.content, _, _, _,
+                         "root agent inside prolog-rlm")),
+    assertion(sub_string(Identity.content, _, _, _, "prolog-rlm")),
+    assertion(Skills.role == system),
+    assertion(sub_string(Skills.content, _, _, _, "RLM_OPERATE_BODY")),
+    assertion(User.role == user).
+
+test(downstream_agent_name_formats_identity,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Base),
+    Options = [agent_name('agentProlog')|Base],
+    rlm_completion("plain", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_planner_request(Request),
+    Request.messages = [Identity, _Skills, _User],
+    assertion(sub_string(Identity.content, _, _, _,
+                         "root agent inside agentProlog")),
+    assertion(\+ sub_string(Identity.content, _, _, _,
+                            "root agent inside prolog-rlm")).
+
+test(delegated_scope_omits_identity_system_message,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Base),
+    Options = [agent_scope(delegated)|Base],
+    rlm_completion("plain", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_planner_request(Request),
+    Request.messages = [Skills, User],
+    assertion(Skills.role == system),
+    assertion(User.role == user),
+    assertion(\+ sub_string(Skills.content, _, _, _,
+                            "root agent inside")).
+
+test(invalid_agent_name_fails_before_planner,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Base),
+    Options = [agent_name('')|Base],
+    rlm_completion("plain", text("ctx"), Options, Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.kind == completion_fault),
+    completion_test_support:planner_calls(Calls),
+    assertion(Calls =:= 0).
+
+test(invalid_agent_scope_fails_before_planner,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Base),
+    Options = [agent_scope(sidekick)|Base],
+    rlm_completion("plain", text("ctx"), Options, Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.kind == completion_fault),
+    completion_test_support:planner_calls(Calls),
+    assertion(Calls =:= 0).
 
 test(trusted_per_skill_disable_removes_only_named_skill,
      [setup(completion_test_support:reset_calls)]) :-
@@ -266,7 +338,8 @@ test(custom_relevant_skill_uses_compiler_relevance,
     rlm_completion("Tell me about the weather", text("ctx"), Options, First),
     expect_ok(First, _),
     completion_test_support:last_planner_request(Unrelated),
-    assertion(Unrelated.messages = [message{role:user, content:_}]),
+    assertion(Unrelated.messages = [message{role:system, content:_},
+                                    message{role:user, content:_}]),
     rlm_completion("Build this feature test first with integration tests",
                    text("ctx"), Options, Second),
     expect_ok(Second, _),
@@ -327,8 +400,9 @@ test(planner_retry_reuses_skill_projection_without_duplicate_body,
     rlm_completion("retry", text("ctx"), Options, Outcome),
     expect_ok(Outcome, _),
     completion_test_support:planner_requests([First, Second]),
-    First.messages = [FirstSystem, FirstUser],
-    Second.messages = [SecondSystem, SecondUser, Repair],
+    First.messages = [FirstIdentity, FirstSystem, FirstUser],
+    Second.messages = [SecondIdentity, SecondSystem, SecondUser, Repair],
+    assertion(FirstIdentity == SecondIdentity),
     assertion(FirstSystem == SecondSystem),
     assertion(FirstUser == SecondUser),
     assertion(Repair.role == user),
@@ -365,7 +439,8 @@ test(caller_planner_instruction_survives_skill_opt_out,
     rlm_completion("plain", text("ctx"), Options, Outcome),
     expect_ok(Outcome, _),
     completion_test_support:last_planner_request(Request),
-    Request.messages = [message{role:user, content:Prompt}],
+    Request.messages = [message{role:system, content:_},
+                        message{role:user, content:Prompt}],
     assertion(sub_string(Prompt, _, _, _, "CALLER_INSTRUCTION_SENTINEL")).
 
 test(raw_llm_query_remains_single_user_message_with_default_skills,
