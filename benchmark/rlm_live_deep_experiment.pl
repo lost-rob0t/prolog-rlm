@@ -50,7 +50,8 @@ live_constraint_case(Lane, Depth, Model, Provider, Case) :-
                     capabilities(Capabilities),
                     child_capabilities(Capabilities),
                     planner_attempts(2),
-                    planner_max_tokens(1800),
+                    planner_reasoning_effort(low),
+                    planner_max_tokens(2400),
                     budget(Budget)
                   ],
     append(InstructionOptions, BaseOptions, Options),
