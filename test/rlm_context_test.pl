@@ -134,6 +134,26 @@ test(backend_declares_no_filesystem_or_network_capability) :-
     assertion(Caps.network == false),
     assertion(Caps.persistent == false).
 
+test(public_projection_binds_artifact_value_before_field_access) :-
+    Artifact = rlm_artifact{
+                   value:artifact_data{
+                             name:demo,
+                             scope:project(demo),
+                             lifetime:persistent,
+                             visibility:opaque,
+                             state:mounted,
+                             source_kind:text,
+                             source_fingerprint:abc},
+                   ref:artifact_ref{namespace:[rlm,context_mount],
+                                    key:mount_demo,
+                                    version:1},
+                   version:1},
+    rlm_context_mount:public_from_artifact(Artifact, Public),
+    assertion(Public.name == demo),
+    assertion(Public.scope == project(demo)),
+    assertion(Public.artifact_ref == Artifact.ref),
+    assertion(Public.version =:= 1).
+
 test(persistent_mount_rehydrates_canonical_persisted_text_source) :-
     setup_call_cleanup(
         artifact_store_open(memory, ok(Store)),
