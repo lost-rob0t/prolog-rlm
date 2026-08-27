@@ -145,6 +145,25 @@ It must not persist `allow_session`, silently promote permissions to `dangerous`
 
 The symbolic prompt compiler is the sole owner of skill, instruction, tool, and MCP provider-context selection and bounded packing. The `SKILL.md` layer only discovers and normalizes inert packages into prompt units. The #216 slice wires compiler-active local tool schemas into the exact root-planner request without changing trusted executable bindings; #176/#183 retain the broader MCP, project-instruction, managed-context, observability, and permanent-context acceptance work.
 
+The consolidated task-first runtime work on the `prolog-rlm-v1` branch improves
+the downstream composition boundary without completing this phase: roots may
+choose a strict direct answer or typed plan; retrieved structured evidence can
+flow into an isolated task-producing model step; hosts can supply a descriptive
+`agent_name/1`; delegated children suppress root identity; and managed
+conversation packing has deterministic and paid 40,000-message acceptance.
+These are reusable runtime contracts, not a coding-agent product. Project
+instructions, MCP/managed-context compiler ownership, indexed cold retrieval,
+the standard coding tool package, and the headless coding workflow remain open.
+
+The same branch now adds a domain-neutral native direct loop. Standard provider
+function tools cover bounded context, compiler-selected registered tools, SPEC
+source compilation/observation/verification, and complete typed-plan execution.
+Non-context results are retained behind opaque context aliases. A separate
+Spec-strategy graph composes either direct or typed execution with
+Observe/Verify/bounded Repair under one unchanged Frozen Spec. This is runtime
+substrate only; it does not supply AgentProlog project policy, coding tools, or
+product UX.
+
 Project instructions should enter the coding context with provenance. Repository instructions, current source/tests, operator requirements, skill instructions, and model inference are not the same kind of evidence.
 
 The direct Tree-sitter mechanics from #94 and the declarative Project/File/Language/grammar registry from #95 are now substrate. Implement #96-#99 behind the semantic project-state boundary established by `rlm_spec`/`rlm_verify`: project concrete syntax into versioned observations, run structural queries, normalize semantic source relations, and enforce incremental freshness. Source, build metadata, package metadata, and configuration should be parsed once into canonical project knowledge. Planner and verifier consumers query that knowledge through trusted semantic providers. Do not add a planner-only parser and a verifier-only parser.

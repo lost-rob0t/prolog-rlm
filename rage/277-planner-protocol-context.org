@@ -106,3 +106,100 @@ model bind naming.
   =project_read= tool, and independent binding assertions find every
   sentinel.
 - =git diff --check= :: passed.
+
+* Consolidated v1 continuation
+The review branch =prolog-rlm-v1= carries the original #277 repair together
+with the live-CI corrections and runtime contracts discovered while validating
+that repair.  PR #278 stops at =93f69ad= and therefore does not represent the
+candidate now under review.  The consolidated branch includes:
+
+- the closed direct-or-plan root decision and truthful direct trajectory;
+- registry-tool envelope-field repair before execution;
+- task-first root framing, structured retrieval-to-model evidence composition,
+  and planner/task-model role isolation;
+- descriptive root agent identity with delegated-scope suppression;
+- OpenRouter attribution and generation-level diagnostic tooling;
+- bounded large-conversation candidate optimization, append sequence counters,
+  and deterministic plus paid 40,000-message acceptance.
+
+The earlier statement that task framing and evidence composition were
+non-goals describes the initial #277 slice, not this consolidated continuation.
+Likewise, a direct envelope normally takes one root call, but a direct decision
+accepted after a repairable rejection retains the earlier planner calls in its
+aggregate usage.
+
+The consolidation does not add product-specific Auto-Dig or coding-agent
+behavior, widen model authority, persist session authority, add a scheduler, or
+claim indexed/constant-memory cold search.  Current conversation backends still
+materialize/list transcript records and perform linear cold search; 40,000
+messages is an acceptance point, not an arbitrary-size storage guarantee.
+
+The direct-loop review made the provider-cache prefix independent of query
+trigger activation when the host supplies an explicit skill set.  Ten fresh
+compiler/runtime constructions now alternate unrelated query text while
+requiring byte-identical static messages and native schemas.  Routine
+credentialed CI is single-lane: the pinned paid workflow runs on pull requests
+and =main=, while the duplicate general-CI live lane is manual only.
+
+The same review rejects an assistant continuation unless its normalized native
+call batch exactly matches the response envelope, and charges nested typed-plan
+steps against the enclosing direct iteration budget.  These checks happen
+before dispatch or continuation and do not widen schema visibility or runtime
+authority.
+
+* Consolidated candidate evidence
+- Full deterministic PlUnit corpus :: 1017/1017 passed (87 suites).
+- Focused deterministic 40,000-message managed conversation :: passed.
+- Runtime/load checks and =git diff --check= :: passed.
+- Hardened paid 40,000-message acceptance :: passed with a runtime-random UUID
+  at sequence 13338, exact =context(search) -> model(openrouter) -> final=
+  transitions, exact UUID-only child/final output, and two independently
+  recorded HTTP 200 generations.
+- Paid generation ids :: root
+  =gen-1787869997-I5aPbbJqaKh8DqeZR0PX=; child
+  =gen-1787870056-CSTOe1zz4cdvAzlqnZ1y=.
+- Paid aggregate :: 2 model calls, 7422 provider-native tokens,
+  =$0.007575160= runtime-reported cost.  OpenRouter generation metadata reports
+  =$0.007047616= root plus =$0.000527543= child (one-microdollar rounding
+  difference from the runtime aggregate).
+
+* Native direct-loop iteration
+The earlier root-decision design treated =direct= as one strict answer envelope
+with no runtime operations.  That remains a compatibility behavior of
+=rlm_completion/4=, but it is not the ordinary direct agent strategy required
+by the library.  Direct mode instead means a provider-native conversation loop
+whose model may select bounded context and registered tools without producing a
+typed plan.  Typed-plan mode remains independent.
+
+** Design
+The decision-ready contract is recorded in =docs/direct-runtime.md=.  Add
+=rlm_direct/4=, =rlm_direct_async/4=, and the canonical
+=rlm_direct_execute/4=.  Add provider-neutral closed native schema, call,
+result, and correlated message normalization.  Compiler-selected registry
+schemas and capability-filtered context schemas are provider-visible data only;
+all registered execution re-enters =tool_invoke_execute/6= and all context
+execution reuses the existing bounded context operations.  The loop runs inside
+one existing async worker, charges the completion budget across every turn and
+observation, and preserves provider call IDs only as correlation.
+
+Malformed batches are fully normalized before any member executes.  Duplicate
+call IDs, unavailable schema names, malformed/non-ground arguments, denied
+capability/authority, confinement failure, exhausted budgets, oversized
+observations, cancellation, unsupported formats, and missing final text are
+terminal structured failures.  A replayed or unresolved non-read operation is
+not model retry authority: the durable boundary prevents resubmission and the
+direct loop terminates conservatively.
+
+Optional Frozen-Spec composition belongs above both strategies.  A closed
+=direct | typed_plan= strategy remains bound to one exact Spec reference;
+trusted graph handlers execute the existing branch runtime, refresh and observe
+state, verify with =rlm_verify=, and optionally repair under one bounded graph.
+Verification rejection never authorizes implicit effect replay.
+
+** Compatibility and non-goals
+- =llm_query/3= remains exactly one raw provider call with its current result.
+- Existing typed plans and the root direct-or-plan controller remain usable.
+- Provider transport does not gain registry handlers, Spec policy, or
+  authority.
+- No Auto-Dig, coding-agent, chat-product, CLI, fixed catalog, ambient system
+  authority, second scheduler, or second effect ledger enters core.

@@ -106,6 +106,9 @@ swipl -q -s bin/prolog-rlm.pl -- trace-view /tmp/graph.json
 The same CLI supports JSONL traces and custom OpenAI-compatible endpoints. See:
 
 - `docs/cli-demo-traces.md` for commands, provider configuration, budgets, capabilities, failures, and trace format;
+- `docs/completion-runtime.md` for the task-first direct-or-plan protocol, trusted identity framing, repair, and live acceptance gates;
+- `docs/direct-runtime.md` for standard provider-native tools, opaque result contexts, SPEC/typed-plan native modes, budgets, effects, and cache boundaries;
+- `docs/conversation-runtime.md` for bounded hot/warm packing, opaque cold retrieval, scale guarantees, and current storage limits;
 - `docs/deep-recursion-experiments.md` for the explicit depth >1 experiment gate, shared-tree safety invariants, deterministic/live benchmark commands, and promotion rule;
 - `docs/skills.md` for Prolog-owned skill discovery, automatic activation, budgets, dependency rules, and third-party skill loading;
 - `examples/README.md` for reproducible direct, context, tool, recursion, graph, MCP, hosted-provider, and local-provider walkthroughs.

@@ -1,5 +1,6 @@
 :- module(rlm_completion_async,
-          [ rlm_completion_async/4,
+           [ rlm_completion_async/4,
+             rlm_direct_async/4,
             llm_query_async/3,
             rlm_query_async/4
           ]).
@@ -13,9 +14,13 @@ synchronous public wrapper.
 */
 
 :- use_module(rlm_completion, []).
+:- use_module(rlm_direct, []).
 
 rlm_completion_async(Query, Context, Options, Future) :-
     rlm_completion:rlm_completion_async(Query, Context, Options, Future).
+
+rlm_direct_async(Query, Context, Options, Future) :-
+    rlm_direct:rlm_direct_async(Query, Context, Options, Future).
 
 llm_query_async(Prompt, Options, Future) :-
     rlm_completion:llm_query_async(Prompt, Options, Future).

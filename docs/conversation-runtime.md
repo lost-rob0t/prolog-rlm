@@ -41,7 +41,12 @@ conversation_cold_context(+Conversation, +Options, -Outcome).
 conversation_turn(+Conversation, +UserMessage, +Options, -Outcome).
 ```
 
-Stores currently support `memory` and `persist(File)`.
+Stores currently support `memory` and `persist(File)`. Both backends maintain a
+per-conversation next-sequence counter, so normal append does not rescan the
+transcript. A non-empty persistent store created before the counter existed is
+still readable: its first append derives the next sequence from existing
+records and establishes the counter. No offline transcript migration is
+required for this additive metadata.
 
 Conversation metadata is inert closed data. Anonymous SWI-Prolog dict tags are
 recursively canonicalized to `rlm_anonymous_dict` before either backend stores
@@ -101,6 +106,32 @@ Already-published warm state is integrated into managed turns when `warm_store/1
 ## Cold history and unbounded conversations
 
 The complete transcript stays in durable storage behind a small opaque context handle. Historical payload is projected only through bounded context operations. The provider window therefore limits active attention, not total addressable conversation history.
+
+### Scale acceptance and guarantee boundary
+
+`test/rlm_conversation_scale_test.pl` builds 40,000 messages and proves that a
+managed turn remains bounded, keeps an old marker out of the planner request,
+and retrieves it through cold `context(search)`. The credentialed
+`test/live_conversation_scale_openrouter_test.pl` strengthens that check with a
+runtime-random UUID and cold sequence, a real root planner, a second real model
+step, exact transition/dataflow assertions, and exact UUID output. The focused
+live command and evidence fields are documented in
+`docs/completion-runtime.md`.
+
+`test/live_direct_native_openrouter_test.pl` separately exercises the ordinary
+direct strategy. Its 40,000-record case sends a capability-filtered standard
+`context_search` function schema, proves the runtime-random UUID is absent from
+the first provider request, requires a native call and correlated tool result,
+and accepts only exact UUID final text. This is the direct/native acceptance;
+the earlier context -> model -> final fixture remains typed-plan evidence.
+
+This is an acceptance point, not a claim of constant-time or arbitrary-size
+local storage. Candidate optimization is bounded, but current memory and
+persistent backends still list/materialize transcript records for packing and
+cold search remains linear and unindexed. In particular, this branch does not
+claim an 8 GiB physical transcript guarantee. Indexed or streaming cold
+storage can replace the adapter implementation later without changing the
+opaque context contract.
 
 ## Remaining work
 
