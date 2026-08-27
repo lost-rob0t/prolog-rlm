@@ -891,6 +891,16 @@ decrement_remaining(Name, State0, Outcome) :-
                        State0)
     ).
 
+% A model step produces the task result; it must not inherit planner-only
+% output instructions (the plan protocol). The scoped system message states
+% the step contract only: answer the step task, keep any task-requested
+% format, never emit plan JSON or provider-native tool calls.
+model_step_system_message(Message) :-
+    Message = message{
+                  role:system,
+                  content:"You are executing one bounded task step inside an RLM plan.\nThe user message is the complete task for this step. Answer it directly with the final result text for this step, following any output format the task itself requests.\nThis is not the planner: do not emit plan JSON, plan steps, or a provider-native tool call for this step."
+              }.
+
 execute_step(context(HandleExpr, Action, Bind), Runtime, Inputs, State0,
              Outcome) :-
     !,
@@ -902,16 +912,6 @@ execute_step(context(HandleExpr, Action, Bind), Runtime, Inputs, State0,
         run_context_action(Action, Handle, ContextOptions, ContextOutcome),
         handle_context_result(ContextOutcome, Action, Bind, State0, Outcome)
     ).
-% A model step produces the task result; it must not inherit planner-only
-% output instructions (the plan protocol). The scoped system message states
-% the step contract only: answer the step task, keep any task-requested
-% format, never emit plan JSON or provider-native tool calls.
-model_step_system_message(Message) :-
-    Message = message{
-                  role:system,
-                  content:"You are executing one bounded task step inside an RLM plan.\nThe user message is the complete task for this step. Answer it directly with the final result text for this step, following any output format the task itself requests.\nThis is not the planner: do not emit plan JSON, plan steps, or a provider-native tool call for this step."
-              }.
-
 execute_step(model(ProviderName, PromptExpr, RequestOptions, Bind), Runtime,
              Inputs, State0, Outcome) :-
     !,

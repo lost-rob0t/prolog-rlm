@@ -209,7 +209,7 @@ publish_old_warm_context(Conversation, ArtifactStore) :-
         ok(_)).
 
 warm_loaded_planner(Request, ok(Output)) :-
-    Request.messages = [System, Message],
+    Request.messages = [_, System, Message],
     assertion(System.role == system),
     assertion(Message.role == user),
     assertion(sub_string(Message.content,
@@ -225,7 +225,7 @@ warm_loaded_planner(Request, ok(Output)) :-
              }.
 
 cold_boundary_planner(Request, ok(Output)) :-
-    Request.messages = [System, Message],
+    Request.messages = [_, System, Message],
     assertion(System.role == system),
     assertion(Message.role == user),
     assertion(sub_string(Message.content,
