@@ -51,6 +51,10 @@ type model struct {
 
 func main() {
 	if hasArg("--check") {
+		if err := protocolCheck(); err != nil {
+			fmt.Fprintf(os.Stderr, "agentprolog-deepseek-tui check: %v\n", err)
+			os.Exit(1)
+		}
 		fmt.Println("agentprolog-deepseek-tui: ready")
 		return
 	}
@@ -65,6 +69,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "deepseek-harness: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func protocolCheck() error {
+	client, err := newProtocolClient()
+	if err != nil {
+		return err
+	}
+	return client.close()
 }
 
 func initialModel() model {
