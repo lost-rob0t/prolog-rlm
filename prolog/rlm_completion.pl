@@ -876,7 +876,8 @@ planner_loop(Attempt,
             option_value(compiled_planner_messages,
                          Options,
                          [message{role:user, content:Prompt}],
-                         Messages),
+                         BaseMessages),
+            planner_attempt_messages(BaseMessages, Options, Messages),
             Request = model_request{
                           messages:Messages,
                           options:RequestOptions
@@ -969,7 +970,7 @@ planner_parse_result(ok(Plan),
                               Budget,
                               Token,
                               Outcome).
-planner_parse_result(error(_),
+planner_parse_result(error(ParseError),
                      _,
                      Usage,
                      Attempt,
@@ -985,12 +986,13 @@ planner_parse_result(error(_),
     Attempt < MaxAttempts,
     !,
     Next is Attempt+1,
+    planner_retry_options(Options, ParseError, RetryOptions),
     planner_loop(Next,
                  MaxAttempts,
                  Prompt,
                  ProviderName,
                  Provider,
-                 Options,
+                 RetryOptions,
                  TokenLimit,
                  Budget,
                  Token,
@@ -1035,12 +1037,13 @@ planner_validation_result(error(ValidationError),
     Attempt < MaxAttempts,
     !,
     Next is Attempt+1,
+    planner_retry_options(Options, ValidationError, RetryOptions),
     planner_loop(Next,
                  MaxAttempts,
                  Prompt,
                  ProviderName,
                  Provider,
-                 Options,
+                 RetryOptions,
                  TokenLimit,
                  Budget,
                  Token,
@@ -1088,6 +1091,63 @@ planner_deferred_validation(Error) :-
     get_dict(phase, Error, validate),
     get_dict(kind, Error, Kind),
     memberchk(Kind, [capability_denied, budget_exceeded]).
+
+planner_attempt_messages(BaseMessages, Options, Messages) :-
+    option_value(planner_repair_message, Options, none, Repair),
+    (   Repair == none
+    ->  Messages = BaseMessages
+    ;   append(BaseMessages, [Repair], Messages)
+    ).
+
+planner_retry_options(Options0, Error, Options) :-
+    planner_repair_message(Error, Repair),
+    exclude(named_option(planner_repair_message), Options0, Rest),
+    Options = [planner_repair_message(Repair)|Rest].
+
+planner_repair_message(Error,
+                       message{role:user,
+                               content:Content}) :-
+    planner_repair_field(Error, phase, unknown, Phase),
+    planner_repair_field(Error, kind, invalid_plan, Kind),
+    planner_repair_detail(Error, Detail),
+    format(string(Content),
+           "Previous planner candidate was rejected without execution. Return a complete new typed-plan JSON object. Host diagnostic: phase=~w kind=~w detail=~s.",
+           [Phase, Kind, Detail]).
+
+planner_repair_field(Error, Key, Default, Value) :-
+    (   is_dict(Error),
+        get_dict(Key, Error, Found),
+        atom(Found),
+        atom_length(Found, Length),
+        Length =< 64
+    ->  Value = Found
+    ;   Value = Default
+    ).
+
+planner_repair_detail(Error, Detail) :-
+    (   is_dict(Error),
+        get_dict(detail, Error, Raw),
+        safe_planner_repair_detail(Raw, Safe)
+    ->  term_string(Safe, Detail,
+                    [quoted(false), numbervars(true)])
+    ;   Detail = "typed_plan_contract_rejected"
+    ).
+
+safe_planner_repair_detail(missing_field(Field), missing_field(Field)) :-
+    atom(Field),
+    atom_length(Field, Length),
+    Length =< 64,
+    !.
+safe_planner_repair_detail(final_must_be_unique_and_last,
+                           final_must_be_unique_and_last) :-
+    !.
+safe_planner_repair_detail(cyclic_plan, cyclic_plan) :-
+    !.
+safe_planner_repair_detail(invalid_json_text, invalid_json_text) :-
+    !.
+safe_planner_repair_detail(no_json_object, no_json_object) :-
+    !.
+safe_planner_repair_detail(_, typed_plan_contract_rejected).
 
 call_planner(Options, Provider, Request, Outcome) :-
     option_value(planner_handler, Options, none, Handler),
