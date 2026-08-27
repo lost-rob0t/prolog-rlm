@@ -291,14 +291,14 @@ jobs:
             cat "$report"
           fi
           if [ "$status" -eq 0 ]; then
-            grep -q '"suite":"deep_openrouter_experiment"' "$report" || status=1
-            grep -q '"case_count":3' "$report" || status=1
+            grep -q '"suite":"deep_constraint_openrouter"' "$report" || status=1
+            grep -q '"case_count":6' "$report" || status=1
             grep -q '"recursion_depth":2' "$report" || status=1
           fi
           if [ "$status" -ne 0 ]; then
             message="$(tail -n 80 /tmp/openrouter-deep.log | tr '\n' ' ')"
             message="${message//'%'/'%25'}"
-            echo "::error title=REAL depth recursion experiment failed::${message}"
+            echo "::error title=REAL constraint recursion experiment failed::${message}"
           fi
           exit "$status"
 
