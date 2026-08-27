@@ -185,7 +185,8 @@ ensure_persistent_context(Store, Key, Artifact, ContextOptions, ContextRef) :-
     (   persistent_mount_cache(Store, Key, Version, Cached),
         context_metadata(Cached.handle, ok(_))
     ->  ContextRef = Cached
-    ;   register_descriptor(Artifact.value.source, ContextOptions, Fresh),
+    ;   decode_persisted_source_descriptor(Artifact.value.source, Descriptor),
+        register_descriptor(Descriptor, ContextOptions, Fresh),
         with_mutex(rlm_context_mount,
                    replace_persistent_cache(Store, Key, Version, Fresh)),
         ContextRef = Fresh
@@ -257,15 +258,19 @@ request_record(Request, State,
                    source:Request.source
                }).
 
-prompt_source_text(context_source{kind:text,value:Text}, Text) :- !.
-prompt_source_text(context_source{kind:terms,value:Terms}, Text) :-
+prompt_source_text(Source0, Text) :-
+    decode_persisted_source_descriptor(Source0, Source),
+    prompt_source_text_descriptor(Source, Text).
+
+prompt_source_text_descriptor(context_source{kind:text,value:Text}, Text) :- !.
+prompt_source_text_descriptor(context_source{kind:terms,value:Terms}, Text) :-
     !,
     term_string(Terms, Text, [quoted(true),numbervars(true)]).
-prompt_source_text(context_source{kind:adapter,name:Name}, _) :-
+prompt_source_text_descriptor(context_source{kind:adapter,
+                                             name:Name,
+                                             source_ref:_}, _) :-
     !,
     throw(context_mount_fault(adapter_prompt_projection_requires_context_operation(Name))).
-prompt_source_text(Source, _) :-
-    throw(context_mount_fault(unsupported_prompt_source(Source))).
 
 bounded_text(Text0, MaxChars, Text, Truncated) :-
     string_length(Text0, Length),
@@ -368,6 +373,33 @@ normalize_source_descriptor(adapter(Name0, SourceRef0),
     closed_data(SourceRef0, SourceRef).
 normalize_source_descriptor(Source, _, _) :-
     throw(context_mount_fault(unsupported_source(Source))).
+
+decode_persisted_source_descriptor(Source0, Source) :-
+    (   is_dict(Source0)
+    ->  dict_pairs(Source0, _, Pairs),
+        decode_persisted_source_pairs(Pairs, Source)
+    ;   throw(context_mount_fault(invalid_persisted_source_shape))
+    ).
+
+decode_persisted_source_pairs([kind-text,value-Text0],
+                              context_source{kind:text,value:Text}) :-
+    !,
+    normalize_text(Text0, Text).
+decode_persisted_source_pairs([kind-terms,value-Terms0],
+                              context_source{kind:terms,value:Terms}) :-
+    !,
+    closed_data(Terms0, Terms).
+decode_persisted_source_pairs([kind-adapter,
+                               name-Name0,
+                               source_ref-SourceRef0],
+                              context_source{kind:adapter,
+                                             name:Name,
+                                             source_ref:SourceRef}) :-
+    !,
+    normalize_name(Name0, Name),
+    closed_data(SourceRef0, SourceRef).
+decode_persisted_source_pairs(_, _) :-
+    throw(context_mount_fault(invalid_persisted_source_shape)).
 
 register_descriptor(context_source{kind:text,value:Text},
                     Options,
