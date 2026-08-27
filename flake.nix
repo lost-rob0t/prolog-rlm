@@ -12,6 +12,7 @@
         pkgs = import nixpkgs { inherit system; };
         swiProlog = pkgs."swi-prolog";
         packRoot = "$out/share/swi-prolog/pack";
+
         prologRlm = pkgs.stdenvNoCC.mkDerivation {
           pname = "prolog-rlm";
           version = "0.1.0";
@@ -35,18 +36,65 @@
             runHook postInstall
           '';
         };
+
+        installedPackRoot = "${prologRlm}/share/swi-prolog/pack";
+
+        agentProlog = pkgs.stdenvNoCC.mkDerivation {
+          pname = "agentprolog";
+          version = "0.1.0";
+          src = self;
+          dontBuild = true;
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out/share/agentprolog/bin"
+            mkdir -p "$out/share/agentprolog/agentProlog"
+            cp bin/agentprolog.pl "$out/share/agentprolog/bin/agentprolog.pl"
+            cp -R agentProlog/prolog "$out/share/agentprolog/agentProlog/prolog"
+            mkdir -p "$out/bin"
+            makeWrapper ${swiProlog}/bin/swipl "$out/bin/agentprolog" \
+              --prefix SWIPL_PACK_PATH : "${installedPackRoot}" \
+              --add-flags "-q" \
+              --add-flags "-s" \
+              --add-flags "$out/share/agentprolog/bin/agentprolog.pl" \
+              --add-flags "--"
+            runHook postInstall
+          '';
+        };
+
+        deepseekPython = pkgs.python3.withPackages (ps: [ ps.textual ]);
+
+        deepseekHarness = pkgs.writeShellApplication {
+          name = "deepseek-harness";
+          runtimeInputs = [ agentProlog ];
+          text = ''
+            exec ${deepseekPython}/bin/python \
+              ${self}/harness/deepseek_tui/deepseek_tui/app.py "$@"
+          '';
+        };
       in {
         packages.prolog-rlm = prologRlm;
+        packages.agentprolog = agentProlog;
+        packages.deepseek-harness = deepseekHarness;
         packages.default = prologRlm;
 
         apps.swipl = {
           type = "app";
           program = "${prologRlm}/bin/prolog-rlm-swipl";
         };
+        apps.agentprolog = {
+          type = "app";
+          program = "${agentProlog}/bin/agentprolog";
+        };
+        apps.deepseek-harness = {
+          type = "app";
+          program = "${deepseekHarness}/bin/deepseek-harness";
+        };
         apps.default = self.apps.${system}.swipl;
 
         devShells.default = pkgs.mkShell {
-          packages = [ swiProlog prologRlm ];
+          packages = [ swiProlog prologRlm agentProlog deepseekPython ];
         };
 
         checks.packaged-library-load = pkgs.runCommand "prolog-rlm-packaged-library-load" {
@@ -66,6 +114,24 @@
           mkdir -p "$HOME" "$TMPDIR/outside-source"
           cd "$TMPDIR/outside-source"
           prolog-rlm-swipl -q -g "use_module(library(rlm)),rlm:rlm_ready,rlm:rlm_agent_zero_adapter_ready,halt"
+          touch "$out"
+        '';
+
+        checks.agentprolog-product = pkgs.runCommand "agentprolog-product" {
+          nativeBuildInputs = [ swiProlog prologRlm agentProlog ];
+        } ''
+          export HOME="$TMPDIR/home"
+          export XDG_CONFIG_HOME="$TMPDIR/config"
+          mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+          swipl -q -s ${self}/agentProlog/test/run.pl
+          agentprolog help | grep -q '^AgentProlog$'
+          touch "$out"
+        '';
+
+        checks.deepseek-harness = pkgs.runCommand "agentprolog-deepseek-harness" {
+          nativeBuildInputs = [ deepseekHarness ];
+        } ''
+          deepseek-harness --check | grep -q 'agentprolog-deepseek-tui: ready'
           touch "$out"
         '';
       });
