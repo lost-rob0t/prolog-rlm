@@ -1,0 +1,94 @@
+#+title: #219 — Design
+#+startup: overview
+
+* Slice E1 — provider-neutral embeddings
+Add rlm_embedding as a dedicated public runtime, separate from chat-completion semantics but following the same provider and async conventions.
+
+* Proposed public surface
+#+begin_src prolog
+embed(+Provider, +Text, +Options, -Outcome).
+embed_async(+Provider, +Text, +Options, -Future).
+embed_batch(+Provider, +Texts, +Options, -Outcome).
+embed_batch_async(+Provider, +Texts, +Options, -Future).
+embedding_provider_capability(?ProviderName, ?Capability).
+#+end_src
+
+* Canonical execution
+#+begin_example
+embed_execute / embed_batch_execute
+        -> async Future
+        -> sync facade awaits same Future
+#+end_example
+
+Use the existing ground provider(Name, Config) convention. Chat and embeddings may use different providers, endpoints, and models; no implicit inheritance from the active chat model.
+
+* Transport reuse
+Reuse existing OpenAI-compatible provider config, env credential resolution, timeout/address-family behavior, secret redaction, and transport exception normalization. Do not copy those policies.
+
+* Initial capability
+openai_compatible -> embeddings
+
+Configured endpoint is the embeddings endpoint. Local OpenAI-compatible embedding servers are normal provider configurations.
+
+* Normalized result direction
+#+begin_src prolog
+embedding_result{
+  provider: ProviderName,
+  model: Model,
+  dimensions: Dimensions,
+  embeddings: [embedding{index:0, vector:[...]}],
+  usage: chain_usage{
+    prompt_tokens: InputTokens,
+    completion_tokens: 0,
+    total_tokens: TotalTokens,
+    cost: Cost
+  }
+}.
+#+end_src
+
+* E1 TDD acceptance
+1. single text -> exact normalized vector
+2. batch -> exact count/order and common dimension
+3. sync/async outcomes equivalent
+4. chat and embedding providers may differ
+5. dimensions transmitted and validated
+6. empty/oversized inputs fail structurally
+7. bad response indexes fail structurally
+8. inconsistent dimensions fail
+9. nonnumeric/non-finite entries fail
+10. malformed/provider HTTP errors stay structured
+11. missing env credential reports reference name only
+12. credential bytes never appear in results/errors/traces
+13. timeout/cancellation are control outcomes
+14. usage uses existing vocabulary
+15. static load + aggregate gate include module
+
+Use a tiny local SWI HTTP fixture. Real/local smoke is optional and explicitly gated.
+
+* E2 — generic dumb retrieval
+After E1, add rlm_retrieval with trusted backend adapters and closed retriever configuration. Preserve score semantics/direction; do not fake a universal similarity score.
+
+* E3 — Chroma
+Chroma is one optional rlm_retrieval backend, never the architecture or a required daemon.
+
+* E4 — retrieval_expert
+Symbolic/non-LLM planning above embeddings + retrieval:
+- query classification
+- source/strategy selection
+- exact/lexical/vector/graph/structural/hybrid
+- evidence-gap detection
+- confidence/provenance filtering
+- cost-aware ordering
+- explanation
+- later case-based/bandit policy behind stable interfaces
+
+Embeddings are a sensor, not the decision-maker. Do not add a second scheduler or agent runtime.
+
+* Source integration ordering
+#+begin_example
+#96 CST facts
+ -> #97 query/captures
+ -> #98 semantic facts
+ -> #99 freshness/publication
+ -> #219 snapshot/retrieval adapter
+#+end_example
