@@ -1,6 +1,6 @@
 # Recursive completion runtime
 
-`rlm_completion` is the bounded supervisor that turns a query plus opaque context into a validated symbolic plan and executes that plan with the existing closed interpreter.
+`rlm_completion` is the bounded supervisor that turns a query plus opaque context into one root model decision: a closed direct answer or a validated symbolic plan, which is then executed with the existing closed interpreter.
 
 ## Public predicates
 
@@ -17,7 +17,11 @@ default_completion_budget(-Budget).
 
 ## Execution contract
 
-The root planner receives the user goal plus context metadata/handle information, capability declarations, and **compiler-active tool schemas**. It does not receive the full opaque context implicitly. Its output must parse as the typed plan AST used by `rlm_plan`.
+The root controller receives the user goal plus context metadata/handle information, capability declarations, and **compiler-active tool schemas**. It does not receive the full opaque context implicitly. Its output must be exactly one JSON root decision: the direct-answer envelope `{"mode":"direct","answer":"<nonempty final text>"}` or the typed plan AST shape used by `rlm_plan`.
+
+A direct answer must match the closed envelope exactly: the only fields are `mode` (literally `direct`) and a nonempty textual `answer`. Anything else fails closed as `completion_error{phase:planner,kind:plan_parse_failed,cause:plan_error{kind:invalid_root_decision,...}}`. Arbitrary prose is never a successful direct answer, a malformed typed plan is never accepted as one, and provider-native tool calls are neither plans nor answers. A valid typed plan always wins over the envelope fallback, so the plan protocol is unchanged for context retrieval, registered tools, model steps, and recursive plans.
+
+A valid direct envelope finishes immediately with exactly one root model call: no plan validation/execution, no plan transitions, empty bindings, zero recursion depth and recursive calls, and truthful usage/trajectory data (`plan:none`, trajectory reason `root model answered directly without plan execution`). The aggregate model-call, token, and cost budget check still applies before the result is returned. The default prompt and the mandatory `rlm-operate` skill instruct the root model to prefer direct completion whenever runtime operations add no value, and never to return a plan whose only purpose is passing the original goal to another model call.
 
 The default mandatory `rlm-operate` planner skill supplies the closed JSON
 envelopes needed to project the `query` and opaque `context` inputs, invoke an
@@ -44,7 +48,7 @@ trigger this retry context.
 
 The supervisor then:
 
-1. parses the model-selected plan;
+1. parses the JSON root decision: a strict direct envelope finishes immediately (one model call, no plan execution), or a typed plan continues below;
 2. validates recursive depth, duplicate/cycle structure, and child capabilities;
 3. counts planned model calls and tightens their generation ceilings against the remaining token budget;
 4. executes context/model/tool operations through `rlm_plan`;
@@ -107,7 +111,7 @@ Cancellation marks the token and signals currently registered execution threads 
 
 ## Direct completion
 
-Recursion is optional. A planner may emit a direct plan ending in `final(...)`, and `llm_query/3` provides a bounded direct model call for callers that do not need decomposition.
+Recursion is optional, and so is planning. The root model may return the strict direct-answer envelope `{"mode":"direct","answer":"..."}`, which finishes in exactly one root model call with `plan:none`, empty transitions/bindings, and zero recursion. A planner may alternatively emit a direct plan ending in `final(...)` when it wants plan-shaped bookkeeping, and `llm_query/3` remains the bounded direct model call for callers that manage their own protocol entirely.
 
 ## Live acceptance gate
 
