@@ -30,7 +30,7 @@ created with `visibility(prompt)`.
 :- use_module(rlm_context).
 
 :- dynamic session_mount_record/4.
-:- dynamic persistent_mount_cache/3.
+:- dynamic persistent_mount_cache/4.
 
 rlm_context_mount_ready.
 
@@ -67,7 +67,7 @@ context_mount_runtime_reset :-
                  sort(Refs0, Refs),
                  maplist(delete_cached_context, Refs),
                  retractall(session_mount_record(_, _, _, _)),
-                 retractall(persistent_mount_cache(_, _, _))
+                 retractall(persistent_mount_cache(_, _, _, _))
                )).
 
 context_mount_(Store, Name0, Source0, Options, Binding) :-
@@ -92,7 +92,8 @@ mount_by_lifetime(persistent, Store, Request, Binding) :-
     require_artifact_store(Store),
     mount_key(Request.scope, Request.name, Key),
     persistent_publish_or_reuse(Store, Key, Request, Artifact),
-    ensure_persistent_context(Key,
+    ensure_persistent_context(Store,
+                              Key,
                               Artifact,
                               Request.context_options,
                               ContextRef),
@@ -163,7 +164,8 @@ context_mount_resolve_(Store, Name0, Scope0, Options, Resolution) :-
         latest_persistent_mount(Store, Key, Artifact),
         require_identity(Artifact.value, Name, Scope),
         require_mounted(Artifact.value),
-        ensure_persistent_context(Key,
+        ensure_persistent_context(Store,
+                                  Key,
                                   Artifact,
                                   ContextOptions,
                                   ContextRef),
@@ -178,23 +180,23 @@ ensure_live_context(ContextRef0, _, _, ContextRef0) :-
 ensure_live_context(_, Descriptor, ContextOptions, ContextRef) :-
     register_descriptor(Descriptor, ContextOptions, ContextRef).
 
-ensure_persistent_context(Key, Artifact, ContextOptions, ContextRef) :-
+ensure_persistent_context(Store, Key, Artifact, ContextOptions, ContextRef) :-
     Version = Artifact.version,
-    (   persistent_mount_cache(Key, Version, Cached),
+    (   persistent_mount_cache(Store, Key, Version, Cached),
         context_metadata(Cached.handle, ok(_))
     ->  ContextRef = Cached
     ;   register_descriptor(Artifact.value.source, ContextOptions, Fresh),
         with_mutex(rlm_context_mount,
-                   replace_persistent_cache(Key, Version, Fresh)),
+                   replace_persistent_cache(Store, Key, Version, Fresh)),
         ContextRef = Fresh
     ).
 
-replace_persistent_cache(Key, Version, ContextRef) :-
+replace_persistent_cache(Store, Key, Version, ContextRef) :-
     findall(Old,
-            retract(persistent_mount_cache(Key, _, Old)),
+            retract(persistent_mount_cache(Store, Key, _, Old)),
             OldRefs),
     maplist(delete_cached_context, OldRefs),
-    assertz(persistent_mount_cache(Key, Version, ContextRef)).
+    assertz(persistent_mount_cache(Store, Key, Version, ContextRef)).
 
 latest_persistent_mount(Store, Key, Artifact) :-
     mount_namespace(Namespace),
@@ -298,7 +300,7 @@ context_mount_unmount_(Store, Name0, Scope0, Public) :-
                      Provenance,
                      PutOutcome),
         require_artifact_outcome(PutOutcome, TombstoneArtifact),
-        clear_persistent_cache(Key),
+        clear_persistent_cache(Store, Key),
         public_from_artifact(TombstoneArtifact, Public)
     ).
 
@@ -315,10 +317,10 @@ tombstone_value(Value,
                     source:none
                 }).
 
-clear_persistent_cache(Key) :-
+clear_persistent_cache(Store, Key) :-
     with_mutex(rlm_context_mount,
                ( findall(Ref,
-                         retract(persistent_mount_cache(Key, _, Ref)),
+                         retract(persistent_mount_cache(Store, Key, _, Ref)),
                          Refs),
                  maplist(delete_cached_context, Refs)
                )).
@@ -531,7 +533,7 @@ require_options(Value) :-
     throw(context_mount_fault(invalid_options(Value))).
 
 cached_context_ref(Ref) :- session_mount_record(_, _, Ref, _).
-cached_context_ref(Ref) :- persistent_mount_cache(_, _, Ref).
+cached_context_ref(Ref) :- persistent_mount_cache(_, _, _, Ref).
 
 delete_cached_context(Ref) :-
     (   is_dict(Ref), get_dict(handle, Ref, Handle)
