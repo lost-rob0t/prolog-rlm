@@ -51,9 +51,13 @@ live_constraint_case(Lane, Depth, Model, Provider, Case) :-
                     provider_name(openrouter),
                     capabilities(Capabilities),
                     child_capabilities(Capabilities),
-                    planner_attempts(2),
+                    planner_attempts(3),
                     planner_reasoning_effort(low),
-                    planner_max_tokens(2400),
+                    % The root decision may now carry the complete direct
+                    % answer, so the per-request generation ceiling must fit
+                    % the full JSON assignment plus reasoning, not just a
+                    % tiny echo plan. 2400 truncated direct answers mid-JSON.
+                    planner_max_tokens(3600),
                     budget(Budget)
                   ],
     append(InstructionOptions, BaseOptions, Options),

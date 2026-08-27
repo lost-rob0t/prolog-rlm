@@ -2096,6 +2096,7 @@ planner_prompt(Query,
 Return ONLY one JSON object; no markdown. Choose exactly one root decision:\n\
 1. Direct answer when runtime operations add no value: {\"mode\":\"direct\",\"answer\":\"<nonempty final text>\"}. Prefer this whenever the goal can be answered now without context retrieval, tools, another model call, or recursion. Never return a plan whose only purpose is to pass the original goal to another model call.\n\
 2. Typed plan when runtime operations are needed: the top-level plan shape {\"steps\":[...]} with one final step last.\n\
+Any other output shape — prose, markdown, or a provider-native tool call — is rejected without execution.\n\
 The opaque context is available only through input name context. Do not invent context bytes from metadata.\n\
 Goal: ~s\n\
 Context metadata: ~q\n\
