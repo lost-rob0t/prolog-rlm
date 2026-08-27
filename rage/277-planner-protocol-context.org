@@ -58,4 +58,8 @@ remain non-repairable and receive no retry context.
 - Deep experiment :: 15/15 passed.
 - Runtime and production-module load checks :: passed.
 - JSON CLI demo :: passed.
+- Real OpenRouter agentic planner regression :: passed without a fixed plan or
+  =planner_instruction=; the generated plan executed both =context(slice)= and
+  the confined =project_read= tool, and independent binding assertions found
+  both sentinels.
 - =git diff --check= :: passed.
