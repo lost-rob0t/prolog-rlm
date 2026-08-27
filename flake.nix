@@ -63,14 +63,19 @@
           '';
         };
 
-        deepseekPython = pkgs.python3.withPackages (ps: [ ps.textual ]);
+        deepseekHarness = pkgs.buildGoModule {
+          pname = "agentprolog-deepseek-harness";
+          version = "0.1.0";
+          src = ./harness/deepseek_tui;
+          vendorHash = pkgs.lib.fakeHash;
+          nativeBuildInputs = [ pkgs.makeWrapper ];
 
-        deepseekHarness = pkgs.writeShellApplication {
-          name = "deepseek-harness";
-          runtimeInputs = [ agentProlog ];
-          text = ''
-            exec ${deepseekPython}/bin/python \
-              ${self}/harness/deepseek_tui/deepseek_tui/app.py "$@"
+          postInstall = ''
+            if [ -x "$out/bin/deepseek_tui" ]; then
+              mv "$out/bin/deepseek_tui" "$out/bin/deepseek-harness"
+            fi
+            wrapProgram "$out/bin/deepseek-harness" \
+              --prefix PATH : ${pkgs.lib.makeBinPath [ agentProlog ]}
           '';
         };
       in {
@@ -94,7 +99,7 @@
         apps.default = self.apps.${system}.swipl;
 
         devShells.default = pkgs.mkShell {
-          packages = [ swiProlog prologRlm agentProlog deepseekPython ];
+          packages = [ swiProlog prologRlm agentProlog pkgs.go ];
         };
 
         checks.packaged-library-load = pkgs.runCommand "prolog-rlm-packaged-library-load" {

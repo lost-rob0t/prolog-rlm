@@ -1,16 +1,18 @@
 # DeepSeek TUI harness
 
-This is a **frontend harness**, not a second agent runtime. It runs the `agentprolog` CLI with the DeepSeek profile and renders the result with [Textual](https://github.com/Textualize/textual).
+This is a **frontend harness**, not a second agent runtime. It runs the `agentprolog` CLI with the DeepSeek profile and renders the session with **Bubble Tea v2** and the **Bubbles v2** component library.
+
+Bubble Tea is the most widely starred general-purpose TUI framework among the mainstream choices checked for this recovery. The harness uses the current v2 Charm import paths rather than starting on the legacy v1 API.
 
 The authority/runtime boundary stays:
 
 ```text
-Textual TUI
+Bubble Tea TUI
    -> agentprolog CLI
    -> public prolog-rlm runtime
 ```
 
-The TUI never executes model-generated shell text and never owns provider, tool, authority, effect, planning, or verification semantics.
+The TUI never evaluates model-generated shell text and never owns provider, tool, authority, effect, planning, or verification semantics. AgentProlog is launched with `exec.Command` argument vectors.
 
 ## Run
 
@@ -20,11 +22,11 @@ With Nix:
 nix run .#deepseek-harness
 ```
 
-Or from Python packaging:
+From a development shell:
 
 ```sh
-python -m pip install -e harness/deepseek_tui
-deepseek-harness
+nix develop
+go run ./harness/deepseek_tui
 ```
 
 Set the DeepSeek credential in the environment:
@@ -33,7 +35,7 @@ Set the DeepSeek credential in the environment:
 export DEEPSEEK_API_KEY=...
 ```
 
-The default API profile is the current OpenAI-compatible DeepSeek endpoint and model:
+The default API profile is:
 
 ```text
 endpoint: https://api.deepseek.com
@@ -42,8 +44,16 @@ model:    deepseek-v4-flash
 
 Override the model with `DEEPSEEK_MODEL`. Override the AgentProlog executable with `AGENTPROLOG_BIN`.
 
-For a dependency/import smoke check without entering full-screen mode:
+For a non-interactive binary/dependency smoke check:
 
 ```sh
 deepseek-harness --check
+```
+
+Pinned direct Go dependencies:
+
+```text
+charm.land/bubbletea/v2 v2.0.8
+charm.land/bubbles/v2   v2.1.1
+charm.land/lipgloss/v2  v2.0.5
 ```
