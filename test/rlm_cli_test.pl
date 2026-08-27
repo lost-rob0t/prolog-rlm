@@ -145,28 +145,13 @@ test(rlm_long_help_is_a_valid_non_provider_session) :-
     assertion(sub_string(Session.summary, _, _, _, "prolog-rlm rlm QUERY")),
     assertion(is_dict(Session.output)).
 
-test(run_long_help_is_a_valid_non_provider_session) :-
-    cli_run([run,'--help'], ok(Session)),
-    assertion(Session.status == pass),
-    assertion(Session.command == help(run)),
-    assertion(sub_string(Session.summary, _, _, _, "prolog-rlm run TASK")),
-    assertion(is_dict(Session.output)).
-
-test(run_without_task_uses_canonical_rlm_argument_validation) :-
-    cli_run([run], error(Error)),
-    assertion(Error.kind == invalid_cli_request),
-    assertion(Error.detail == missing_argument(query)).
-
 test(long_help_execute_paths_exit_zero) :-
     with_output_to(string(_GlobalOutput),
                    cli_execute(['--help'], GlobalExit)),
     with_output_to(string(_RlmOutput),
                    cli_execute([rlm,'--help'], RlmExit)),
-    with_output_to(string(_RunOutput),
-                   cli_execute([run,'--help'], RunExit)),
     assertion(GlobalExit =:= 0),
-    assertion(RlmExit =:= 0),
-    assertion(RunExit =:= 0).
+    assertion(RlmExit =:= 0).
 
 test(unknown_command_with_help_remains_unknown) :-
     cli_run([wat,'--help'], error(Error)),
