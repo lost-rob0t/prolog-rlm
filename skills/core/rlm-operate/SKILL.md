@@ -6,16 +6,40 @@ description: Operate the bounded typed RLM runtime without inventing context or 
 
 RLM_OPERATE_BODY
 
-Use only operations, bindings, references, context, tools, providers, and capabilities exposed by the runtime. Respect budgets and never invent unavailable authority or unseen context.
+Use only the tools, bindings, references, context, providers, and capabilities the runtime actually exposes to you. Respect budgets. Never invent unseen context, unlisted tools, ungranted providers, or authority you do not hold.
 
-Root output is one closed JSON object: either a direct answer or a typed plan. First decide whether this goal needs a typed plan at all. Prefer the direct answer `{"mode":"direct","answer":"<nonempty final text>"}` whenever no runtime operation would add value: answer directly when the goal needs no context retrieval, tool, additional model call, or recursion. When runtime operations are needed, return the typed-plan shape `{"steps":[...]}`; do not wrap the steps array in `plan`, `goal`, or prose, and every step is a JSON object with an `op` field with exactly one `final` step last. Do not write free prose outside either JSON form: prose is never accepted as a final answer, and provider-native tool calls are never accepted as plans or answers.
+## Your output: one closed JSON object
 
-A model step uses `op`, `provider`, `prompt`, `options`, and `bind`. Set `provider` to a provider name granted by the runtime. To pass the original completion goal without copying it, use `{"ref":"input","name":"query"}` as the model prompt expression. For example: `{"op":"model","provider":"<granted-provider>","prompt":{"ref":"input","name":"query"},"options":{},"bind":"answer"}`. A final step can return that binding as `{"op":"final","value":{"ref":"var","name":"answer"}}`.
+Your entire reply is exactly one JSON object with nothing outside it. Choose one of two root decisions:
 
-The opaque context bytes are available only through the `context` input. When a listed context capability is useful, retrieve a bounded projection with a context step such as `{"op":"context","handle":{"ref":"input","name":"context"},"action":{"type":"slice","start":0,"length":1024},"bind":"evidence"}`. Other context actions must use exactly the action names and fields exposed by the runtime.
+1. Direct answer — when no runtime tool would add value (no context retrieval, no tool call, no extra model call, no recursion):
+   `{"mode":"direct","answer":"<nonempty final text>"}`
+2. Typed plan — when runtime tools genuinely help:
+   `{"steps":[...]}`
+   Do not wrap the steps array inside a `plan`, `goal`, or any other key, and never inside prose.
 
-Invoke an active tool with `{"op":"tool","name":"<active-tool-name>","args":{},"bind":"tool_result"}`. The `name` must exactly match an active tool schema and `args` must match that schema. Seeing a schema does not grant permission; use a tool only when its capability is listed. A successful tool step binds an envelope object whose `value` field holds the schema-conforming result, so select nested result fields through chained references. For example, to return a tool's `content` field as the final value: `{"op":"final","value":{"ref":"field","value":{"ref":"field","value":{"ref":"var","name":"tool_result"},"key":"value"},"key":"content"}}`.
+Prose is never accepted as an answer. A provider-native tool call is never accepted as a plan or an answer. Any other output shape is rejected without execution.
 
-Expressions may use prior bindings as `{"ref":"var","name":"binding"}` or select a field as `{"ref":"field","value":{"ref":"var","name":"binding"},"key":"field"}`. References are backward-only: bind a value before referring to it.
+## Plan tools
 
-Do not return a plan whose only purpose is to pass the original goal to another model call; answer directly instead. Return a typed plan only when its context, tool, model, or recursive steps genuinely add value beyond the root answer.
+A plan is an ordered list of steps. Every step is one call to a plan tool: the `op` field names the tool, and `bind` names the result for later reference. Exactly one `final` step must come last.
+
+- `final` — end the plan and return a value.
+  `{"op":"final","value":{"ref":"var","name":"answer"}}`
+- `model` — call a provider granted to you; `provider` must be a granted provider name. To pass the original completion goal without copying it, use `{"ref":"input","name":"query"}` as the prompt expression.
+  `{"op":"model","provider":"<granted-provider>","prompt":{"ref":"input","name":"query"},"options":{},"bind":"answer"}`
+- `context` — read a bounded projection of the opaque context bytes. The context is available only through the `context` input; never invent its bytes from metadata. Use exactly the action names and fields the runtime exposes.
+  `{"op":"context","handle":{"ref":"input","name":"context"},"action":{"type":"slice","start":0,"length":1024},"bind":"evidence"}`
+- `tool` — invoke an active tool. `name` must exactly match an active tool schema and `args` must match that schema. Seeing a schema does not grant permission: call a tool only when its capability is listed. A successful tool step binds an envelope object whose `value` field holds the schema-conforming result, so select nested result fields through chained references. For example, to return a tool's `content` field as the final value:
+  `{"op":"tool","name":"<active-tool-name>","args":{},"bind":"tool_result"}`
+  `{"op":"final","value":{"ref":"field","value":{"ref":"field","value":{"ref":"var","name":"tool_result"},"key":"value"},"key":"content"}}`
+
+The recursive `rlm` plan tool is documented in the `rlm-recurse` skill and may be emitted only when the runtime grants the `rlm` capability.
+
+## References
+
+Use a previous binding as `{"ref":"var","name":"binding"}` or select one of its fields as `{"ref":"field","value":{"ref":"var","name":"binding"},"key":"field"}`. References are backward-only: bind a value before referring to it.
+
+## Prefer the direct answer
+
+Do not return a plan whose only purpose is to pass the original goal to another model call; answer directly instead. Return a typed plan only when its context, tool, model, or recursive steps genuinely add value beyond your own direct answer.
