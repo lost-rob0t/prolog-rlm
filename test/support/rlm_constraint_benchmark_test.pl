@@ -2,6 +2,7 @@
 
 :- use_module(library(http/json)).
 :- use_module('../../prolog/rlm_plan').
+:- use_module('../../prolog/rlm_skill').
 :- use_module('../../benchmark/rlm_constraint_problem').
 :- use_module('../../benchmark/rlm_constraint_verify').
 :- use_module('../../benchmark/rlm_live_deep_experiment').
@@ -27,6 +28,17 @@ drop_task(Input, Task, Output) :-
     put_dict(assignments, Input, Rows, Output).
 
 not_task(Task, Row) :- Row.task \== Task.
+
+core_skill_content(Name, Content) :-
+    skill_default_catalog(ok(Catalog)),
+    skill_catalog_skill(Catalog, Name, Skill),
+    skill_prompt_unit(Skill,
+                      [ activation(always),
+                        mandatory_context(true),
+                        provider_visible(true)
+                      ],
+                      ok(Unit)),
+    Content = Unit.content.
 
 test(fixture_has_exactly_one_solution) :-
     constraint_solution_count(Count),
@@ -114,24 +126,30 @@ test(documented_direct_model_contract_parses_as_typed_plan) :-
     assertion(Plan == plan([model(openrouter, input(query), _{}, answer),
                             final(var(answer))])).
 
-test(core_minimal_lane_exposes_required_root_steps_contract) :-
-    benchmark_lane_instruction(core_minimal, 0, Options),
-    assertion(Options = [planner_instruction(Guidance)]),
-    assertion(sub_string(Guidance, _, _, _, "top-level \"steps\" array")),
-    assertion(sub_string(Guidance, _, _, _, "{\"steps\":[...]}")),
-    assertion(sub_string(Guidance, _, _, _, "\"prompt\":{\"ref\":\"input\",\"name\":\"query\"}")),
-    assertion(sub_string(Guidance, _, _, _, "Do not emit an \"rlm\" step")),
-    assertion(\+ sub_string(Guidance, _, _, _, "slot system first")),
-    assertion(\+ sub_string(Guidance, _, _, _, "\"slot\":7")).
+test(core_operate_skill_exposes_root_typed_plan_contract) :-
+    core_skill_content('rlm-operate', Content),
+    assertion(sub_string(Content, _, _, _, "{\"steps\":[...]}")),
+    assertion(sub_string(Content, _, _, _, "{\"ref\":\"input\",\"name\":\"query\"}")),
+    assertion(sub_string(Content, _, _, _, "{\"op\":\"final\"")),
+    assertion(\+ sub_string(Content, _, _, _, "slot system first")),
+    assertion(\+ sub_string(Content, _, _, _, "\"slot\":7")).
 
-test(guided_lane_exposes_nested_rlm_steps_contract_and_decomposition_hint) :-
+test(core_recurse_skill_exposes_nested_plan_steps_contract) :-
+    core_skill_content('rlm-recurse', Content),
+    assertion(sub_string(Content, _, _, _, "{\"op\":\"rlm\",\"plan\":{\"steps\":[...]},\"bind\":\"child\"}")),
+    assertion(sub_string(Content, _, _, _, "{\"ref\":\"input\",\"name\":\"query\"}")),
+    assertion(\+ sub_string(Content, _, _, _, "\"slot\":7")).
+
+test(core_minimal_lane_adds_no_benchmark_specific_planner_instruction) :-
+    benchmark_lane_instruction(core_minimal, 2, Options),
+    assertion(Options == []).
+
+test(guided_lane_is_explicitly_downstream_owned) :-
     benchmark_lane_instruction(harness_guided, 2, Options),
     assertion(Options = [planner_instruction(Guidance)]),
-    assertion(sub_string(Guidance, _, _, _, "{\"steps\":[...]}")),
-    assertion(sub_string(Guidance, _, _, _, "{\"op\":\"rlm\",\"plan\":{\"steps\":[...]},\"bind\":\"child\"}")),
-    assertion(sub_string(Guidance, _, _, _, "same closed typed-plan grammar")),
     assertion(sub_string(Guidance, _, _, _, "depth 2")),
     assertion(sub_string(Guidance, _, _, _, "slot system first")),
+    assertion(\+ sub_string(Guidance, _, _, _, "{\"steps\":[...]}")),
     assertion(\+ sub_string(Guidance, _, _, _, "\"slot\":7")).
 
 :- end_tests(rlm_constraint_benchmark).
