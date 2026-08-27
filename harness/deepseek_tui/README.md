@@ -1,18 +1,36 @@
 # DeepSeek TUI harness
 
-This is a **frontend harness**, not a second agent runtime. It runs the `agentprolog` CLI with the DeepSeek profile and renders the session with **Bubble Tea v2** and the **Bubbles v2** component library.
+This is the bundled **frontend harness**, not a second agent runtime. It uses **Bubble Tea v2** and talks to the persistent `agentprolog-ui` process over the existing renderer-independent `prolog_agent_ui_v1` NDJSON protocol.
 
-Bubble Tea is the most widely starred general-purpose TUI framework among the mainstream choices checked for this recovery. The harness uses the current v2 Charm import paths rather than starting on the legacy v1 API.
-
-The authority/runtime boundary stays:
+The runtime boundary is:
 
 ```text
 Bubble Tea TUI
-   -> agentprolog CLI
+   -> prolog_agent_ui_v1
+   -> agentprolog-ui application adapter
+   -> AgentProlog command/config composition
    -> public prolog-rlm runtime
 ```
 
-The TUI never evaluates model-generated shell text and never owns provider, tool, authority, effect, planning, or verification semantics. AgentProlog is launched with `exec.Command` argument vectors.
+The TUI does not own provider, tool, authority, effect, planning, history, recursion, or verification semantics. It submits explicit correlated commands and renders canonical results/events produced by Prolog.
+
+## Runtime behavior
+
+The frontend keeps one `agentprolog-ui` child process alive for the session.
+
+A turn is:
+
+```text
+negotiate
+-> run.submit
+-> run_started event
+-> session.poll ...
+-> run_finished event
+```
+
+`Esc` while a run is active sends `session.cancel`. The AgentProlog adapter cancels the canonical `rlm_async` Future, so cancellation reaches the Prolog execution tree instead of merely stopping UI waiting.
+
+Request IDs correlate command results. Runtime events retain their own server-owned sequence numbers and may carry `caused_by` request correlation according to `prolog_agent_ui_v1`.
 
 ## Run
 
@@ -42,7 +60,13 @@ endpoint: https://api.deepseek.com
 model:    deepseek-v4-flash
 ```
 
-Override the model with `DEEPSEEK_MODEL`. Override the AgentProlog executable with `AGENTPROLOG_BIN`.
+Override the model with `DEEPSEEK_MODEL`.
+
+Override the protocol-server executable with:
+
+```sh
+export AGENTPROLOG_UI_BIN=/path/to/agentprolog-ui
+```
 
 For a non-interactive binary/dependency smoke check:
 
