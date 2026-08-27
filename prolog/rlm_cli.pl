@@ -133,7 +133,7 @@ effect_store_migration_session(Args, Session) :-
                           status:Status,
                           summary:Summary,
                           payload:Report,
-                          output:Output}.
+                          output:Options}.
 
 migration_cli_status(migrated, pass) :- !.
 migration_cli_status(already_migrated, pass) :- !.
@@ -375,7 +375,7 @@ completion_budget_from_options(Options,
                                  max_cost_usd:Options.max_cost_usd,
                                  max_output_bytes:65536,
                                  time_limit:Options.time_limit}) :-
-    TotalTokens is max(512, Options.max_tokens*4).
+    TotalTokens is max(2048, Options.max_tokens*4).
 
 /* Trace export and inspection ----------------------------------------- */
 
