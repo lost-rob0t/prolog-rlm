@@ -21,12 +21,25 @@ Provider = provider(openrouter,
                      credential(env('OPENROUTER_API_KEY')),
                      model('openrouter/free'),
                      timeout(30),
-                     address_family(inet)]).
+                     address_family(inet),
+                     app_title('prolog-rlm'),
+                     app_referer('https://github.com/lost-rob0t/prolog-rlm')]).
 ```
 
 The provider term stores only the environment-variable reference. The key is
 resolved with `getenv/2` at request execution time and is never added to model
 responses, errors, traces, fixtures, or logs.
+
+App attribution is descriptive identity, never authority: every OpenRouter
+request from `openrouter_provider/2` carries
+`X-OpenRouter-Title: prolog-rlm` and
+`HTTP-Referer: https://github.com/lost-rob0t/prolog-rlm` so the runtime is
+identifiable in OpenRouter rankings and per-generation analytics. Downstream
+products may set their own identity by building a provider term with
+`app_title(Title)` and `app_referer(Referer)` (nonempty atom or string;
+invalid values fail closed as a `configuration_error` before any network
+I/O). Generic OpenAI-compatible endpoints send no attribution headers unless
+a host opts in with the same keys.
 
 If `OPENROUTER_TEST_MODEL` is unset or empty, `default_openrouter_model/1`
 returns `openrouter/free`.

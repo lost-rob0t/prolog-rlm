@@ -93,7 +93,8 @@ model bind naming.
   the registry envelope-field repair).
 - Focused completion suite with direct-decision regressions :: 47/47 passed.
 - Focused plan suite :: 18/18 passed.
-- Full deterministic PlUnit corpus :: 1005/1005 passed.
+- Full deterministic PlUnit corpus :: 1010/1010 passed (86 suites; includes
+  the five =rlm_chain_app_attribution= header tests).
 - Deterministic benchmark :: 16/16 passed.
 - Deep experiment :: 15/15 passed.
 - Runtime and production-module load checks :: passed.
