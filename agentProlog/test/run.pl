@@ -9,8 +9,14 @@
    directory_file_path(TestDir, '../prolog', AgentDir),
    asserta(user:file_search_path(agentprolog, AgentDir)).
 
+:- use_module(library(rlm_async)).
+:- use_module(library(prolog_agent_ui_v1)).
 :- use_module(agentprolog(agentprolog_cli)).
 :- use_module(agentprolog(agentprolog_config)).
+:- use_module(agentprolog(agentprolog_ui)).
+
+fake_ui_submit(_Argv, Future) :-
+    rlm_future_deferred(async_metadata{operation:agentprolog_ui_test}, Future).
 
 :- begin_tests(agentprolog_product).
 
@@ -83,6 +89,110 @@ test(duplicate_provider_is_rejected,
          '--provider', deepseek,
          '--provider', openrouter],
         _).
+
+test(ui_negotiate_returns_correlated_snapshot) :-
+    agentprolog_ui_initial_state(State0),
+    Protocol = "prolog_agent_ui_v1",
+    Frame = ui_frame{protocol:Protocol,
+                     kind:"negotiate",
+                     request_id:"req_negotiate",
+                     payload:_{protocol_versions:[Protocol],
+                               required_capabilities:[],
+                               optional_capabilities:["mouse"]}},
+    agentprolog_ui_handle(Frame, State0, State, Frames, user:fake_ui_submit),
+    assertion(State == State0),
+    assertion(Frames = [Result, Snapshot]),
+    assertion(Result.kind == "result"),
+    assertion(Result.request_id == "req_negotiate"),
+    assertion(Result.status == "ok"),
+    assertion(Snapshot.kind == "snapshot"),
+    assertion(Snapshot.session_id == State0.session_id),
+    assertion(Snapshot.at_seq =:= 0).
+
+test(ui_submit_poll_completes_exactly_once) :-
+    agentprolog_ui_initial_state(State0),
+    ui_v1_command_frame(State0.session_id,
+                        "req_submit",
+                        "run.submit",
+                        _{query:"hello", provider:"deepseek"},
+                        Submit),
+    agentprolog_ui_handle(Submit,
+                          State0,
+                          State1,
+                          SubmitFrames,
+                          user:fake_ui_submit),
+    assertion(SubmitFrames = [SubmitResult, Started]),
+    assertion(SubmitResult.request_id == "req_submit"),
+    assertion(SubmitResult.status == "ok"),
+    assertion(Started.event_type == "run_started"),
+    assertion(Started.caused_by == "req_submit"),
+    Future = State1.active.future,
+    rlm_future_resolve(
+        Future,
+        ok(cli_session{command:rlm,
+                       status:pass,
+                       summary:"ok\n",
+                       payload:_{text:"done"},
+                       output:_{}})),
+    ui_v1_command_frame(State1.session_id,
+                        "req_poll_1",
+                        "session.poll",
+                        _{},
+                        Poll1),
+    agentprolog_ui_handle(Poll1,
+                          State1,
+                          State2,
+                          PollFrames1,
+                          user:fake_ui_submit),
+    assertion(PollFrames1 = [PollResult1, Finished]),
+    assertion(PollResult1.request_id == "req_poll_1"),
+    assertion(PollResult1.payload.state == "completed"),
+    assertion(Finished.event_type == "run_finished"),
+    assertion(Finished.caused_by == "req_submit"),
+    assertion(State2.active == none),
+    ui_v1_command_frame(State2.session_id,
+                        "req_poll_2",
+                        "session.poll",
+                        _{},
+                        Poll2),
+    agentprolog_ui_handle(Poll2,
+                          State2,
+                          State3,
+                          PollFrames2,
+                          user:fake_ui_submit),
+    assertion(PollFrames2 = [Idle]),
+    assertion(Idle.payload.state == "idle"),
+    assertion(State3 == State2).
+
+test(ui_cancel_is_correlated_and_terminal) :-
+    agentprolog_ui_initial_state(State0),
+    ui_v1_command_frame(State0.session_id,
+                        "req_submit_cancel",
+                        "run.submit",
+                        _{query:"cancel me"},
+                        Submit),
+    agentprolog_ui_handle(Submit,
+                          State0,
+                          State1,
+                          _,
+                          user:fake_ui_submit),
+    ui_v1_command_frame(State1.session_id,
+                        "req_cancel",
+                        "session.cancel",
+                        _{},
+                        Cancel),
+    agentprolog_ui_handle(Cancel,
+                          State1,
+                          State2,
+                          CancelFrames,
+                          user:fake_ui_submit),
+    assertion(CancelFrames = [CancelResult, Finished]),
+    assertion(CancelResult.request_id == "req_cancel"),
+    assertion(CancelResult.status == "ok"),
+    assertion(CancelResult.payload.state == "cancelled"),
+    assertion(Finished.event_type == "run_finished"),
+    assertion(Finished.caused_by == "req_cancel"),
+    assertion(State2.active == none).
 
 argv_pair(Name, Value, Args) :-
     append(_, [Name, Value|_], Args).
