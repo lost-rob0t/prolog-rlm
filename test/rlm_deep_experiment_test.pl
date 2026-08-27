@@ -2,6 +2,7 @@
 
 :- use_module('../prolog/rlm').
 :- use_module('../prolog/rlm_deep_experiment').
+:- use_module('../benchmark/rlm_live_deep_experiment').
 
 :- dynamic planner_call_count/1.
 
@@ -235,6 +236,25 @@ test(promotion_rule_accepts_only_bounded_positive_live_evidence) :-
     deep_experiment_promotion(Evidence, Decision),
     assertion(Decision.status == promote),
     assertion(Decision.reasons == []).
+
+test(live_depth_budget_scales_with_expected_provider_calls) :-
+    rlm_live_deep_experiment:live_depth_budget(0, Depth0),
+    rlm_live_deep_experiment:live_depth_budget(1, Depth1),
+    rlm_live_deep_experiment:live_depth_budget(2, Depth2),
+    assertion(Depth0.max_total_tokens < Depth1.max_total_tokens),
+    assertion(Depth1.max_total_tokens < Depth2.max_total_tokens).
+
+test(live_depth_two_budget_covers_three_provider_calls) :-
+    rlm_live_deep_experiment:live_depth_budget(2, Budget),
+    assertion(Budget.max_total_tokens >= 6000).
+
+test(live_depth_budgets_remain_finite) :-
+    forall(between(0, 2, Depth),
+           ( rlm_live_deep_experiment:live_depth_budget(Depth, Budget),
+             assertion(integer(Budget.max_total_tokens)),
+             assertion(Budget.max_total_tokens > 0),
+             assertion(Budget.max_total_tokens =< 12000)
+           )).
 
 :- initialization(reset_planner_calls).
 
