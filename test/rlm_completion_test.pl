@@ -113,6 +113,12 @@ test(default_skills_reach_one_system_message_on_unrelated_input,
            ( assertion(sub_string(System, _, _, _, Name)),
              assertion(sub_string(System, _, _, _, Marker))
            )),
+    assertion(sub_string(System, _, _, _,
+                         "{\"op\":\"context\",\"handle\":{\"ref\":\"input\",\"name\":\"context\"}")),
+    assertion(sub_string(System, _, _, _,
+                         "{\"op\":\"tool\",\"name\":\"<active-tool-name>\",\"args\":")),
+    assertion(sub_string(System, _, _, _,
+                         "{\"ref\":\"field\",\"value\":")),
     maplist(message_role, Request.messages, [system, user]).
 
 test(natural_language_disable_cannot_remove_default_skills,
@@ -218,12 +224,35 @@ test(planner_retry_reuses_skill_projection_without_duplicate_body,
     rlm_completion("retry", text("ctx"), Options, Outcome),
     expect_ok(Outcome, _),
     completion_test_support:planner_requests([First, Second]),
-    assertion(First.messages == Second.messages),
+    First.messages = [FirstSystem, FirstUser],
+    Second.messages = [SecondSystem, SecondUser, Repair],
+    assertion(FirstSystem == SecondSystem),
+    assertion(FirstUser == SecondUser),
+    assertion(Repair.role == user),
+    assertion(sub_string(Repair.content, _, _, _,
+                         "Previous planner candidate was rejected")),
+    assertion(sub_string(Repair.content, _, _, _, "invalid_plan")),
     request_system_content(First, System),
     forall(default_skill_marker(_, Marker),
            ( occurrence_count(System, Marker, Count),
              assertion(Count =:= 1)
            )).
+
+test(planner_retry_reports_missing_tool_name_without_echoing_candidate,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(
+        completion_test_support:capture_missing_name_retry_planner,
+        Base),
+    Options = [planner_attempts(2)|Base],
+    rlm_completion("retry missing tool name", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, Result),
+    assertion(Result.value == "repaired"),
+    completion_test_support:planner_requests([_, Second]),
+    last(Second.messages, Repair),
+    assertion(sub_string(Repair.content, _, _, _, "missing_field(name)")),
+    assertion(\+ sub_string(Repair.content, _, _, _, "MUST_NOT_ECHO")),
+    string_length(Repair.content, Length),
+    assertion(Length =< 1024).
 
 test(caller_planner_instruction_survives_skill_opt_out,
      [setup(completion_test_support:reset_calls)]) :-
