@@ -19,9 +19,16 @@ default_completion_budget(-Budget).
 
 The root controller receives a task-first prompt containing the user goal, context metadata/handle information, capability declarations, and **compiler-active tool schemas**. It does not receive the full opaque context implicitly. Its output must be exactly one JSON root decision: the direct-answer envelope `{"mode":"direct","answer":"<nonempty final text>"}` or the typed plan AST shape used by `rlm_plan`.
 
-A direct answer must match the closed envelope exactly: the only fields are `mode` (literally `direct`) and a nonempty textual `answer`. Anything else fails closed as `completion_error{phase:planner,kind:plan_parse_failed,cause:plan_error{kind:invalid_root_decision,...}}`. Arbitrary prose is never a successful direct answer, a malformed typed plan is never accepted as one, and provider-native tool calls are neither plans nor answers. A valid typed plan always wins over the envelope fallback, so the plan protocol is unchanged for context retrieval, registered tools, model steps, and recursive plans.
+A direct answer must match the closed envelope exactly: the only fields are `mode` (literally `direct`) and a nonempty textual `answer`. Anything else fails closed as `completion_error{phase:planner,kind:plan_parse_failed,cause:plan_error{kind:invalid_root_decision,...}}`. Arbitrary prose is never a successful direct answer, a malformed typed plan is never accepted as one, and provider-native tool calls are not interpreted by this legacy root-decision compatibility API. A valid typed plan always wins over the envelope fallback, so its existing context, tool, model, and recursive behavior is unchanged.
 
-A valid direct envelope finishes immediately with exactly one root model call: no plan validation/execution, no plan transitions, empty bindings, zero recursion depth and recursive calls, and truthful usage/trajectory data (`plan:none`, trajectory reason `root model answered directly without plan execution`). The aggregate model-call, token, and cost budget check still applies before the result is returned. The default prompt and the mandatory `rlm-operate` skill instruct the root model to prefer direct completion whenever runtime operations add no value, and never to return a plan whose only purpose is passing the original goal to another model call.
+The ordinary model-facing direct strategy is `rlm_direct/4`, documented in
+`docs/direct-runtime.md`. It uses standard provider `tools`, `tool_calls`, and
+correlated `role:tool` messages. Context, registered tools, full SPEC lifecycle,
+and typed-plan execution are capability-gated native functions. New hosts should
+use that loop rather than interpreting the strict `rlm_completion/4` direct
+envelope as meaning "one model call with no tools".
+
+A valid direct envelope performs no additional plan or model execution: no plan validation/execution, no plan transitions, empty bindings, zero recursion depth and recursive calls, and truthful usage/trajectory data (`plan:none`, trajectory reason `root model answered directly without plan execution`). It normally finishes in one root call, but a direct envelope accepted after a repairable rejected candidate retains all prior planner calls in aggregate usage. The aggregate model-call, token, and cost budget check still applies before the result is returned. The default prompt and the mandatory `rlm-operate` skill instruct the root model to prefer direct completion whenever runtime operations add no value, and never to return a plan whose only purpose is passing the original goal to another model call.
 
 The root prompt is task-first rather than plan-first. The model should solve the
 request from the task and active context before considering runtime operations.
@@ -29,6 +36,17 @@ For managed conversations, the context compiler supplies the bounded warm/hot
 projection in the task framing while older transcript payload remains behind
 the opaque context handle. The model can therefore answer directly when the
 projection is sufficient, or choose a bounded retrieval plan when it is not.
+
+### Trusted agent framing
+
+Root completion calls receive a small system identity message for role clarity.
+The trusted `agent_name(Name)` option replaces the default `prolog-rlm` display
+name; it is prompt framing, not authentication, capability, or authority.
+`agent_scope(root)` is the default. The supervised subagent runtime installs
+`agent_scope(delegated)` so a child does not falsely receive a second root
+identity, and caller options cannot override that delegated scope. Invalid or
+empty values fail before planner dispatch. Raw `llm_query/3` remains a direct
+provider primitive and does not acquire this root-agent message.
 
 Evidence composition is supported across plan steps. A context or tool result
 may be bound first and then placed inside a ground JSON object or array used as
@@ -44,6 +62,11 @@ with a field reference to `text`, for example:
   {"op":"final","value":{"ref":"field","value":{"ref":"var","name":"answer"},"key":"text"}}
 ]}
 ```
+
+An executed `model` step receives a static task-step system message rather than
+the root planner protocol. It is told to answer the bound task directly and not
+to emit plan JSON or provider-native tool calls. This keeps root plan selection
+separate from task-result generation.
 
 The closed operation vocabulary is `final`, `model`, `context`, `tool`,
 `parallel`, `retry`, `checkpoint`, and `rlm`; context actions are `peek`,
@@ -153,23 +176,44 @@ Cancellation marks the token and signals currently registered execution threads 
 
 ## Direct completion
 
-Recursion is optional, and so is planning. The root model may return the strict direct-answer envelope `{"mode":"direct","answer":"..."}`, which finishes in exactly one root model call with `plan:none`, empty transitions/bindings, and zero recursion. A planner may alternatively emit a direct plan ending in `final(...)` when it wants plan-shaped bookkeeping, and `llm_query/3` remains the bounded direct model call for callers that manage their own protocol entirely.
+Recursion is optional, and so is planning. The root model may return the strict direct-answer envelope `{"mode":"direct","answer":"..."}`, which performs no plan execution and returns `plan:none`, empty transitions/bindings, and zero recursion. Prior rejected planner attempts remain visible in usage if repair was required. A planner may alternatively emit a direct plan ending in `final(...)` when it wants plan-shaped bookkeeping, and `llm_query/3` remains the bounded direct model call for callers that manage their own protocol entirely.
+
+This section describes `rlm_completion/4` compatibility only. It is distinct
+from the native direct loop.
 
 ## Live acceptance gate
 
-Trusted same-repository CI exercises the complete P0 path with production OpenRouter calls:
+Trusted same-repository CI exercises two complementary production OpenRouter
+paths. The planner/tool acceptance asks a real root controller, without a fixed
+plan or caller instruction, to retrieve opaque context and execute confined
+registered tools. Assertions inspect transitions and bound values rather than
+trusting final prose.
+
+The managed-conversation acceptance creates 40,000 durable messages, puts a
+fresh UUID at a random guaranteed-cold sequence, and verifies that the UUID is
+absent from every outbound root-planner message. A successful run must execute
+exactly:
 
 ```text
 real root planner
-  -> external opaque context slice
-  -> registered project_read tool
-  -> one rlm child
-       -> real OpenRouter model call
-       -> child final
-  -> root final
+  -> context(search) returning the randomized cold record
+  -> real OpenRouter model step returning only the UUID
+  -> final returning exactly the same UUID
 ```
 
-The live log emits only non-secret evidence such as HTTP status, authorization result, recursion depth/count, model-call count, and fixture-token success. Planner JSON, model response text/reasoning, API keys, Authorization headers, and environment dumps are not intentionally logged.
+The scale test rejects raw search-result finalization, fixed-offset
+`peek`/`slice` shortcuts, extra transitions, non-exact model output, and any
+root-prompt leak of the generated payload. Its terminal evidence includes the
+random sequence, test/model UUIDs, root and child generation IDs, HTTP status,
+aggregate calls/tokens/cost, and elapsed time. UUIDs are ephemeral test data;
+credentials and authorization headers are never logged.
+
+Run the focused paid acceptance with:
+
+```sh
+swipl -q -s test/live_conversation_scale_openrouter_test.pl \
+  -g "run_tests(live_conversation_scale_openrouter),halt"
+```
 
 ## Reasoning controls
 

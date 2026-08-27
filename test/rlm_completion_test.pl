@@ -184,7 +184,11 @@ test(root_prompt_offers_direct_answer_before_symbolic_plan,
     sub_string(User.content, PlanAt, _, _, "{\"steps\":[...]}"),
     assertion(DirectAt < PlanAt),
     assertion(sub_string(User.content, _, _, _,
-                         "runtime operations add no value")).
+                          "runtime operations add no value")),
+    assertion(sub_string(User.content, _, _, _,
+                          "unless runtime operations add value to the answer")),
+    assertion(\+ sub_string(User.content, _, _, _,
+                             "unless runtime operations add no value to the answer")).
 
 test(context_request_still_selects_and_executes_a_plan,
      [setup(completion_test_support:reset_calls)]) :-

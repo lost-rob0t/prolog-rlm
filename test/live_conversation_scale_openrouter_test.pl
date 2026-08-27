@@ -7,9 +7,12 @@
                 openrouter_provider/2
               ]).
 :- use_module(library(uuid)).
+:- use_module(library(random)).
 
 :- dynamic live_uuid_evidence/2.
-:- dynamic live_provider_evidence/3.
+:- dynamic live_needle_sequence/1.
+:- dynamic live_provider_evidence/4.
+:- dynamic live_usage_evidence/5.
 :- at_halt(print_live_uuid_evidence).
 
 test(real_openrouter_managed_turn_retrieves_needle_from_40000_messages) :-
@@ -30,13 +33,17 @@ test(real_openrouter_managed_turn_retrieves_needle_from_40000_messages) :-
 run_live_scale_case(ConversationStore, ArtifactStore, RequestedModel) :-
     uuid(PayloadAtom, [version(4)]),
     atom_string(PayloadAtom, ExpectedPayload),
+    random_between(1000, 30000, NeedleSequence),
     retractall(live_uuid_evidence(_, _)),
-    retractall(live_provider_evidence(_, _, _)),
+    retractall(live_needle_sequence(_)),
+    retractall(live_provider_evidence(_, _, _, _)),
+    retractall(live_usage_evidence(_, _, _, _, _)),
     assertz(live_uuid_evidence(test, ExpectedPayload)),
+    assertz(live_needle_sequence(NeedleSequence)),
     rlm:conversation_create(ConversationStore,
                               [id(live_scale_40000)],
                               ok(Conversation)),
-    append_scale_messages(Conversation, ExpectedPayload),
+    append_scale_messages(Conversation, NeedleSequence, ExpectedPayload),
     rlm:conversation_warm_publish(
         Conversation,
         ArtifactStore,
@@ -97,48 +104,121 @@ run_live_scale_case(ConversationStore, ArtifactStore, RequestedModel) :-
     assertion(selected_model_matches(
                   RequestedModel,
                   Completion.trajectory.root_event.selected_model)),
-    assertion(Completion.usage.model_calls >= 1),
     assertion(Turn.context.warm.loaded_units =:= 1),
     assertion(Turn.context.cold_history_boundary.active == true),
-    once(member(plan_transition{operation:context(search),
-                                status:ok,
-                                bind:_,
-                                sequence:_},
-                Completion.transitions)),
-    assistant_payload(Turn.assistant.content,
-                      ExpectedPayload,
-                      ModelPayload),
+    validate_model_retrieval(Completion,
+                             RequestedModel,
+                             NeedleSequence,
+                             ExpectedPayload,
+                             ModelPayload,
+                             ChildResponse),
+    assertion(Turn.assistant.content == ExpectedPayload),
+    record_provider_evidence(child_model, ChildResponse),
+    record_usage_evidence(Completion.usage),
     assertz(live_uuid_evidence(model, ModelPayload)),
     log_live_scale_evidence(RequestedModel, Completion, Turn, Elapsed).
+
+validate_model_retrieval(Completion,
+                         RequestedModel,
+                         NeedleSequence,
+                         ExpectedPayload,
+                         ModelPayload,
+                         ChildResponse) :-
+    Completion.transitions = [
+        plan_transition{operation:context(search),
+                        status:ok,
+                        bind:SearchBind,
+                        sequence:1},
+        plan_transition{operation:model(openrouter),
+                        status:ok,
+                        bind:ModelBind,
+                        sequence:2},
+        plan_transition{operation:final,
+                        status:ok,
+                        bind:none,
+                        sequence:3}
+    ],
+    get_dict(SearchBind, Completion.vars, SearchMatches),
+    needle_content(ExpectedPayload, ExpectedContent),
+    once(member(conversation_match{sequence:NeedleSequence,
+                                   content:ExpectedContent,
+                                   index:_,
+                                   ref:_,
+                                   role:user},
+                SearchMatches)),
+    get_dict(ModelBind, Completion.vars, ChildResponse),
+    assertion(ChildResponse.provider == openrouter),
+    assertion(ChildResponse.metadata.http_status =:= 200),
+    assertion(selected_model_matches(RequestedModel,
+                                     ChildResponse.selected_model)),
+    get_dict(text, ChildResponse, ModelPayload),
+    assertion(ModelPayload == ExpectedPayload),
+    assertion(Completion.value == ExpectedPayload),
+    assertion(Completion.usage.model_calls >= 2).
 
 print_live_uuid_evidence :-
     forall(live_uuid_evidence(test, TestUUID),
            format(user_error,
                   'conversation_scale_test_uuid: ~s~n',
                   [TestUUID])),
-    forall(live_provider_evidence(GenerationId, Model, Status),
+    forall(live_needle_sequence(NeedleSequence),
+           format(user_error,
+                  'conversation_scale_needle_sequence: ~d~n',
+                  [NeedleSequence])),
+    forall(live_provider_evidence(Role, GenerationId, Model, Status),
            ( format(user_error,
-                    'conversation_scale_generation_id: ~w~n',
-                    [GenerationId]),
+                    'conversation_scale_~w_generation_id: ~w~n',
+                    [Role, GenerationId]),
              format(user_error,
-                    'conversation_scale_generation_model: ~w~n',
-                    [Model]),
+                    'conversation_scale_~w_generation_model: ~w~n',
+                    [Role, Model]),
              format(user_error,
-                    'conversation_scale_generation_http_status: ~d~n',
-                    [Status])
+                    'conversation_scale_~w_generation_http_status: ~d~n',
+                    [Role, Status])
            )),
     forall(live_uuid_evidence(model, ModelUUID),
            format(user_error,
                   'conversation_scale_model_uuid: ~s~n',
                   [ModelUUID])),
+    forall(live_usage_evidence(ModelCalls,
+                               PromptTokens,
+                               CompletionTokens,
+                               TotalTokens,
+                               CostUSD),
+           ( format(user_error,
+                    'conversation_scale_model_calls: ~d~n',
+                    [ModelCalls]),
+             format(user_error,
+                    'conversation_scale_prompt_tokens: ~d~n',
+                    [PromptTokens]),
+             format(user_error,
+                    'conversation_scale_completion_tokens: ~d~n',
+                    [CompletionTokens]),
+             format(user_error,
+                    'conversation_scale_total_tokens: ~d~n',
+                    [TotalTokens]),
+             format(user_error,
+                    'conversation_scale_cost_usd: ~9f~n',
+                    [CostUSD])
+           )),
     flush_output(user_error).
 
-assistant_payload(AssistantContent, ExpectedPayload, ModelPayload) :-
-    string_length(ExpectedPayload, Length),
-    once(( sub_string(AssistantContent, Start, Length, _, ModelPayload),
-           Start >= 0,
-           ModelPayload == ExpectedPayload
-         )).
+record_provider_evidence(Role, Response) :-
+    get_dict(response_id, Response, GenerationId),
+    get_dict(selected_model, Response, SelectedModel),
+    get_dict(metadata, Response, Metadata),
+    get_dict(http_status, Metadata, Status),
+    assertz(live_provider_evidence(Role,
+                                   GenerationId,
+                                   SelectedModel,
+                                   Status)).
+
+record_usage_evidence(Usage) :-
+    assertz(live_usage_evidence(Usage.model_calls,
+                                Usage.prompt_tokens,
+                                Usage.completion_tokens,
+                                Usage.total_tokens,
+                                Usage.cost_usd)).
 
 live_provider_planner(ExpectedPayload, Request, Outcome) :-
     get_dict(messages, Request, Messages),
@@ -157,7 +237,10 @@ log_live_provider_outcome(ok(Response)) :-
     get_dict(selected_model, Response, SelectedModel),
     get_dict(metadata, Response, Metadata),
     get_dict(http_status, Metadata, Status),
-    assertz(live_provider_evidence(GenerationId, SelectedModel, Status)),
+    assertz(live_provider_evidence(root_planner,
+                                   GenerationId,
+                                   SelectedModel,
+                                   Status)),
     format(user_error,
            'conversation_scale_generation_id: ~w~n',
            [GenerationId]),
@@ -174,19 +257,26 @@ log_live_provider_outcome(error(Error)) :-
            [Error]),
     flush_output(user_error).
 
-append_scale_messages(Conversation, Payload) :-
+append_scale_messages(Conversation, NeedleSequence, Payload) :-
     forall(between(1, 40000, Sequence),
-           ( scale_message(Sequence, Payload, Content),
+           ( scale_message(Sequence,
+                           NeedleSequence,
+                           Payload,
+                           Content),
               rlm:conversation_append(Conversation,
                                       message(user, Content),
                                       ok(_))
             )).
 
-scale_message(12345, Payload, Content) :-
+scale_message(Sequence, NeedleSequence, Payload, Content) :-
+    Sequence =:= NeedleSequence,
     !,
-    format(string(Content), "LIVE_40K_NEEDLE payload=~s", [Payload]).
-scale_message(Sequence, _, Content) :-
+    needle_content(Payload, Content).
+scale_message(Sequence, _, _, Content) :-
     format(string(Content), "historical live chat ~d", [Sequence]).
+
+needle_content(Payload, Content) :-
+    format(string(Content), "LIVE_40K_NEEDLE payload=~s", [Payload]).
 
 warm_generator(_Source,
                _Options,

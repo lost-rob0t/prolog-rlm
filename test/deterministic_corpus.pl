@@ -115,7 +115,9 @@ corpus_entry('rlm_completion_hardening_test.pl',
 corpus_entry('rlm_completion_final_handoff_test.pl',
              include(rlm_completion_final_handoff)).
 corpus_entry('rlm_completion_tool_visibility_test.pl',
-             include(rlm_completion_tool_visibility)).
+              include(rlm_completion_tool_visibility)).
+corpus_entry('rlm_native_tool_test.pl', include(rlm_native_tool)).
+corpus_entry('rlm_direct_test.pl', include(rlm_direct)).
 corpus_entry('rlm_nested_usage_test.pl', include(rlm_nested_usage)).
 corpus_entry('rlm_nested_trajectory_test.pl',
              include(rlm_nested_trajectory)).
@@ -150,6 +152,7 @@ corpus_entry('rlm_spec_verify_test.pl', include(rlm_spec_verify)).
 corpus_entry('rlm_result_accept_test.pl', include(rlm_result_accept)).
 corpus_entry('rlm_spec_lang_test.pl', include(rlm_spec_lang)).
 corpus_entry('rlm_spec_workflow_test.pl', include(rlm_spec_workflow)).
+corpus_entry('rlm_spec_strategy_test.pl', include(rlm_spec_strategy)).
 corpus_entry('rlm_project_source_test.pl', include(rlm_project_source)).
 corpus_entry('rlm_research_approval_test.pl', include(research_approval)).
 corpus_entry('prolog_agent_ui_v1_test.pl', include(prolog_agent_ui_v1)).
@@ -171,7 +174,11 @@ corpus_entry('live_completion_openrouter_test.pl',
 corpus_entry('live_planner_context_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).
 corpus_entry('live_conversation_scale_openrouter_test.pl',
-             exclude(live_provider, 'requires the credentialed live gate')).
+              exclude(live_provider, 'requires the credentialed live gate')).
+corpus_entry('live_direct_native_openrouter_test.pl',
+              exclude(live_provider, 'requires the credentialed live gate')).
+corpus_entry('live_compiler_cache_openrouter_test.pl',
+              exclude(live_provider, 'requires the credentialed cache gate')).
 corpus_entry('live_repair_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).
 corpus_entry('live_openrouter_test.pl',

@@ -2,7 +2,10 @@
           [ rlm_version/1,
             rlm_ready/0,
             rlm_completion/4,
-            rlm_completion_async/4,
+             rlm_completion_async/4,
+             rlm_direct/4,
+             rlm_direct_async/4,
+             rlm_direct_execute/4,
             llm_query/3,
             llm_query_async/3,
             rlm_query/4,
@@ -241,7 +244,12 @@ latency is represented by a deferred pending-operation Future; no shared
                 llm_query_async/3,
                 rlm_cancellation_token/1,
                 rlm_cancel/1,
-                default_completion_budget/1
+                 default_completion_budget/1
+               ]).
+:- use_module(rlm_direct,
+              [ rlm_direct/4,
+                rlm_direct_async/4,
+                rlm_direct_execute/4
               ]).
 :- use_module(rlm_context_budget,
               [ rlm_context_budget_ready/0,

@@ -7,7 +7,33 @@
             rlm_query_async/4,
             rlm_cancellation_token/1,
             rlm_cancel/1,
-            default_completion_budget/1
+            default_completion_budget/1,
+            completion_task_metadata/3,
+            require_options/1,
+            text_string/2,
+            completion_runtime_budget/2,
+            cancellation_option/3,
+            register_current_thread/1,
+            cleanup_cancellation/2,
+            acquire_context/3,
+            cleanup_context/2,
+            require_context_metadata/2,
+            provider_options/3,
+            provider_tool_projection/6,
+            completion_skill_messages/6,
+            agent_identity_message/2,
+            zero_usage/1,
+            remaining_tokens/3,
+            planner_token_limit/2,
+            model_request_options/3,
+            call_model/4,
+            response_usage/2,
+            usage_add/3,
+            budget_usage_check/3,
+            context_runtime_options/2,
+            tool_invocation_options/2,
+            plan_usage/2,
+            check_cancelled/1
           ]).
 
 /** <module> Bounded Recursive Language Model supervisor
@@ -51,6 +77,9 @@ default_completion_budget(
                       max_cost_usd:0.25,
                       max_output_bytes:32768,
                       time_limit:30.0}).
+
+completion_runtime_budget(Options, Budget) :-
+    completion_budget(Options, Budget).
 
 /* -------------------------------------------------------------------------
  * Public API and canonical task entrypoints
@@ -2144,7 +2173,7 @@ planner_prompt(Query,
     text_string(Instruction0, Instruction),
     format(string(Prompt),
            "You are the root answerer and controller for a bounded Recursive Language Model runtime.\n\
-Your first responsibility is to solve the user task below. Do not design a runtime plan unless runtime operations add no value to the answer.\n\
+Your first responsibility is to solve the user task below. Do not design a runtime plan unless runtime operations add value to the answer.\n\
 TASK (authoritative user request):\n\
 ~s\n\
 \n\
