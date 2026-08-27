@@ -68,3 +68,54 @@ Run focused regression tests, =swipl -q -s test/run_tests.pl=,
 =swipl -q -s benchmark/run.pl -- deep-smoke=. Require exact-head CI, Paid
 OpenRouter, Nix, clean SWI pack, and Tree-sitter evidence before recommending
 merge. Do not merge this slice.
+
+* Realize
+- TDD regression and runtime handoff commit :: =f334d365d3443b3accc6102d02f1901b6a1fae99=
+- CLI fixed-plan budget commit :: =093841bd4833a52d2539e06625e405f9faa8499b=
+- PR branch :: =rage/223-constraint-benchmark-recovery=
+
+The runtime fix removes the compiled root-planner skill projection from the
+validated plan's provider. The planner still receives its host-owned typed-plan
+contract; executed model steps receive the task prompt and provider request
+options only. =rlm_plan= continues to own execution, terminal =final/1= value
+materialization, shared budgets, recursion state, transitions, response ledger,
+and trajectory lineage. The benchmark adapter's manually supplied observation
+uses collector =none= while retaining required benchmark-result evidence policy;
+no constraint or acceptance rule was relaxed.
+
+* Adversarial review
+- Planner JSON cannot become final output merely by parsing/validating: covered
+  by the local endpoint returning planner-shaped JSON on context leakage and the
+  trusted verifier rejecting =steps=.
+- Explicit final materializes the executed model response; absent final and
+  failed model execution remain structured failures with no fallback.
+- Recursive child output reaches the parent's final value; earlier model output
+  cannot replace a later selected final value.
+- Text final output is selected over a reasoning-channel planner object.
+- Native planner tool calls are not accepted as typed plans or final results.
+- Retry/repair preserves the later executed value.
+- Completion trajectory retains root planner and executed model events separately.
+
+* Exact-head evidence
+At final head =093841bd4833a52d2539e06625e405f9faa8499b=, the PR remains open
+and draft. Push and pull-request runs both passed CI, Paid OpenRouter, Nix,
+clean SWI pack, and Tree-sitter. The pull-request CI run was
+=33058714646= and the pull-request Paid OpenRouter run was =33058714555=.
+Their REAL constraint reports each contain exactly six cases:
+=core_minimal_depth_0=, =core_minimal_depth_1=, =core_minimal_depth_2=,
+=harness_guided_depth_0=, =harness_guided_depth_1=, and
+=harness_guided_depth_2=; all six passed with zero skips and zero violations.
+Each lane independently records =fixed_plan_injected:false= and the trusted
+assignment verifier passed. The same runs also passed the existing real core,
+repair, ordinary benchmark, native tool, recursive-completion, and CLI smoke
+checks.
+
+The provider selected direct plans in the reported depth-1/2 CSP lanes
+(=actual_recursion_depth:0= and =recursive_calls:0=) while all requested lanes
+passed. This slice preserves optional RLM selection semantics and does not force
+an exact recursive plan; deeper strategy-selection measurement remains a
+benchmark follow-up rather than a handoff workaround.
+
+* Decision
+GO for the #264 runtime/final-output slice. Human/adversarial review is still
+required; do not merge from this run.
