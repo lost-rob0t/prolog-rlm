@@ -108,6 +108,14 @@ replace_session_mount(Key, Request, ContextRef) :-
     assertz(session_mount_record(Key, Request, ContextRef, mounted)).
 
 persistent_publish_or_reuse(Store, Key, Request, Artifact) :-
+    persistent_publish_mutex(Store, Key, Mutex),
+    with_mutex(Mutex,
+               persistent_publish_or_reuse_locked(Store,
+                                                  Key,
+                                                  Request,
+                                                  Artifact)).
+
+persistent_publish_or_reuse_locked(Store, Key, Request, Artifact) :-
     mount_namespace(Namespace),
     artifact_latest(Store, Namespace, Key, LatestOutcome),
     (   LatestOutcome = ok(Latest),
@@ -182,22 +190,37 @@ ensure_live_context(_, Descriptor, ContextOptions, ContextRef) :-
 
 ensure_persistent_context(Store, Key, Artifact, ContextOptions, ContextRef) :-
     Version = Artifact.version,
-    (   persistent_mount_cache(Store, Key, Version, Cached),
-        context_metadata(Cached.handle, ok(_))
+    (   live_persistent_context(Store, Key, Version, Cached)
     ->  ContextRef = Cached
     ;   decode_persisted_source_descriptor(Artifact.value.source, Descriptor),
         register_descriptor(Descriptor, ContextOptions, Fresh),
         with_mutex(rlm_context_mount,
-                   replace_persistent_cache(Store, Key, Version, Fresh)),
+                   install_persistent_context(Store,
+                                              Key,
+                                              Version,
+                                              Fresh,
+                                              ContextRef))
+    ).
+
+live_persistent_context(Store, Key, Version, ContextRef) :-
+    persistent_mount_cache(Store, Key, Version, ContextRef),
+    context_metadata(ContextRef.handle, ok(_)),
+    !.
+
+install_persistent_context(Store, Key, Version, Fresh, ContextRef) :-
+    (   live_persistent_context(Store, Key, Version, Winner)
+    ->  delete_cached_context(Fresh),
+        ContextRef = Winner
+    ;   clear_stale_persistent_version_locked(Store, Key, Version),
+        assertz(persistent_mount_cache(Store, Key, Version, Fresh)),
         ContextRef = Fresh
     ).
 
-replace_persistent_cache(Store, Key, Version, ContextRef) :-
-    findall(Old,
-            retract(persistent_mount_cache(Store, Key, _, Old)),
-            OldRefs),
-    maplist(delete_cached_context, OldRefs),
-    assertz(persistent_mount_cache(Store, Key, Version, ContextRef)).
+clear_stale_persistent_version_locked(Store, Key, Version) :-
+    findall(Stale,
+            retract(persistent_mount_cache(Store, Key, Version, Stale)),
+            StaleRefs),
+    maplist(delete_cached_context, StaleRefs).
 
 latest_persistent_mount(Store, Key, Artifact) :-
     mount_namespace(Namespace),
@@ -439,6 +462,15 @@ mount_key(Scope, Name, Key) :-
                      [algorithm(sha256),encoding(utf8)]),
     atom_concat(mount_, Hash, Key).
 
+persistent_publish_mutex(Store, Key, Mutex) :-
+    term_string(persistent_mount(Store, Key),
+                Canonical,
+                [quoted(true),numbervars(true),ignore_ops(true)]),
+    crypto_data_hash(Canonical,
+                     Hash,
+                     [algorithm(sha256),encoding(utf8)]),
+    atom_concat(rlm_context_mount_publish_, Hash, Mutex).
+
 normalize_name(Value, Name) :-
     atom(Value),
     Value \== '',
@@ -516,18 +548,27 @@ public_mount(Request, ArtifactRef, Version, State,
              }).
 
 public_from_artifact(Artifact, Public) :-
-    Value = Artifact.value,
+    get_dict(value, Artifact, Value),
+    get_dict(name, Value, Name),
+    get_dict(scope, Value, Scope),
+    get_dict(lifetime, Value, Lifetime),
+    get_dict(visibility, Value, Visibility),
+    get_dict(state, Value, State),
+    get_dict(source_kind, Value, SourceKind),
+    get_dict(source_fingerprint, Value, SourceFingerprint),
+    get_dict(ref, Artifact, ArtifactRef),
+    get_dict(version, Artifact, Version),
     Public = context_mount{
                  schema_version:1,
-                 name:Value.name,
-                 scope:Value.scope,
-                 lifetime:Value.lifetime,
-                 visibility:Value.visibility,
-                 state:Value.state,
-                 source_kind:Value.source_kind,
-                 source_fingerprint:Value.source_fingerprint,
-                 artifact_ref:Artifact.ref,
-                 version:Artifact.version
+                 name:Name,
+                 scope:Scope,
+                 lifetime:Lifetime,
+                 visibility:Visibility,
+                 state:State,
+                 source_kind:SourceKind,
+                 source_fingerprint:SourceFingerprint,
+                 artifact_ref:ArtifactRef,
+                 version:Version
              }.
 
 require_identity(Value, Name, Scope) :-
