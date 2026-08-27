@@ -38,7 +38,7 @@ constraint_registry([
                        rlm_constraint_verify:evaluate_constraint_solution,
                        none,
                        _{ verifier:_{id:constraint_oracle,version:1},
-                          collector:_{id:benchmark_result,version:1},
+                           collector:_{id:none,version:1},
                           evidence_policy:_{ required_evidence:true,
                                              source_classes:[benchmark_result],
                                              trust_classes:[observed],

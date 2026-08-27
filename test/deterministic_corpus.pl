@@ -108,6 +108,8 @@ corpus_entry('rlm_completion_planner_validation_retry_test.pl',
              include(rlm_completion_planner_validation_retry)).
 corpus_entry('rlm_completion_hardening_test.pl',
              include(rlm_completion_hardening)).
+corpus_entry('rlm_completion_final_handoff_test.pl',
+             include(rlm_completion_final_handoff)).
 corpus_entry('rlm_completion_tool_visibility_test.pl',
              include(rlm_completion_tool_visibility)).
 corpus_entry('rlm_nested_usage_test.pl', include(rlm_nested_usage)).
