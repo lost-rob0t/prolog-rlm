@@ -95,6 +95,13 @@ test(fixed_cli_planner_returns_exact_plan_without_token_usage) :-
     assertion(Output.usage.total_tokens =:= 0),
     assertion(Output.usage.cost =:= 0.0).
 
+test(small_output_cap_keeps_room_for_mandatory_runtime_context) :-
+    rlm_cli:default_cli_options(Default),
+    Options = Default.put(max_tokens, 96),
+    rlm_cli:completion_budget_from_options(Options, Budget),
+    assertion(Budget.max_total_tokens >= 2048),
+    assertion(Budget.max_total_tokens > Options.max_tokens).
+
 test(demo_trace_export_and_trace_view_are_roundtrippable) :-
     tmp_file_stream(text, Path, Stream),
     close(Stream),
