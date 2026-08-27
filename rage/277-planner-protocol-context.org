@@ -74,18 +74,34 @@ diagnostics remain bounded and never echo rejected provider output.  The
 deep-experiment report records the actual =root_decision= and claims
 =plan_parsed= / =plan_validated= only when a plan actually executed.
 
+Live CI at the first fixed head exposed a second, related protocol gap: the
+model reliably executed =context(slice)= plus all three =project_read=
+reads but then composed the final as a one-hop field reference over the tool
+binding (e.g. =field(var(readme),content)=), missing the envelope =value=
+hop, and died unrecoverably at execution.  Root-plan validation now adds one
+registry-aware structural rule: a first-hop field key outside the closed
+=tool_result= envelope over a registry-tool binding can never resolve and is
+rejected at validation with a =tool_result_envelope_field(Key,Bind)= repair
+hint, so the existing bounded retry loop corrects it.  Direct trusted host
+tools are exempt (host-defined result shape).  The live acceptance
+assertions inspect bound values and transitions without over-constraining
+model bind naming.
+
 * Verification
 - Focused planner-context suite :: 41/41 passed.
-- Focused structural-retry suite :: 4/4 passed (both root-decision forms).
+- Focused structural-retry suite :: 6/6 passed (both root-decision forms and
+  the registry envelope-field repair).
 - Focused completion suite with direct-decision regressions :: 47/47 passed.
-- Full deterministic PlUnit corpus :: see final run in the PR evidence.
+- Focused plan suite :: 18/18 passed.
+- Full deterministic PlUnit corpus :: 1005/1005 passed.
 - Deterministic benchmark :: 16/16 passed.
 - Deep experiment :: 15/15 passed.
 - Runtime and production-module load checks :: passed.
 - JSON CLI demo :: passed.
-- Real OpenRouter agentic planner regression :: passes without a fixed plan or
-  =planner_instruction= against neutral repository fixtures (README and the
-  completion/tool runtime docs); the generated plan executes both
-  =context(slice)= and the confined =project_read= tool, and independent
-  binding assertions find every sentinel.
+- Real OpenRouter agentic planner regression :: passes repeatedly (3/3 local
+  verification runs) without a fixed plan or =planner_instruction= against
+  neutral repository fixtures (README and the completion/tool runtime docs);
+  the generated plan executes both =context(slice)= and the confined
+  =project_read= tool, and independent binding assertions find every
+  sentinel.
 - =git diff --check= :: passed.

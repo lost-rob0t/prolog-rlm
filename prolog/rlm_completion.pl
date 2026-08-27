@@ -1096,7 +1096,7 @@ planner_parse_result(ok(root_plan(Plan)),
                        ProviderName,
                        Capabilities,
                        _),
-    plan_validate(Plan, Capabilities, default, ValidationOutcome),
+    planner_validate_root_plan(Plan, Capabilities, Options, ValidationOutcome),
     planner_validation_result(ValidationOutcome,
                               Plan,
                               Summary,
@@ -1229,6 +1229,119 @@ planner_repairable_validation(Error) :-
     get_dict(phase, Error, validate),
     get_dict(kind, Error, invalid_plan).
 
+% Root-plan validation adds one registry-aware structural rule on top of
+% plan_validate: a field reference over a binding produced by a REGISTRY
+% tool selects from the closed tool_result envelope installed by the adapter
+% (see plan_envelope/3 in rlm_tool). A first-hop key outside that envelope
+% can never resolve, so it is rejected here as a repairable structural fault
+% instead of failing execution unrecoverably. Direct trusted host tools
+% (tools([...])) are exempt: their result shape is host-defined.
+planner_validate_root_plan(Plan, Capabilities, Options, Outcome) :-
+    plan_validate(Plan, Capabilities, default, ValidationOutcome),
+    (   ValidationOutcome = ok(_)
+    ->  registry_tool_names(Options, RegistryNames),
+        catch(tool_envelope_field_check(Plan, RegistryNames),
+              plan_validation(Fault),
+              true),
+        !,
+        (   var(Fault)
+        ->  Outcome = ValidationOutcome
+        ;   Outcome = error(plan_error{phase:validate,
+                                       kind:invalid_plan,
+                                       detail:Fault,
+                                       message:"plan failed structural validation"})
+        )
+    ;   Outcome = ValidationOutcome
+    ).
+
+registry_tool_names(Options, Names) :-
+    option_value(tool_registry, Options, none, Registry),
+    (   Registry == none
+    ->  Names = []
+    ;   rlm_tool:tool_discover(Registry, Schemas)
+    ->  maplist(schema_tool_name, Schemas, Names)
+    ;   Names = []
+    ).
+
+schema_tool_name(Schema, Name) :-
+    get_dict(name, Schema, Name).
+
+tool_envelope_field_check(plan(Steps), RegistryNames) :-
+    envelope_steps_check(Steps, [], RegistryNames).
+
+envelope_steps_check([], _, _).
+envelope_steps_check([Step|Steps], EnvelopeBinds, RegistryNames) :-
+    envelope_step_check(Step, EnvelopeBinds, NextEnvelopeBinds, RegistryNames),
+    envelope_steps_check(Steps, NextEnvelopeBinds, RegistryNames).
+
+envelope_step_check(context(Handle, _, _), Binds, Binds, Names) :-
+    !,
+    envelope_expr_check(Handle, Binds, Names).
+envelope_step_check(model(_, Prompt, _, _), Binds, Binds, Names) :-
+    !,
+    envelope_expr_check(Prompt, Binds, Names).
+envelope_step_check(tool(Name, Args, Bind), Binds0, Binds, RegistryNames) :-
+    !,
+    envelope_expr_check(Args, Binds0, RegistryNames),
+    (   memberchk(Name, RegistryNames)
+    ->  Binds = [Bind|Binds0]
+    ;   Binds = Binds0
+    ).
+envelope_step_check(rlm(Child, _), Binds, Binds, Names) :-
+    !,
+    envelope_child_check(Child, [], Names).
+envelope_step_check(parallel(Plans, _), Binds, Binds, Names) :-
+    !,
+    maplist(envelope_branch_check(Binds, Names), Plans).
+envelope_step_check(retry(_, Child, _), Binds, Binds, Names) :-
+    !,
+    envelope_child_check(Child, Binds, Names).
+envelope_step_check(checkpoint(_), Binds, Binds, _) :- !.
+envelope_step_check(final(Value), Binds, Binds, Names) :-
+    !,
+    envelope_expr_check(Value, Binds, Names).
+
+envelope_branch_check(Binds, Names, Child) :-
+    envelope_child_check(Child, Binds, Names).
+
+envelope_child_check(plan(ChildSteps), Binds, Names) :-
+    envelope_steps_check(ChildSteps, Binds, Names).
+
+envelope_expr_check(Expr, _, _) :-
+    var(Expr),
+    !.
+envelope_expr_check(Expr, _, _) :-
+    is_dict(Expr),
+    !.
+envelope_expr_check(literal(_), _, _) :-
+    !.
+envelope_expr_check(field(Base, Key), EnvelopeBinds, Names) :-
+    !,
+    (   Base = var(Name),
+        atom(Name),
+        memberchk(Name, EnvelopeBinds),
+        \+ tool_result_envelope_key(Key)
+    ->  throw(plan_validation(tool_result_envelope_field(Key, Name)))
+    ;   true
+    ),
+    envelope_expr_check(Base, EnvelopeBinds, Names).
+envelope_expr_check(Expr, EnvelopeBinds, Names) :-
+    compound(Expr),
+    !,
+    Expr =.. [_|Args],
+    forall(member(Arg, Args),
+           envelope_expr_check(Arg, EnvelopeBinds, Names)).
+envelope_expr_check(_, _, _).
+
+tool_result_envelope_key(value).
+tool_result_envelope_key(authorization).
+tool_result_envelope_key(authority).
+tool_result_envelope_key(status).
+tool_result_envelope_key(fingerprint).
+tool_result_envelope_key(approval_id).
+tool_result_envelope_key(output_bytes).
+tool_result_envelope_key(elapsed_ms).
+
 planner_deferred_validation(Error) :-
     is_dict(Error),
     get_dict(phase, Error, validate),
@@ -1297,6 +1410,15 @@ safe_planner_repair_detail(invalid_direct_envelope_fields,
                            invalid_direct_envelope_fields) :-
     !.
 safe_planner_repair_detail(unsupported_root_mode, unsupported_root_mode) :-
+    !.
+safe_planner_repair_detail(tool_result_envelope_field(Key, Name),
+                           tool_result_envelope_field(Key, Name)) :-
+    atom(Key),
+    atom(Name),
+    atom_length(Key, KeyLength),
+    KeyLength =< 64,
+    atom_length(Name, NameLength),
+    NameLength =< 64,
     !.
 safe_planner_repair_detail(_, typed_plan_contract_rejected).
 
