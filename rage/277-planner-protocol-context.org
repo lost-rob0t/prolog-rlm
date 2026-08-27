@@ -134,12 +134,16 @@ claim indexed/constant-memory cold search.  Current conversation backends still
 materialize/list transcript records and perform linear cold search; 40,000
 messages is an acceptance point, not an arbitrary-size storage guarantee.
 
-The direct-loop review made the provider-cache prefix independent of query
-trigger activation when the host supplies an explicit skill set.  Ten fresh
-compiler/runtime constructions now alternate unrelated query text while
-requiring byte-identical static messages and native schemas.  Routine
-credentialed CI is single-lane: the pinned paid workflow runs on pull requests
-and =main=, while the duplicate general-CI live lane is manual only.
+The direct-loop review preserves canonical prompt-compiler ownership.  Direct
+mode defaults to contextual =compiled= projection, passes the real query into
+tool and skill selection, compiles once per session, and reuses that projection
+unchanged only for continuations within the session.  Ten fresh constructions
+with the same input require identical output; a changed query is required to
+activate or remove relevant schemas and skills.  =all_tools= remains an
+explicit compatibility/cache profile, not the default.  Routine credentialed
+CI is single-lane: the pinned paid workflow skips draft pull requests and runs
+when they become ready, on subsequent ready-PR updates, and on =main=; the
+duplicate general-CI live lane is manual only.
 
 The same review rejects an assistant continuation unless its normalized native
 call batch exactly matches the response envelope, and charges nested typed-plan
