@@ -164,6 +164,8 @@ corpus_entry('live_tool_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).
 corpus_entry('live_completion_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).
+corpus_entry('live_planner_context_openrouter_test.pl',
+             exclude(live_provider, 'requires the credentialed live gate')).
 corpus_entry('live_repair_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).
 corpus_entry('live_openrouter_test.pl',
