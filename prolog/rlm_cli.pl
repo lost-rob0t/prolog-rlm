@@ -245,6 +245,9 @@ rlm_session(Query, Options, Session) :-
                    planner_max_tokens(1),
                    context_options([max_bytes(Options.context_bytes),
                                     time_limit(2.0)]),
+                   % The CLI supplies a host-owned fixed plan; do not charge
+                   % its unused root-planner skills against the small budget.
+                   skill_mode(off),
                    budget(Budget)],
     runtime_reasoning_options(Options, ReasoningOptions),
     append(RuntimeBase, ReasoningOptions, RuntimeOptions),
