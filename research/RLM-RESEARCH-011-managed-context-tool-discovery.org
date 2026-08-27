@@ -3,6 +3,13 @@
 :END:
 #+title: RLM-RESEARCH-011 Managed Context Tool Discovery and Activation
 #+status: RESEARCHED
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
 #+filetags: :rlm:prompt:compiler:context:tools:mcp:discovery:budget:security:
 
 * Research Question
