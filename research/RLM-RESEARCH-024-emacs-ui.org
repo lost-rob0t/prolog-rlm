@@ -1,4 +1,12 @@
-#+TITLE: RLM-RESEARCH-024 Emacs UI and Elisp bindings for PrologAgent
+#+title: RLM-RESEARCH-024 Emacs UI and Elisp bindings for PrologAgent
+#+status: RESEARCHED
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
 #+DATE: 2026-08-18
 #+OPTIONS: toc:3 num:nil
 

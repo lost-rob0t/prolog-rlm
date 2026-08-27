@@ -1,5 +1,12 @@
-#+TITLE: RLM-RESEARCH-026 — Subagent task deadlines
-#+STATUS: accepted-for-realization
+#+title: RLM-RESEARCH-026 — Subagent task deadlines
+#+status: accepted-for-realization
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
 #+ISSUE: #175
 
 * Research Question

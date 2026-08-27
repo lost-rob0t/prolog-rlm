@@ -1,0 +1,19 @@
+#+title: RLM-RESEARCH-NNN Short research title
+#+status: RESEARCHING
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
+
+* Research Question
+
+Replace this heading with the bounded question under investigation.
+
+* Findings
+
+Record sources, retrieval dates, findings, inference, implications, rejected
+alternatives, open questions, and acceptance experiments below the canonical
+header block. Do not use prose or checkboxes as an approval signal.
