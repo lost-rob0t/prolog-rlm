@@ -12,4 +12,10 @@ Planner output is one closed typed-plan JSON object. The root object must have t
 
 A model step uses `op`, `provider`, `prompt`, `options`, and `bind`. Set `provider` to a provider name granted by the runtime. To pass the original completion goal without copying it, use `{"ref":"input","name":"query"}` as the model prompt expression. For example: `{"op":"model","provider":"<granted-provider>","prompt":{"ref":"input","name":"query"},"options":{},"bind":"answer"}`. A final step can return that binding as `{"op":"final","value":{"ref":"var","name":"answer"}}`.
 
+The opaque context bytes are available only through the `context` input. When a listed context capability is useful, retrieve a bounded projection with a context step such as `{"op":"context","handle":{"ref":"input","name":"context"},"action":{"type":"slice","start":0,"length":1024},"bind":"evidence"}`. Other context actions must use exactly the action names and fields exposed by the runtime.
+
+Invoke an active tool with `{"op":"tool","name":"<active-tool-name>","args":{},"bind":"tool_result"}`. The `name` must exactly match an active tool schema and `args` must match that schema. Seeing a schema does not grant permission; use a tool only when its capability is listed.
+
+Expressions may use prior bindings as `{"ref":"var","name":"binding"}` or select a field as `{"ref":"field","value":{"ref":"var","name":"binding"},"key":"field"}`. References are backward-only: bind a value before referring to it.
+
 Return executable strategy in planner JSON, not the task's final answer itself.

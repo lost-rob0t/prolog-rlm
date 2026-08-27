@@ -19,6 +19,12 @@ default_completion_budget(-Budget).
 
 The root planner receives the user goal plus context metadata/handle information, capability declarations, and **compiler-active tool schemas**. It does not receive the full opaque context implicitly. Its output must parse as the typed plan AST used by `rlm_plan`.
 
+The default mandatory `rlm-operate` planner skill supplies the closed JSON
+envelopes needed to project the `query` and opaque `context` inputs, invoke an
+active tool by its exact schema name, and reference prior bindings. This
+protocol context is descriptive only: a listed JSON shape or provider-visible
+schema never grants the corresponding capability or installs a handler.
+
 Tool possession and provider-visible tool schemas are deliberately separate. `rlm_completion` keeps the complete capability-filtered trusted runtime bindings for execution, authority, and effect mediation. Registry schemas are imported as inert declarative units into an ephemeral `rlm_prompt_compiler` catalog; the compiler decides which schemas are visible to the root planner. Hiding a schema does not unregister a tool, and exposing a schema does not grant capability or authority.
 
 The trusted host option `prompt_compile_mode/1` controls this projection:
@@ -28,6 +34,13 @@ The trusted host option `prompt_compile_mode/1` controls this projection:
 - any other value fails closed as `completion_error{phase:prompt_compile,kind:invalid_prompt_compile_mode,...}` before planner dispatch.
 
 The temporary compiler catalog is always destroyed during cleanup. Tool handlers/callables never enter prompt-compiler data.
+
+Configured planner retries are corrective for parse and structural validation
+failures. A later attempt receives one bounded host-generated diagnostic for
+the latest rejected candidate. The diagnostic contains no candidate text or
+raw provider payload, and the candidate was not executed. Capability and
+budget denials are authoritative failures rather than repair hints and do not
+trigger this retry context.
 
 The supervisor then:
 

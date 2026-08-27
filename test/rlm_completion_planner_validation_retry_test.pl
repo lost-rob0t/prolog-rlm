@@ -4,10 +4,12 @@
 
 :- dynamic planner_call_count/1.
 :- dynamic model_call_count/1.
+:- dynamic planner_request/2.
 
 reset_retry_fixture :-
     retractall(planner_call_count(_)),
     retractall(model_call_count(_)),
+    retractall(planner_request(_, _)),
     assertz(planner_call_count(0)),
     assertz(model_call_count(0)).
 
@@ -25,8 +27,9 @@ planner_output(Plan,
                                       total_tokens:2,
                                       cost:0.0}}).
 
-structurally_invalid_then_valid_planner(_, ok(Output)) :-
+structurally_invalid_then_valid_planner(Request, ok(Output)) :-
     bump_count(planner_call_count, Call),
+    assertz(planner_request(Call, Request)),
     (   Call =:= 1
     ->  Plan = plan([model(openrouter,
                           literal("MUST_NOT_EXECUTE"),
@@ -92,7 +95,13 @@ test(structural_validation_failure_uses_configured_retry,
     planner_call_count(PlannerCalls),
     model_call_count(ModelCalls),
     assertion(PlannerCalls =:= 2),
-    assertion(ModelCalls =:= 0).
+    assertion(ModelCalls =:= 0),
+    planner_request(1, FirstRequest),
+    planner_request(2, SecondRequest),
+    append(FirstRequest.messages, [Repair], SecondRequest.messages),
+    assertion(Repair.role == user),
+    assertion(sub_string(Repair.content, _, _, _,
+                         "final_must_be_unique_and_last")).
 
 test(structural_validation_retry_exhaustion_is_explicit_and_accounted,
      [setup(reset_retry_fixture)]) :-

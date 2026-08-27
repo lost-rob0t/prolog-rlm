@@ -1,0 +1,61 @@
+#+title: RAGE record for issue 277 planner protocol context
+
+* Run identity
+- Consumed issue :: #277
+- Branch :: =rage/277-planner-protocol-context=
+- RAGE start commit :: =87189f7128bacfe97cd09874e958dd07e03322d3=
+
+* Failure evidence
+Auto-Dig run =33094075463= removed the earlier repeated 2048-token
+truncation signature but exhausted three planner attempts with
+=missing_field(name)=.  The root planner received active tool schemas, while
+the mandatory operating skill documented model, recursion, and final syntax
+but not the typed =tool= or =context= envelopes.
+
+Retries currently resend identical messages.  A structurally rejected attempt
+therefore gives the model no bounded diagnostic with which to correct the next
+candidate.
+
+* Design
+Keep the existing prompt-compiler and root-planner-only skill projection.  Add
+the closed context and tool step shapes plus the required reference forms to
+the mandatory =rlm-operate= skill.  Syntax remains descriptive: capabilities,
+registries, schemas, child narrowing, budgets, authority, and effect mediation
+remain independently enforced by Prolog.
+
+For parse and repairable structural-validation retries, append one inert user
+message containing the latest host-generated diagnostic.  Retain the original
+compiled system and root user messages unchanged, replace rather than
+accumulate older diagnostics, bound the diagnostic text, and never include the
+rejected candidate or raw provider response.  Capability and budget denials
+remain non-repairable and receive no retry context.
+
+* TDD contract
+- Captured default planner context contains exact context/tool JSON shapes and
+  input/variable/field reference forms.
+- Attempt one keeps the original compiled messages; attempt two adds exactly
+  one bounded repair diagnostic while each mandatory skill body still appears
+  once.
+- A missing tool =name= is represented in the repair diagnostic without the
+  rejected provider output.
+- Capability denial still performs one planner call and zero candidate
+  operations.
+- Aggregate retry usage, cancellation, and global budgets remain unchanged.
+
+* Non-goals
+- Do not add product-specific Auto-Dig instructions.
+- Do not expose the full opaque context directly to the root planner.
+- Do not propagate planner protocol context into task-producing model calls.
+- Do not add a second compiler, scheduler, authority layer, or executable
+  model callback.
+- Bounded task-framing plus evidence composition is a separate issue slice.
+
+* Verification
+- Focused planner-context suite :: 41/41 passed.
+- Focused structural-retry suite :: 3/3 passed.
+- Full deterministic PlUnit corpus :: 996/996 passed.
+- Deterministic benchmark :: 16/16 passed.
+- Deep experiment :: 15/15 passed.
+- Runtime and production-module load checks :: passed.
+- JSON CLI demo :: passed.
+- =git diff --check= :: passed.
