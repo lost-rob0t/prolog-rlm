@@ -1,6 +1,7 @@
 :- begin_tests(rlm_constraint_benchmark).
 
 :- use_module(library(http/json)).
+:- use_module('../../prolog/rlm_plan').
 :- use_module('../../benchmark/rlm_constraint_problem').
 :- use_module('../../benchmark/rlm_constraint_verify').
 :- use_module('../../benchmark/rlm_live_deep_experiment').
@@ -107,14 +108,30 @@ test(benchmark_status_comes_from_verification_not_magic_token) :-
     assertion(Quality =:= 0.0),
     assertion(Details.verification_status == rejected).
 
-test(core_minimal_lane_adds_no_benchmark_specific_planner_instruction) :-
-    benchmark_lane_instruction(core_minimal, 2, Options),
-    assertion(Options == []).
+test(documented_direct_model_contract_parses_as_typed_plan) :-
+    Json = "{\"steps\":[{\"op\":\"model\",\"provider\":\"openrouter\",\"prompt\":{\"ref\":\"input\",\"name\":\"query\"},\"options\":{},\"bind\":\"answer\"},{\"op\":\"final\",\"value\":{\"ref\":\"var\",\"name\":\"answer\"}}]}",
+    plan_parse(Json, ok(Plan)),
+    assertion(Plan == plan([model(openrouter, input(query), _{}, answer),
+                            final(var(answer))])).
 
-test(guided_lane_is_explicitly_downstream_owned) :-
+test(core_minimal_lane_exposes_required_root_steps_contract) :-
+    benchmark_lane_instruction(core_minimal, 0, Options),
+    assertion(Options = [planner_instruction(Guidance)]),
+    assertion(sub_string(Guidance, _, _, _, "top-level \"steps\" array")),
+    assertion(sub_string(Guidance, _, _, _, "{\"steps\":[...]}")),
+    assertion(sub_string(Guidance, _, _, _, "\"prompt\":{\"ref\":\"input\",\"name\":\"query\"}")),
+    assertion(sub_string(Guidance, _, _, _, "Do not emit an \"rlm\" step")),
+    assertion(\+ sub_string(Guidance, _, _, _, "slot system first")),
+    assertion(\+ sub_string(Guidance, _, _, _, "\"slot\":7")).
+
+test(guided_lane_exposes_nested_rlm_steps_contract_and_decomposition_hint) :-
     benchmark_lane_instruction(harness_guided, 2, Options),
     assertion(Options = [planner_instruction(Guidance)]),
+    assertion(sub_string(Guidance, _, _, _, "{\"steps\":[...]}")),
+    assertion(sub_string(Guidance, _, _, _, "{\"op\":\"rlm\",\"plan\":{\"steps\":[...]},\"bind\":\"child\"}")),
+    assertion(sub_string(Guidance, _, _, _, "same closed typed-plan grammar")),
     assertion(sub_string(Guidance, _, _, _, "depth 2")),
-    assertion(sub_string(Guidance, _, _, _, "slot system first")).
+    assertion(sub_string(Guidance, _, _, _, "slot system first")),
+    assertion(\+ sub_string(Guidance, _, _, _, "\"slot\":7")).
 
 :- end_tests(rlm_constraint_benchmark).
