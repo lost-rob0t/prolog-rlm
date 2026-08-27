@@ -104,6 +104,8 @@ corpus_entry('rlm_tool_mcp_async_test.pl', include(rlm_tool_mcp_async)).
 corpus_entry('rlm_tool_mcp_scheduler_test.pl',
              include(rlm_tool_mcp_scheduler)).
 corpus_entry('rlm_completion_test.pl', include(rlm_completion)).
+corpus_entry('rlm_completion_planner_validation_retry_test.pl',
+             include(rlm_completion_planner_validation_retry)).
 corpus_entry('rlm_completion_hardening_test.pl',
              include(rlm_completion_hardening)).
 corpus_entry('rlm_completion_tool_visibility_test.pl',
