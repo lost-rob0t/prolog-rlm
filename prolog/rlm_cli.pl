@@ -133,7 +133,7 @@ effect_store_migration_session(Args, Session) :-
                           status:Status,
                           summary:Summary,
                           payload:Report,
-                          output:Options}.
+                          output:Output}.
 
 migration_cli_status(migrated, pass) :- !.
 migration_cli_status(already_migrated, pass) :- !.
