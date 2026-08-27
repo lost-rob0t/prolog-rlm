@@ -134,6 +134,26 @@ test(backend_declares_no_filesystem_or_network_capability) :-
     assertion(Caps.network == false),
     assertion(Caps.persistent == false).
 
+test(persistent_mount_rehydrates_canonical_persisted_text_source) :-
+    setup_call_cleanup(
+        artifact_store_open(memory, ok(Store)),
+        ( Options = [lifetime(persistent), scope(project(demo))],
+          context_mount(Store,
+                        canonical_text,
+                        text("CANONICAL-PERSISTED-CONTEXT"),
+                        Options,
+                        ok(Binding)),
+          context_slice(Binding.context_ref.handle,
+                        0,
+                        64,
+                        [],
+                        ok(Slice)),
+          assertion(Slice.value == "CANONICAL-PERSISTED-CONTEXT")
+        ),
+        ( context_mount_runtime_reset,
+          artifact_store_close(Store, _)
+        )).
+
 test(persistent_mount_cache_is_partitioned_by_artifact_store) :-
     setup_call_cleanup(
         ( artifact_store_open(memory, ok(StoreA)),
