@@ -1,12 +1,12 @@
 #+title: RLM-RESEARCH-025 Lem UI and Common Lisp bindings for PrologAgent
 #+status: RESEARCHED
 #+approval_schema: prolog-rlm.research-approval.v1
-#+approval_state: PENDING
-#+approval_actor: NONE
-#+approval_evidence: NONE
-#+approval_base_commit: NONE
-#+approval_base_blob: NONE
-#+approval_decided_at: NONE
+#+approval_state: APPROVED
+#+approval_actor: lost-rob0t
+#+approval_evidence: human:emacs-research-dashboard
+#+approval_base_commit: 87189f7128bacfe97cd09874e958dd07e03322d3
+#+approval_base_blob: 1b03ac3c3cc6d72338013b755707b1991c68846f
+#+approval_decided_at: 2026-08-27T13:57:48-04:00
 #+DATE: 2026-08-18
 #+OPTIONS: toc:3 num:nil
 
