@@ -369,4 +369,129 @@ test(child_completion_enforces_wall_time_budget) :-
     assertion(Envelope.status == failed),
     assertion(Envelope.error.kind == timeout).
 
+% Issue #175: task-deadline policy must be resolved before child spawn and the
+% same effective task deadline must be observable through the canonical tool.
+test(subagent_schema_exposes_optional_timeout_seconds) :-
+    Caps = [tool(rlm_subagent), rlm, model(openrouter)],
+    agent_runtime_create([root_capabilities(Caps)], Runtime),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( agent_spawn(Runtime, none, agent_spec(parent), Caps, ok(Parent)),
+          subagent_options(Options),
+          rlm_subagent_register(Registry, Runtime, Parent,
+                                [rlm, model(openrouter)], text("ctx"),
+                                Options, ok(_)),
+          tool_lookup(Registry, rlm_subagent, ok(Schema)),
+          assertion(Schema.arguments.required == [query]),
+          get_dict(timeout_seconds, Schema.arguments.properties, TimeoutSchema),
+          assertion(TimeoutSchema.type == number)
+        ),
+        ( tool_registry_destroy(Registry), agent_runtime_destroy(Runtime) )).
+
+test(outer_tool_limit_covers_host_maximum_plus_grace) :-
+    Caps = [tool(rlm_subagent), rlm, model(openrouter)],
+    agent_runtime_create([root_capabilities(Caps)], Runtime),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( agent_spawn(Runtime, none, agent_spec(parent), Caps, ok(Parent)),
+          subagent_options(Base),
+          append(Base,
+                 [subagent_timeout_default(0.2),
+                  subagent_timeout_max(0.5),
+                  subagent_timeout_grace(0.1)],
+                 Options),
+          rlm_subagent_register(Registry, Runtime, Parent,
+                                [rlm, model(openrouter)], text("ctx"),
+                                Options, ok(_)),
+          tool_lookup(Registry, rlm_subagent, ok(Schema)),
+          assertion(abs(Schema.limits.time_limit - 0.6) < 0.000001)
+        ),
+        ( tool_registry_destroy(Registry), agent_runtime_destroy(Runtime) )).
+
+test(subagent_timeout_omitted_uses_host_default,
+     [setup(completion_test_support:reset_calls)]) :-
+    Caps = [tool(rlm_subagent), rlm, model(openrouter)],
+    agent_runtime_create([root_capabilities(Caps), max_agents(3)], Runtime),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( agent_spawn(Runtime, none, agent_spec(parent), Caps, ok(Parent)),
+          subagent_options(Base),
+          append(Base,
+                 [subagent_timeout_default(0.2),
+                  subagent_timeout_max(0.5),
+                  subagent_timeout_grace(0.1)],
+                 Options),
+          rlm_subagent_register(Registry, Runtime, Parent,
+                                [rlm, model(openrouter)], text("ctx"),
+                                Options, ok(_)),
+          tool_invoke(Registry, Caps, rlm_subagent,
+                      json{query:"unknown"}, [], ok(Execution), _),
+          Envelope = Execution.value,
+          assertion(Envelope.status == completed),
+          assertion(Envelope.timeout.source == default),
+          assertion(Envelope.timeout.requested_seconds == none),
+          assertion(abs(Envelope.timeout.effective_seconds - 0.2) < 0.000001)
+        ),
+        ( tool_registry_destroy(Registry), agent_runtime_destroy(Runtime) )).
+
+test(subagent_timeout_explicit_override_is_honored,
+     [setup(completion_test_support:reset_calls)]) :-
+    Caps = [tool(rlm_subagent), rlm, model(openrouter)],
+    agent_runtime_create([root_capabilities(Caps), max_agents(3)], Runtime),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( agent_spawn(Runtime, none, agent_spec(parent), Caps, ok(Parent)),
+          subagent_options(Base),
+          append(Base,
+                 [subagent_timeout_default(0.2),
+                  subagent_timeout_max(0.5),
+                  subagent_timeout_grace(0.1)],
+                 Options),
+          rlm_subagent_register(Registry, Runtime, Parent,
+                                [rlm, model(openrouter)], text("ctx"),
+                                Options, ok(_)),
+          tool_invoke(Registry, Caps, rlm_subagent,
+                      json{query:"unknown", timeout_seconds:0.4}, [],
+                      ok(Execution), _),
+          Envelope = Execution.value,
+          assertion(Envelope.status == completed),
+          assertion(Envelope.timeout.source == model_request),
+          assertion(abs(Envelope.timeout.requested_seconds - 0.4) < 0.000001),
+          assertion(abs(Envelope.timeout.effective_seconds - 0.4) < 0.000001)
+        ),
+        ( tool_registry_destroy(Registry), agent_runtime_destroy(Runtime) )).
+
+test(subagent_timeout_above_host_max_is_rejected_before_spawn) :-
+    Caps = [tool(rlm_subagent), rlm, model(openrouter)],
+    agent_runtime_create([root_capabilities(Caps), max_agents(3)], Runtime),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( agent_spawn(Runtime, none, agent_spec(parent), Caps, ok(Parent)),
+          subagent_options(Base),
+          append(Base,
+                 [subagent_timeout_default(0.2),
+                  subagent_timeout_max(0.5),
+                  subagent_timeout_grace(0.1)],
+                 Options),
+          rlm_subagent_register(Registry, Runtime, Parent,
+                                [rlm, model(openrouter)], text("ctx"),
+                                Options, ok(_)),
+          agent_children(Runtime, Parent, Before),
+          tool_invoke(Registry, Caps, rlm_subagent,
+                      json{query:"unknown", timeout_seconds:0.6}, [],
+                      ok(Execution), _),
+          Envelope = Execution.value,
+          assertion(Envelope.status == failed),
+          assertion(Envelope.error.kind == timeout_exceeds_maximum),
+          assertion(Envelope.correlation.child == none),
+          agent_children(Runtime, Parent, After),
+          assertion(Before == After)
+        ),
+        ( tool_registry_destroy(Registry), agent_runtime_destroy(Runtime) )).
+
 :- end_tests(rlm_subagent).

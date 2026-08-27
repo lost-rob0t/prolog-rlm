@@ -69,6 +69,10 @@ completion_budget{
 
 The completion budget is projected into the plan runtime's step/depth/concurrency/model/tool/context/output/time limits. Planner calls consume the same completion-level model-call/token/cost envelope.
 
+`completion_budget.time_limit` is an execution wall-time, not a Future waiter timeout. The `rlm_subagent` runtime may replace only this field after resolving an optional model `timeout_seconds` request against host-owned default and maximum policy. Every other host completion-budget field remains authoritative and is preserved. Model-facing tool arguments never become a general completion-budget mutation surface.
+
+An enclosing parent completion may terminate before a longer child request. Until the generic runtime exposes a reliable remaining-parent-deadline API, `rlm_subagent` does not invent one locally or widen the enclosing lifetime.
+
 Provider-reported token and cost usage is enforced when numeric metadata is available. A generation request is also tightened against the remaining token ceiling before execution. If a provider omits usage or cost metadata, the trajectory records that it is unknown rather than fabricating precision.
 
 ## Cancellation

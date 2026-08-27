@@ -104,7 +104,13 @@ rlm_future_await(Future, 0.25, TimeoutOutcome),
 rlm_future_await(Future, FinalOutcome).
 ```
 
-Use `rlm_future_cancel/2` when cancellation is intended.
+Future await timeout controls only how long a caller waits. Domain task deadlines such as the validated `rlm_subagent` completion budget are execution limits owned and enforced by the domain runtime/tool. Therefore:
+
+```text
+await timeout != task execution timeout != cancellation
+```
+
+Use `rlm_future_cancel/2` when cancellation is intended. A caller may time out while waiting and later observe the same task finish normally; conversely, an `rlm_subagent` task deadline may terminate child completion even when its caller is willing to await the Future longer.
 
 ### Cancellation and cleanup
 
