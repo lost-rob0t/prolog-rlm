@@ -51,6 +51,7 @@
             mkdir -p "$out/share/agentprolog/bin"
             mkdir -p "$out/share/agentprolog/agentProlog"
             cp bin/agentprolog.pl "$out/share/agentprolog/bin/agentprolog.pl"
+            cp bin/agentprolog-ui.pl "$out/share/agentprolog/bin/agentprolog-ui.pl"
             cp -R agentProlog/prolog "$out/share/agentprolog/agentProlog/prolog"
             mkdir -p "$out/bin"
             makeWrapper ${swiProlog}/bin/swipl "$out/bin/agentprolog" \
@@ -58,6 +59,12 @@
               --add-flags "-q" \
               --add-flags "-s" \
               --add-flags "$out/share/agentprolog/bin/agentprolog.pl" \
+              --add-flags "--"
+            makeWrapper ${swiProlog}/bin/swipl "$out/bin/agentprolog-ui" \
+              --prefix SWIPL_PACK_PATH : "${installedPackRoot}" \
+              --add-flags "-q" \
+              --add-flags "-s" \
+              --add-flags "$out/share/agentprolog/bin/agentprolog-ui.pl" \
               --add-flags "--"
             runHook postInstall
           '';
@@ -91,6 +98,10 @@
         apps.agentprolog = {
           type = "app";
           program = "${agentProlog}/bin/agentprolog";
+        };
+        apps.agentprolog-ui = {
+          type = "app";
+          program = "${agentProlog}/bin/agentprolog-ui";
         };
         apps.deepseek-harness = {
           type = "app";
@@ -130,6 +141,9 @@
           mkdir -p "$HOME" "$XDG_CONFIG_HOME"
           swipl -q -s ${self}/agentProlog/test/run.pl
           agentprolog help | grep -q '^AgentProlog$'
+          printf '%s\n' '{"protocol":"prolog_agent_ui_v1","kind":"negotiate","request_id":"req_check","payload":{"protocol_versions":["prolog_agent_ui_v1"],"required_capabilities":[],"optional_capabilities":[]}}' \
+            | agentprolog-ui \
+            | grep -q '"request_id":"req_check"'
           touch "$out"
         '';
 
