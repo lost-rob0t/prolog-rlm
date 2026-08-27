@@ -1,6 +1,11 @@
 :- module(completion_test_support,
-          [ direct_planner/2,
-            depth_two_planner/2,
+           [ direct_planner/2,
+             direct_root_answer/2,
+             empty_direct_answer/2,
+             extra_field_direct_answer/2,
+             unsupported_mode_direct_answer/2,
+             context_slice_planner/2,
+             depth_two_planner/2,
             duplicate_recursive_planner/2,
             anonymous_dict_grandchild_tool_planner/2,
             nonground_recursive_planner/2,
@@ -62,6 +67,34 @@ planner_output(Plan,
 direct_planner(_, ok(Output)) :-
     bump_planner,
     Plan = plan([final(literal("direct-ok"))]),
+    planner_output(Plan, Output).
+
+direct_root_answer(_, ok(Response)) :-
+    bump_planner,
+    fake_response("{\"mode\":\"direct\",\"answer\":\"direct-root-ok\"}",
+                  Response).
+
+empty_direct_answer(_, ok(Response)) :-
+    bump_planner,
+    fake_response("{\"mode\":\"direct\",\"answer\":\"\"}",
+                  Response).
+
+extra_field_direct_answer(_, ok(Response)) :-
+    bump_planner,
+    fake_response("{\"mode\":\"direct\",\"answer\":\"x\",\"extra\":1}",
+                  Response).
+
+unsupported_mode_direct_answer(_, ok(Response)) :-
+    bump_planner,
+    fake_response("{\"mode\":\"auto\",\"answer\":\"x\"}",
+                  Response).
+
+context_slice_planner(_, ok(Output)) :-
+    bump_planner,
+    Plan = plan([context(input(context),
+                         slice(0, 1024),
+                         evidence),
+                 final(literal("context-plan-ok"))]),
     planner_output(Plan, Output).
 
 depth_two_planner(_, ok(Output)) :-

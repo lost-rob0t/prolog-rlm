@@ -8,10 +8,12 @@
 /** <module> REAL-provider recursive constraint-solving benchmark
 
 This is the reasoning benchmark. It deliberately does not inject a fixed plan.
-The root planner receives the normal minimal rlm_completion runtime contract and
-a hard closed CSP query. Correctness is decided by the trusted Prolog oracle in
-rlm_constraint_problem and routed through the production Frozen Spec / Verify
-path, never by model self-report or a magic output token.
+The root controller receives the normal minimal rlm_completion runtime contract
+and a hard closed CSP query; it may answer directly or select a typed plan.
+The report records the actual root decision and claims a plan parsed/validated
+only when a plan actually executed. Correctness is decided by the trusted
+Prolog oracle in rlm_constraint_problem and routed through the production
+Frozen Spec / Verify path, never by model self-report or a magic output token.
 
 Two lanes are compared at recursion ceilings 0/1/2:
 
@@ -107,6 +109,7 @@ constraint_outcome_case(Lane,
                                    VerificationDetails),
     result_recursion(Result, ActualDepth, RecursiveCalls),
     result_selected_model(Result, SelectedModel),
+    result_root_decision(Result, Decision, PlanParsed, PlanValidated),
     usage_metrics(Result.usage, LatencyMs, ActualDepth, Metrics),
     format(atom(Name), '~w_depth_~d', [Lane, RequestedDepth]),
     output_present(TextOutcome, OutputPresent),
@@ -116,8 +119,9 @@ constraint_outcome_case(Lane,
                requested_recursion_depth:RequestedDepth,
                actual_recursion_depth:ActualDepth,
                recursive_calls:RecursiveCalls,
-               plan_parsed:true,
-               plan_validated:true,
+               root_decision:Decision,
+               plan_parsed:PlanParsed,
+               plan_validated:PlanValidated,
                fixed_plan_injected:false,
                planner_instruction:Lane,
                final_output_present:OutputPresent},
@@ -197,6 +201,15 @@ result_recursion(Result, Depth, Calls) :-
     ;   Depth = 0,
         Calls = 0
     ).
+
+% Truthful root-decision reporting: a direct completion executed no typed
+% plan, so plan_parsed/plan_validated must not claim one ran. Only an
+% executed plan result carries a parsed and validated plan.
+result_root_decision(Result, direct, false, false) :-
+    get_dict(plan, Result, none),
+    !.
+result_root_decision(Result, plan, true, true) :-
+    get_dict(plan, Result, _).
 
 result_selected_model(Result, Model) :-
     (   get_dict(trajectory, Result, Trajectory),

@@ -55,13 +55,41 @@ capability_denied_then_valid_planner(_, ok(Output)) :-
     bump_count(planner_call_count, Call),
     (   Call =:= 1
     ->  Plan = plan([model(openrouter,
-                          literal("MUST_NOT_EXECUTE"),
-                          _{},
-                          forbidden),
-                     final(literal("denied"))])
+                        literal("MUST_NOT_EXECUTE"),
+                        _{},
+                        forbidden),
+                   final(literal("denied"))])
     ;   Plan = plan([final(literal("MUST_NOT_REPAIR_POLICY"))])
     ),
     planner_output(Plan, Output).
+
+invalid_direct_then_direct_planner(Request, ok(Response)) :-
+    bump_count(planner_call_count, Call),
+    assertz(planner_request(Call, Request)),
+    (   Call =:= 1
+    ->  fake_retry_response(
+            "UNIQUE_REJECTED_CANDIDATE {\"mode\":\"direct\",\"answer\":\"\"}",
+            Response)
+    ;   fake_retry_response(
+            "{\"mode\":\"direct\",\"answer\":\"direct-after-repair\"}",
+            Response)
+    ).
+
+fake_retry_response(Text,
+                    model_response{provider:fake,
+                                   requested_model:fake,
+                                   selected_model:fake,
+                                   text:Text,
+                                   reasoning:"",
+                                   tool_calls:[],
+                                   finish_reason:stop,
+                                   usage:usage{present:true,
+                                               prompt_tokens:1,
+                                               completion_tokens:1,
+                                               total_tokens:2,
+                                               cost:0.0},
+                                   metadata:metadata{http_status:200,
+                                                     response_received:true}}).
 
 must_not_execute_model(_, ok(_)) :-
     bump_count(model_call_count, _),
@@ -145,5 +173,41 @@ test(capability_denial_is_not_a_planner_repair_signal,
     model_call_count(ModelCalls),
     assertion(PlannerCalls =:= 1),
     assertion(ModelCalls =:= 0).
+
+test(invalid_direct_envelope_repairs_to_direct_with_both_forms,
+     [setup(reset_retry_fixture)]) :-
+    retry_options(
+        plunit_rlm_completion_planner_validation_retry:invalid_direct_then_direct_planner,
+        [model(openrouter)],
+        Options),
+    rlm_completion("repair an invalid direct root decision",
+                   text("opaque context"),
+                   Options,
+                   Outcome),
+    Outcome = ok(Completion),
+    assertion(Completion.value == "direct-after-repair"),
+    assertion(Completion.plan == none),
+    assertion(Completion.usage.model_calls =:= 2),
+    planner_call_count(PlannerCalls),
+    model_call_count(ModelCalls),
+    assertion(PlannerCalls =:= 2),
+    assertion(ModelCalls =:= 0),
+    planner_request(1, FirstRequest),
+    planner_request(2, SecondRequest),
+    append(FirstRequest.messages, [Repair], SecondRequest.messages),
+    assertion(Repair.role == user),
+    assertion(sub_string(Repair.content, _, _, _,
+                         "Previous planner candidate was rejected")),
+    assertion(sub_string(Repair.content, _, _, _, "invalid_root_decision")),
+    assertion(sub_string(Repair.content, _, _, _,
+                         "direct_answer_must_be_nonempty_text")),
+    assertion(sub_string(Repair.content, _, _, _,
+                         "{\"mode\":\"direct\"")),
+    assertion(sub_string(Repair.content, _, _, _,
+                         "{\"steps\":[...]}")),
+    assertion(\+ sub_string(Repair.content, _, _, _,
+                            "UNIQUE_REJECTED_CANDIDATE")),
+    string_length(Repair.content, Length),
+    assertion(Length =< 1024).
 
 :- end_tests(rlm_completion_planner_validation_retry).

@@ -50,16 +50,42 @@ remain non-repairable and receive no retry context.
   model callback.
 - Bounded task-framing plus evidence composition is a separate issue slice.
 
+* Root decision closure (issue #279)
+The forced-planner protocol regression: every =rlm_completion/4= request had
+to produce a typed plan even when no runtime operation added value, so plain
+questions paid a second model call that only echoed the goal, and the paid
+=harness_guided_depth_2= case lost its final textual output inside that
+second hop (=no textual final model output=).  The benchmark additionally
+hardcoded =plan_parsed:true= / =plan_validated:true= for every successful
+case, hiding which root decision actually ran.
+
+Design: the root model chooses one closed JSON root decision.  The strict
+direct envelope ={"mode":"direct","answer":"<nonempty final text>"}= finishes
+immediately with exactly one model call, =plan:none=, empty transitions and
+bindings, zero recursion, and truthful usage/trajectory data.  A valid typed
+plan always wins over the envelope fallback, so plan semantics for context,
+tools, model steps, and recursion are unchanged.  Envelopes with unapproved
+fields, non-=direct= modes, or nontextual/empty answers fail explicitly as
+=invalid_root_decision=; prose and native provider tool calls are never
+accepted as either root decision form.  The prompt, the mandatory
+=rlm-operate= skill, and planner repair diagnostics state both forms and
+prefer direct completion when runtime operations add no value.  Repair
+diagnostics remain bounded and never echo rejected provider output.  The
+deep-experiment report records the actual =root_decision= and claims
+=plan_parsed= / =plan_validated= only when a plan actually executed.
+
 * Verification
 - Focused planner-context suite :: 41/41 passed.
-- Focused structural-retry suite :: 3/3 passed.
-- Full deterministic PlUnit corpus :: 996/996 passed.
+- Focused structural-retry suite :: 4/4 passed (both root-decision forms).
+- Focused completion suite with direct-decision regressions :: 47/47 passed.
+- Full deterministic PlUnit corpus :: see final run in the PR evidence.
 - Deterministic benchmark :: 16/16 passed.
 - Deep experiment :: 15/15 passed.
 - Runtime and production-module load checks :: passed.
 - JSON CLI demo :: passed.
-- Real OpenRouter agentic planner regression :: passed without a fixed plan or
-  =planner_instruction=; the generated plan executed both =context(slice)= and
-  the confined =project_read= tool, and independent binding assertions found
-  both sentinels.
+- Real OpenRouter agentic planner regression :: passes without a fixed plan or
+  =planner_instruction= against neutral repository fixtures (README and the
+  completion/tool runtime docs); the generated plan executes both
+  =context(slice)= and the confined =project_read= tool, and independent
+  binding assertions find every sentinel.
 - =git diff --check= :: passed.

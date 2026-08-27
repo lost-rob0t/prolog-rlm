@@ -102,6 +102,109 @@ test(direct_non_recursive_completion,
     completion_test_support:planner_calls(Calls),
     assertion(Calls =:= 1).
 
+test(root_answers_directly_without_plan_execution,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:direct_root_answer, Options),
+    rlm_completion("answer without planning",
+                   text("opaque context body"),
+                   Options,
+                   Outcome),
+    expect_ok(Outcome, Result),
+    assertion(Result.value == "direct-root-ok"),
+    assertion(Result.plan == none),
+    dict_keys(Result.vars, []),
+    assertion(Result.transitions == []),
+    assertion(Result.recursion.recursive_calls =:= 0),
+    assertion(Result.recursion.max_depth =:= 0),
+    assertion(Result.usage.model_calls =:= 1),
+    assertion(Result.trajectory.reason ==
+              "root model answered directly without plan execution"),
+    assertion(Result.trajectory.events = [Result.trajectory.root_event]),
+    completion_test_support:planner_calls(Calls),
+    assertion(Calls =:= 1).
+
+test(direct_root_answer_must_be_nonempty_text,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:empty_direct_answer, Base),
+    Options = [planner_attempts(1)|Base],
+    rlm_completion("reject an empty direct answer",
+                   text("opaque context body"),
+                   Options,
+                   Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.phase == planner),
+    assertion(Error.kind == plan_parse_failed),
+    assertion(Error.cause.kind == invalid_root_decision),
+    assertion(Error.cause.detail == direct_answer_must_be_nonempty_text),
+    assertion(Error.usage.model_calls =:= 1).
+
+test(direct_envelope_rejects_unapproved_fields,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:extra_field_direct_answer, Base),
+    Options = [planner_attempts(1)|Base],
+    rlm_completion("reject a direct envelope with extra fields",
+                   text("opaque context body"),
+                   Options,
+                   Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.phase == planner),
+    assertion(Error.kind == plan_parse_failed),
+    assertion(Error.cause.kind == invalid_root_decision),
+    assertion(Error.cause.detail == invalid_direct_envelope_fields).
+
+test(direct_envelope_rejects_unsupported_root_mode,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:unsupported_mode_direct_answer,
+                 Base),
+    Options = [planner_attempts(1)|Base],
+    rlm_completion("reject an unsupported root decision mode",
+                   text("opaque context body"),
+                   Options,
+                   Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.phase == planner),
+    assertion(Error.kind == plan_parse_failed),
+    assertion(Error.cause.kind == invalid_root_decision),
+    assertion(Error.cause.detail == unsupported_root_mode).
+
+test(root_prompt_offers_direct_answer_before_symbolic_plan,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Options),
+    rlm_completion("ordinary unrelated task", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_planner_request(Request),
+    Request.messages = [_, User],
+    sub_string(User.content, DirectAt, _, _, "{\"mode\":\"direct\""),
+    sub_string(User.content, PlanAt, _, _, "{\"steps\":[...]}"),
+    assertion(DirectAt < PlanAt),
+    assertion(sub_string(User.content, _, _, _,
+                         "runtime operations add no value")).
+
+test(context_request_still_selects_and_executes_a_plan,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_caps(Caps),
+    base_child_caps(ChildCaps),
+    Options = [ planner_handler(completion_test_support:context_slice_planner),
+                capabilities([context(slice)|Caps]),
+                child_capabilities(ChildCaps)
+              ],
+    rlm_completion("use the opaque context",
+                   text("CONTEXT_EVIDENCE_OK: body"),
+                   Options,
+                   Outcome),
+    expect_ok(Outcome, Result),
+    assertion(Result.plan \== none),
+    assertion(Result.value == "context-plan-ok"),
+    assertion(member(plan_transition{operation:context(slice),
+                                     status:ok,
+                                     bind:evidence,
+                                     sequence:_},
+                     Result.transitions)),
+    assertion(get_dict(evidence, Result.vars, "CONTEXT_EVIDENCE_OK: body")),
+    assertion(Result.usage.model_calls =:= 1),
+    completion_test_support:planner_calls(Calls),
+    assertion(Calls =:= 1).
+
 test(default_skills_reach_one_system_message_on_unrelated_input,
      [setup(completion_test_support:reset_calls)]) :-
     base_options(completion_test_support:capture_planner, Options),

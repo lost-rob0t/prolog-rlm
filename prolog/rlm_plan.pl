@@ -4,6 +4,7 @@
             plan_validate/4,
             plan_execute/4,
             plan_run/5,
+            json_object_text/2,
             default_plan_budget/1
           ]).
 

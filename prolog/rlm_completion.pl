@@ -12,7 +12,8 @@
 
 /** <module> Bounded Recursive Language Model supervisor
 
-The root model selects a typed symbolic plan. Prolog owns validation,
+The root model either answers directly through the closed direct-answer
+envelope or selects a typed symbolic plan. Prolog owns validation,
 capabilities, recursion ceilings, budgets, cancellation and trajectory data.
 Recursive `rlm(...)` nodes remain closed symbolic plans; a child model call is
 still executed by the production provider registry, never by model-generated
@@ -24,6 +25,7 @@ awaits its Future. Internal recursive/model steps call canonical execution
 predicates directly and never re-enter a synchronous public facade.
 */
 
+:- use_module(library(http/json)).
 :- use_module(library(lists)).
 :- use_module(library(time)).
 :- use_module(library(uuid)).
@@ -552,6 +554,26 @@ completion_after_planner(error(Error), _, _, _, _, _, _, _, _, _, _,
                          error(Error)) :-
     !.
 completion_after_planner(ok(Planner),
+                         _,
+                         _,
+                         _,
+                         _,
+                         _,
+                         ChildCapabilities,
+                         _,
+                         _,
+                         Budget,
+                         Token,
+                         Outcome) :-
+    Planner.decision == direct,
+    !,
+    check_cancelled(Token),
+    budget_usage_check(Budget, Planner.usage, BudgetOutcome),
+    completion_direct_finish(BudgetOutcome,
+                             Planner,
+                             ChildCapabilities,
+                             Outcome).
+completion_after_planner(ok(Planner),
                          Query,
                          ContextRef,
                          ProviderName,
@@ -583,8 +605,9 @@ completion_after_planner(ok(Planner),
                                           Outcome).
 
 completion_after_recursive_validation(error(Error), _, _, _, _, _, _, _, _,
-                                      _, _, _, error(Error)) :-
+                                       _, _, _, error(Error)) :-
     !.
+
 completion_after_recursive_validation(ok(Stats),
                                       Planner,
                                       Query,
@@ -678,6 +701,26 @@ completion_after_execution(ok(Result),
                       ChildCapabilities,
                       TotalUsage,
                       Outcome).
+
+completion_direct_finish(error(Error), _, _, error(Error)) :- !.
+completion_direct_finish(ok, Planner, ChildCapabilities, ok(Completion)) :-
+    direct_root_event(Planner, RootEvent),
+    Completion = completion_result{
+                     value:Planner.value,
+                     plan:none,
+                     vars:_{},
+                     transitions:[],
+                     recursion:recursion_stats{recursive_calls:0,
+                                               max_depth:0,
+                                               fingerprints:[]},
+                     child_capabilities:ChildCapabilities,
+                     usage:Planner.usage,
+                     trajectory:completion_trajectory{
+                                    root_event:RootEvent,
+                                    events:[RootEvent],
+                                    reason:"root model answered directly without plan execution"
+                                }
+                 }.
 
 execution_error_usage(Error, Usage) :-
     (   is_dict(Error),
@@ -820,6 +863,85 @@ rlm_query_result(ok(ModelResult), Depth, ok(Result)) :-
                               trajectory:ModelResult.trajectory}.
 
 /* -------------------------------------------------------------------------
+ * Root decision: direct answer envelope or typed plan
+ * ---------------------------------------------------------------------- */
+
+root_decision_parse(Input, Outcome) :-
+    plan_parse(Input, PlanOutcome),
+    root_decision_after_plan(PlanOutcome, Input, Outcome).
+
+root_decision_after_plan(ok(Plan), _, ok(root_plan(Plan))) :- !.
+root_decision_after_plan(error(PlanError), Input, Outcome) :-
+    direct_envelope_probe(Input, DirectOutcome),
+    root_decision_from_probe(DirectOutcome, PlanError, Outcome).
+
+root_decision_from_probe(ok(Answer), _, ok(root_direct(Answer))) :- !.
+root_decision_from_probe(error(DirectError), _, error(DirectError)) :- !.
+root_decision_from_probe(not_direct, PlanError, error(PlanError)).
+
+% A valid typed plan always wins; the direct envelope is recognized only as a
+% strict fallback shape with exactly the approved fields. A root object that
+% declares a mode without matching the closed envelope is an explicit
+% invalid_root_decision failure, never prose, never a native tool call.
+direct_envelope_probe(Input, Outcome) :-
+    is_dict(Input),
+    !,
+    direct_envelope_dict(Input, Outcome).
+direct_envelope_probe(Input, Outcome) :-
+    plain_text(Input),
+    !,
+    text_string(Input, Text),
+    (   catch(direct_envelope_json(Text, Dict), _, fail)
+    ->  direct_envelope_dict(Dict, Outcome)
+    ;   Outcome = not_direct
+    ).
+direct_envelope_probe(_, not_direct).
+
+plain_text(Value) :- string(Value), !.
+plain_text(Value) :- atom(Value).
+
+direct_envelope_json(Text, Dict) :-
+    rlm_plan:json_object_text(Text, JsonText),
+    atom_string(Atom, JsonText),
+    atom_json_dict(Atom, Dict, []).
+
+direct_envelope_dict(Dict, Outcome) :-
+    (   get_dict(mode, Dict, _)
+    ->  direct_envelope_strict(Dict, Outcome)
+    ;   Outcome = not_direct
+    ).
+
+direct_envelope_strict(Dict, Outcome) :-
+    dict_keys(Dict, Keys0),
+    sort(Keys0, Keys),
+    (   Keys == [answer, mode]
+    ->  direct_envelope_answer(Dict, Outcome)
+    ;   direct_envelope_error(invalid_direct_envelope_fields, Outcome)
+    ).
+
+direct_envelope_answer(Dict, Outcome) :-
+    get_dict(mode, Dict, Mode),
+    (   direct_mode(Mode)
+    ->  get_dict(answer, Dict, Answer),
+        (   nonempty_text(Answer)
+        ->  text_string(Answer, Text),
+            Outcome = ok(Text)
+        ;   direct_envelope_error(direct_answer_must_be_nonempty_text,
+                                  Outcome)
+        )
+    ;   direct_envelope_error(unsupported_root_mode, Outcome)
+    ).
+
+direct_mode(direct) :- !.
+direct_mode("direct").
+
+direct_envelope_error(Detail,
+                      error(plan_error{phase:normalize,
+                                       kind:invalid_root_decision,
+                                       detail:Detail,
+                                       message:"root decision envelope was rejected"})).
+
+/* -------------------------------------------------------------------------
  * Planner
  * ---------------------------------------------------------------------- */
 
@@ -921,7 +1043,7 @@ planner_call_result(ok(Output),
     budget_usage_check(Budget, Usage1, UsageBudgetOutcome),
     (   UsageBudgetOutcome = error(Error)
     ->  Outcome = error(Error)
-    ;   plan_parse(PlanInput, ParseOutcome),
+    ;   root_decision_parse(PlanInput, ParseOutcome),
         planner_parse_result(ParseOutcome,
                              Summary,
                              Usage1,
@@ -937,7 +1059,26 @@ planner_call_result(ok(Output),
                              Outcome)
     ).
 
-planner_parse_result(ok(Plan),
+planner_parse_result(ok(root_direct(Answer)),
+                     Summary,
+                     Usage,
+                     Attempt,
+                     _,
+                     _,
+                     _,
+                     _,
+                     _,
+                     _,
+                     _,
+                     _,
+                     ok(Planner)) :-
+    !,
+    Planner = planner_result{decision:direct,
+                             value:Answer,
+                             attempt:Attempt,
+                             usage:Usage,
+                             provider_summary:Summary}.
+planner_parse_result(ok(root_plan(Plan)),
                      Summary,
                      Usage,
                      Attempt,
@@ -1005,17 +1146,18 @@ planner_parse_result(error(ParseError), _, Usage, Attempt, _, _, _, _, _, _, _, 
                              attempts:Attempt,
                              usage:Usage,
                              cause:ParseError,
-                             message:"planner responses did not contain a valid typed plan"}.
+                             message:"planner responses did not contain a valid direct answer or typed plan"}.
 
 planner_validation_result(ok(_),
-                          Plan,
-                          Summary,
-                          Usage,
-                          Attempt,
-                          _, _, _, _, _, _, _, _,
-                          ok(Planner)) :-
+                           Plan,
+                           Summary,
+                           Usage,
+                           Attempt,
+                           _, _, _, _, _, _, _, _,
+                           ok(Planner)) :-
     !,
-    Planner = planner_result{plan:Plan,
+    Planner = planner_result{decision:plan,
+                             plan:Plan,
                              attempt:Attempt,
                              usage:Usage,
                              provider_summary:Summary}.
@@ -1065,15 +1207,16 @@ planner_validation_result(error(ValidationError),
                              cause:ValidationError,
                              message:"planner responses did not contain a structurally valid typed plan"}.
 planner_validation_result(error(ValidationError),
-                          Plan,
-                          Summary,
-                          Usage,
-                          Attempt,
-                          _, _, _, _, _, _, _, _,
-                          ok(Planner)) :-
+                           Plan,
+                           Summary,
+                           Usage,
+                           Attempt,
+                           _, _, _, _, _, _, _, _,
+                           ok(Planner)) :-
     planner_deferred_validation(ValidationError),
     !,
-    Planner = planner_result{plan:Plan,
+    Planner = planner_result{decision:plan,
+                             plan:Plan,
                              attempt:Attempt,
                              usage:Usage,
                              provider_summary:Summary}.
@@ -1111,7 +1254,7 @@ planner_repair_message(Error,
     planner_repair_field(Error, kind, invalid_plan, Kind),
     planner_repair_detail(Error, Detail),
     format(string(Content),
-           "Previous planner candidate was rejected without execution. Return a complete new typed-plan JSON object. Host diagnostic: phase=~w kind=~w detail=~s.",
+           "Previous planner candidate was rejected without execution. Return one complete new JSON root decision: either {\"mode\":\"direct\",\"answer\":\"<nonempty final text>\"} when runtime operations add no value, or the typed plan {\"steps\":[...]} when they do. Host diagnostic: phase=~w kind=~w detail=~s.",
            [Phase, Kind, Detail]).
 
 planner_repair_field(Error, Key, Default, Value) :-
@@ -1146,6 +1289,14 @@ safe_planner_repair_detail(cyclic_plan, cyclic_plan) :-
 safe_planner_repair_detail(invalid_json_text, invalid_json_text) :-
     !.
 safe_planner_repair_detail(no_json_object, no_json_object) :-
+    !.
+safe_planner_repair_detail(direct_answer_must_be_nonempty_text,
+                           direct_answer_must_be_nonempty_text) :-
+    !.
+safe_planner_repair_detail(invalid_direct_envelope_fields,
+                           invalid_direct_envelope_fields) :-
+    !.
+safe_planner_repair_detail(unsupported_root_mode, unsupported_root_mode) :-
     !.
 safe_planner_repair_detail(_, typed_plan_contract_rejected).
 
@@ -1706,6 +1857,13 @@ planner_event(Planner,
                           http_status:Planner.provider_summary.http_status,
                           usage:Planner.usage}).
 
+direct_root_event(Planner, Event) :-
+    planner_event(Planner, BaseEvent),
+    put_dict(reason,
+             BaseEvent,
+             "answer directly without plan execution",
+             Event).
+
 completion_model_events(_, Result, Events) :-
     get_dict(model_events, Result, Recorded),
     is_list(Recorded),
@@ -1803,17 +1961,19 @@ response_summary(Response, ProviderFallback, Channel,
  * ---------------------------------------------------------------------- */
 
 planner_prompt(Query,
-               Metadata,
-               Capabilities,
-               ChildCapabilities,
-               ToolSchemas,
-               Options,
-               Prompt) :-
+                Metadata,
+                Capabilities,
+                ChildCapabilities,
+                ToolSchemas,
+                Options,
+                Prompt) :-
     option_value(planner_instruction, Options, "", Instruction0),
     text_string(Instruction0, Instruction),
     format(string(Prompt),
-           "You are the root planner for a bounded Recursive Language Model runtime.\n\
-Return ONLY one JSON object accepted by the typed plan interpreter; no markdown.\n\
+           "You are the root controller for a bounded Recursive Language Model runtime.\n\
+Return ONLY one JSON object; no markdown. Choose exactly one root decision:\n\
+1. Direct answer when runtime operations add no value: {\"mode\":\"direct\",\"answer\":\"<nonempty final text>\"}. Prefer this whenever the goal can be answered now without context retrieval, tools, another model call, or recursion. Never return a plan whose only purpose is to pass the original goal to another model call.\n\
+2. Typed plan when runtime operations are needed: the top-level plan shape {\"steps\":[...]} with one final step last.\n\
 The opaque context is available only through input name context. Do not invent context bytes from metadata.\n\
 Goal: ~s\n\
 Context metadata: ~q\n\
