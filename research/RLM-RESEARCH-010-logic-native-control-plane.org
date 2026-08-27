@@ -4,12 +4,12 @@
 #+title: RLM-RESEARCH-010 Logic-Native Recursive Control Plane
 #+status: RESEARCHED
 #+approval_schema: prolog-rlm.research-approval.v1
-#+approval_state: PENDING
-#+approval_actor: NONE
-#+approval_evidence: NONE
-#+approval_base_commit: NONE
-#+approval_base_blob: NONE
-#+approval_decided_at: NONE
+#+approval_state: APPROVED
+#+approval_actor: N545PY
+#+approval_evidence: https://github.com/lost-rob0t/prolog-rlm/pull/58
+#+approval_base_commit: c0eb4e0606e494bcfdca8513c134da0a78a43cd1
+#+approval_base_blob: fbf84994796f4efabcf9ba73c879019011e2332e
+#+approval_decided_at: 2026-08-27T07:21:19Z
 #+filetags: :rlm:rrlm:agents:prolog:verification:transactions:policy:actors:
 
 * Research Question
