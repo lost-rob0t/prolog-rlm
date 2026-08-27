@@ -85,10 +85,12 @@ assert_schema_rejected_without_spawn(Args) :-
         cleanup_fixture(Runtime, Registry)).
 
 test(subagent_timeout_zero_is_rejected_before_spawn) :-
-    assert_timeout_policy_rejected_without_spawn(0).
+    assert_schema_rejected_without_spawn(
+        json{query:"unknown", timeout_seconds:0}).
 
 test(subagent_timeout_negative_is_rejected_before_spawn) :-
-    assert_timeout_policy_rejected_without_spawn(-0.1).
+    assert_schema_rejected_without_spawn(
+        json{query:"unknown", timeout_seconds:(-0.1)}).
 
 test(subagent_timeout_non_number_is_schema_rejected) :-
     assert_schema_rejected_without_spawn(
