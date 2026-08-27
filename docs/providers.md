@@ -52,6 +52,35 @@ The initial generation-option allow-list includes `max_tokens`,
 `max_completion_tokens`, `temperature`, `top_p`, `seed`, `stop`, `tools`,
 `tool_choice`, and `response_format`.
 
+### Provider/model tool-choice compatibility
+
+Provider configuration may declare a host-owned restriction such as:
+
+```prolog
+provider(openrouter,
+         [ endpoint(...),
+           credential(env('OPENROUTER_API_KEY')),
+           model('vendor/model'),
+           tool_choice_modes([auto])
+         ])
+```
+
+`tool_choice_modes/1` is compatibility data, not an authority grant. Its value
+must be a non-empty unique subset of `none`, `auto`, and `required`. If the
+option is absent, the runtime preserves historical OpenAI-compatible behavior.
+
+When a trusted profile permits only `auto`, a simple request for `required` is
+normalized to `auto` before either streaming or non-streaming HTTP dispatch.
+Providers whose profile includes `required` preserve it exactly. Other
+unsupported requests, including a specific-function selector under an
+`[auto]`-only profile, fail with a structured pre-dispatch capability error
+rather than silently weakening the caller's intent. Malformed compatibility
+configuration likewise fails before credential resolution or network effects.
+
+This profile is supplied by trusted host/provider configuration. Model-produced
+request data cannot select it, widen it, or gain tool capability, execution
+authority, or effect permission from it.
+
 ## Other OpenAI-compatible endpoints
 
 Use `openai_compatible_provider/4`:
