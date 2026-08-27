@@ -74,6 +74,8 @@ corpus_entry('rlm_conversation_runtime_test.pl',
              include(rlm_conversation_runtime)).
 corpus_entry('rlm_conversation_cold_test.pl',
              include(rlm_conversation_cold)).
+corpus_entry('rlm_conversation_scale_test.pl',
+             include(rlm_conversation_scale)).
 corpus_entry('rlm_plan_test.pl', include(rlm_plan)).
 corpus_entry('rlm_tool_test.pl', include(rlm_tool)).
 corpus_entry('rlm_tool_effect_test.pl', include(rlm_tool_effect)).
@@ -167,6 +169,8 @@ corpus_entry('live_tool_openrouter_test.pl',
 corpus_entry('live_completion_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).
 corpus_entry('live_planner_context_openrouter_test.pl',
+             exclude(live_provider, 'requires the credentialed live gate')).
+corpus_entry('live_conversation_scale_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).
 corpus_entry('live_repair_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).
