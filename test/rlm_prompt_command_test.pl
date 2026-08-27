@@ -257,4 +257,6 @@ pump_until_child_result(Runtime, Parent, Child, Attempts) :-
         pump_until_child_result(Runtime, Parent, Child, Next)
     ).
 
+:- include('support/rlm_delegation_runtime_cases.pl').
+
 :- end_tests(rlm_prompt_command).
