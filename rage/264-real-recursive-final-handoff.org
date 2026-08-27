@@ -72,6 +72,7 @@ merge. Do not merge this slice.
 * Realize
 - TDD regression and runtime handoff commit :: =f334d365d3443b3accc6102d02f1901b6a1fae99=
 - CLI fixed-plan budget commit :: =093841bd4833a52d2539e06625e405f9faa8499b=
+- Final evidence record commit :: =287a6f88987c9fd2fa3afa7bfb2088e8007ec32e=
 - PR branch :: =rage/223-constraint-benchmark-recovery=
 
 The runtime fix removes the compiled root-planner skill projection from the
@@ -97,11 +98,11 @@ no constraint or acceptance rule was relaxed.
 - Completion trajectory retains root planner and executed model events separately.
 
 * Exact-head evidence
-At final head =093841bd4833a52d2539e06625e405f9faa8499b=, the PR remains open
-and draft. Push and pull-request runs both passed CI, Paid OpenRouter, Nix,
-clean SWI pack, and Tree-sitter. The pull-request CI run was
-=33058714646= and the pull-request Paid OpenRouter run was =33058714555=.
-Their REAL constraint reports each contain exactly six cases:
+At final head =287a6f88987c9fd2fa3afa7bfb2088e8007ec32e=, the PR remains open
+and draft. The pull-request runs passed CI, Paid OpenRouter, Nix, clean SWI
+pack, and Tree-sitter. The pull-request CI run was =33059177166= and the
+pull-request Paid OpenRouter run was =33059177226=. Their REAL constraint
+reports each contain exactly six cases:
 =core_minimal_depth_0=, =core_minimal_depth_1=, =core_minimal_depth_2=,
 =harness_guided_depth_0=, =harness_guided_depth_1=, and
 =harness_guided_depth_2=; all six passed with zero skips and zero violations.
@@ -109,6 +110,12 @@ Each lane independently records =fixed_plan_injected:false= and the trusted
 assignment verifier passed. The same runs also passed the existing real core,
 repair, ordinary benchmark, native tool, recursive-completion, and CLI smoke
 checks.
+
+The matching push-event Nix, Paid OpenRouter, clean-pack, and Tree-sitter runs
+also passed. The duplicate push-event CI run =33059174133= remained in progress
+in the GitHub runner-integrity step after the pull-request CI run had passed;
+it produced no product failure evidence. The pull-request check is the
+authoritative PR gate for this draft.
 
 The provider selected direct plans in the reported depth-1/2 CSP lanes
 (=actual_recursion_depth:0= and =recursive_calls:0=) while all requested lanes
