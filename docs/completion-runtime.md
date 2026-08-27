@@ -43,8 +43,16 @@ Configured planner retries are corrective for parse and structural validation
 failures. A later attempt receives one bounded host-generated diagnostic for
 the latest rejected candidate. The diagnostic contains no candidate text or
 raw provider payload, and the candidate was not executed. Capability and
-budget denials are authoritative failures rather than repair hints and do not
-trigger this retry context.
+budget denials are authoritative failures rather than repair hints and do
+not trigger this retry context.
+
+One structural rule is registry-aware: a field reference over a binding
+produced by a registry tool must select from the closed `tool_result`
+envelope (`value`, `authorization`, `status`, ...) installed by the adapter;
+a first-hop key outside that envelope can never resolve and is rejected at
+validation with a `tool_result_envelope_field(Key, Bind)` repair hint instead
+of failing execution unrecoverably. Direct trusted host tools (`tools([...])`)
+are exempt because their result shape is host-defined.
 
 The supervisor then:
 

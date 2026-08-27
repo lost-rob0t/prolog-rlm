@@ -25,13 +25,13 @@ register_live_planner_context_tool(Registry) :-
     ).
 
 run_live_planner_context_case(Registry) :-
-    Query = "Perform a repository self-audit before returning a final result. Retrieve the opaque context input, then use the active project_read tool to inspect all three authoritative records: README.md, docs/completion-runtime.md, and docs/tools.md. Do not guess their contents and do not omit or substitute any record.",
+    Query = "Perform a repository self-audit before returning a final result. Retrieve the opaque context input, then use the active project_read tool to inspect all three authoritative records: README.md, docs/completion-runtime.md, and docs/tools.md. Do not guess their contents and do not omit or substitute any record. The audit is satisfied only by a run that itself retrieves the opaque context input and reads all three records with the tool; an answer produced without executing those steps fails the audit.",
     Context = text("RLM_PLANNER_CONTEXT_OK: inspect the repository README and the completion/tool runtime documentation before finalizing."),
     Options = [ capabilities([context(slice), tool(project_read)]),
                 child_capabilities([]),
                 tool_registry(Registry),
                 planner_attempts(3),
-                planner_reasoning_effort(low),
+                planner_reasoning_effort(medium),
                 planner_max_tokens(4096),
                 context_options([max_bytes(4096), time_limit(1.0)]),
                 budget(_{max_iterations:12,
@@ -69,14 +69,20 @@ require_live_planner_context_success(error(Error), _) :-
                         'real planner did not execute the agentic context/tool task'))).
 
 validate_live_planner_context_result(Result) :-
-    member(plan_transition{operation:context(slice),
-                           status:ok,
-                           bind:ContextBind,
-                           sequence:_},
-           Result.transitions),
-    get_dict(ContextBind, Result.vars, ContextValue),
-    assertion(sub_string(ContextValue, _, _, _,
-                         "RLM_PLANNER_CONTEXT_OK")),
+    assertion(member(plan_transition{operation:context(slice),
+                                     status:ok,
+                                     bind:_,
+                                     sequence:_},
+                     Result.transitions)),
+    dict_pairs(Result.vars, _, VarPairs),
+    findall(SentinelValue,
+            ( member(_-Value, VarPairs),
+              string(Value),
+              sub_string(Value, _, _, _, "RLM_PLANNER_CONTEXT_OK"),
+              SentinelValue = Value
+            ),
+            SentinelValues),
+    assertion(SentinelValues \== []),
     findall(ToolBind,
             member(plan_transition{operation:tool(project_read),
                                    status:ok,
