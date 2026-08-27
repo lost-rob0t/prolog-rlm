@@ -173,7 +173,10 @@ with no runtime operations.  That remains a compatibility behavior of
 =rlm_completion/4=, but it is not the ordinary direct agent strategy required
 by the library.  Direct mode instead means a provider-native conversation loop
 whose model may select bounded context and registered tools without producing a
-typed plan.  Typed-plan mode remains independent.
+typed plan.  Typed-plan mode remains an independent first-class strategy.  Its
+current =model= operation is a bounded single provider call; the missing common
+native-session integration is a gap to close, not deprecation or compatibility
+baggage.
 
 ** Design
 The decision-ready contract is recorded in =docs/direct-runtime.md=.  Add

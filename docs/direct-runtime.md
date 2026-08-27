@@ -342,11 +342,12 @@ Direct and root completion reuse the same prompt compiler, and recursion or
 delegation re-enters that root boundary. A direct loop compiles once: its schema
 list and order are identical on every continuation, static identity,
 instructions, and explicit skills precede dynamic task/context metadata, and
-observations only append to the message suffix. Legacy typed-plan `model` steps
-remain single-shot provider calls without native schemas; plans use their typed
-`tool` and `context` operations instead. Native tools inside a typed-plan model
-step require a later shared session-executor integration and are not claimed by
-this slice.
+observations only append to the message suffix. Typed plans are an independent,
+first-class execution strategy: their `tool`, `context`, `model`, and recursive
+operations remain supported. The current `model` operation makes one bounded
+provider call without native schemas. Moving that operation onto the common
+native session executor is an integration gap in this slice, not a legacy or
+deprecated typed-plan path.
 
 `rlm_direct` defaults to `prompt_compile_mode(compiled)`, matching root
 completion. The canonical prompt compiler uses the current query, capability
