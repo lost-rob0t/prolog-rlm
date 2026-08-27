@@ -99,7 +99,9 @@ openrouter_provider(Model0,
                                credential(env('OPENROUTER_API_KEY')),
                                model(Model),
                                timeout(30),
-                               address_family(inet)
+                               address_family(inet),
+                               app_title('prolog-rlm'),
+                               app_referer('https://github.com/lost-rob0t/prolog-rlm')
                              ])) :-
     (   var(Model0)
     ->  default_openrouter_model(Model)
