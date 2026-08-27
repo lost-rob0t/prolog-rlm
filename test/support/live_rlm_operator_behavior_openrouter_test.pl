@@ -82,6 +82,11 @@ result_value_contains(Result, Needle) :-
     term_string(Result.value, Text, [quoted(false)]),
     sub_string(Text, _, _, _, Needle).
 
+test(behavior_output_budget_keeps_finite_provider_reasoning_headroom) :-
+    live_behavior_budget(Budget),
+    assertion(Budget.max_output_bytes >= 65536),
+    assertion(Budget.max_output_bytes =< 131072).
+
 test(trivial_task_does_not_recurse_without_spoon_fed_plan) :-
     require_live_behavior_credential,
     live_behavior_common_options([rlm, model(openrouter)],
