@@ -80,7 +80,11 @@ Compiled provider context is disposable. Persistent KB/history, artifacts, graph
 
 Typed delegation policy may carry compiler-authenticated role/skill metadata into the canonical `rlm_subagent` path, but compilation never grants child authority. Child capabilities and authority continue to narrow through the runtime. A child learning that a tool exists does not restore a capability withheld by its parent.
 
-Provider-visible permanent RLM context is propagated through the existing trusted completion/provider-context path. Do not add a second compiler in recursive plan execution or downstream products.
+The root planner receives the compiled provider-visible RLM context through the
+existing trusted completion/provider-context path. Plan execution is a separate
+task-model boundary: planner instructions are not projected onto model steps,
+because planner structure is not task output. Do not add a second compiler in
+recursive plan execution or downstream products.
 
 ## Security invariants
 

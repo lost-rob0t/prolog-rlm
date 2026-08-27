@@ -13,21 +13,25 @@ known_solution_json(Json) :-
                    json_write_dict(current_output, Solution, [width(0)])).
 
 mutate_task_slot(Input, Task, Slot, Output) :-
-    Rows0 = Input.assignments,
+    get_dict(assignments, Input, Rows0),
     maplist(mutate_row_slot(Task, Slot), Rows0, Rows),
     put_dict(assignments, Input, Rows, Output).
 
 mutate_row_slot(Task, Slot, Row0, Row) :-
-    Row0.task == Task,
+    get_dict(task, Row0, RowTask),
+    RowTask == Task,
     !,
     put_dict(slot, Row0, Slot, Row).
 mutate_row_slot(_, _, Row, Row).
 
 drop_task(Input, Task, Output) :-
-    include(not_task(Task), Input.assignments, Rows),
+    get_dict(assignments, Input, Rows0),
+    include(not_task(Task), Rows0, Rows),
     put_dict(assignments, Input, Rows, Output).
 
-not_task(Task, Row) :- Row.task \== Task.
+not_task(Task, Row) :-
+    get_dict(task, Row, RowTask),
+    RowTask \== Task.
 
 core_skill_content(Name, Content) :-
     skill_default_catalog(ok(Catalog)),
@@ -86,8 +90,10 @@ test(mutated_solution_is_rejected_by_spec_verify_path) :-
 test(incomplete_assignment_fails_shape_validation) :-
     constraint_known_solution(Solution),
     drop_task(Solution, kappa, Incomplete),
-    constraint_verify_assignment(Incomplete, error(Error)),
-    assertion(Error.phase == normalize).
+    rlm_constraint_problem:constraint_verify_assignment(Incomplete, Outcome),
+    Outcome = error(Error),
+    get_dict(phase, Error, Phase),
+    assertion(Phase == normalize).
 
 test(duplicate_domain_value_is_not_accepted) :-
     constraint_known_solution(Solution),
@@ -123,8 +129,11 @@ test(benchmark_status_comes_from_verification_not_magic_token) :-
 test(documented_direct_model_contract_parses_as_typed_plan) :-
     Json = "{\"steps\":[{\"op\":\"model\",\"provider\":\"openrouter\",\"prompt\":{\"ref\":\"input\",\"name\":\"query\"},\"options\":{},\"bind\":\"answer\"},{\"op\":\"final\",\"value\":{\"ref\":\"var\",\"name\":\"answer\"}}]}",
     plan_parse(Json, ok(Plan)),
-    assertion(Plan == plan([model(openrouter, input(query), _{}, answer),
-                            final(var(answer))])).
+    Plan = plan([model(openrouter, input(query), Options, answer),
+                 final(var(answer))]),
+    assertion(is_dict(Options)),
+    dict_pairs(Options, _, Pairs),
+    assertion(Pairs == []).
 
 test(core_operate_skill_exposes_root_typed_plan_contract) :-
     core_skill_content('rlm-operate', Content),
@@ -146,7 +155,7 @@ test(core_minimal_lane_adds_no_benchmark_specific_planner_instruction) :-
 
 test(guided_lane_is_explicitly_downstream_owned) :-
     benchmark_lane_instruction(harness_guided, 2, Options),
-    assertion(Options = [planner_instruction(Guidance)]),
+    Options = [planner_instruction(Guidance)],
     assertion(sub_string(Guidance, _, _, _, "depth 2")),
     assertion(sub_string(Guidance, _, _, _, "slot system first")),
     assertion(\+ sub_string(Guidance, _, _, _, "{\"steps\":[...]}")),
