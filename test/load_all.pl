@@ -27,6 +27,7 @@
 :- use_module('../prolog/rlm_spec', []).
 :- use_module('../prolog/rlm_spec_lang', []).
 :- use_module('../prolog/rlm_verify', []).
+:- use_module('../prolog/rlm_result_accept', []).
 :- use_module('../prolog/rlm_spec_workflow', []).
 :- use_module('../prolog/rlm_project_source', []).
 :- use_module('../prolog/prolog_agent_ui_v1', []).
