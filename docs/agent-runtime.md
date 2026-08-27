@@ -216,6 +216,51 @@ Focused conformance covers child capability and authority possession,
 agent-count admission, recursive depth, parallel width, token and wall-time
 budgets, cancellation, parent delivery, and mailbox/worker backpressure.
 
+## RLM subagent task deadlines
+
+The model-visible `rlm_subagent` interface keeps `query` as its only required
+argument. A normal call therefore remains:
+
+```json
+{"query":"investigate this"}
+```
+
+The model may request a bounded duration when needed:
+
+```json
+{"query":"run the longer investigation","timeout_seconds":120}
+```
+
+That value is a duration request, not authority. Trusted registration options
+own the default, maximum, and cleanup grace. An omitted timeout uses the host
+default; zero, negative, malformed, and over-maximum requests fail before child
+creation. The model cannot supply the host default/max/grace or arbitrary
+completion-budget fields because the tool schema is closed.
+
+After validation, the effective task duration replaces only the child
+`completion_budget.time_limit`. Token, model-call, tool-call, context-op,
+recursion, concurrency, cost, and output limits remain host-controlled. The
+outer tool-handler and supervised-call limits are host safety envelopes sized
+to allow the maximum approved task duration plus cleanup grace; they are not
+the model's default timeout and do not grant a longer enclosing parent lifetime.
+
+The result envelope adds non-secret timeout provenance (`default` or
+`model_request`, requested value, and effective value). A completion that
+exceeds the effective duration remains a structured failed `subagent_result`
+with `error.kind == timeout` rather than becoming empty success.
+
+Future waiting is separate: `rlm_future_await/3` controls how long a caller
+waits and does not cancel the underlying task. Cancellation is also separate and
+continues to signal supervised child work. In short:
+
+```text
+await timeout != task execution timeout != cancellation
+```
+
+If an enclosing parent completion has a shorter lifetime, the parent may still
+terminate first. `rlm_subagent` does not invent a local remaining-parent-deadline
+API merely to widen or reinterpret that outer bound.
+
 ## Failure supervision
 
 When child work fails, the child enters a failed state and its supervisor gets

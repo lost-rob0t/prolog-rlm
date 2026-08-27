@@ -1,0 +1,108 @@
+#+TITLE: RLM-RESEARCH-026 — Subagent task deadlines
+#+STATUS: accepted-for-realization
+#+ISSUE: #175
+
+* Research Question
+How should the existing model-visible =rlm_subagent= tool expose an optional task duration without creating a second task API, weakening host policy, or confusing execution deadlines with Future waiter timeouts and cancellation?
+
+* Current Runtime Evidence
+=rlm_subagent= is already a normal permissioned =rlm_tool= entry. The trusted binding owns the supervised runtime, parent, child capability ceiling, context, and completion options. The completion runtime already enforces =completion_budget.time_limit= with =call_with_time_limit/2=. The tool runtime separately enforces =Schema.limits.time_limit= around the trusted handler. =rlm_future_await/3= only bounds the caller's wait and does not define the lifetime of the underlying task.
+
+After #172, the canonical subagent path also carries compiler-authenticated role/skill/source provenance through =rlm_subagent_register_command/8=. Deadline work must compose with that path rather than replacing it.
+
+The stale #212 implementation exposed a deterministic precedence defect: it overwrote an existing trusted =budget(...time_limit:0.02...)= with a 30-second default. The slow regression planner therefore survived past 20ms, reached a deliberately forbidden tool, and correctly returned =capability_denied= instead of =timeout=. Capability enforcement was correct; deadline-default resolution was wrong.
+
+* Timeout Vocabulary
+The runtime must keep three concepts distinct:
+
+#+begin_example
+await timeout != task execution timeout != cancellation
+#+end_example
+
+- Future await timeout: how long a caller waits for a Future; it does not define or restart task execution.
+- Task execution timeout: the semantic wall-time budget owned by the subagent/completion path.
+- Cancellation: an explicit runtime control event that interrupts the task/child and propagates through supervision.
+
+* Model-visible vs Host-owned Policy
+The model may supply only the optional =timeout_seconds= request on the existing =rlm_subagent= arguments object. The schema remains closed with =additional_properties:false=.
+
+Host-only completion options own:
+
+- =subagent_timeout_default/1=;
+- =subagent_timeout_max/1=;
+- =subagent_timeout_grace/1=.
+
+For backward compatibility, when the host does not set a dedicated default but already supplies a positive =budget(...time_limit:T...)=, =T= is the host default. An explicit dedicated default wins. The model never controls maximum, cleanup grace, arbitrary budget fields, capabilities, authority, or callable handlers.
+
+* Deadline Resolution
+Invocation resolution is:
+
+#+begin_example
+normalize host default/max/grace
+        |
+        +-- explicit subagent_timeout_default -> host default
+        `-- otherwise legacy budget.time_limit -> host default when present
+                                    |
+model timeout_seconds present? -----+
+        | yes: validate > 0 and <= host max
+        | no: use host default
+        v
+EffectiveTimeout
+#+end_example
+
+Invalid/non-positive or over-maximum requests fail before child creation. Over-maximum requests are rejected, never silently clamped.
+
+The effective timeout updates only =budget.time_limit=. Every other trusted completion budget field is preserved.
+
+* Nested/Parent Deadline Semantics
+A child timeout never widens the enclosing parent lifetime. If the parent is already running under a smaller outer completion deadline, the parent may terminate first.
+
+There is no reliable generic remaining-parent-deadline API in this slice. Do not invent one inside =rlm_subagent=. A future generic deadline-propagation contract may derive =min(requested_or_default, host_max, parent_remaining)= when runtime-wide evidence supports it.
+
+* Tool Handler vs Completion Limit
+The inner completion timeout is the semantic task deadline. The outer tool-handler timeout is only a host safety envelope and must be large enough not to preempt any allowed task duration:
+
+#+begin_example
+OuterHandlerLimit = HostMaximum + CleanupGrace
+#+end_example
+
+The supervised-call envelope likewise uses the effective task timeout plus the same host cleanup grace. Neither envelope grants a longer semantic completion budget.
+
+* Cancellation Interaction
+Cancellation remains authoritative and independent of timeout policy. Parent cancellation must interrupt supervised child completion and leave no normal child work running indefinitely. A timeout failure remains a structured completion/subagent failure and must not be translated into success.
+
+* Rejected Alternatives
+- A second =rlm_task= or =spawn_task= model API: rejected because =rlm_subagent= already owns this delegation domain.
+- Infinite outer handler timeout: rejected because execution remains bounded.
+- Model-controlled max/default/grace or raw =budget= fields: rejected as authority/budget widening.
+- Reusing =rlm_future_await/3= as task lifetime: rejected because waiter semantics do not cancel or own execution.
+- Replacing current #172 delegation code with the stale #212 file: rejected because it would regress compiler-authenticated provenance and fail-closed validation.
+- Weakening capability checks to make timeout tests pass: rejected; the stale =capability_denied==timeout= failure demonstrated correct capability behavior after a deadline-precedence bug.
+
+* Implementation Implications
+- Keep =rlm_subagent_register_command/8= and the canonical #172 delegation-source validation unchanged.
+- Normalize timeout policy once during registration and capture it in the trusted handler closure.
+- Add optional model =timeout_seconds= to the existing closed schema.
+- Resolve/validate timeout and construct effective completion options before spawn.
+- Merge only =budget.time_limit=.
+- Size outer/supervised execution envelopes from host policy + grace.
+- Add timeout provenance as an additive =subagent_result.timeout= field.
+- Preserve Future-await and cancellation semantics.
+
+* Acceptance Experiments
+1. Omitted timeout uses host default and reports =source:default=.
+2. Existing trusted =budget.time_limit= remains the default when no dedicated default is supplied.
+3. Valid explicit model override is honored and reports =source:model_request=.
+4. Above-max, zero, negative, and schema-invalid timeout requests fail before spawn.
+5. Existing non-time completion budget fields survive the timeout merge unchanged.
+6. Outer handler and supervised-call envelopes cannot preempt an allowed effective timeout.
+7. Timeout produces a structured failed subagent envelope.
+8. Timeout requests do not widen child capabilities or authority.
+9. Cancellation still interrupts child completion.
+10. Future waiter timeout remains independent from task execution timeout.
+11. Compiler-authenticated role/skill/source provenance survives deadline-policy registration and result propagation.
+
+* Open Questions
+- Whether a later generic runtime deadline object should expose trustworthy parent-remaining time across completion, tools, subagents, and graphs.
+- Whether timeout provenance should later gain a =parent_bound= source once such a generic deadline contract exists.
+- Whether task-deadline policy should become a reusable host policy object shared by other long-running generic runtime operations after at least one additional production use case demonstrates common semantics.
