@@ -515,20 +515,20 @@ public_mount(Request, ArtifactRef, Version, State,
                  version:Version
              }).
 
-public_from_artifact(Artifact,
-                     context_mount{
-                         schema_version:1,
-                         name:Value.name,
-                         scope:Value.scope,
-                         lifetime:Value.lifetime,
-                         visibility:Value.visibility,
-                         state:Value.state,
-                         source_kind:Value.source_kind,
-                         source_fingerprint:Value.source_fingerprint,
-                         artifact_ref:Artifact.ref,
-                         version:Artifact.version
-                     }) :-
-    Value = Artifact.value.
+public_from_artifact(Artifact, Public) :-
+    Value = Artifact.value,
+    Public = context_mount{
+                 schema_version:1,
+                 name:Value.name,
+                 scope:Value.scope,
+                 lifetime:Value.lifetime,
+                 visibility:Value.visibility,
+                 state:Value.state,
+                 source_kind:Value.source_kind,
+                 source_fingerprint:Value.source_fingerprint,
+                 artifact_ref:Artifact.ref,
+                 version:Artifact.version
+             }.
 
 require_identity(Value, Name, Scope) :-
     (   Value.name == Name,
