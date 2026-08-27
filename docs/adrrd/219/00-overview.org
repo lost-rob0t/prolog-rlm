@@ -1,0 +1,40 @@
+#+title: prolog-rlm #219 — ADRRD / Human-Gated ADARD
+#+startup: overview
+
+* Issue
+https://github.com/lost-rob0t/prolog-rlm/issues/219
+
+* Priority
+AP0 — next coding move.
+
+* Human-gated flow
+1. Analyze / research
+2. Design
+3. Adversarial review
+4. Decision gate — HUMAN APPROVAL REQUIRED
+5. Realize TDD-first
+6. Verify exact head
+7. Merge gate — HUMAN APPROVAL REQUIRED
+
+* Current status
+- [X] Analyze / research
+- [X] Design
+- [X] Adversarial review
+- [ ] Decision approved by human
+- [ ] Realize E1 TDD-first
+- [ ] Verify exact head
+- [ ] Merge approved by human
+
+* Recommended first transaction
+E1 only:
+- rlm_embedding
+- OpenAI-compatible embedding transport
+- deterministic SWI-Prolog HTTP fixture tests
+- optional explicitly gated real/local-compatible smoke
+
+Do NOT include in E1:
+- rlm_retrieval
+- Chroma
+- retrieval_expert
+- source freshness
+- source-KB/RLM integration
