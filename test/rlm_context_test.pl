@@ -1,5 +1,6 @@
 :- begin_tests(rlm_context).
 
+:- use_module(library(thread)).
 :- use_module('../prolog/rlm_artifact').
 :- use_module('../prolog/rlm_context').
 :- use_module('../prolog/rlm_context_mount').
@@ -212,6 +213,103 @@ test(persistent_mount_cache_is_partitioned_by_artifact_store) :-
         ( context_mount_runtime_reset,
           artifact_store_close(StoreA, _),
           artifact_store_close(StoreB, _)
+        )).
+
+test(concurrent_persistent_resolves_converge_on_live_winner) :-
+    setup_call_cleanup(
+        artifact_store_open(memory, ok(Store)),
+        ( Options = [lifetime(persistent), scope(project(demo))],
+          context_mount(Store,
+                        concurrent_rules,
+                        text("CONCURRENT-RESOLVE-CONTEXT"),
+                        Options,
+                        ok(_)),
+          context_mount_runtime_reset,
+          run_two_workers(concurrent_resolve_worker(Store),
+                          ResolveAOutcome,
+                          ResolveBOutcome),
+          expect_ok(resolve_a, ResolveAOutcome, ResolveA),
+          expect_ok(resolve_b, ResolveBOutcome, ResolveB),
+          assertion(ResolveA.context_ref.handle ==
+                    ResolveB.context_ref.handle),
+          context_slice(ResolveA.context_ref.handle,
+                        0,
+                        64,
+                        [],
+                        SliceAOutcome),
+          expect_ok(resolve_slice_a, SliceAOutcome, SliceA),
+          context_slice(ResolveB.context_ref.handle,
+                        0,
+                        64,
+                        [],
+                        SliceBOutcome),
+          expect_ok(resolve_slice_b, SliceBOutcome, SliceB),
+          assertion(SliceA.value == "CONCURRENT-RESOLVE-CONTEXT"),
+          assertion(SliceB.value == "CONCURRENT-RESOLVE-CONTEXT")
+        ),
+        ( context_mount_runtime_reset,
+          artifact_store_close(Store, _)
+        )).
+
+test(concurrent_identical_persistent_mounts_publish_once) :-
+    setup_call_cleanup(
+        artifact_store_open(memory, ok(Store)),
+        ( Options = [lifetime(persistent), scope(project(demo))],
+          run_two_workers(concurrent_mount_worker(Store, Options),
+                          MountAOutcome,
+                          MountBOutcome),
+          expect_ok(concurrent_mount_a, MountAOutcome, MountA),
+          expect_ok(concurrent_mount_b, MountBOutcome, MountB),
+          assertion(MountA.mount.artifact_ref ==
+                    MountB.mount.artifact_ref),
+          assertion(MountA.mount.version =:= 1),
+          assertion(MountB.mount.version =:= 1),
+          artifact_list(Store,
+                        [rlm,context_mount],
+                        [history(true)],
+                        ok(History)),
+          assertion(length(History, 1))
+        ),
+        ( context_mount_runtime_reset,
+          artifact_store_close(Store, _)
+        )).
+
+concurrent_resolve_worker(Store, Start, Done) :-
+    thread_get_message(Start, go),
+    context_mount_resolve(Store,
+                          concurrent_rules,
+                          project(demo),
+                          [],
+                          Outcome),
+    thread_send_message(Done, result(Outcome)).
+
+concurrent_mount_worker(Store, Options, Start, Done) :-
+    thread_get_message(Start, go),
+    context_mount(Store,
+                  concurrent_rules,
+                  text("CONCURRENT-MOUNT-CONTEXT"),
+                  Options,
+                  Outcome),
+    thread_send_message(Done, result(Outcome)).
+
+run_two_workers(Worker, OutcomeA, OutcomeB) :-
+    message_queue_create(Start),
+    message_queue_create(Done),
+    setup_call_cleanup(
+        ( thread_create(call(Worker, Start, Done), ThreadA, []),
+          thread_create(call(Worker, Start, Done), ThreadB, [])
+        ),
+        ( thread_send_message(Start, go),
+          thread_send_message(Start, go),
+          thread_get_message(Done, result(OutcomeA)),
+          thread_get_message(Done, result(OutcomeB)),
+          thread_join(ThreadA, StatusA),
+          thread_join(ThreadB, StatusB),
+          assertion(StatusA == true),
+          assertion(StatusB == true)
+        ),
+        ( message_queue_destroy(Start),
+          message_queue_destroy(Done)
         )).
 
 expect_ok(_, ok(Value), Value) :- !.
