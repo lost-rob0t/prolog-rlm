@@ -246,7 +246,7 @@ A confined package boundary for inert Agent Skills. It indexes bounded `SKILL.md
 
 ### `rlm_completion`
 
-The high-level RLM execution loop: root model planning, closed-plan validation, capability checks, bounded context/tool/model execution, recursive child calls, structured repair, usage aggregation, and trajectories. The root planner receives the bounded skill projection in provider instruction context; broader leaf/subagent provider projection remains tracked separately.
+The high-level RLM execution loop: task-first root model decisions, bounded context retrieval, closed-plan validation, capability checks, bounded context/tool/model execution, recursive child calls, structured repair, usage aggregation, and trajectories. The root planner receives the bounded skill projection in provider instruction context and can compose retrieved JSON evidence into later model steps; broader leaf/subagent provider projection remains tracked separately.
 
 ### `rlm_graph`
 

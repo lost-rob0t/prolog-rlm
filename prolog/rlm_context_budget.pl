@@ -192,6 +192,66 @@ context_pack_(Units0, Sections0, Policy, Pack) :-
 
 solve_units([], _, [], 0, 0) :- !.
 solve_units(Units, Available, Selected, SelectedTokens, Utility) :-
+    (   best_fit_units(Units,
+                       Available,
+                       Selected,
+                       SelectedTokens,
+                       Utility)
+    ->  true
+    ;   exact_solve_units(Units,
+                          Available,
+                          Selected,
+                          SelectedTokens,
+                          Utility)
+    ).
+
+% If every unit's highest-utility representation fits together, that choice is
+% globally optimal because utilities are non-negative and units are independent.
+% This avoids asking CLPFD to enumerate a large optional transcript when the
+% budget is not actually constraining it.
+best_fit_units(Units, Available, Selected, SelectedTokens, Utility) :-
+    maplist(best_unit_choice, Units, Choices),
+    choice_totals(Choices, SelectedTokens, Utility),
+    SelectedTokens =< Available,
+    choices_selected(Choices, Selected).
+
+best_unit_choice(Unit, choice(Tokens, Utility, Selection)) :-
+    unit_variants(Unit, Variants),
+    best_variant(Variants, Variant),
+    Tokens = Variant.tokens,
+    Utility = Variant.utility,
+    (   Variant.kind == omitted
+    ->  Selection = none
+    ;   nth1(Index, Variants, Variant),
+        selected_variant(Unit, Variants, Index, Selection)
+    ).
+
+best_variant([Variant|Variants], Best) :-
+    foldl(prefer_variant, Variants, Variant, Best).
+
+prefer_variant(Candidate, Current, Best) :-
+    (   Candidate.utility > Current.utility
+    ;   Candidate.utility =:= Current.utility,
+        Candidate.tokens < Current.tokens
+    ),
+    !,
+    Best = Candidate.
+prefer_variant(_, Current, Current).
+
+choice_totals([], 0, 0).
+choice_totals([choice(Tokens, Utility, _)|Choices], TotalTokens, TotalUtility) :-
+    choice_totals(Choices, RestTokens, RestUtility),
+    TotalTokens is Tokens+RestTokens,
+    TotalUtility is Utility+RestUtility.
+
+choices_selected([], []).
+choices_selected([choice(_, _, none)|Choices], Selected) :-
+    !,
+    choices_selected(Choices, Selected).
+choices_selected([choice(_, _, Selection)|Choices], [Selection|Selected]) :-
+    choices_selected(Choices, Selected).
+
+exact_solve_units(Units, Available, Selected, SelectedTokens, Utility) :-
     build_unit_constraints(Units,
                            Indexes,
                            TokenVars,

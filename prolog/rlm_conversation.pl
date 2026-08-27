@@ -46,6 +46,7 @@ usable independently. Cold history is exposed through a trusted lazy
 :- dynamic conversation_memory_store/1.
 :- dynamic conversation_memory_header/4.
 :- dynamic conversation_memory_message/4.
+:- dynamic conversation_memory_sequence/3.
 
 rlm_conversation_ready :-
     rlm_context_budget:rlm_context_budget_ready,
@@ -87,6 +88,7 @@ conversation_store_close_(conversation_store(memory, Id)) :-
     with_mutex(rlm_conversation_memory,
                ( retractall(conversation_memory_message(Id, _, _, _)),
                  retractall(conversation_memory_header(Id, _, _, _)),
+                 retractall(conversation_memory_sequence(Id, _, _)),
                  retractall(conversation_memory_store(Id)) )).
 conversation_store_close_(conversation_store(persist, _)) :-
     !,
@@ -277,26 +279,30 @@ conversation_context_pack_(Conversation, Options, Pack) :-
     require_budget_outcome(PolicyOutcome, Policy),
     option(token_options(TokenOptions), Options, []),
     require_options(TokenOptions),
-    option(visible_sections(SectionSpecs), Options, []),
-    require_list(SectionSpecs, visible_sections),
-    compile_sections(SectionSpecs, TokenOptions, Sections),
-    option(context_units(ExtraUnits), Options, []),
+     option(visible_sections(SectionSpecs), Options, []),
+     require_list(SectionSpecs, visible_sections),
+     compile_sections(SectionSpecs, TokenOptions, Sections),
+     option(max_cold_candidates(MaxColdCandidates), Options, 256),
+     require_nonnegative_integer(MaxColdCandidates, max_cold_candidates),
+     option(context_units(ExtraUnits), Options, []),
     require_list(ExtraUnits, context_units),
     covered_source_refs(ExtraUnits, CoveredRefs),
     conversation_messages_(Conversation, all, [], Messages),
-    messages_context_units(Messages,
-                           Policy.min_recent_turns,
-                           CoveredRefs,
-                           TokenOptions,
-                           MessageUnits),
+     messages_context_units(Messages,
+                            Policy.min_recent_turns,
+                            CoveredRefs,
+                            MaxColdCandidates,
+                            TokenOptions,
+                            MessageUnits),
     append(MessageUnits, ExtraUnits, Units),
     context_pack(Units, Sections, Policy, PackOutcome),
     require_budget_outcome(PackOutcome, BudgetPack),
     Pack = conversation_context_pack{conversation_id:Conversation.id,
                                      selected:BudgetPack.selected,
-                                     policy:BudgetPack.policy,
-                                     ledger:BudgetPack.ledger,
-                                     utility:BudgetPack.utility}.
+                                      policy:BudgetPack.policy,
+                                      ledger:BudgetPack.ledger,
+                                      utility:BudgetPack.utility,
+                                      max_cold_candidates:MaxColdCandidates}.
 
 conversation_token_ledger(Conversation, Options, Outcome) :-
     conversation_outcome(token_ledger,
@@ -343,26 +349,32 @@ covered_source_refs(Units, Refs) :-
 messages_context_units(Messages,
                        MinRecent,
                        CoveredRefs,
+                       MaxColdCandidates,
                        TokenOptions,
                        Units) :-
     length(Messages, Count),
     MandatoryStart is max(1, Count-MinRecent+1),
+    ColdCandidateStart is max(1, MandatoryStart-MaxColdCandidates),
     messages_context_units(Messages,
                            1,
                            MandatoryStart,
+                           ColdCandidateStart,
                            CoveredRefs,
                            TokenOptions,
                            Units).
 
-messages_context_units([], _, _, _, _, []).
+messages_context_units([], _, _, _, _, _, []).
 messages_context_units([Message|Messages],
                        Position,
                        MandatoryStart,
+                       ColdCandidateStart,
                        CoveredRefs,
                        TokenOptions,
                        Units) :-
     (   Position < MandatoryStart,
         memberchk(Message.ref, CoveredRefs)
+    ->  Units = Rest
+    ;   Position < ColdCandidateStart
     ->  Units = Rest
     ;   message_context_unit(Message,
                              Position,
@@ -375,6 +387,7 @@ messages_context_units([Message|Messages],
     messages_context_units(Messages,
                            Next,
                            MandatoryStart,
+                           ColdCandidateStart,
                            CoveredRefs,
                            TokenOptions,
                            Rest).
@@ -904,11 +917,12 @@ backend_create(conversation_store(memory, StoreId),
     with_mutex(rlm_conversation_memory,
                (   conversation_memory_header(StoreId, Id, _, _)
                ->  throw(conversation_fault(conversation_exists(Id)))
-               ;   assertz(conversation_memory_header(StoreId,
-                                                       Id,
-                                                       CreatedAt,
-                                                       Metadata))
-               )).
+                ;   assertz(conversation_memory_header(StoreId,
+                                                        Id,
+                                                        CreatedAt,
+                                                        Metadata)),
+                    assertz(conversation_memory_sequence(StoreId, Id, 1))
+                )).
 backend_create(conversation_store(persist, _),
                Id,
                CreatedAt,
@@ -956,15 +970,9 @@ backend_append(conversation_store(memory, StoreId), Id, Base, Message) :-
     !,
     with_mutex(rlm_conversation_memory,
                (   conversation_memory_header(StoreId, Id, _, _)
-               ->  findall(Sequence,
-                           conversation_memory_message(StoreId,
-                                                       Id,
-                                                       Sequence,
-                                                       _),
-                           Sequences),
-                   next_sequence(Sequences, Sequence),
-                   Ref = conversation_message_ref{conversation_id:Id,
-                                                  sequence:Sequence},
+                ->  next_memory_sequence(StoreId, Id, Sequence),
+                    Ref = conversation_message_ref{conversation_id:Id,
+                                                   sequence:Sequence},
                    put_dict(_{ref:Ref, sequence:Sequence},
                             Base,
                             Message),
@@ -972,11 +980,23 @@ backend_append(conversation_store(memory, StoreId), Id, Base, Message) :-
                                                        Id,
                                                        Sequence,
                                                        Message))
-               ;   throw(conversation_fault(not_found(Id)))
-               )).
+                ;   throw(conversation_fault(not_found(Id)))
+                )).
+
 backend_append(conversation_store(persist, _), Id, Base, Message) :-
     !,
     conversation_persist_append(Id, Base, Message).
+
+next_memory_sequence(StoreId, Id, Sequence) :-
+    (   retract(conversation_memory_sequence(StoreId, Id, Next))
+    ->  Sequence = Next
+    ;   findall(Existing,
+                conversation_memory_message(StoreId, Id, Existing, _),
+                ExistingSequences),
+        next_sequence(ExistingSequences, Sequence)
+    ),
+    Following is Sequence+1,
+    assertz(conversation_memory_sequence(StoreId, Id, Following)).
 
 backend_get(conversation_store(memory, StoreId), Id, Sequence, Message) :-
     !,

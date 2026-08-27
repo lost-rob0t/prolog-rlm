@@ -918,9 +918,9 @@ execute_step(model(ProviderName, PromptExpr, RequestOptions, Bind), Runtime,
     resolve_expr(PromptExpr, Inputs, State0, PromptOutcome),
     (   PromptOutcome = error(Error)
     ->  Outcome = error(Error, State0)
-    ;   PromptOutcome = ok(PromptValue),
-        (   text_string(PromptValue, Prompt)
-        ->  lookup_provider(ProviderName, Runtime, Provider),
+     ;   PromptOutcome = ok(PromptValue),
+         (   model_prompt_text(PromptValue, Prompt)
+         ->  lookup_provider(ProviderName, Runtime, Provider),
             model_step_system_message(System),
             Request = model_request{messages:[System,
                                               message{role:user,
@@ -930,12 +930,12 @@ execute_step(model(ProviderName, PromptExpr, RequestOptions, Bind), Runtime,
             handle_model_result(ModelOutcome, ProviderName, Bind, State0,
                                 Outcome)
         ;   Outcome = error(plan_error{phase:execute,
-                                       kind:invalid_prompt,
-                                       provider:ProviderName,
-                                       message:"model prompt did not resolve to text"},
-                           State0)
-        )
-    ).
+                                        kind:invalid_prompt,
+                                        provider:ProviderName,
+                                        message:"model prompt did not resolve to text or ground JSON data"},
+                            State0)
+         )
+     ).
 execute_step(rlm(Plan, Bind), Runtime, Inputs, State0, Outcome) :-
     !,
     parent_vars(State0, ParentVars),
@@ -1621,6 +1621,24 @@ text_string(Value, String) :-
     atom(Value),
     !,
     atom_string(Value, String).
+
+% Evidence bindings are often structured JSON-shaped values rather than text.
+% Keep the model boundary closed: only ground dicts/lists are serialized, and
+% arbitrary Prolog terms never become executable model input.
+model_prompt_text(Value, Prompt) :-
+    text_string(Value, Prompt),
+    !.
+model_prompt_text(Value, Prompt) :-
+    ground(Value),
+    (   is_dict(Value)
+    ;   is_list(Value)
+    ),
+    catch(with_output_to(string(Prompt),
+                        json_write(current_output,
+                                   Value,
+                                   [width(0)])),
+          _,
+          fail).
 
 value_bytes(Value, Bytes) :-
     term_string(Value, Text, [quoted(true), numbervars(true)]),
