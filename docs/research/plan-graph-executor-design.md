@@ -601,6 +601,18 @@ slice), `docs/spec-verify.md` links `validate/1` -> verifier expert -> `spec_obs
 `docs/prolog-agent-roadmap.md` gains a note when AgentProlog readiness
 changes (long-horizon execution layer available for the standalone product).
 
+## 13b. Recorded deviations from this design (post final review)
+
+- §6 named TWO cancellation shapes (thrown and `plan_outcome/5`-folded).
+  The implementation calls `rlm_plan:plan_execute/4` directly and never
+  goes through `plan_outcome/5`, so the folded shape cannot occur;
+  `step_throw/2` covers the thrown and thread-signal shapes instead.
+- §2.1 typed `plan_graph_execute/5` as taking `+ValidatedGraph`; the
+  implementation takes raw `+Input` and validates inside the worker
+  (consistent with §10 and the docs; §2.1 was the stale wording).
+- §10 metadata omits step/capability counts; the implemented
+  `async_metadata` mirrors `rlm_graph` keys exactly.
+
 ## 14. Appendix: verification queries
 
 All queries run against the current checkout (branch state of this design

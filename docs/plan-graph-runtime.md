@@ -84,7 +84,10 @@ lineage, and expert closure identity. This layer adds no external-effect
 path: shipped expert handlers are pure host-supplied closures.
 
 `delegate/2` child capabilities are validated as a narrowing subset of the
-graph capabilities (narrowing by default); the spawn path re-checks.
+graph capabilities (narrowing by default). Execution desugars to a plain
+`tool(spawn_agent, ...)` step with a host-supplied handler; any additional
+narrowing re-check at execution time is the host handler's obligation in
+this slice.
 
 ## Model-facing JSON and term forms
 
@@ -165,8 +168,10 @@ default_plan_graph_budget(graph_budget{max_steps:64,
 ```
 
 Each step receives `min(default, remaining aggregate)` per feed-forward
-class; after each step the consumed budget (from
-`plan_result.budget_remaining`) is deducted. A step that cannot be funded,
+class; after each COMPLETED step the consumed budget (from
+`plan_result.budget_remaining`) is deducted. Note that a step result's
+bytes are charged at bind and again at `final/1`, so effective per-step
+output cost is twice the result size (budgets are strict, never lenient). A step that cannot be funded,
 that reports budget exhaustion, or that runs past the wall-clock deadline
 aborts the graph: remaining steps are `abandoned` and the outcome is
 `status:aborted` with reason `budget` or `time`. Never silent success, and

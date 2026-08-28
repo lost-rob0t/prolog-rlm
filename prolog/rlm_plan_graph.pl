@@ -133,7 +133,7 @@ require_exact_keys(Dict, Allowed) :-
 
 require_atom_key(Dict, Key, Atom) :-
     require_dict_key(Dict, Key, Raw),
-    (   atom_string(Atom, Raw)
+    (   catch(atom_string(Atom, Raw), _, fail)
     ->  true
     ;   graph_fault(structure, expected_atom(Key))
     ).
@@ -174,7 +174,8 @@ graph_exception(_, graph_fault(Phase, Detail),
                 error(plan_graph_error{phase:Phase,
                                        kind:FaultKind,
                                        detail:Detail})) :-
-    fault_kind(Detail, FaultKind).
+    fault_kind(Detail, FaultKind),
+    !.
 graph_exception(Phase, Exception,
                 error(plan_graph_error{phase:Phase,
                                        kind:exception,
@@ -247,7 +248,7 @@ plan_graph_normalize_(Input, Outcome) :-
     require_acyclic_data(Input),
     normalize_input(Input, Steps, Deps),
     maplist(with_requirements(Deps), Steps, StepsWithReq),
-    edges_from_deps(Deps, Edges),
+    edges_from_deps(StepsWithReq, Edges),
     Outcome = ok(plan_graph{steps:StepsWithReq, edges:Edges}).
 
 normalize_input(Dict, Steps, Deps) :-
@@ -331,9 +332,12 @@ decode_term_dep(depends_on(StepId, Reqs), dep(step:StepId, requires:Reqs)) :-
 decode_args(Op, ArgsDict, Args, Arity) :-
     plan_graph_op(Op/DecodedArity),
     !,
-    (   decode_known_args(Op, ArgsDict, Args)
+    (   catch(decode_known_args(Op, ArgsDict, Args),
+              graph_fault(_, _),
+              fail)
     ->  true
-    ;   Args = invalid_args(Op, ArgsDict)
+    ;   ground_args_data(ArgsDict, GroundArgs),
+        Args = invalid_args(Op, GroundArgs)
     ),
     Arity = DecodedArity.
 decode_args(_, ArgsDict, Args, Arity) :-
@@ -344,45 +348,67 @@ decode_args(_, ArgsDict, Args, Arity) :-
     length(Pairs, Arity).
 decode_args(_, ArgsTerm, ArgsTerm, unknown_arity).
 
+%% Copy the offending args into a fully ground form (JSON dicts carry a
+%% fresh variable tag that would make the sentinel non-ground and break
+%% ground/1 during validation).
+ground_args_data(ArgsDict, Ground) :-
+    is_dict(ArgsDict),
+    !,
+    dict_pairs(ArgsDict, plan_graph_args, Pairs),
+    dict_create(Ground, plan_graph_args, Pairs).
+ground_args_data(Args, Args).
+
 decode_known_args(sync_remote, D, sync_remote(op(A))) :-
+    require_exact_keys(D, [op]),
     require_atom_key(D, op, A).
 decode_known_args(index, D, index(scope(S))) :-
+    require_exact_keys(D, [scope]),
     require_dict_key(D, scope, Raw),
     decode_scope(Raw, S).
 decode_known_args(search, D, search(P, S)) :-
+    require_exact_keys(D, [pattern, scope]),
     require_atom_key(D, pattern, P),
     require_dict_key(D, scope, Raw),
     decode_scope(Raw, S).
 decode_known_args(locate, D, locate(symbol_ref(Ref))) :-
+    require_exact_keys(D, [symbol]),
     require_dict_key(D, symbol, RefDict),
     is_dict(RefDict),
     json_symbol_ref(RefDict, Ref).
 decode_known_args(read, D, read(path(A))) :-
+    require_exact_keys(D, [source]),
     require_dict_key(D, source, Raw),
     require_path_object(Raw, A).
 decode_known_args(diff, D, diff(L, R)) :-
+    require_exact_keys(D, [left, right]),
     require_dict_key(D, left, Left),
     require_dict_key(D, right, Right),
     decode_side(Left, L),
     decode_side(Right, R).
 decode_known_args(edit, D, edit(T, Rep)) :-
+    require_exact_keys(D, [target, replacement]),
     require_dict_key(D, target, Raw),
     decode_side(Raw, T),
     require_atom_key(D, replacement, Rep).
 decode_known_args(create, D, create(path(A), literal(L))) :-
+    require_exact_keys(D, [path, literal]),
     require_atom_key(D, path, A),
     require_atom_key(D, literal, L).
 decode_known_args(delete, D, delete(path(A))) :-
+    require_exact_keys(D, [path]),
     require_atom_key(D, path, A).
 decode_known_args(run, D, run(command(A))) :-
+    require_exact_keys(D, [command]),
     require_atom_key(D, command, A).
 decode_known_args(validate, D, validate(spec(fingerprint(A)))) :-
+    require_exact_keys(D, [spec]),
     require_dict_key(D, spec, Raw),
     (   is_dict(Raw)
     ->  require_atom_key(Raw, fingerprint, A)
     ;   atom_string(A, Raw)
     ).
 decode_known_args(delegate, D, delegate(task(A), caps(Cs))) :-
+    require_exact_keys(D, [task, caps]),
     require_atom_key(D, task, A),
     require_dict_key(D, caps, CapsRaw),
     must_list(CapsRaw, caps),
@@ -483,18 +509,23 @@ with_requirements(Deps, Step0, Step) :-
                 DepId == Id,
                 member(Req, Reqs)
             ),
-            Reqs),
+            Reqs0),
+    sort(Reqs0, Reqs),
     put_dict(requires, Step0, Reqs, Step).
 
-edges_from_deps(Deps, Edges) :-
-    include(dep_requires_nonempty, Deps, NonEmpty),
-    maplist(dep_to_edge, NonEmpty, Edges).
+%% Edges are derived from the dependency-merged steps so duplicate or
+%% ghost depends_on entries can never produce an inconsistent edge set.
+edges_from_deps(Steps, Edges) :-
+    include(step_requires_nonempty, Steps, WithDeps),
+    maplist(step_to_edge, WithDeps, Edges).
 
-dep_requires_nonempty(dep(step:_, requires:Reqs)) :-
+step_requires_nonempty(Step) :-
+    get_dict(requires, Step, Reqs),
     Reqs \== [].
 
-dep_to_edge(dep(step:StepId, requires:Reqs),
-            graph_edge{step:StepId, requires:Reqs}).
+step_to_edge(Step, graph_edge{step:StepId, requires:Reqs}) :-
+    get_dict(id, Step, StepId),
+    get_dict(requires, Step, Reqs).
 
 /* -------------------------------------------------------------------------
  * Validation
@@ -512,13 +543,16 @@ plan_graph_validate_(Graph0, Caps0, Budget0,
                                              estimates:Estimates})) :-
     require_acyclic_data(Graph0),
     check_structure(Graph0, Graph),
+    !,
     check_duplicates(Graph),
     check_unknown_dependencies(Graph),
     check_acyclic(Graph),
     check_vocabulary(Graph),
     check_arg_shapes(Graph),
-    capabilities_narrow(Caps0, Caps0, CapsOutcome),
-    require_caps_outcome(CapsOutcome, Caps),
+    (   catch(capabilities_narrow(Caps0, Caps0, CapsOutcome), _, fail)
+    ->  require_caps_outcome(CapsOutcome, Caps)
+    ;   graph_fault(capability, capability_error(invalid_capabilities(Caps0)))
+    ),
     check_capabilities(Graph, Caps),
     normalize_graph_budget(Budget0, Budget),
     check_budget(Graph, Budget, Estimates),
@@ -529,7 +563,11 @@ check_structure(Graph, Graph) :-
     get_dict(steps, Graph, Steps),
     must_list(Steps, steps),
     Steps = [_|_],
-    forall(member(Step, Steps), valid_step_shape(Step)),
+    forall(member(Step, Steps),
+           (   valid_step_shape(Step)
+           ->  true
+           ;   graph_fault(structure, invalid_graph(Step))
+           )),
     get_dict(edges, Graph, Edges),
     must_list(Edges, edges),
     edges_consistent(Steps, Edges).
@@ -556,22 +594,28 @@ op_term(Name/Arity) :-
     ).
 
 edges_consistent(Steps, Edges) :-
-    forall(member(Edge, Edges),
-           (   is_dict(Edge),
-               get_dict(step, Edge, StepId),
-               get_dict(requires, Edge, Reqs),
-               member(Step, Steps),
-               get_dict(id, Step, StepId),
-               get_dict(requires, Step, StepReqs),
-               StepReqs == Reqs
-           )),
+    forall(member(Edge, Edges), edge_consistent(Steps, Edge)),
     forall((   member(Step, Steps),
                get_dict(requires, Step, Reqs),
                Reqs \== []
            ),
            (   get_dict(id, Step, Id),
                memberchk(graph_edge{step:Id, requires:Reqs}, Edges)
+           ->  true
+           ;   graph_fault(structure, invalid_graph(missing_edge(Id)))
            )).
+
+edge_consistent(Steps, Edge) :-
+    is_dict(Edge),
+    get_dict(step, Edge, StepId),
+    get_dict(requires, Edge, Reqs),
+    member(Step, Steps),
+    get_dict(id, Step, StepId),
+    get_dict(requires, Step, StepReqs),
+    StepReqs == Reqs,
+    !.
+edge_consistent(_, Edge) :-
+    graph_fault(structure, invalid_graph(Edge)).
 
 check_duplicates(Graph) :-
     get_dict(steps, Graph, Steps),
@@ -608,6 +652,14 @@ check_unknown_dependencies(Graph) :-
            ->  true
            ;   get_dict(id, Step, StepId),
                graph_fault(structure, dependency(StepId, Req))
+           )),
+    get_dict(edges, Graph, Edges),
+    forall(member(Edge, Edges),
+           (   get_dict(step, Edge, EdgeStep),
+               memberchk(EdgeStep, Ids)
+           ->  true
+           ;   graph_fault(structure,
+                           unknown_dependency(EdgeStep, depends_on_entry))
            )).
 
 check_acyclic(Graph) :-
@@ -819,7 +871,7 @@ plan_graph_execute_(GraphInput, Caps, Options, Inputs, Outcome) :-
     graph_option(experts, Options, [], Experts),
     validate_expert_registry(Experts),
     graph_option(budget, Options, default, BudgetArg),
-    plan_graph_parse_(GraphInput, NormOutcome),
+    plan_graph_parse(GraphInput, NormOutcome),
     require_graph_outcome(NormOutcome, Graph),
     plan_graph_validate_(Graph, Caps, BudgetArg, ValidOutcome),
     require_graph_outcome(ValidOutcome, Validated),
@@ -917,10 +969,19 @@ first_ready(Graph, State, StepId) :-
     plan_graph_ready(Graph, State, StepId),
     !.
 
+%% Every step's desugared plan needs at least one tool call and a
+%% non-empty output allowance for its result. An unfundable step means
+%% the aggregate is exhausted: abort with reason budget, never hand out
+%% a zero-valued budget field.
+fundable(Agg) :-
+    get_dict(tool_calls, Agg, ToolCalls),
+    ToolCalls >= 1,
+    get_dict(output_bytes, Agg, OutputBytes),
+    OutputBytes >= 1.
+
 admit_step(Graph, StepId, Experts, Inputs, Token, Deadline,
            DefaultPlanBudget, State0, Agg0, State, Agg, Status, Reason) :-
-    (   get_dict(tool_calls, Agg0, Available),
-        Available < 1
+    (   \+ fundable(Agg0)
     ->  abort_graph(Graph, State0, Aborted),
         State = Aborted,
         Agg = Agg0,

@@ -54,3 +54,18 @@ session, TDD) -> final adversarial review (fresh opencode subprocess) -> gates.
 - Docs: docs/plan-graph-runtime.md; cross-links in typed-plans.md,
   spec-verify.md via guarantee boundary; roadmap long-horizon note added.
 - Registered in test/deterministic_corpus.pl (include(rlm_plan_graph)).
+* Final review loop
+
+- Final adversarial review subprocess: verdict sound-with-changes; report
+  rage/288-final-review-report.md. Required changes 1-7 all applied:
+  R1 deterministic fault_kind/graph_exception (zero choicepoint warnings),
+  R2 grounded invalid_args sentinels, edges/duplicate/ghost depends_on
+  rejection, malformed caps -> structured fault, validate fail-closed,
+  R3 per-op exact JSON key sets, R4 fundable/2 across feed-forward classes
+  + aggregate_unfundable_step_aborts test, R5 parse-phase attribution via
+  public wrapper, R6 pre_cancelled_token test, R7 docs corrected
+  (completed-step charging, delegate spawn re-check as host obligation)
+  + design-record deviations section.
+- Final suite: 1021/1021 (86 suites) incl. 26 plan-graph tests; contract
+  gate ALL DEFINED; check_runtime/load_all/benchmark/demo/diff-check/
+  research-approval all green.

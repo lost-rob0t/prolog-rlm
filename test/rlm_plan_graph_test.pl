@@ -335,6 +335,48 @@ test(source_span_rejects_inverted_bytes) :-
                                                 start_byte: -1,
                                                 end_byte:5}).
 
+/* Aggregate unfundable step (final review M2) --------------------------- */
+
+test(aggregate_unfundable_step_aborts) :-
+    plan_graph_test_tools:reset_calls,
+    Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"index\",\"args\":{\"scope\":\"all\"},\"bind\":\"a\"},{\"id\":\"s2\",\"op\":\"read\",\"args\":{\"source\":{\"path\":\"x\"}},\"bind\":\"b\"},{\"id\":\"s3\",\"op\":\"search\",\"args\":{\"pattern\":\"p\",\"scope\":\"all\"},\"bind\":\"c\"}]}",
+    all_caps(Caps),
+    run_options(Options),
+    Budget = graph_budget{max_total_output_bytes:12},
+    plan_graph_run(Json, Caps, [budget(Budget)|Options], inputs{}, RunOutcome),
+    RunOutcome = ok(Result),
+    UnfundedState = Result.state,
+    assertion(Result.status == aborted),
+    assertion(Result.reason == budget),
+    get_dict(status, UnfundedState, Statuses),
+    get_dict(s2, Statuses, S2),
+    get_dict(s3, Statuses, S3),
+    assertion(S2 == abandoned),
+    assertion(S3 == abandoned),
+    findall(Name, plan_graph_test_tools:expert_call(Name, _), Calls),
+    assertion(Calls == [index]).
+
+/* Pre-cancelled token plumbing (final review minor 4) -------------------- */
+
+test(pre_cancelled_token_aborts_before_execution) :-
+    plan_graph_test_tools:reset_calls,
+    Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"index\",\"args\":{\"scope\":\"all\"},\"bind\":\"a\"}]}",
+    all_caps(Caps),
+    run_options(Options),
+    plan_graph_cancellation_token(Token),
+    plan_graph_cancel(Token),
+    catch(plan_graph_run(Json, Caps, [cancellation_token(Token)|Options],
+                        inputs{}, _Outcome),
+          error(rlm_cancelled(Token2), _Context),
+          true),
+    (   var(Token2)
+    ->  Token2 = no_throw
+    ;   true
+    ),
+    assertion(Token2 == Token),
+    findall(Name, plan_graph_test_tools:expert_call(Name, _), Calls),
+    assertion(Calls == []).
+
 /* Async / sync parity ------------------------------------------------------ */
 
 test(run_async_awaits_same_future_as_run) :-
