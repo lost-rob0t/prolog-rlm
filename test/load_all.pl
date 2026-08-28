@@ -29,6 +29,7 @@
 :- use_module('../prolog/rlm_spec_lang', []).
 :- use_module('../prolog/rlm_verify', []).
 :- use_module('../prolog/rlm_result_accept', []).
+:- use_module('../prolog/rlm_spec_plan', []).
 :- use_module('../prolog/rlm_spec_workflow', []).
 :- use_module('../prolog/rlm_spec_strategy', []).
 :- use_module('../prolog/rlm_project_source', []).
@@ -50,6 +51,7 @@ main(_) :-
         rlm_spec:rlm_spec_ready,
         rlm_spec_lang:rlm_spec_lang_ready,
         rlm_verify:rlm_verify_ready,
+        rlm_spec_plan:rlm_spec_plan_ready,
         rlm_spec_workflow:rlm_spec_workflow_ready,
         rlm_spec_strategy:rlm_spec_strategy_ready,
         rlm_project_source:rlm_project_source_ready,
