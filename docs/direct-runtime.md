@@ -26,11 +26,23 @@ The direct strategy is exposed by `rlm_direct` and the `rlm` facade:
 rlm_direct(+Query, +Context, +Options, -Outcome).
 rlm_direct_async(+Query, +Context, +Options, -Future).
 rlm_direct_execute(+Query, +Context, +Options, -Outcome).
+rlm_direct_model_step(+Context, +Capabilities, +Options, +Budget, +Token,
+                      +Provider, +Prompt, +RequestOptions, +NativeBudget,
+                      -Outcome).
 ```
 
 `rlm_direct_async/4` submits the canonical `rlm_direct_execute/4` operation to
 `rlm_async`. `rlm_direct/4` starts that same Future and awaits it. Code already
 running in a bounded worker calls `rlm_direct_execute/4` directly.
+
+`rlm_direct_model_step/10` is the trusted typed-plan model-step ABI. Host
+runtimes bind it (module-qualified, with the already-acquired context handle,
+capabilities, runtime options, remaining budget, and cancellation token) as the
+`model_step_handler` of a typed-plan runtime. The plan runtime then calls it
+with the step provider, prompt, request options, and native budget; it runs one
+provider-native direct session through `rlm_direct_execute/4` and reports a
+`native_model_execution{response,responses,iterations,model_calls,tool_calls,
+context_calls,observation_bytes}`. It is never model-supplied data.
 
 Provider-neutral native data is exposed by `rlm_native_tool`:
 
@@ -54,18 +66,22 @@ A successful direct loop returns:
 ok(direct_result{
     value: Text,
     response: FinalModelResponse,
+    responses: [ModelResponse, ...],
     usage: UsageSummary,
     turns: ModelTurnCount,
     iterations: ProviderTurnsAndNestedPlanSteps,
     context_calls: ContextCallCount,
     tool_calls: NonContextNativeCallCount,
+    observation_bytes: ObservationBytesBeforeFinalText,
     output_bytes: ObservationAndFinalBytes,
     trajectory: [DirectEvent, ...]
 })
 ```
 
 `value` is exactly the final nonempty model text. `response` preserves the
-canonical provider response. Usage is the sum of every provider turn,
+canonical final provider response and `responses` preserves every provider
+response of the session in chronological order, so nested typed-plan sessions
+can account for all spent calls. Usage is the sum of every provider turn,
 including turns that requested tools. Trajectory events preserve provider
 response identity and each native call ID; registered-tool events additionally
 retain canonical authority/effect trace data.
@@ -79,6 +95,7 @@ error(direct_error{
     message: Text,
     usage: UsageSummary,
     trajectory: Events,
+    model_responses: [ModelResponse, ...],
     ...
 })
 ```
@@ -94,6 +111,7 @@ Internal loop state is closed runtime data:
 direct_state{
     messages: Messages,
     seen_call_ids: CallIds,
+    responses: [ModelResponse, ...],
     model_calls: N,
     context_calls: N,
     tool_calls: N,
@@ -208,8 +226,9 @@ source text and composes normalize, trusted assertion-registry validation, and
 freeze. Observe and Verify consume exact retained result contexts, so the model
 cannot replace a Frozen Spec or observation with a similar-looking JSON value.
 `typed_plan_execute` accepts one complete plan object and calls the existing
-plan runtime with remaining shared budgets. Existing Prolog APIs remain the
-lower-level non-model interfaces.
+plan runtime with remaining shared budgets; model steps inside that plan run as
+nested provider-native sessions through the shared `rlm_direct_model_step/10`
+handler. Existing Prolog APIs remain the lower-level non-model interfaces.
 
 Tool schemas already define execution contracts, so the model does not repeat
 them as Spec requirements. Core cannot infer a task's desired outcome from a
@@ -235,8 +254,10 @@ prepare trusted provider/context/catalog
                       -> schema/capability/confinement
                       -> authority
                       -> durable effect boundary when non-read
-       Spec call -> rlm_spec_lang or rlm_verify
-       typed plan call -> rlm_plan with the remaining shared budget
+        Spec call -> rlm_spec_lang or rlm_verify
+        typed plan call -> rlm_plan with the remaining shared budget
+                       (plan model steps re-enter this direct loop through
+                        the trusted rlm_direct_model_step/10 handler)
      encode and bound each correlated observation
      append tool messages
      repeat
@@ -255,6 +276,11 @@ Direct mode uses `completion_budget`, including `max_model_calls`,
 - Every provider turn consumes one model call and its reported tokens/cost.
 - Every provider turn and every nested typed-plan step consumes one shared
   iteration; a nested plan receives only the remaining iteration budget.
+- A typed-plan model step runs as one nested direct session: the plan reserves
+  one step and one model call, and the runtime then charges the session's
+  actual continuation iterations, model calls, tool calls, context operations,
+  observation bytes, and recorded provider responses against the same shared
+  budget before binding the step result.
 - Every non-context native operation consumes one tool call before dispatch.
 - Every context invocation consumes one context operation before dispatch.
 - Every provider-visible observation and the final text consume output bytes.
@@ -344,10 +370,12 @@ list and order are identical on every continuation, static identity,
 instructions, and explicit skills precede dynamic task/context metadata, and
 observations only append to the message suffix. Typed plans are an independent,
 first-class execution strategy: their `tool`, `context`, `model`, and recursive
-operations remain supported. The current `model` operation makes one bounded
-provider call without native schemas. Moving that operation onto the common
-native session executor is an integration gap in this slice, not a legacy or
-deprecated typed-plan path.
+operations remain supported. The `model` operation runs through the same
+provider-native session executor whenever the runtime supplies the canonical
+`rlm_direct_model_step/10` handler — root completion and direct-mode
+`typed_plan_execute` always do — while standalone `plan_run/5` without a
+handler keeps the one-raw-call compatibility profile described in
+`docs/typed-plans.md`. The native path is canonical, not legacy.
 
 `rlm_direct` defaults to `prompt_compile_mode(compiled)`, matching root
 completion. The canonical prompt compiler uses the current query, capability

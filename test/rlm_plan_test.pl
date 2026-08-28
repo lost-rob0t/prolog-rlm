@@ -4,6 +4,105 @@
 :- use_module('../prolog/rlm_context').
 :- use_module('support/plan_test_tools').
 
+native_model_step_fixture(fake, Prompt, RequestOptions, Budget, Outcome) :-
+    assertion(Prompt == "inspect with native tools"),
+    assertion(RequestOptions.max_tokens =:= 32),
+    assertion(Budget.max_iterations =:= 5),
+    assertion(Budget.max_model_calls =:= 3),
+    assertion(Budget.max_tool_calls =:= 2),
+    assertion(Budget.max_context_ops =:= 2),
+    response_fixture(native_1, "", 3, First),
+    response_fixture(native_2, "NATIVE_STEP_OK", 5, Final),
+    Outcome = ok(native_model_execution{
+                     response:Final,
+                     responses:[First,Final],
+                     iterations:2,
+                     model_calls:2,
+                     tool_calls:1,
+                     context_calls:1,
+                     observation_bytes:5
+                 }).
+
+response_fixture(Id, Text, Tokens,
+                 model_response{
+                     provider:fake,
+                     response_id:Id,
+                     text:Text,
+                     metadata:provider_metadata{http_status:200,
+                                                response_received:true},
+                     usage:usage{prompt_tokens:Tokens,
+                                 completion_tokens:0,
+                                 total_tokens:Tokens,
+                                 cost:0.0}
+                 }).
+
+:- dynamic native_fixture_calls/1.
+:- dynamic native_seen_used_tokens/1.
+
+reset_native_fixture_calls :-
+    retractall(native_fixture_calls(_)),
+    retractall(native_seen_used_tokens(_)),
+    assertz(native_fixture_calls(0)).
+
+bump_native_fixture_calls :-
+    retract(native_fixture_calls(N0)),
+    N is N0+1,
+    assertz(native_fixture_calls(N)).
+
+% Reports more continuation iterations than the shared plan budget can charge
+% after the already-reserved model step.
+native_overspend_fixture(fake, _Prompt, _RequestOptions, _Budget, Outcome) :-
+    bump_native_fixture_calls,
+    response_fixture(native_o1, "", 3, First),
+    response_fixture(native_o2, "OVERSPEND", 5, Final),
+    Outcome = ok(native_model_execution{
+                     response:Final,
+                     responses:[First,Final],
+                     iterations:9,
+                     model_calls:2,
+                     tool_calls:0,
+                     context_calls:0,
+                     observation_bytes:0
+                 }).
+
+% A native session that already spent provider turns and then failed: the
+% direct failure retains every completed response for accounting.
+native_failure_fixture(fake, _Prompt, _RequestOptions, _Budget,
+                       error(direct_error{phase:provider,
+                                          kind:provider_failed,
+                                          message:"fake native session failed",
+                                          usage:usage_summary{model_calls:1,
+                                                              prompt_tokens:7,
+                                                              completion_tokens:0,
+                                                              total_tokens:7,
+                                                              cost_usd:0.0,
+                                                              cost_known:true,
+                                                              tokens_known:true},
+                                          model_responses:[FailedResponse],
+                                          iterations:1,
+                                          context_calls:0,
+                                          tool_calls:0,
+                                          output_bytes:0,
+                                          trajectory:[]})) :-
+    response_fixture(native_fail, "PARTIAL", 7, FailedResponse).
+
+% Succeeds in two provider turns and records the native budget it received so
+% the shared token accounting across model steps is observable.
+native_capturing_fixture(fake, _Prompt, _RequestOptions, Budget, Outcome) :-
+    bump_native_fixture_calls,
+    assertz(native_seen_used_tokens(Budget.used_total_tokens)),
+    response_fixture(native_c1, "", 4, First),
+    response_fixture(native_c2, "SECOND_STEP_OK", 4, Final),
+    Outcome = ok(native_model_execution{
+                     response:Final,
+                     responses:[First,Final],
+                     iterations:2,
+                     model_calls:2,
+                     tool_calls:0,
+                     context_calls:0,
+                     observation_bytes:0
+                 }).
+
 test(parses_model_json_into_closed_ast) :-
     Json = "{\"steps\":[{\"op\":\"context\",\"handle\":{\"ref\":\"input\",\"name\":\"context\"},\"action\":{\"type\":\"search\",\"pattern\":\"needle\"},\"bind\":\"hits\"},{\"op\":\"tool\",\"name\":\"count_items\",\"args\":{\"ref\":\"var\",\"name\":\"hits\"},\"bind\":\"count\"},{\"op\":\"final\",\"value\":{\"ref\":\"var\",\"name\":\"count\"}}]}",
     plan_parse(Json, ok(Plan)),
@@ -89,6 +188,104 @@ test(model_provider_is_preflighted_before_execution) :-
     plan_run(Plan, Caps, [], _{}, error(Error)),
     assertion(Error.phase == preflight),
     assertion(Error.kind == unknown_provider).
+
+test(first_class_model_step_uses_native_session_and_charges_actual_counts) :-
+    Plan = plan([
+        model(fake, literal("inspect with native tools"),
+              _{max_tokens:32}, reply),
+        final(field(var(reply), text))
+    ]),
+    Caps = [model(fake)],
+    Budget = _{max_steps:5,max_model_calls:3,max_tool_calls:2,
+               max_context_ops:2,max_output_bytes:4096},
+    Options = [providers([provider_ref(fake,provider(fake,[]))]),
+               model_step_handler(plunit_rlm_plan:native_model_step_fixture),
+               budget(Budget)],
+    plan_run(Plan, Caps, Options, _{}, ok(Result)),
+    assertion(Result.value == "NATIVE_STEP_OK"),
+    Result.model_responses = [First,Final],
+    assertion(First.response_id == native_1),
+    assertion(Final.response_id == native_2),
+    assertion(Result.budget_remaining.steps =:= 2),
+    assertion(Result.budget_remaining.model_calls =:= 1),
+    assertion(Result.budget_remaining.tool_calls =:= 1),
+    assertion(Result.budget_remaining.context_ops =:= 1).
+
+test(native_continuation_overspend_is_rejected_before_binding) :-
+    reset_native_fixture_calls,
+    Plan = plan([
+        model(fake, literal("inspect with native tools"), _{max_tokens:32},
+              reply),
+        final(field(var(reply), text))
+    ]),
+    Caps = [model(fake)],
+    Budget = _{max_steps:5,max_model_calls:3,max_tool_calls:2,
+               max_context_ops:2,max_output_bytes:4096},
+    Options = [providers([provider_ref(fake,provider(fake,[]))]),
+               model_step_handler(plunit_rlm_plan:native_overspend_fixture),
+               budget(Budget)],
+    plan_run(Plan, Caps, Options, _{}, error(Error)),
+    assertion(Error.kind == budget_exhausted),
+    assertion(Error.budget == steps),
+    assertion(Error.requested =:= 8),
+    assertion(Error.remaining =:= 4),
+    response_fixture(native_o1, "", 3, First),
+    response_fixture(native_o2, "OVERSPEND", 5, Final),
+    assertion(Error.model_responses == [First,Final]),
+    native_fixture_calls(1).
+
+test(partial_native_failure_preserves_provider_usage) :-
+    Plan = plan([
+        model(fake, literal("inspect with native tools"), _{}, reply),
+        final(field(var(reply), text))
+    ]),
+    Caps = [model(fake)],
+    Budget = _{max_steps:5,max_model_calls:3,max_tool_calls:2,
+               max_context_ops:2,max_output_bytes:4096},
+    Options = [providers([provider_ref(fake,provider(fake,[]))]),
+               model_step_handler(plunit_rlm_plan:native_failure_fixture),
+               budget(Budget)],
+    plan_run(Plan, Caps, Options, _{}, error(Error)),
+    assertion(Error.kind == model_error),
+    response_fixture(native_fail, "PARTIAL", 7, FailedResponse),
+    assertion(Error.model_responses == [FailedResponse]),
+    assertion(FailedResponse.usage.total_tokens =:= 7),
+    assertion(Error.budget_remaining.model_calls =:= 2).
+
+test(native_sessions_share_recorded_token_budget_across_steps) :-
+    reset_native_fixture_calls,
+    Plan = plan([
+        model(fake, literal("first native step"), _{}, first),
+        model(fake, literal("second native step"), _{}, second),
+        final(field(var(second), text))
+    ]),
+    Caps = [model(fake)],
+    Budget = _{max_steps:8,max_model_calls:4,max_tool_calls:2,
+               max_context_ops:2,max_output_bytes:4096},
+    Options = [providers([provider_ref(fake,provider(fake,[]))]),
+               model_step_handler(plunit_rlm_plan:native_capturing_fixture),
+               budget(Budget)],
+    plan_run(Plan, Caps, Options, _{}, ok(Result)),
+    assertion(Result.value == "SECOND_STEP_OK"),
+    native_fixture_calls(2),
+    findall(Used, native_seen_used_tokens(Used), [0,8]),
+    assertion(length(Result.model_responses, 4)),
+    assertion(Result.budget_remaining.model_calls =:= 0).
+
+test(standalone_model_step_without_handler_makes_one_raw_provider_call) :-
+    Plan = plan([
+        model(fake, literal("raw provider call"), _{}, reply),
+        final(field(var(reply), text))
+    ]),
+    Caps = [model(fake)],
+    Options = [providers([provider_ref(fake,provider(fake,[]))]),
+               budget(_{max_steps:5,max_model_calls:3,max_tool_calls:2,
+                        max_context_ops:2,max_output_bytes:4096})],
+    plan_run(Plan, Caps, Options, _{}, error(Error)),
+    assertion(Error.kind == model_error),
+    assertion(Error.cause.kind == capability_denied),
+    assertion(Error.cause.provider == fake),
+    assertion(Error.model_responses == []).
 
 test(duplicate_binding_is_rejected) :-
     Plan = plan([

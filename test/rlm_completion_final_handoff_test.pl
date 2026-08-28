@@ -285,15 +285,21 @@ run_system_message_regression(Port) :-
                    Outcome),
     expect_ok(Outcome, _),
     final_handoff_requests([Request]),
-    get_dict(messages, Request, [System, User]),
+    get_dict(messages, Request, [Identity, System, User]),
+    get_dict(role, Identity, "system"),
+    get_dict(content, Identity, IdentityText),
     get_dict(role, System, "system"),
     get_dict(content, System, SystemText),
-    assertion(sub_string(SystemText, _, _, _, "bounded task step")),
+    assertion(sub_string(SystemText, _, _, _, "bounded direct agent")),
     assertion(\+ sub_string(SystemText, _, _, _, "{\"steps\":")),
     assertion(\+ sub_string(SystemText, _, _, _, "RLM_OPERATE_BODY")),
     assertion(\+ sub_string(SystemText, _, _, _, "\"mode\":\"direct\"")),
+    assertion(\+ sub_string(IdentityText, _, _, _, "{\"steps\":")),
+    assertion(\+ sub_string(IdentityText, _, _, _, "RLM_OPERATE_BODY")),
     get_dict(role, User, "user"),
-    get_dict(content, User, "produce the task result").
+    get_dict(content, User, UserText),
+    assertion(sub_string(UserText, _, _, _, "produce the task result")),
+    assertion(\+ sub_string(UserText, _, _, _, "{\"steps\":[...]")).
 
 test(native_tool_call_is_not_a_planner_or_final_result) :-
     completion_options(

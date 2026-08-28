@@ -1,7 +1,8 @@
 :- module(rlm_direct,
           [ rlm_direct/4,
             rlm_direct_async/4,
-            rlm_direct_execute/4
+            rlm_direct_execute/4,
+            rlm_direct_model_step/10
           ]).
 
 /** <module> Bounded provider-native direct agent loop */
@@ -61,6 +62,118 @@ rlm_direct_execute(Query, Context, Options, Outcome) :-
           Exception,
           direct_exception(Exception, Outcome)).
 
+rlm_direct_model_step(Context,
+                      Capabilities,
+                      BaseOptions,
+                      BaseBudget,
+                      Token,
+                      ProviderName,
+                      Prompt,
+                      RequestOptions,
+                      NativeBudget,
+                      Outcome) :-
+    catch(direct_model_step_(Context,
+                             Capabilities,
+                             BaseOptions,
+                             BaseBudget,
+                             Token,
+                             ProviderName,
+                             Prompt,
+                             RequestOptions,
+                             NativeBudget,
+                             Outcome),
+          Exception,
+          direct_model_step_exception(Exception, Outcome)).
+
+direct_model_step_(Context,
+                   Capabilities,
+                   BaseOptions,
+                   BaseBudget,
+                   Token,
+                   ProviderName,
+                   Prompt,
+                   RequestOptions,
+                   NativeBudget,
+                   Outcome) :-
+    provider_options(BaseOptions, ConfiguredName, _),
+    (   ProviderName == ConfiguredName
+    ->  true
+    ;   throw(direct_fault(direct_error{
+                             phase:provider,
+                             kind:provider_mismatch,
+                             requested:ProviderName,
+                             configured:ConfiguredName,
+                             message:"typed-plan model provider is not the configured native session provider"}))
+    ),
+    direct_model_step_budget(BaseBudget, NativeBudget, ChildBudget),
+    direct_model_step_token_limit(RequestOptions, BaseOptions, TokenLimit),
+    ChildOptions = [ budget(ChildBudget),
+                     capabilities(Capabilities),
+                     cancel_token(Token),
+                     native_request_options(RequestOptions),
+                     planner_max_tokens(TokenLimit)
+                   | BaseOptions
+                   ],
+    rlm_direct_execute(Prompt, Context, ChildOptions, DirectOutcome),
+    direct_model_step_outcome(DirectOutcome, Outcome).
+
+direct_model_step_budget(Base, Native, Budget) :-
+    Tokens is Base.max_total_tokens-Native.used_total_tokens,
+    Cost is max(0.0, Base.max_cost_usd-Native.used_cost_usd),
+    Output is min(Base.max_output_bytes, Native.max_output_bytes),
+    (   Tokens > 0,
+        Output > 0
+    ->  Budget = completion_budget{
+                     max_iterations:Native.max_iterations,
+                     max_recursion_depth:Base.max_recursion_depth,
+                     max_concurrent_subcalls:Base.max_concurrent_subcalls,
+                     max_model_calls:Native.max_model_calls,
+                     max_tool_calls:Native.max_tool_calls,
+                     max_context_ops:Native.max_context_ops,
+                     max_total_tokens:Tokens,
+                     max_cost_usd:Cost,
+                     max_output_bytes:Output,
+                     time_limit:Base.time_limit
+                 }
+    ;   throw(direct_fault(direct_error{
+                             phase:budget,
+                             kind:native_model_step_budget_exhausted,
+                             remaining_tokens:Tokens,
+                             remaining_output_bytes:Output,
+                             message:"typed-plan model session has no remaining token or output budget"}))
+    ).
+
+direct_model_step_token_limit(RequestOptions, BaseOptions, Limit) :-
+    (   get_dict(max_tokens, RequestOptions, Requested),
+        integer(Requested), Requested > 0
+    ->  Limit = Requested
+    ;   get_dict(max_completion_tokens, RequestOptions, Requested),
+        integer(Requested), Requested > 0
+    ->  Limit = Requested
+    ;   planner_token_limit(BaseOptions, Limit)
+    ).
+
+direct_model_step_outcome(ok(Result),
+                          ok(native_model_execution{
+                                 response:Result.response,
+                                 responses:Result.responses,
+                                 iterations:Result.iterations,
+                                 model_calls:Result.turns,
+                                 tool_calls:Result.tool_calls,
+                                 context_calls:Result.context_calls,
+                                 observation_bytes:Result.observation_bytes
+                             })) :-
+    !.
+direct_model_step_outcome(error(Error), error(Error)).
+
+direct_model_step_exception(Exception,
+                            error(direct_error{
+                                      phase:runtime,
+                                      kind:native_model_step_exception,
+                                      detail:Safe,
+                                      message:"typed-plan native model session raised an exception"})) :-
+    term_string(Exception, Safe, [quoted(true),numbervars(true)]).
+
 direct_guarded(Query0, Context, Options, Outcome) :-
     require_options(Options),
     text_string(Query0, Query),
@@ -114,6 +227,7 @@ direct_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                                                   source:input,
                                                   value:none}],
                          seen_call_ids:[],
+                         responses:[],
                          iterations:0,
                          model_calls:0,
                          context_calls:0,
@@ -413,7 +527,8 @@ provider_turn(Runtime, State0, Outcome) :-
     planner_token_limit(Runtime.options, Requested),
     Limit is max(1, min(Requested, Remaining)),
     model_request_options(Runtime.options, Limit, BaseOptions),
-    request_options(Runtime.schemas, BaseOptions, RequestOptions),
+    native_request_options(Runtime.options, Limit, BaseOptions, StepOptions),
+    request_options(Runtime.schemas, StepOptions, RequestOptions),
     Request = model_request{messages:State0.messages,options:RequestOptions},
     call_model(Runtime.options, Runtime.provider, Request, ModelOutcome),
     after_provider(ModelOutcome, Runtime, State0, Outcome).
@@ -421,6 +536,35 @@ provider_turn(Runtime, State0, Outcome) :-
 request_options([], Options, Options) :- !.
 request_options(Schemas, Options0, Options) :-
     put_dict(_{tools:Schemas,tool_choice:auto}, Options0, Options).
+
+native_request_options(Options, Limit, Base, RequestOptions) :-
+    option(native_request_options, Options, none, Overrides),
+    (   Overrides == none
+    ->  Merged0 = Base
+    ;   is_dict(Overrides)
+    ->  reject_native_request_control(Overrides),
+        put_dict(Overrides, Base, Merged0)
+    ;   throw(direct_fault(direct_error{
+                             phase:provider,
+                             kind:invalid_native_request_options,
+                             message:"typed-plan model options must be a JSON object"}))
+    ),
+    (   del_dict(max_completion_tokens, Merged0, _, Merged1)
+    ->  true
+    ;   Merged1 = Merged0
+    ),
+    put_dict(max_tokens, Merged1, Limit, RequestOptions).
+
+reject_native_request_control(Options) :-
+    member(Key, [messages,tools,tool_choice,stream]),
+    get_dict(Key, Options, _),
+    !,
+    throw(direct_fault(direct_error{
+                           phase:provider,
+                           kind:reserved_native_request_option,
+                           option:Key,
+                           message:"typed-plan model options cannot replace native session controls"})).
+reject_native_request_control(_).
 
 after_provider(error(Cause), _, State, error(Error)) :-
     !,
@@ -432,9 +576,10 @@ after_provider(ok(Response), Runtime, State0, Outcome) :-
     usage_add(State0.usage, CallUsage, Usage),
     ModelCalls is State0.model_calls+1,
     Iterations is State0.iterations+1,
+    Responses = [Response|State0.responses],
     model_event(Response, ModelCalls, Event),
     append(State0.trajectory, [Event], Trajectory),
-    put_dict(_{iterations:Iterations,model_calls:ModelCalls,
+    put_dict(_{iterations:Iterations,model_calls:ModelCalls,responses:Responses,
                usage:Usage,trajectory:Trajectory},
              State0, State1),
     budget_usage_check(Runtime.budget, Usage, BudgetOutcome),
@@ -837,12 +982,15 @@ finish_direct(Response, Runtime, State0, Outcome) :-
        Total is State0.output_bytes+Bytes,
        ( Total =< Runtime.budget.max_output_bytes
        -> put_dict(output_bytes, State0, Total, State),
+          reverse(State.responses, Responses),
           Outcome = ok(direct_result{value:Text,response:Response,
+                                     responses:Responses,
                                      usage:State.usage,
                                      turns:State.model_calls,
                                      iterations:State.iterations,
                                      context_calls:State.context_calls,
                                      tool_calls:State.tool_calls,
+                                     observation_bytes:State0.output_bytes,
                                      output_bytes:State.output_bytes,
                                      trajectory:State.trajectory})
        ;  state_error(State0, budget, output_budget_exhausted,
@@ -1047,11 +1195,35 @@ native_plan_runtime(Runtime, State, Options, Budget, Inputs) :-
                                   RuntimeTools)
     ),
     context_runtime_options(Runtime.options, ContextOptions),
-    Options = [providers([provider_ref(Runtime.provider_name,Runtime.provider)]),
-               tools(RuntimeTools),context_options(ContextOptions),budget(Budget)],
     context_handle("input", State.contexts, InputHandle),
+    native_model_step_handler(Runtime, State, InputHandle, Handler),
+    Options = [providers([provider_ref(Runtime.provider_name,Runtime.provider)]),
+               tools(RuntimeTools),context_options(ContextOptions),budget(Budget),
+               model_step_handler(Handler)],
     option(plan_inputs, Runtime.options, _{}, ExtraInputs),
     put_dict(context, ExtraInputs, InputHandle, Inputs).
+
+% The typed-plan model step runs one provider-native direct session against the
+% already-acquired input context handle. The child session receives the exact
+% outer provider, capabilities, cancellation token, and the outer budget with
+% the outer session's spent usage already netted out. The plan runtime reserves
+% one step and one model call for the step and charges actual native
+% continuation counts, tool calls, context operations, and observation bytes.
+native_model_step_handler(Runtime, State, InputHandle,
+                          rlm_direct:rlm_direct_model_step(
+                              InputHandle,
+                              Runtime.capabilities,
+                              Runtime.options,
+                              HandlerBudget,
+                              Runtime.token)) :-
+    remaining_tokens(Runtime.budget.max_total_tokens,
+                     State.usage.total_tokens,
+                     RemainingTokens),
+    RemainingCost is max(0.0, Runtime.budget.max_cost_usd-State.usage.cost_usd),
+    put_dict(_{max_total_tokens:RemainingTokens,
+               max_cost_usd:RemainingCost},
+             Runtime.budget,
+             HandlerBudget).
 
 native_plan_result(error(Error), _, error(Error)) :- !.
 native_plan_result(ok(Result), Budget,
@@ -1085,8 +1257,10 @@ model_event(Response, Sequence,
     response_usage(Response, Usage).
 
 state_error(State, Phase, Kind, Fields, Message, Error) :-
+    reverse(State.responses, Responses),
     Base = direct_error{phase:Phase,kind:Kind,message:Message,
                         usage:State.usage,trajectory:State.trajectory,
+                        model_responses:Responses,
                         iterations:State.iterations,
                         context_calls:State.context_calls,
                         tool_calls:State.tool_calls,
