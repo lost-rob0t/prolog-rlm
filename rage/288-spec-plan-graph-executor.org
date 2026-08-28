@@ -22,3 +22,8 @@ session, TDD) -> final adversarial review (fresh opencode subprocess) -> gates.
   conflate abstractions or require a second scheduler.
 - Gap: no typed project-op vocabulary; no plan dependency-graph executor;
   no symbol_ref -> source_span contract; no validate/1 op bound to frozen Specs.
+- Contract gate added: scripts/plan_graph_contract_check.{pl,sh}; proven RED
+  (exit 1, module undefined) before implementation; loops over one Prolog
+  requirement fact per #288 requirement.
+- Research record: research/RLM-RESEARCH-027-spec-plan-graph-executor.org
+  (PENDING approval header; make research-approval PASS).

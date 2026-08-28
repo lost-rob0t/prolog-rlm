@@ -1,0 +1,208 @@
+#+title: RLM-RESEARCH-027 Closed project-op plan vocabulary and plan dependency-graph executor
+#+status: RESEARCHING
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
+
+* Research Question
+
+Can the runtime support a model-authored *project plan language* — a typed,
+closed-vocabulary plan dependency graph (`step/2`, `depends_on/2`,
+`ready_step/1`) over project ops (`sync_remote/1`, `index/1`, `search/2`,
+`locate/1`, `read/1`, `diff/2`, `edit/2`, `create/2`, `delete/1`, `run/1`,
+`validate/1`, `delegate/2`) plus a normalized `symbol_ref` -> `source_span`
+contract — without creating a second plan interpreter, a second scheduler, or
+any path from model data to unrestricted execution?
+
+The originating request also asks for a SPEC language with clauses
+`goal/1, input/1, require/1, constraint/1, artifact/1, validate/1,
+success/1`.  This record checks how much of that already exists in canonical
+`main` and isolates the true gap.
+
+* Sources (retrieved 2026-08-28, canonical main 7165680e31fa67053f19887026cd00e4e59ed0aa)
+
+- =prolog/rlm_plan.pl= — closed plan AST, validation, execution, budgets.
+- =prolog/rlm_outcome.pl= — structured outcomes, bounded repair.
+- =prolog/rlm_spec.pl=, =prolog/rlm_spec_lang.pl=, =prolog/rlm_verify.pl=,
+  =prolog/rlm_spec_workflow.pl= — SPEC validate/freeze/verify and
+  fingerprint-bound plan composition.
+- =prolog/rlm_graph.pl=, =prolog/rlm_graph_persist.pl= — durable graph state
+  machine over trusted node closures.
+- =prolog/rlm_project_source.pl= — Project/File/Language/grammar registry
+  (#95).
+- =prolog/rlm_delegation_runtime.pl=, =prolog/rlm_subagent.pl=,
+  =prolog/rlm_agent.pl= — supervised delegation with narrowing capabilities.
+- =docs/typed-plans.md=, =docs/spec-verify.md=, =docs/spec-mode.md=,
+  =docs/project-source-registry.md=, =docs/delegation-runtime.md=.
+- Issues #93 (Project/SPEC/source-knowledge epic), #96-#99 (Tree-sitter
+  syntax/semantic layers, open), #71 (verified continuation workflow, gated on
+  TaskIR #69), #176 (prompt-compiler planner projection).
+
+* Findings (execution truth)
+
+** F1: A closed-AST plan runtime already exists.
+
+=rlm_plan= parses model JSON (or a =plan(Steps)= term) into a closed AST:
+
+#+begin_example
+context/3, model/4, rlm/2, tool/3, spawn_agent/3,
+parallel/2, retry/3, checkpoint/1, final/1
+#+end_example
+
+plus closed expressions =literal/1, input/1, var/1, field/2, list/1,
+object/1= (=prolog/rlm_plan.pl= lines 112-142, 280+).  Unknown ops are
+rejected during normalization (=normalize_dict_step(Op, _, _) :- throw(...)=,
+line 201; =unknown_or_malformed_operation= at validation, line ~1009) and
+tests pin that =call(shell(...))= style output never reaches execution
+(=test/rlm_plan_test.pl= "raw_call_term_is_rejected_during_validation").
+
+** F2: Whole-plan validation precedes any side effect.
+
+=plan_validate/4= checks vocabulary, single trailing =final/1=, variable
+binding, capability subset, recursive budget estimate
+(=docs/typed-plans.md= "Whole-plan validation").  Execution preflight
+verifies providers/tools exist before the first step
+(=preflight_runtime/2=, =prolog/rlm_plan.pl= ~line 800).
+
+** F3: Capabilities and expert closures are host-owned.
+
+Per-op capability requirements (=context_capability/2=, =require_capability/2=
+lines 577-587); tools/providers only resolve through host registries
+=tools([tool(Name, Handler)])= / =providers([provider_ref(Name, Term)])=
+(lines 760-790).  Model data cannot construct the callable.  This is the
+"expert KB decides who executes" substrate.
+
+** F4: SPEC language already covers the requested clause set (richer).
+
+=rlm_spec_lang= structural catalog: =spec/1, schema_version/1, subject/1,
+require/2-3, optional/2-3, invariant/1, output_contract/1, provenance/1,
+assertion/2-3, evidence_policy/1=, desugared via =foldl(apply_form)= so each
+clause may occur multiple times, then =spec_normalize -> spec_validate ->
+spec_freeze=.  Mapping: goal ≈ =subject/1=; input ≈ subject/invariant data;
+require ≈ =require/2-3=; constraint ≈ =invariant/1=; artifact ≈
+=output_contract/1=; validate ≈ =assertion/2-3 + evidence_policy/1=; success ≈
+=output_contract/1=.  Adding a second, weaker SPEC vocabulary would violate
+the no-parallel-subsystem rule; hardening =rlm_spec_lang= aliases is the
+coherent path if any alias is wanted at all.
+
+** F5: SPEC->PLAN binding exists; plans are fingerprint-bound.
+
+=rlm_spec_workflow:spec_plan_bind/4= normalizes a plan through
+=rlm_plan:plan_normalize= and attaches =spec_ref= (frozen fingerprint);
+=spec_plan_execute/5= runs it through =rlm_outcome:plan_outcome/5=.  A
+validate-style plan step can therefore be anchored to a frozen Spec without a
+new verification stack.
+
+** F6: rlm_graph is a state machine over node closures, not a plan-op DAG.
+
+=rlm_graph= nodes resolve to trusted closures via a registry; edges are
+fixed/routed transitions with visit limits, durable checkpoints and resume
+(=prolog/rlm_graph.pl= module doc, lines 86-235).  It is the right *durability
+substrate* but compiling =step/depends_on= scheduling directly onto it would
+either misuse node semantics or require a graph-per-step encoding; conversely
+using it as the model-facing plan language contradicts F1.
+
+** F7: Plans are strictly sequential today; no sibling-dependency DAG.
+
+=execute_steps/5= runs the step list left to right; =parallel/2= is bounded
+fan-out of independent subplans; =retry/3= multiplies estimates.  Nothing
+expresses "s4 depends on s1..s3, s5 depends on s2" inside one plan, and no
+=ready_step= scheduling exists anywhere (=grep ready_step= returns nothing).
+
+** F8: No project-op vocabulary and no symbol/span contract.
+
+The only executable op reaching non-context work is generic =tool/3=.  There
+are no typed =sync_remote/index/locate/diff/edit/...= constructors, no
+=symbol_ref= / =source_span= data contract, and no bounded resolver.
+=rlm_project_source= owns file/language/grammar *identity* (#95) but "does
+not traverse syntax trees, run Tree-sitter queries, normalize symbols"
+(=docs/project-source-registry.md=); semantic extraction is #96-#99, still
+open.
+
+** F9: Delegation with capability narrowing exists.
+
+=spawn_agent(Spec, Capabilities, Bind)= desugars to =tool(spawn_agent, ...)=
+with child capability narrowing (=rlm_plan.pl= lines 120-176);
+=rlm_delegation_runtime= / =rlm_subagent= supervise child execution.  A
+=delegate/2= project op must narrow through this path, not widen it.
+
+* Inference (design direction; design record will finalize)
+
+- I1: A new sibling module =rlm_plan_graph= (like =rlm_spec_workflow= composes
+  =rlm_plan=) is the coherent shape: it owns *plan-graph data* (parse,
+  normalize, validate, ready-step scheduling, blocked propagation) and
+  executes each ready step by desugaring the project op into a *single-step
+  closed-AST plan* executed through =rlm_plan=/=rlm_outcome= with the host
+  expert registry presented as the tool registry.  No =call/1=, no second
+  interpreter, no new Future/scheduler (canonical direction preserved).
+- I2: The closed op vocabulary is data: =plan_graph_op(Name/Arity)= style
+  declarations plus per-op argument shape validation; each op carries a
+  required capability term (e.g. =plan_op(sync_remote)=, =validate_spec=) so
+  capability gating stays per-op, narrowing by default.
+- I3: =validate/1= steps reference a frozen Spec ref; execution routes through
+  the host verifier path (=rlm_verify= / trusted assertion registry), never
+  model self-report (F5, #56 rules).
+- I4: =symbol_ref= / =source_span= are closed ground data with structural
+  validation; a bounded resolver over *host-supplied index facts*
+  (=symbol_definition(SymbolRef, SourceSpan, Provenance)=) yields
+  =ok(Span) / error(unresolved|ambiguous|unsupported)=.  Extraction remains
+  #96-#99; plans speak =symbol(foo)=, adapters resolve spans (language
+  independence).
+- I5: Model-facing JSON shape (parity with =docs/typed-plans.md=):
+  ={"steps":[{"id":"s1","op":"index","args":{...}}],
+  "depends_on":[{"step":"s2","requires":["s1"]}]}=.  Snake_case op names match
+  repository convention; the request's camelCase spellings are aliases at most.
+- I6: Failure semantics: a failed step marks dependents =blocked=
+  (structured, inspectable, terminal for this run); =ready_step= only admits
+  steps whose dependencies are =completed=.  Cancellation/budget exhaustion
+  produce structured partial outcomes, never silent success.
+- I7: Contract-presence gate: =scripts/plan_graph_contract_check.pl= holds one
+  Prolog fact per required public surface (module exports, closed vocabulary,
+  validator rejections, scheduling semantics, resolver states, docs links);
+  a bash wrapper loops over the facts until all are defined, satisfying the
+  "loops over every requirement" request without hand-maintained checklists.
+
+* Rejected / avoided alternatives
+
+- R1: Extending =rlm_plan.pl= in place with a project-op family and DAG
+  scheduler — inflates a stable ~1500-line core, mixes graph scheduling with
+  sequential execution, larger regression blast radius.
+- R2: Compiling step/depends_on onto =rlm_graph= nodes directly — conflates
+  trusted node closures with plan-op data; edges/routes/checkpoint semantics
+  are not dependency semantics; would need graph-per-step encodings.
+- R3: A second SPEC vocabulary =spec(SpecId,[goal(...), ...])= — F4 shows the
+  existing closed SPEC language already covers the semantics; a parallel
+  vocabulary would fragment validation/freezing/fingerprinting.
+- R4: Executing ops directly in Prolog (e.g. =call(sync_remote(Origin))=) —
+  violates the core authority invariant; model data must never become a goal.
+- R5: Tree-sitter-based semantic extraction inside this slice — owned by
+  #96-#98; this slice only defines the consumption contract (YAGNI).
+
+* Open questions (for design record)
+
+- Q1: Exact JSON schema for op args incl. =symbol_ref= / span-valued args.
+- Q2: Whether =delegate/2= maps onto =spawn_agent= desugaring in this slice or
+  is vocabulary-only with =error(unsupported)= until #172 policy lands.
+- Q3: Whether graph state should checkpoint through =rlm_graph_persist= now or
+  stay in-memory with structured outcomes (durability follow-up).
+- Q4: Per-step time limits and their interaction with the global plan budget.
+
+* Acceptance experiments / tests (planned)
+
+- Parse: JSON and term forms -> closed graph AST; unknown op / unknown
+  dependency / duplicate id / cycle rejected before execution.
+- Scheduling: =ready_step= admits only dependency-complete steps; topological
+  order exercised via host-recorded expert call order; failure blocks
+  dependents with structured =blocked= outcomes.
+- Authority: capability denial per op; expert closure resolution fails closed
+  when registry missing the op; no =call/1= on model data anywhere.
+- Symbols: =symbol_ref= structural validation; resolver
+  =ok/unresolved/ambiguous/unsupported= over host index facts; spans validated
+  (bytes ordered); no filesystem or parser access in this layer.
+- Budget: step count bound; per-op execution still bounded by =rlm_plan=
+  budgets; cancellation yields structured partial state.
+- Contract gate: =scripts/plan_graph_contract_check.sh= loops to green.
