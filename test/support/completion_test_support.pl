@@ -6,6 +6,7 @@
              unsupported_mode_direct_answer/2,
              context_slice_planner/2,
              depth_two_planner/2,
+            model_step_planner/2,
             duplicate_recursive_planner/2,
             anonymous_dict_grandchild_tool_planner/2,
             nonground_recursive_planner/2,
@@ -95,6 +96,15 @@ context_slice_planner(_, ok(Output)) :-
                          slice(0, 1024),
                          evidence),
                  final(literal("context-plan-ok"))]),
+    planner_output(Plan, Output).
+
+model_step_planner(_, ok(Output)) :-
+    bump_planner,
+    Plan = plan([model(openrouter,
+                       literal("native step task: fetch the token"),
+                       _{},
+                       reply),
+                 final(field(var(reply), text))]),
     planner_output(Plan, Output).
 
 depth_two_planner(_, ok(Output)) :-

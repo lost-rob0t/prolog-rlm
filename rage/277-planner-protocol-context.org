@@ -210,3 +210,56 @@ Verification rejection never authorizes implicit effect replay.
   authority.
 - No Auto-Dig, coding-agent, chat-product, CLI, fixed catalog, ambient system
   authority, second scheduler, or second effect ledger enters core.
+
+* First-class typed-plan model steps
+The typed-plan =model= operation still made one raw provider call without
+native schemas while direct mode and root completion used provider-native
+sessions. Typed plans are first-class, so this was an integration gap to close,
+not deprecation or compatibility baggage. The plan runtime now accepts a
+trusted =model_step_handler= runtime option, and both root completion and
+direct =typed_plan_execute= supply a module-qualified =rlm_direct_model_step/10
+= closure bound to the already-acquired context handle, the exact provider,
+capabilities, the cancellation token, and the remaining budget (outer spent
+usage already netted out).
+
+** Design
+The child model session is the existing direct loop entered through
+=rlm_direct_execute/4= from inside the bounded worker: no second scheduler, no
+nested Future wait, and no duplicate native loop. It re-runs canonical
+query-aware prompt/compiler selection on the step prompt, projects
+provider-native schemas that stay unchanged across continuation turns, and
+preserves exact assistant/tool call IDs through correlated =role:tool=
+messages. The plan reserves one step and one model call, then charges the
+reported native execution atomically against the shared plan budget:
+=iterations-1= steps, =model_calls-1= model calls, all tool calls and context
+operations, and provider-facing observation bytes. The final response and every
+provider response are recorded into the plan result; partial failures retain
+every completed response so usage accounting stays complete. Per-step request
+options are preserved but model-supplied =messages=, =tools=, =tool_choice=,
+and streaming controls are rejected before provider dispatch. Standalone
+=plan_run/5= without a handler keeps the one-raw-call compatibility path, and
+=llm_query/3= is untouched. Handlers are trusted host closures and are never
+carried in or constructed from model-controlled data.
+
+** Verification
+- Focused plan suite :: 23/23 passed (native contract, atomic overspend
+  rejection, partial-failure usage preservation, shared token budget across
+  sessions, standalone one-raw-call fallback).
+- Focused direct suite :: 25/25 passed (compiler-selected schemas for the step
+  prompt, tool-plus-context continuation to final text, schema bundle stability
+  across continuation turns, exact call-ID correlation, nested counts in the
+  runtime trace, reserved-option rejection before provider dispatch, budget
+  exhaustion blocking an extra provider call).
+- Focused completion suite :: 53/53 passed (root completion native model step
+  with usage accounting).
+- Focused final-handoff suite :: 13/13 passed (task-step requests carry the
+  scoped direct-agent framing, not the planner protocol).
+- Full deterministic PlUnit corpus :: 1061/1061 passed (90 suites; discovered =
+  planned = completed = passed, zero failures/timeouts/blocked/fixme).
+- Deterministic benchmark :: 16/16 passed.
+- Deep experiment :: 15/15 passed.
+- Runtime and production-module load checks :: passed (also standalone
+  =rlm_completion=, =rlm_direct=, and =rlm_plan= loads).
+- JSON CLI demo and =git diff --check= :: passed.
+- Paid provider :: not called during development; the pinned paid workflow
+  stays skipped until the draft PR is deliberately marked ready.

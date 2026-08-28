@@ -60,6 +60,27 @@ scenario_wire_response(assistant_call_mismatch, Response0, Response) :-
     put_dict(assistant, Response0, Assistant, Response).
 scenario_wire_response(_, Response, Response).
 
+typed_plan_model_step_plan(Plan) :-
+    Plan = _{steps:[_{op:"model",
+                      provider:"openai_compatible",
+                      prompt:"fetch the runtime token value",
+                      bind:"reply"},
+                    _{op:"final",
+                      value:_{ref:"field",
+                              value:_{ref:"var",name:"reply"},
+                              key:"text"}}]}.
+
+typed_plan_model_step_plan(ExtraModelOptions, Plan) :-
+    Plan = _{steps:[_{op:"model",
+                      provider:"openai_compatible",
+                      prompt:"fetch the runtime token value",
+                      options:ExtraModelOptions,
+                      bind:"reply"},
+                    _{op:"final",
+                      value:_{ref:"field",
+                              value:_{ref:"var",name:"reply"},
+                              key:"text"}}]}.
+
 scenario_response(context_search(UUID), 1, _, "", [ToolCall], "") :-
     native_call("ctx_1", "context_search",
                 _{query:"DIRECT_NEEDLE"}, ToolCall),
@@ -130,6 +151,59 @@ scenario_response(typed_plan_native, 2, Request, "", [ToolCall], "") :-
 scenario_response(typed_plan_native, 3, Request, "NATIVE_PLAN_OK", [], "") :-
     request_tool_message(Request, "plan_ctx_1", context_peek, Content),
     assertion(sub_string(Content, _, _, _, "NATIVE_PLAN_OK")).
+
+scenario_response(typed_plan_model_step, 1, _, "", [ToolCall], "") :-
+    typed_plan_model_step_plan(Plan),
+    native_call("plan_1", "typed_plan_execute", _{plan:Plan}, ToolCall).
+scenario_response(typed_plan_model_step, 2, _, "", [ToolCall], "") :-
+    native_call("child_tool_1", "runtime_token", _{}, ToolCall).
+scenario_response(typed_plan_model_step, 3, Request, "", [ToolCall], "") :-
+    request_tool_message(Request, "child_tool_1", runtime_token, Content),
+    assertion(sub_string(Content, _, _, _, "result_child_tool_1")),
+    native_call("child_ctx_1", "context_peek",
+                _{context:"result_child_tool_1",
+                  selector:_{type:"item",index:0}}, ToolCall).
+scenario_response(typed_plan_model_step, 4, Request, FinalText, [], "") :-
+    request_tool_message(Request, "child_ctx_1", context_peek, Content),
+    assertion(sub_string(Content, _, _, _, "plan-model-token-value")),
+    format(string(FinalText),
+           "PLAN_MODEL token=plan-model-token-value", []).
+scenario_response(typed_plan_model_step, 5, _, "", [ToolCall], "") :-
+    native_call("plan_ctx_1", "context_peek",
+                _{context:"result_plan_1",
+                  selector:_{type:"item",index:0}}, ToolCall).
+scenario_response(typed_plan_model_step, 6, Request, "TYPED_PLAN_MODEL_OK", [],
+                  "") :-
+    request_tool_message(Request, "plan_ctx_1", context_peek, Content),
+    assertion(sub_string(Content, _, _, _, "PLAN_MODEL")).
+scenario_response(typed_plan_model_step, N, _, "", [], "") :-
+    integer(N),
+    N >= 7,
+    !,
+    throw(error(unexpected_provider_call(N),
+                context(rlm_direct_test, typed_plan_model_step))).
+
+scenario_response(typed_plan_reserved_options, 1, _, "", [ToolCall], "") :-
+    typed_plan_model_step_plan(_{tools:[],stream:false}, Plan),
+    native_call("plan_1", "typed_plan_execute", _{plan:Plan}, ToolCall).
+scenario_response(typed_plan_reserved_options, N, _, "", [], "") :-
+    integer(N),
+    N >= 2,
+    !,
+    throw(error(unexpected_provider_call(N),
+                context(rlm_direct_test, typed_plan_reserved_options))).
+
+scenario_response(typed_plan_model_step_budget, 1, _, "", [ToolCall], "") :-
+    typed_plan_model_step_plan(Plan),
+    native_call("plan_1", "typed_plan_execute", _{plan:Plan}, ToolCall).
+scenario_response(typed_plan_model_step_budget, 2, _, "", [ToolCall], "") :-
+    native_call("child_tool_1", "runtime_token", _{}, ToolCall).
+scenario_response(typed_plan_model_step_budget, N, _, "", [], "") :-
+    integer(N),
+    N >= 3,
+    !,
+    throw(error(unexpected_provider_call(N),
+                context(rlm_direct_test, typed_plan_model_step_budget))).
 
 scenario_response(spec_lifecycle, 1, _, "", [ToolCall], "") :-
     native_spec_source(Source),
@@ -240,6 +314,8 @@ runtime_token_handler(_, json{token:Token}) :-
 
 scenario_token(registered_tool(Token), Token).
 scenario_token(two_registered_calls, "budget-token").
+scenario_token(typed_plan_model_step, "plan-model-token-value").
+scenario_token(typed_plan_model_step_budget, "plan-model-token-value").
 
 slow_read_schema(
     tool_schema{name:slow_read,
@@ -404,6 +480,107 @@ test(typed_plan_steps_consume_shared_iteration_budget) :-
     assertion(Error.kind == iteration_budget_exhausted),
     assertion(Error.iterations =:= 2),
     direct_call_count(1).
+
+test(typed_plan_model_step_runs_native_session_with_compiler_selected_schemas) :-
+    reset_direct(typed_plan_model_step),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        register_runtime_token(Registry),
+        ( typed_plan_compiled_options(Registry, Options),
+          rlm_direct("Execute a typed plan", text("opaque"), Options,
+                     ok(Result)),
+          assertion(Result.value == "TYPED_PLAN_MODEL_OK"),
+          assertion(Result.turns =:= 6),
+          assertion(Result.iterations =:= 7),
+          direct_call_count(6),
+          direct_tool_count(1),
+          Result.usage.total_tokens =:= 18,
+          once((member(Event, Result.trajectory),
+                Event.type == native_tool,
+                Event.name == typed_plan_execute)),
+          assertion(Event.trace.nested_iterations =:= 4),
+          assertion(Event.trace.nested_model_calls =:= 3),
+          assertion(Event.trace.nested_tool_calls =:= 1),
+          assertion(Event.trace.nested_context_calls =:= 1),
+          direct_request(1, OuterReq),
+          assertion(wire_names(OuterReq,
+                               ["context_peek", "typed_plan_execute"])),
+          direct_request(2, ChildReq1),
+          assertion(wire_names(ChildReq1,
+                               ["context_peek", "typed_plan_execute",
+                                "runtime_token"])),
+          ChildReq1.messages = [_, ChildSystem, ChildTask|_],
+          assertion(sub_string(ChildSystem.content, _, _, _,
+                               "bounded direct agent")),
+          assertion(sub_string(ChildTask.content, _, _, _,
+                               "fetch the runtime token value")),
+          direct_request(3, ChildReq2),
+          assertion(ChildReq2.options.tools == ChildReq1.options.tools),
+          ChildReq2.messages = [_, _, _, ChildAssistant, ChildTool],
+          assertion(ChildAssistant.role == assistant),
+          ChildAssistant.tool_calls = [AssistantCall],
+          assertion(AssistantCall.id == "child_tool_1"),
+          assertion(ChildTool.role == tool),
+          assertion(ChildTool.tool_call_id == "child_tool_1"),
+          assertion(ChildTool.name == runtime_token),
+          direct_request(4, ChildReq3),
+          assertion(ChildReq3.options.tools == ChildReq1.options.tools)
+        ),
+        tool_registry_destroy(Registry)).
+
+test(typed_plan_model_step_rejects_reserved_options_before_provider_dispatch) :-
+    reset_direct(typed_plan_reserved_options),
+    direct_provider_options([model(openai_compatible),plan(execute)], [],
+                            Options),
+    rlm_direct("Execute a typed plan", text("opaque"), Options, error(Error)),
+    assertion(Error.kind == model_error),
+    assertion(sub_string(Error.cause.cause, _, _, _,
+                         "reserved_native_request_option")),
+    direct_call_count(1).
+
+test(typed_plan_model_step_budget_exhaustion_blocks_extra_provider_call) :-
+    reset_direct(typed_plan_model_step_budget),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        register_runtime_token(Registry),
+        ( direct_provider_options([model(openai_compatible),plan(execute),
+                                   tool(runtime_token)],
+                                  [tool_registry(Registry),
+                                   budget(_{max_model_calls:2})],
+                                  Options),
+          rlm_direct("Execute a typed plan", text("opaque"), Options,
+                     error(Error)),
+          assertion(Error.kind == model_error),
+          assertion(sub_string(Error.cause.cause, _, _, _,
+                               "model_call_budget_exhausted")),
+          direct_call_count(2),
+          direct_tool_count(1)
+        ),
+        tool_registry_destroy(Registry)).
+
+typed_plan_compiled_options(Registry, Options) :-
+    Options = [ provider(provider(openai_compatible, [])),
+                provider_name(openai_compatible),
+                model_handler(plunit_rlm_direct:scripted_direct_model),
+                capabilities([model(openai_compatible),
+                              plan(execute),
+                              context(peek),
+                              tool(runtime_token)]),
+                tool_registry(Registry),
+                budget(_{max_iterations:16,
+                         max_model_calls:8,
+                         max_tool_calls:8,
+                         max_context_ops:8})
+              ].
+
+wire_names(Request, Names) :-
+    (   get_dict(tools, Request.options, Tools)
+    ->  maplist(wire_tool_name, Tools, Names)
+    ;   Names = []
+    ).
+
+wire_tool_name(Tool, Name) :-
+    Name = Tool.function.name.
 
 test(full_spec_compile_observe_verify_lifecycle_uses_native_tools) :-
     reset_direct(spec_lifecycle),

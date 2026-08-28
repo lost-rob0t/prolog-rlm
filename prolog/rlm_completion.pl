@@ -58,6 +58,12 @@ predicates directly and never re-enter a synchronous public facade.
 :- use_module(rlm_async).
 :- use_module(rlm_chain).
 :- use_module(rlm_context).
+% Canonical cycle: rlm_direct imports its shared runtime vocabulary from this
+% module, while typed-plan model steps delegated by root completion re-enter
+% the provider-native direct session through rlm_direct_model_step/10. SWI
+% module imports resolve at call time, so either load order works and no
+% duplicate native loop exists.
+:- use_module(rlm_direct, [rlm_direct_model_step/10]).
 :- use_module(rlm_plan).
 :- use_module(rlm_prompt_compiler, []).
 :- use_module(rlm_skill, []).
@@ -724,10 +730,19 @@ completion_after_recursive_validation(ok(Stats),
                                    BoundedPlan),
     plan_budget(Budget, RemainingCalls, PlanBudget),
     context_runtime_options(Options, ContextOptions),
+    completion_model_step_handler(ContextRef,
+                                  Capabilities,
+                                  Options,
+                                  Budget,
+                                  Planner.usage,
+                                  RemainingTokens,
+                                  Token,
+                                  ModelStepHandler),
     RuntimeOptions = [ providers([provider_ref(ProviderName, Provider)]),
                        tools(RuntimeTools),
                        context_options(ContextOptions),
-                       budget(PlanBudget)
+                       budget(PlanBudget),
+                       model_step_handler(ModelStepHandler)
                      ],
     check_cancelled(Token),
     plan_run(BoundedPlan,
@@ -1892,6 +1907,31 @@ plan_budget(Budget, RemainingModelCalls,
               max_output_bytes:Budget.max_output_bytes,
               time_limit:Budget.time_limit}) :-
     PlanDepth is Budget.max_recursion_depth+1.
+
+% The typed-plan model step runs one provider-native direct session against the
+% already-acquired root context handle. The child session receives the exact
+% root provider, capabilities, cancellation token, and the completion budget
+% with the root planner's spent usage already netted out. The plan runtime
+% reserves one step and one model call for the step and charges actual native
+% continuation counts, tool calls, context operations, and observation bytes.
+completion_model_step_handler(ContextRef,
+                              Capabilities,
+                              Options,
+                              Budget,
+                              PlannerUsage,
+                              RemainingTokens,
+                              Token,
+                              rlm_direct:rlm_direct_model_step(
+                                  ContextRef.handle,
+                                  Capabilities,
+                                  Options,
+                                  HandlerBudget,
+                                  Token)) :-
+    RemainingCost is max(0.0, Budget.max_cost_usd-PlannerUsage.cost_usd),
+    put_dict(_{max_total_tokens:RemainingTokens,
+               max_cost_usd:RemainingCost},
+             Budget,
+             HandlerBudget).
 
 /* -------------------------------------------------------------------------
  * Usage and trajectory

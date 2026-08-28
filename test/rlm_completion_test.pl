@@ -215,6 +215,38 @@ test(context_request_still_selects_and_executes_a_plan,
     completion_test_support:planner_calls(Calls),
     assertion(Calls =:= 1).
 
+test(typed_plan_model_step_runs_provider_native_session,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_caps(Caps),
+    base_child_caps(ChildCaps),
+    Options = [ planner_handler(completion_test_support:model_step_planner),
+                capabilities(Caps),
+                child_capabilities(ChildCaps),
+                model_handler(completion_test_support:capture_model)
+              ],
+    rlm_completion("run one native model step",
+                   text("opaque context body"),
+                   Options,
+                   Outcome),
+    expect_ok(Outcome, Result),
+    assertion(Result.value == "CAPTURED_MODEL_OK"),
+    assertion(Result.usage.model_calls =:= 2),
+    assertion(Result.usage.total_tokens =:= 5),
+    completion_test_support:model_calls(1),
+    completion_test_support:planner_calls(1),
+    completion_test_support:last_model_request(Request),
+    Request.messages = [Identity, DirectSystem, Task],
+    assertion(sub_string(Identity.content, _, _, _, "root agent inside")),
+    assertion(sub_string(DirectSystem.content, _, _, _,
+                         "bounded direct agent")),
+    assertion(sub_string(Task.content, _, _, _,
+                         "native step task: fetch the token")),
+    assertion(member(plan_transition{operation:model(openrouter),
+                                     status:ok,
+                                     bind:reply,
+                                     sequence:_},
+                     Result.transitions)).
+
 test(default_skills_reach_one_system_message_on_unrelated_input,
      [setup(completion_test_support:reset_calls)]) :-
     base_options(completion_test_support:capture_planner, Options),
