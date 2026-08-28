@@ -191,7 +191,7 @@ operator requirements
 
 Reuse `rlm_spec`, `rlm_verify`, `rlm_spec_workflow`, `rlm_agent`, `rlm_graph`, `rlm_async`, `rlm_authority`, traces, effects, artifacts, and the shared prompt-compiler inputs. Do not create a special coding-agent scheduler, a second acceptance language, or a frontend-owned prompt router.
 
-TaskIR work from #69 should carry/reference the exact Frozen Spec rather than becoming a second canonical owner of acceptance criteria. Result acceptance work from #56 should share the same evidence/verifier substrate instead of growing an incompatible verifier stack. Resume/restart work from #71 must remain bound to the original Spec identity.
+TaskIR work from #69 should carry/reference the exact Frozen Spec rather than becoming a second canonical owner of acceptance criteria. The INTENT -> SPEC -> VALIDATE (hard gate) -> PLAN COMPILER -> plan-KB -> expert-loop flow, including `plan_seed_from_spec/3`, plan-vs-spec validation, project retrieval/write/validation engines over normalized references, and direct/symbolic/recursive strategy selection, is designed in `docs/research/spec-plan-authority.md` (refinement of PR #290); its implementation slices S1-S10 are the dependency graph for the remaining Phase 2/3 substrate. Result acceptance work from #56 should share the same evidence/verifier substrate instead of growing an incompatible verifier stack. Resume/restart work from #71 must remain bound to the original Spec identity.
 
 ### Frontend protocol foundation
 

@@ -27,31 +27,48 @@ Typed plans should not invent their own goal state. The canonical Frozen Spec
 is the authority for desired state and acceptance requirements; planning uses
 that spec as its seed.
 
-The intended dependency direction is:
+The intended dependency direction is (refined in
+`docs/research/spec-plan-authority.md`, which is the canonical design record
+for this area):
 
 ```text
-requirements
+user / model semantics
     |
+    v
+INTENT                       (typed features + candidate intents; model
+    |                         annotations are model_claim until validated)
     v
 SPEC source
     |
     v
+VALIDATE SPEC                (first-class HARD GATE, environment-aware)
+    |
+    +-- invalid --> structured diagnostics / spec-source repair;
+    |               no plan may be seeded from an invalid spec
+    v
 canonical Frozen Spec / SpecRef
     |
     v
-symbolic plan seed
+PLAN COMPILER (plan_seed_from_spec; accepts only a fingerprint-checked
+    |          frozen spec)
+    v
+initial plan KB (dependency graph)
     |
     v
-planner / expert-system refinement
+planner / expert-system refinement (validated typed patches only)
     |
     v
-whole-plan validation
+whole-plan validation (including plan-vs-spec compatibility)
     |
     v
 bounded execution
     |
     v
 SPEC verification
+    |
+    +-- unmet --> replan (same frozen ref) or continue
+    v
+FINAL (verification_report{status:passed})
 ```
 
 The seed is not a second specification and is not automatically executable. It
@@ -197,11 +214,17 @@ The exact predicates and task representation remain an implementation choice,
 but the authority boundary is not: the symbolic runtime owns the durable plan
 state, while model output proposes typed updates that must pass validation.
 
-This also preserves direct mode. A caller may still run a normal direct model
-interaction when symbolic planning is unnecessary. Symbolic planning is an
-available execution mode for tasks that benefit from durable state, dependency
-reasoning, constrained expert selection, or long-horizon verification; it is
-not a requirement that every model call become an agentic workflow.
+This also preserves direct mode. Three modes are first-class and
+host-selectable: `direct` (native bounded loop, the default for ordinary
+model interaction), `symbolic` (typed plans over the SPEC/PLAN/VERIFY
+boundary), and `recursive_symbolic` (symbolic mode whose subplans use
+`rlm/3` with the existing recursion-policy routes). Selection is deterministic
+host policy (`strategy_select/3` design target in
+`docs/research/spec-plan-authority.md`); a caller may always pin the mode
+explicitly. Symbolic planning is an available execution mode for tasks that
+benefit from durable state, dependency reasoning, constrained expert
+selection, or long-horizon verification; it is not a requirement that every
+model call become an agentic workflow.
 
 ## Closed AST
 
