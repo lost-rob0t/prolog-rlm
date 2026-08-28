@@ -1,7 +1,8 @@
 # Typed symbolic plans
 
 `rlm_plan` is the execution boundary between model-selected strategy and
-runtime-authoritative execution.
+runtime-authoritative execution. For model-authored plan dependency graphs
+over a closed project-op vocabulary, see `plan-graph-runtime.md`.
 
 A model may propose a plan, but it does not receive unrestricted Prolog
 execution. Plans are parsed into a closed AST, normalized, validated in full,

@@ -13,14 +13,20 @@ Usage: swipl -q -s scripts/plan_graph_contract_check.pl
 */
 
 :- use_module(library(lists)).
-:- use_module(library(apply)).
 :- use_module(library(readutil)).
+
+:- dynamic(script_directory/1).
+
+:- (   prolog_load_context(file, Source),
+       file_directory_name(Source, ScriptDir)
+   ->  assertz(script_directory(ScriptDir))
+   ;   true
+   ).
 
 main(_) :-
     (   plan_graph_module_loaded
     ->  run_checks
     ;   format("contract: prolog/rlm_plan_graph.pl missing or unloadable~n"),
-        report([missing_module]),
         halt(1)
     ).
 
@@ -30,56 +36,54 @@ plan_graph_module_loaded :-
     catch(use_module(File, []), _, fail).
 
 plan_graph_file(File) :-
-    prolog_load_context(file, Source),
-    file_directory_name(Source, ScriptDir),
+    script_directory(ScriptDir),
     atomic_list_concat([ScriptDir, '/../prolog/rlm_plan_graph.pl'], File).
 
 repo_file(Rel, File) :-
-    prolog_load_context(file, Source),
-    file_directory_name(Source, ScriptDir),
+    script_directory(ScriptDir),
     atomic_list_concat([ScriptDir, '/../', Rel], File).
 
 run_checks :-
-    findall(Id-Status, check_one(Id, Status), Results),
-    report(Results),
-    (   member(_-failed, Results)
-    ->  halt(1)
-    ;   halt(0)
-    ).
-
-check_one(Id, ok) :-
-    contract(Id, Goal),
-    !,
-    catch(Goal,
-          Error,
-          ( format("  [~w] threw: ~w~n", [Id, Error]),
-            fail )),
-    !.
-check_one(Id, failed) :-
-    (   contract(Id, _)
-    ->  format("  [~w] FAIL~n", [Id])
-    ;   format("  [~w] malformed contract fact~n", [Id])
-    ).
-
-report(Results) :-
-    include(failed_result, Results, Failures),
-    length(Failures, N),
-    (   N == 0
+    (   current_predicate(contract/3)
+    ->  format("contract: malformed contract/3 fact(s) present~n"),
+        halt(1)
+    ;   true
+    ),
+    findall(Id-Status,
+            (   contract(Id, Goal),
+                check_goal(Id, Goal, Status)
+            ),
+            Results),
+    foldl(count_failure, Results, 0, Failures),
+    (   Failures == 0
     ->  format("contract: ALL REQUIREMENTS DEFINED~n")
-    ;   format("contract: ~w REQUIREMENT(S) UNDEFINED~n", [N])
+    ;   format("contract: ~w REQUIREMENT(S) UNDEFINED~n", [Failures])
+    ),
+    (   Failures == 0
+    ->  halt(0)
+    ;   halt(1)
     ).
 
-failed_result(_-failed).
-failed_result(missing_module).
+count_failure(_-failed, N, N1) :-
+    !,
+    N1 is N + 1.
+count_failure(_-ok, N, N).
+
+check_goal(Id, Goal, Status) :-
+    (   catch(Goal,
+              Error,
+              ( format("  [~w] threw: ~w~n", [Id, Error]),
+                fail ))
+    ->  Status = ok
+    ;   Status = failed,
+        format("  [~w] FAIL~n", [Id])
+    ).
 
 /* Presence helpers ----------------------------------------------------- */
 
 exported(Name/Arity) :-
     module_property(rlm_plan_graph, exports(Exports)),
     memberchk(Name/Arity, Exports).
-
-module_export(Name/Arity) :-
-    exported(Name/Arity).
 
 file_contains(File, Needle) :-
     exists_file(File),
@@ -96,26 +100,32 @@ plan_graph_source_mentions(Needle) :-
 
 /* Contract facts: one per requirement from #288 ------------------------ */
 
-contract(module_loads_and_exports_parse,
-         module_export(plan_graph_parse/2)).
-contract(module_loads_and_exports_normalize,
-         module_export(plan_graph_normalize/2)).
-contract(module_loads_and_exports_validate,
-         module_export(plan_graph_validate/4)).
-contract(module_loads_and_exports_ready,
-         module_export(plan_graph_ready/3)).
-contract(module_loads_and_exports_execute,
-         module_export(plan_graph_execute/5)).
-contract(module_loads_and_exports_run,
-         module_export(plan_graph_run/5)).
-contract(module_loads_and_exports_budget,
-         module_export(default_plan_graph_budget/1)).
-contract(module_loads_and_exports_symbol_resolver,
-         module_export(plan_graph_resolve_symbol/3)).
-contract(module_loads_and_exports_symbol_ref_valid,
-         module_export(plan_graph_symbol_ref_valid/1)).
-contract(module_loads_and_exports_source_span_valid,
-         module_export(plan_graph_source_span_valid/1)).
+contract(module_export_parse,
+         exported(plan_graph_parse/2)).
+contract(module_export_normalize,
+         exported(plan_graph_normalize/2)).
+contract(module_export_validate,
+         exported(plan_graph_validate/4)).
+contract(module_export_ready,
+         exported(plan_graph_ready/3)).
+contract(module_export_execute,
+         exported(plan_graph_execute/5)).
+contract(module_export_run,
+         exported(plan_graph_run/5)).
+contract(module_export_run_async,
+         exported(plan_graph_run_async/4)).
+contract(module_export_cancel,
+         exported(plan_graph_cancel/1)).
+contract(module_export_budget,
+         exported(default_plan_graph_budget/1)).
+contract(module_export_symbol_resolver,
+         exported(plan_graph_resolve_symbol/3)).
+contract(module_export_symbol_ref_valid,
+         exported(plan_graph_symbol_ref_valid/1)).
+contract(module_export_source_span_valid,
+         exported(plan_graph_source_span_valid/1)).
+contract(module_export_cancellation_token,
+         exported(plan_graph_cancellation_token/1)).
 
 contract(vocabulary_exactly_closed_set, vocabulary_closed).
 contract(vocabulary_no_call_escape, no_call_escape).
@@ -153,16 +163,22 @@ contract(parse_json_and_term_forms,
          tests_mention('parses')).
 contract(budget_bounds_step_count,
          tests_mention('budget')).
+contract(cancellation_aborts_and_rethrows_test,
+         tests_mention('cancellation_aborts')).
+contract(aggregate_budget_test,
+         tests_mention('aggregate_budget')).
+contract(async_sync_parity_test,
+         tests_mention('run_async_awaits_same_future')).
 
 contract(test_module_exists,
-         repo_file('test/rlm_plan_graph_test.pl', File),
-         exists_file(File)).
+         (   repo_file('test/rlm_plan_graph_test.pl', File),
+             exists_file(File) )).
 contract(docs_exist_and_document_ready_step,
-         repo_file('docs/plan-graph-runtime.md', File),
-         file_contains(File, 'ready_step')).
+         (   repo_file('docs/plan-graph-runtime.md', File),
+             file_contains(File, 'ready_step') )).
 contract(docs_link_typed_plans,
-         repo_file('docs/typed-plans.md', File),
-         file_contains(File, 'plan-graph-runtime.md')).
+         (   repo_file('docs/typed-plans.md', File),
+             file_contains(File, 'plan-graph-runtime.md') )).
 
 /* Vocabulary helpers --------------------------------------------------- */
 

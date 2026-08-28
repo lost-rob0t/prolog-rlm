@@ -30,6 +30,7 @@
 :- use_module('../prolog/rlm_verify', []).
 :- use_module('../prolog/rlm_result_accept', []).
 :- use_module('../prolog/rlm_spec_workflow', []).
+:- use_module('../prolog/rlm_plan_graph', []).
 :- use_module('../prolog/rlm_project_source', []).
 :- use_module('../prolog/rlm_runtime_status', []).
 :- use_module('../prolog/prolog_agent_ui_v1', []).

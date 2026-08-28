@@ -33,3 +33,24 @@ session, TDD) -> final adversarial review (fresh opencode subprocess) -> gates.
   citations corrected (F1/F4/F6/F7/F9); issue #288 body reconciled
   (desugar shape, tool(Op) capabilities, cancellation, aggregate budget,
   async surface, effect boundary, abandoned-terminal).
+* Implementation log (TDD)
+
+- Contract gate proven RED before implementation (module absent, exit 1).
+- test/rlm_plan_graph_test.pl: 24 PlUnit tests written first (red), then
+  prolog/rlm_plan_graph.pl implemented to green.
+- test/support/plan_graph_test_tools.pl: module-qualified expert closures
+  (repo convention: handlers must be visible from rlm_plan's call path).
+- Bugs caught by the loop: JSON path bypassed in execute_; empty-dict
+  variable tags broke ground/1 and outcome equality; dict-dot terms are
+  unevaluated in argument positions; sort/2 dedupe before adjacency check;
+  variable-functor syntax; PlUnit assertion/1 does not propagate bindings;
+  cancellation_throw arity (rlm_cancelled/1); rlm_plan handlers must
+  succeed-or-throw (plain failure fails the plan silently); runtime
+  exhaustion kind is budget_exhausted; the gate's own check_one cut pruned
+  findall enumeration (now generate-and-test, contract/2 only).
+- Full deterministic gate green: check_runtime, load_all, run_tests
+  (1019/1019), benchmark deterministic 16/16, CLI demo --json,
+  git diff --check, make research-approval, contract gate ALL DEFINED.
+- Docs: docs/plan-graph-runtime.md; cross-links in typed-plans.md,
+  spec-verify.md via guarantee boundary; roadmap long-horizon note added.
+- Registered in test/deterministic_corpus.pl (include(rlm_plan_graph)).

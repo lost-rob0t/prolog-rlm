@@ -71,6 +71,13 @@ standalone AgentProlog / DSH plugin / JS / CL / Nim / Emacs / Lem
   Spec + Verify + plan + graph + authority + async + effects + MCP
 ```
 
+Long-horizon execution substrate: `rlm_plan_graph` (#288) adds a closed
+project-op plan vocabulary with a `ready_step` dependency-graph executor,
+an aggregate budget, cancellation-as-token-rethrow, and a
+`symbol_ref`/`source_span` contract consumed by host experts. `rlm_plan`
+remains the only step executor; AgentProlog planners can author graphs as
+inert data without gaining execution authority.
+
 Core must not gain ambient repository write access just because `PrologAgent` needs it. Coding tools remain separately loadable and capability-gated. A frontend never becomes a second execution engine. The project parser/indexer also remains a semantic observation producer, not a hidden executor.
 
 ## Phase 0: finish the write-safety substrate
