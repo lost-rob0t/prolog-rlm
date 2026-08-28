@@ -56,9 +56,11 @@ parallel/2, retry/3, checkpoint/1, final/1
 plus closed expressions =literal/1, input/1, var/1, field/2, list/1,
 object/1= (=prolog/rlm_plan.pl= lines 112-142, 280+).  Unknown ops are
 rejected during normalization (=normalize_dict_step(Op, _, _) :- throw(...)=,
-line 201; =unknown_or_malformed_operation= at validation, line ~1009) and
-tests pin that =call(shell(...))= style output never reaches execution
-(=test/rlm_plan_test.pl= "raw_call_term_is_rejected_during_validation").
+line 201) and at validation (=validate_step= fallback,
+=prolog/rlm_plan.pl:479-481=; the ~1009 fallback is the execute-phase
+belt-and-braces).  Tests pin that =call(shell(...))= style output never
+reaches execution (=test/rlm_plan_test.pl=
+"raw_call_term_is_rejected_during_validation").  The file is 1632 lines.
 
 ** F2: Whole-plan validation precedes any side effect.
 
@@ -80,14 +82,18 @@ lines 577-587); tools/providers only resolve through host registries
 
 =rlm_spec_lang= structural catalog: =spec/1, schema_version/1, subject/1,
 require/2-3, optional/2-3, invariant/1, output_contract/1, provenance/1,
-assertion/2-3, evidence_policy/1=, desugared via =foldl(apply_form)= so each
-clause may occur multiple times, then =spec_normalize -> spec_validate ->
-spec_freeze=.  Mapping: goal ≈ =subject/1=; input ≈ subject/invariant data;
-require ≈ =require/2-3=; constraint ≈ =invariant/1=; artifact ≈
-=output_contract/1=; validate ≈ =assertion/2-3 + evidence_policy/1=; success ≈
-=output_contract/1=.  Adding a second, weaker SPEC vocabulary would violate
-the no-parallel-subsystem rule; hardening =rlm_spec_lang= aliases is the
-coherent path if any alias is wanted at all.
+assertion/2-3, evidence_policy/1=, desugared via =foldl(apply_form)= and
+then =spec_normalize -> spec_validate -> spec_freeze=.  Requirement and
+invariant forms may repeat; singleton forms (=schema_version/1=,
+=subject/1=, =output_contract/1=, =provenance/1=) reject duplicates
+(=set_singleton=, =rlm_spec_lang.pl:369-374=).  =evidence_policy/1= is a
+requirement option, not a free-standing clause.  Mapping: goal ≈
+=subject/1=; input ≈ subject/invariant data; require ≈ =require/2-3=;
+constraint ≈ =invariant/1=; artifact ≈ =output_contract/1=; validate ≈
+=assertion/2-3 + evidence_policy/1=; success ≈ =output_contract/1=.  Adding
+a second, weaker SPEC vocabulary would violate the no-parallel-subsystem
+rule; hardening =rlm_spec_lang= aliases is the coherent path if any alias is
+wanted at all.
 
 ** F5: SPEC->PLAN binding exists; plans are fingerprint-bound.
 
@@ -99,19 +105,24 @@ new verification stack.
 
 ** F6: rlm_graph is a state machine over node closures, not a plan-op DAG.
 
-=rlm_graph= nodes resolve to trusted closures via a registry; edges are
-fixed/routed transitions with visit limits, durable checkpoints and resume
-(=prolog/rlm_graph.pl= module doc, lines 86-235).  It is the right *durability
-substrate* but compiling =step/depends_on= scheduling directly onto it would
-either misuse node semantics or require a graph-per-step encoding; conversely
-using it as the model-facing plan language contradicts F1.
+=rlm_graph= nodes resolve to trusted closures via a registry
+(=normalize_registry_entry= requires callable, =prolog/rlm_graph.pl:243-265=;
+fail-closed =validate_node_registry= 284-292); the module doc is lines 17-32
+and spec/node/edge normalization is 86-237.  Edges are fixed/routed
+transitions with visit limits, durable checkpoints and resume.  It is the
+right *durability substrate* but compiling =step/depends_on= scheduling
+directly onto it would either misuse node semantics or require a graph-per-step
+encoding; conversely using it as the model-facing plan language contradicts
+F1.
 
 ** F7: Plans are strictly sequential today; no sibling-dependency DAG.
 
-=execute_steps/5= runs the step list left to right; =parallel/2= is bounded
-fan-out of independent subplans; =retry/3= multiplies estimates.  Nothing
-expresses "s4 depends on s1..s3, s5 depends on s2" inside one plan, and no
-=ready_step= scheduling exists anywhere (=grep ready_step= returns nothing).
+=execute_steps/5= runs the step list left to right; =parallel/2= branches
+execute *sequentially* (=execute_branches/8=, =rlm_plan.pl:1150-1182=;
+=max_parallel= caps only the static estimate); =retry/3= multiplies
+estimates.  Nothing expresses "s4 depends on s1..s3, s5 depends on s2" inside
+one plan, and =ready_step/1=, =depends_on/2=, =step/2= are defined in no
+loaded module (verified by =predicate_property= scans).
 
 ** F8: No project-op vocabulary and no symbol/span contract.
 
@@ -126,26 +137,59 @@ open.
 ** F9: Delegation with capability narrowing exists.
 
 =spawn_agent(Spec, Capabilities, Bind)= desugars to =tool(spawn_agent, ...)=
-with child capability narrowing (=rlm_plan.pl= lines 120-176);
-=rlm_delegation_runtime= / =rlm_subagent= supervise child execution.  A
-=delegate/2= project op must narrow through this path, not widen it.
+(=rlm_plan.pl= lines 120-124, 168-177); narrowing itself is
+=rlm_tool:capabilities_narrow/3= (=rlm_tool.pl:84-111=, =widening_denied=
+on any non-subset) wired into spawn at =rlm_agent.pl:226-243=.  The handler
+is host-supplied in the tools registry.  A =delegate/2= project op must
+narrow through this path, not widen it.
 
-* Inference (design direction; design record will finalize)
+** F10 (adversarial-review evidence, Q5/Q9): composition traps in the
+planned composition path.
+
+- =rlm_outcome:plan_outcome/5= folds ALL exceptions — including
+  =rlm_cancelled= — into =execution_outcome{status:exception}=
+  (=rlm_outcome.pl:877-885=) while =rlm_plan:plan_execute= rethrows
+  cancellation (=rlm_plan.pl:1479-1481=).  A scheduler consuming
+  =plan_outcome= outcomes must special-case cancellation or it will keep
+  scheduling after cancellation.
+- Each top-level =plan_run= starts a fresh =runtime_budget=
+  (=rlm_plan.pl:820-837=); per-class budgets do NOT aggregate across
+  separate executions, so a graph layer must thread an aggregate budget
+  across steps.
+- Capability terms form a closed grammar =capability_shape/1=
+  (=rlm_tool.pl:127-140=) admitting =tool(Name)= but not =plan_op(Name)=;
+  the per-op capability term for a desugared op must be =tool(Op)=.
+
+* Inference (revised after adversarial review; design record finalizes)
 
 - I1: A new sibling module =rlm_plan_graph= (like =rlm_spec_workflow= composes
   =rlm_plan=) is the coherent shape: it owns *plan-graph data* (parse,
-  normalize, validate, ready-step scheduling, blocked propagation) and
-  executes each ready step by desugaring the project op into a *single-step
-  closed-AST plan* executed through =rlm_plan=/=rlm_outcome= with the host
-  expert registry presented as the tool registry.  No =call/1=, no second
-  interpreter, no new Future/scheduler (canonical direction preserved).
+  normalize, validate, ready-step scheduling, blocked propagation) and is a
+  new closed front-end; =rlm_plan= remains the ONLY step executor (budgets,
+  capability checks, tool dispatch, tracing).  Scheduling recipe pinned by
+  review: =plan_graph_run_async/4= submits ONE execute predicate to
+  =rlm_async=; the ready-step loop runs inside that single worker; each
+  ready step's desugared plan calls =rlm_plan='s execute ABI directly (no
+  nested Future waits); the synchronous facade awaits the same Future
+  (AGENTS.md canonical direction; precedent =rlm_spec_workflow.pl:240-244=).
+- I1a (review D4): the desugared artifact per step is minimally
+  =[tool(Op, literal(StepArgs), StepBind), final(var(StepBind))]= —
+  =rlm_plan= requires exactly one trailing =final/1=; step results route
+  through the plan binding and are charged against the step's output-byte
+  allowance.
 - I2: The closed op vocabulary is data: =plan_graph_op(Name/Arity)= style
-  declarations plus per-op argument shape validation; each op carries a
-  required capability term (e.g. =plan_op(sync_remote)=, =validate_spec=) so
-  capability gating stays per-op, narrowing by default.
-- I3: =validate/1= steps reference a frozen Spec ref; execution routes through
-  the host verifier path (=rlm_verify= / trusted assertion registry), never
-  model self-report (F5, #56 rules).
+  declarations plus per-op argument shape validation; the required capability
+  term for op =Op= is exactly =tool(Op)= (review D3: =plan_op(...)= is
+  outside the closed =capability_shape/1= grammar; =tool(spawn_agent)= is
+  the precedent).  The graph layer must validate the op name against the
+  closed vocabulary BEFORE desugaring, so a model can never name a
+  host-registered tool outside the 12-op vocabulary.  Desugared plan and
+  inner capability term derive mechanically from the single
+  =plan_graph_op/2= declaration, with a pairing test per op (review D7).
+- I3: =validate/1= steps reference a frozen Spec ref; execution routes
+  through the host verifier path — inside the async worker,
+  =rlm_verify='s direct execute ABI (=spec_observe_execute/5=; guarded entry
+  =spec_observe/5=) — never model self-report.
 - I4: =symbol_ref= / =source_span= are closed ground data with structural
   validation; a bounded resolver over *host-supplied index facts*
   (=symbol_definition(SymbolRef, SourceSpan, Provenance)=) yields
@@ -155,22 +199,49 @@ with child capability narrowing (=rlm_plan.pl= lines 120-176);
 - I5: Model-facing JSON shape (parity with =docs/typed-plans.md=):
   ={"steps":[{"id":"s1","op":"index","args":{...}}],
   "depends_on":[{"step":"s2","requires":["s1"]}]}=.  Snake_case op names match
-  repository convention; the request's camelCase spellings are aliases at most.
+  repository convention; the request's camelCase spellings are aliases at
+  most.
 - I6: Failure semantics: a failed step marks dependents =blocked=
-  (structured, inspectable, terminal for this run); =ready_step= only admits
-  steps whose dependencies are =completed=.  Cancellation/budget exhaustion
-  produce structured partial outcomes, never silent success.
+  (structured, inspectable); =ready_step= only admits steps whose
+  dependencies are =completed=.  Cancellation is NOT ordinary failure: a
+  step outcome carrying =error(rlm_cancelled(Token), _)= aborts the whole
+  graph and rethrows the token — no further step executes, no re-submission
+  (review D1).  =abandoned= is terminal state, never retry authorization
+  (AGENTS.md external-effect invariant).
+- I6a (review D2): an aggregate graph budget bounds totals across step
+  executions (steps, tool calls, model calls, context ops, output bytes);
+  per-step plan budgets are derived from the remaining aggregate
+  (=plan_result.budget_remaining= feed-forward) so N steps can never exceed
+  the graph allowance.
 - I7: Contract-presence gate: =scripts/plan_graph_contract_check.pl= holds one
-  Prolog fact per required public surface (module exports, closed vocabulary,
-  validator rejections, scheduling semantics, resolver states, docs links);
-  a bash wrapper loops over the facts until all are defined, satisfying the
-  "loops over every requirement" request without hand-maintained checklists.
+  Prolog fact per required public surface (module exports incl. the
+  async-first entry =plan_graph_run_async/4= and cancellation token
+  =plan_graph_cancel/1=, closed vocabulary, validator rejections, scheduling
+  semantics, resolver states, docs links); a bash wrapper loops over the
+  facts until all are defined.  Presence gate only — never cited as
+  behavioral evidence.
+- I8 (review D6): op effect classification is explicit.  =sync_remote/1=,
+  =edit/2=, =create/2=, =delete/1=, =run/1= are externally effectful in real
+  use; their expert handlers must admit/dispatch/observe through the durable
+  =rlm_effect= boundary (normalize -> schema/capability -> authority ->
+  durable admission -> dispatch -> observe-or-indeterminate) with adapter
+  identity/attempt lineage as trusted runtime data.  THIS SLICE adds no new
+  external-effect path: shipped expert handlers in tests are pure
+  host-supplied closures; docs state the requirement for real expert packs.
+- I9 (review D8): =delegate/2= desugars through the existing
+  =tool(spawn_agent, ...)= path with child capabilities validated as a
+  narrowing subset by the graph validator (narrowing-by-default exercised in
+  this slice, reusing =rlm_tool:capabilities_narrow/3= semantics).
 
 * Rejected / avoided alternatives
 
 - R1: Extending =rlm_plan.pl= in place with a project-op family and DAG
-  scheduler — inflates a stable ~1500-line core, mixes graph scheduling with
-  sequential execution, larger regression blast radius.
+  scheduler — inflates a stable 1632-line core, mixes graph scheduling with
+  sequential execution, larger regression blast radius.  Issue #288 goal-1
+  wording ("data constructors in the existing =rlm_plan= closed-AST world")
+  is read as: ops land as validated =tool(Op)= closed-AST steps executed by
+  =rlm_plan= — the closed-AST *world*, not the file; issue text reconciled in
+  the same slice.
 - R2: Compiling step/depends_on onto =rlm_graph= nodes directly — conflates
   trusted node closures with plan-op data; edges/routes/checkpoint semantics
   are not dependency semantics; would need graph-per-step encodings.
@@ -185,11 +256,23 @@ with child capability narrowing (=rlm_plan.pl= lines 120-176);
 * Open questions (for design record)
 
 - Q1: Exact JSON schema for op args incl. =symbol_ref= / span-valued args.
-- Q2: Whether =delegate/2= maps onto =spawn_agent= desugaring in this slice or
-  is vocabulary-only with =error(unsupported)= until #172 policy lands.
-- Q3: Whether graph state should checkpoint through =rlm_graph_persist= now or
-  stay in-memory with structured outcomes (durability follow-up).
-- Q4: Per-step time limits and their interaction with the global plan budget.
+- Q2: Whether graph state should checkpoint through =rlm_graph_persist= now or
+  stay in-memory with structured outcomes (durability follow-up; if
+  revisited, reuse =rlm_graph_persist= as substrate without adopting node
+  semantics; checkpoints stay their own semantic class).
+- Q3: Per-step time limits and their interaction with the global plan budget
+  and the aggregate graph budget.
+
+* Adversarial review evidence
+
+An independent opencode subprocess adversarially reviewed this record against
+canonical main with Prolog verification queries (Q1-Q9) and focused test runs;
+verdict =sound-with-changes=; full report:
+=rage/288-review-research-report.md=.  Its required changes (cancellation
+propagation, aggregate budget, =tool(Op)= capability reconciliation, desugar
+shape, effect-boundary direction, async contract surface, issue-text
+reconciliation) are folded into I1/I1a/I2/I6/I6a/I8/I9 and R1 above; its
+citation corrections are applied to F1/F4/F6/F7/F9.
 
 * Acceptance experiments / tests (planned)
 
@@ -198,11 +281,18 @@ with child capability narrowing (=rlm_plan.pl= lines 120-176);
 - Scheduling: =ready_step= admits only dependency-complete steps; topological
   order exercised via host-recorded expert call order; failure blocks
   dependents with structured =blocked= outcomes.
-- Authority: capability denial per op; expert closure resolution fails closed
-  when registry missing the op; no =call/1= on model data anywhere.
+- Authority: capability denial per op (=tool(Op)= terms); expert closure
+  resolution fails closed when registry missing the op; no =call/1= on model
+  data anywhere; vocabulary validated before desugaring.
+- Cancellation: cancel mid-step aborts the graph, rethrows the token, and no
+  further ready step executes (review D1 regression test).
+- Budget: step count bound AND aggregate per-class bounds across steps
+  (N steps cannot exceed aggregate tool/model/context/output allowances,
+  review D2 regression test); cancellation yields structured partial state.
+- Delegate: child capabilities validated as narrowing subset (review D8/I9).
 - Symbols: =symbol_ref= structural validation; resolver
   =ok/unresolved/ambiguous/unsupported= over host index facts; spans validated
   (bytes ordered); no filesystem or parser access in this layer.
-- Budget: step count bound; per-op execution still bounded by =rlm_plan=
-  budgets; cancellation yields structured partial state.
+- Async/sync parity: =plan_graph_run= awaits the same Future as
+  =plan_graph_run_async=; one =rlm_async= submission total.
 - Contract gate: =scripts/plan_graph_contract_check.sh= loops to green.

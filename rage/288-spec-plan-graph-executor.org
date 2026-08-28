@@ -27,3 +27,9 @@ session, TDD) -> final adversarial review (fresh opencode subprocess) -> gates.
   requirement fact per #288 requirement.
 - Research record: research/RLM-RESEARCH-027-spec-plan-graph-executor.org
   (PENDING approval header; make research-approval PASS).
+- Adversarial review subprocess completed (opencode --auto, timeout enforced):
+  verdict sound-with-changes; report rage/288-review-research-report.md.
+- Required changes folded into research record I1/I1a/I2/I6/I6a/I8/I9 + R1;
+  citations corrected (F1/F4/F6/F7/F9); issue #288 body reconciled
+  (desugar shape, tool(Op) capabilities, cancellation, aggregate budget,
+  async surface, effect boundary, abandoned-terminal).
