@@ -1,0 +1,24 @@
+* Run identity
+- Consumed issue :: #288
+- Branch :: =rage/288-spec-plan-graph-executor=
+- RAGE start commit :: =7165680e31fa67053f19887026cd00e4e59ed0aa=
+
+* Pipeline
+
+Research (this session, Prolog-verified) -> adversarial review (fresh opencode
+subprocess) -> design (fresh opencode subprocess) -> implementation (this
+session, TDD) -> final adversarial review (fresh opencode subprocess) -> gates.
+
+* Research log
+- Confirmed existing closed plan AST: =prolog/rlm_plan.pl= ops
+  =context/3, model/4, rlm/2, tool/3, spawn_agent/3, parallel/2, retry/3,
+  checkpoint/1, final/1=; JSON parse path; whole-plan validation; host tool
+  registry with preflight; per-op capability requirements.
+- Confirmed SPEC substrate: =rlm_spec_lang= closed authoring,
+  =rlm_spec= validate/freeze, =rlm_verify= evidence states,
+  =rlm_spec_workflow= spec_plan_bind (fingerprint-bound).
+- Confirmed =rlm_graph= is a node/router state machine over trusted closures,
+  not a plan-op DAG; reusing it directly for step/depends_on scheduling would
+  conflate abstractions or require a second scheduler.
+- Gap: no typed project-op vocabulary; no plan dependency-graph executor;
+  no symbol_ref -> source_span contract; no validate/1 op bound to frozen Specs.
