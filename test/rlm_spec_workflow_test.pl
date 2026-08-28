@@ -2,6 +2,7 @@
 
 :- use_module('../prolog/rlm_graph').
 :- use_module('../prolog/rlm_spec').
+:- use_module('../prolog/rlm_spec_plan').
 :- use_module('../prolog/rlm_spec_workflow').
 :- use_module('../prolog/rlm_verify').
 
@@ -133,6 +134,98 @@ test(changed_spec_requires_new_identity) :-
     freeze_workflow_spec(bar/1, 2, Second),
     assertion(First.ref \== Second.ref),
     assertion(First.ref.fingerprint \== Second.ref.fingerprint).
+
+/* Explicit SPEC -> seed -> refine -> validate API ---------------------- */
+
+seed_plan_refiner(Frozen, Seed, Candidate) :-
+    Seed.spec_ref == Frozen.ref,
+    Candidate = plan_candidate{
+                    plan:plan([final(literal(done))]),
+                    project_state:Seed.planning_context
+                }.
+
+repair_plan_refiner(Frozen, Context, Candidate) :-
+    Context.spec_ref == Frozen.ref,
+    Context.execution_state.spec_ref == Frozen.ref,
+    Candidate = plan_candidate{
+                    plan:plan([final(literal(repaired))]),
+                    project_state:Context.planner_input
+                }.
+
+test(plan_seed_is_non_executable_and_spec_bound) :-
+    freeze_workflow_spec(foo/1, 1, Frozen),
+    plan_seed_from_spec(Frozen,
+                        project_state{revision:r1},
+                        ok(Seed)),
+    assertion(Seed.spec_ref == Frozen.ref),
+    assertion(Seed.subject == Frozen.subject),
+    assertion(Seed.planning_context == project_state{revision:r1}),
+    assertion(Seed.goals = [Goal]),
+    assertion(Goal.requirement_id == api),
+    assertion(Goal.severity == required).
+
+test(plan_refine_binds_candidate_to_same_frozen_spec) :-
+    freeze_workflow_spec(foo/1, 1, Frozen),
+    plan_seed_from_spec(Frozen, project_state{revision:r1}, ok(Seed)),
+    plan_refine(Frozen,
+                Seed,
+                plunit_rlm_spec_workflow:seed_plan_refiner,
+                ok(SpecPlan)),
+    assertion(SpecPlan.spec_ref == Frozen.ref),
+    assertion(SpecPlan.project_state == project_state{revision:r1}),
+    assertion(SpecPlan.plan == plan([final(literal(done))])).
+
+test(plan_validate_against_spec_reuses_closed_plan_gate) :-
+    freeze_workflow_spec(foo/1, 1, Frozen),
+    plan_seed_from_spec(Frozen, none, ok(Seed)),
+    plan_refine(Frozen,
+                Seed,
+                plunit_rlm_spec_workflow:seed_plan_refiner,
+                ok(SpecPlan)),
+    plan_validate_against_spec(Frozen,
+                               SpecPlan,
+                               [],
+                               default,
+                               ok(Validated)),
+    assertion(Validated.spec_ref == Frozen.ref),
+    assertion(Validated.validation.plan == plan([final(literal(done))])).
+
+test(plan_prepare_runs_seed_refine_validate_without_execution) :-
+    freeze_workflow_spec(foo/1, 1, Frozen),
+    plan_prepare_from_spec(Frozen,
+                           project_state{revision:r2},
+                           plunit_rlm_spec_workflow:seed_plan_refiner,
+                           [],
+                           default,
+                           ok(Preparation)),
+    assertion(Preparation.spec_ref == Frozen.ref),
+    assertion(Preparation.spec_plan.project_state == project_state{revision:r2}),
+    assertion(Preparation.validation.validation.estimate.steps =:= 1).
+
+test(plan_replan_keeps_same_spec_authority) :-
+    freeze_workflow_spec(foo/1, 1, Frozen),
+    ExecutionState = execution_state{spec_ref:Frozen.ref,status:failed},
+    plan_replan(Frozen,
+                ExecutionState,
+                project_state{revision:r3},
+                plunit_rlm_spec_workflow:repair_plan_refiner,
+                ok(SpecPlan)),
+    assertion(SpecPlan.spec_ref == Frozen.ref),
+    assertion(SpecPlan.plan == plan([final(literal(repaired))])),
+    assertion(SpecPlan.project_state == project_state{revision:r3}).
+
+test(plan_replan_rejects_different_spec_identity) :-
+    freeze_workflow_spec(foo/1, 1, Frozen1),
+    freeze_workflow_spec(bar/1, 2, Frozen2),
+    ExecutionState = execution_state{spec_ref:Frozen2.ref,status:failed},
+    plan_replan(Frozen1,
+                ExecutionState,
+                none,
+                plunit_rlm_spec_workflow:repair_plan_refiner,
+                error(Error)),
+    assertion(Error.phase == replan),
+    assertion(Error.kind == rejected),
+    assertion(Error.detail = spec_ref_mismatch(_, _)).
 
 /* Full graph composition ---------------------------------------------- */
 
