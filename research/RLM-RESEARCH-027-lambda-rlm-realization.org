@@ -1,0 +1,829 @@
+:PROPERTIES:
+:ID:       prolog-rlm-research-027-lambda-rlm-realization
+:END:
+#+title: RLM-RESEARCH-027 λ-RLM Realization on prolog-rlm v1
+#+status: RESEARCHED
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
+#+filetags: :rlm:lambda-rlm:lambda-calculus:long-context:plans:prolog:formal-methods:
+
+* Research Question
+
+How should prolog-rlm v1 realize the λ-RLM architecture from arXiv:2603.20105 as a first-class production strategy while preserving the broader v1 typed-plan runtime, existing authority/capability boundaries, canonical async execution, opaque context semantics, and truthful formal guarantees?
+
+This record is deliberately implementation-oriented. Its first loop fully enumerates the delta between the paper and the current =prolog-rlm-v1= runtime before proposing architecture.
+
+* Source and Baseline Freeze
+
+Repository baseline for this record:
+
+- repository: =lost-rob0t/prolog-rlm=
+- source branch: =prolog-rlm-v1=
+- source commit: =8eddb58b30cbdcb35283f0bd4cb5c332400bd20e=
+- working branch: =gpt-5-6-sol-high/questions-for-rlm-prolog-and-lambda-rlm=
+
+No design conclusion in this record is based on =main=.
+
+Primary sources retrieved 2026-08-27:
+
+- Roy et al., /The Y-Combinator for LLMs: Solving Long-Context Rot with λ-Calculus/, arXiv:2603.20105v1, 2026-03-20: https://arxiv.org/pdf/2603.20105
+- reference λ-RLM repository: https://github.com/lambda-calculus-LLM/lambda-RLM
+- reference implementation inspected at commit =3874d393483dc4299101918cf8e9af670194bd88=, especially =rlm/lambda_rlm.py=
+- existing =RLM-RESEARCH-003 Typed Symbolic Execution for Model Plans=
+- existing =RLM-RESEARCH-008 Adaptive Recursion Policy=
+- current v1 =rlm_plan=, =rlm_context=, =rlm_context_budget=, =rlm_completion=, =rlm_recursion_runtime=, =rlm_spec_strategy=, and =rlm_async= substrates
+
+* Executive Finding
+
+The v1 runtime has already implemented a large part of the substrate that originally motivated λ-RLM: opaque context, a closed typed plan language, static validation, budget checks, bounded recursive planning, canonical model execution, cancellation, token-budgeted context packing, adaptive recursion policy, and a shared async scheduler.
+
+What is still missing is the defining λ-RLM property: a deterministic, data-structural recursive program whose recursive shape is compiled before inference from an explicit combinator profile and whose termination/call/cost obligations can be checked independently of model-generated control flow.
+
+Therefore the correct realization is NOT a literal Python port and NOT a replacement of the general typed planner. The recommended architecture is an additive =lambda_rlm= strategy with a dedicated plan certificate and recursive executor, reusing v1 providers, opaque contexts, token accounting, cancellation, traces, and =rlm_async=.
+
+The central architectural distinction is:
+
+#+begin_src text
+current general typed RLM
+  model chooses direct answer or a validated explicit typed plan
+
+lambda-RLM strategy
+  bounded classifier/host selects a registered task profile
+  -> deterministic planner derives a recursive plan certificate
+  -> validator proves structural/budget obligations
+  -> trusted recursive executor runs the fixed combinator algebra
+  -> models are invoked only through declared oracle combinators
+#+end_src
+
+The two modes should coexist. λ-RLM is strongest when a task admits a known compositional algebra; the paper itself reports that fixed combinators can lose to creative free-form strategies on CodeQA. The general typed planner remains the escape hatch for tasks outside the λ profile library.
+
+* Loop 1 — Exhaustive Delta Enumeration
+
+This loop classifies the current v1 delta as four sets:
+
+- =PRESENT=: capability already exists and should be reused;
+- =MISSING=: no adequate semantic exists yet;
+- =MUST IMPLEMENT=: required to truthfully claim λ-RLM realization;
+- =MIGHT CHANGE=: an existing module/API may require extension depending on the final public integration choice.
+
+** PRESENT [14/14]
+
+*** [1/14] PRESENT Closed typed symbolic execution
+
+=rlm_plan= already parses, validates, estimates, and executes a closed plan language rather than arbitrary model-authored Prolog. It includes context, model, tool, nested RLM, parallel, retry, checkpoint, and final steps.
+
+Reuse: validation discipline, closed expression language, capability checks, provider registry, runtime budget handling, transition traces.
+
+Do not expose arbitrary =call/1= or executable model-authored Prolog to add λ-RLM.
+
+*** [2/14] PRESENT Opaque prompt-as-environment
+
+=rlm_context= already stores large text/term payloads behind opaque versioned handles and exposes bounded =peek=, =slice=, =search=, =partition=, =map=, and =reduce= operations.
+
+This directly satisfies the paper's prompt-as-environment requirement at a stronger trust boundary than a Python REPL variable.
+
+*** [3/14] PRESENT Trusted external context adapters
+
+The context runtime already supports trusted adapter registration without making adapter callbacks model authority. λ-RLM should work over memory and adapter-backed contexts through the same opaque semantics.
+
+*** [4/14] PRESENT Provider-visible token budget solver
+
+=rlm_context_budget= already separates physical provider context, operator working cap, output reserve, and safety margin. It supports an exact registered token counter or a conservative character-based estimate.
+
+This should become the source of truth for the λ leaf threshold. The paper's abstract =K= must not be implemented as a second independent context-window system.
+
+*** [5/14] PRESENT Canonical provider/model boundary
+
+v1 model calls already flow through canonical provider/chain execution and produce structured usage/trajectory data. λ leaf calls must use the same execute ABI.
+
+*** [6/14] PRESENT Shared async scheduler
+
+=rlm_async= already exists and is an explicit repository invariant. λ-RLM must use it for bounded MAP fan-out rather than creating a worker pool or thread-per-leaf subsystem.
+
+*** [7/14] PRESENT Cancellation
+
+Root completion and async work already expose cancellation. λ recursive execution must propagate the same token into all active leaf/subtree Futures.
+
+*** [8/14] PRESENT Capability narrowing and authority boundaries
+
+The runtime already separates tool discovery from capability possession and narrows child authority. λ combinators cannot become a side channel for filesystem/network/tool authority.
+
+*** [9/14] PRESENT Adaptive recursion policy
+
+=rlm_recursion_runtime= already routes among direct continuation, deterministic context work, cheap submodel work, recursive RLM, and delegated subagents with explicit estimated/actual cost and trace metadata.
+
+This remains useful for strategy admission and hybrid fallback, but it is NOT the fixed-point executor required by λ-RLM.
+
+*** [10/14] PRESENT General recursive-plan safety
+
+=rlm_completion= already validates explicit nested =rlm(...)= structures, recursion depth, duplicate recursive fingerprints, model-call budgets, and narrowed child capabilities.
+
+These checks remain valuable, but explicit nested plan syntax is not equivalent to a parameterized data-structural fixed point.
+
+*** [11/14] PRESENT Direct mode
+
+v1 has a first-class direct runtime. λ-RLM should retain the paper's direct-fit optimization: if the complete leaf request fits the safe context budget, invoke the base model once without decomposition.
+
+*** [12/14] PRESENT Spec/verify/repair composition
+
+=rlm_spec_strategy= can bind direct or typed-plan strategies into bounded observe/verify/repair workflows. λ-RLM may later become another strategy mode, but this is not required for the first core implementation.
+
+*** [13/14] PRESENT Durable artifact and tracing substrate
+
+The repository already has durable artifacts, trace envelopes, and runtime trajectory semantics. λ plan certificates and execution traces should project through these systems instead of inventing another persistence format.
+
+*** [14/14] PRESENT Existing λ-RLM design precedent
+
+=RLM-RESEARCH-003= already chose the typed-runtime principle over unrestricted REPL execution. This realization refines that conclusion: v1 now has the typed substrate, so the remaining work is a concrete λ fixed-point strategy, not a second generic plan interpreter.
+
+** MISSING — semantic gaps [18/18]
+
+*** [1/18] MISSING First-class λ strategy identity
+
+There is no public/runtime object that means: execute this task using a deterministic λ-RLM combinator program rather than ask the root model to synthesize a typed plan.
+
+*** [2/18] MISSING λ plan certificate
+
+The current plan object describes explicit steps. It does not carry =k=, leaf threshold =tau=, recursive rank/depth proof, task profile, composition operator, source size metric, predicted leaf/model calls, predicted cost, or guarantee tier.
+
+*** [3/18] MISSING Data-structural fixed-point executor
+
+Current nested =rlm(Plan, Bind)= executes a statically embedded child plan. λ-RLM requires one recursive solver =Phi(P)= whose recursion is driven by decreasing input partitions until a leaf predicate is satisfied.
+
+*** [4/18] MISSING Rank/progress proof
+
+No runtime validator currently proves that every recursive λ child is strictly smaller under a declared well-founded measure. The paper's termination proof depends on this property.
+
+*** [5/18] MISSING Host-owned typed combinator algebra
+
+=rlm_context= has operations named map/reduce/partition, but those are bounded projection utilities with a small fixed transform/reducer vocabulary. There is no higher-order typed algebra corresponding to SPLIT, PEEK, MAP(Phi), FILTER, REDUCE, CONCAT, CROSS, BEST/MERGE, and M.
+
+*** [6/18] MISSING Opaque child-span representation
+
+Current =context_partition= projects bounded partition values into the result. That is appropriate for model-visible inspection but insufficient as the internal representation of an arbitrarily large recursive tree: λ recursion should pass opaque child spans/handles, not repeatedly materialize chunk strings into Prolog state.
+
+*** [7/18] MISSING λ task-profile registry
+
+The paper uses task-specific plans. The reference code hardcodes task enums, prompt templates, reducer choices, and filter flags. Core prolog-rlm needs a domain-neutral trusted registry of task profiles rather than hardcoded benchmark categories.
+
+*** [8/18] MISSING Bounded task-profile classifier
+
+The current completion planner asks a model to choose an entire direct/typed plan. λ-RLM needs either an explicit host profile or one bounded classifier call whose output selects only among registered profiles. Classification must confer no capability.
+
+*** [9/18] MISSING Leaf request compiler
+
+There is no λ-specific compiler that combines the invariant user task, one opaque child span, task-profile leaf template, system/skill context, output reserve, and provider window into a proof that the actual leaf request fits.
+
+*** [10/18] MISSING λ whole-tree abstract cost interpreter
+
+=rlm_plan='s static estimate counts syntactic steps. It cannot predict an input-size-dependent recursive tree, pruning fan-out, leaf tokens, composition oracle calls, or parallel width from =n=, =k=, and =tau=.
+
+*** [11/18] MISSING Formal guarantee classification
+
+The runtime has no distinction between executions that satisfy the paper's deterministic-combinator assumptions and executions that add neural filtering/reduction or other oracle composition.
+
+*** [12/18] MISSING Composition result types
+
+Free-text leaf outputs are not generally safe inputs to deterministic reducers. The λ runtime needs profile-defined closed result schemas or normalized values for majority, extraction union, pairwise CROSS, count merges, ranking, and similar operations.
+
+*** [13/18] MISSING CROSS / symbolic pairwise algebra
+
+The current generic plan/context primitives do not provide the paper's explicit Cartesian-product combinator as a reusable bounded typed operation. Pairwise workloads are one of the paper's strongest empirical cases.
+
+*** [14/18] MISSING Explicit pruning semantics
+
+The paper's specialized plans contain filtering/pruning. v1 has search/filter-like context operations but no λ contract defining whether pruning is symbolic or neural, its maximum oracle calls, its effect on fan-out, and how that changes call-count guarantees.
+
+*** [15/18] MISSING Calibrated cost/accuracy model inputs
+
+The paper's accuracy theorem assumes =A(n)= and =A_compose=; the reference code uses operator constants and default accuracy estimates. v1 does not currently define trusted λ calibration records tied to provider/model/profile/version.
+
+*** [16/18] MISSING Predicted-versus-actual λ accounting
+
+There is no trace record that compares the compiled λ certificate's predicted calls/tokens/cost/depth with actual execution, including deviations caused by pruning or oracle composition.
+
+*** [17/18] MISSING λ-specific benchmark/conformance suite
+
+Existing deterministic and deep-recursion benchmarks do not prove the λ equations, fixed-point rank, call-count bounds, combinator laws, task-profile behavior, or parity against the paper's reference cases.
+
+*** [18/18] MISSING Hybrid profile miss/fallback policy
+
+The paper shows fixed combinators are not universally best, especially for CodeQA. The runtime needs an explicit policy for =no matching λ profile=, =profile rejected=, or =creative strategy preferred= rather than forcing every task through λ-RLM.
+
+** MUST IMPLEMENT [20/20]
+
+*** [1/20] MUST IMPLEMENT =rlm_lambda= public execution surface
+
+Add canonical =rlm_lambda/4=, =rlm_lambda_async/4=, and an internal execute ABI following the repository's execute -> Future -> sync-await direction.
+
+The first implementation should be additive. Do not silently redefine =rlm_completion/4=.
+
+*** [2/20] MUST IMPLEMENT =rlm_lambda_plan= deterministic compiler
+
+Compile trusted inputs into a closed =lambda_plan_v1= object. At minimum it must include:
+
+#+begin_src prolog
+lambda_plan{
+  version: 1,
+  profile: Profile,
+  source_metric: tokens,
+  source_size: N,
+  k: K,
+  tau: Tau,
+  max_depth: D,
+  split: Split,
+  prune: Prune,
+  compose: Compose,
+  guarantee_tier: Tier,
+  predicted: Predicted,
+  assumptions: Assumptions
+}
+#+end_src
+
+The exact representation may change, but the semantics may not remain implicit in callbacks.
+
+*** [3/20] MUST IMPLEMENT Plan validation before model effects
+
+Validate profile existence, combinator signatures, totality declarations, =k >= 2= for recursive runs, =tau > 0=, safe provider-window fit, maximum depth, maximum fan-out, predicted model calls, token/cost/time ceilings, and guarantee-tier assumptions before the first leaf call.
+
+If an impossible run can be detected statically, it must fail before provider inference.
+
+*** [4/20] MUST IMPLEMENT Well-founded rank
+
+Use an explicit rank derived from the declared source metric. For the simple balanced splitter:
+
+#+begin_src text
+rank(P) = ceil(log_k(size(P) / tau))
+#+end_src
+
+Every recursive child must have lower rank. A custom splitter must provide a trusted progress contract that the validator can check or the run loses theorem-core status.
+
+*** [5/20] MUST IMPLEMENT Opaque context spans
+
+Add a trusted host-only split/span primitive that returns child references such as parent handle + version + start/end or backend-native child refs. Do not route whole chunk bodies through the symbolic plan state merely to recurse.
+
+A span must preserve parent provenance and become stale if its parent version is invalidated.
+
+*** [6/20] MUST IMPLEMENT Typed combinator registry
+
+Register combinators as trusted runtime definitions with metadata resembling:
+
+#+begin_src text
+name
+input/output type signature
+totality declaration
+determinism declaration
+neural oracle upper bound
+effect class
+cost model
+order preservation
+progress relevance
+#+end_src
+
+The model may select a registered combinator/profile but may never supply its executable callback.
+
+*** [7/20] MUST IMPLEMENT Theorem-core combinators
+
+Provide at least SPLIT, PEEK/span inspection, MAP-recursive, FILTER-symbolic, REDUCE, CONCAT, CROSS, and the model oracle M. Add the minimal deterministic composition operators needed for acceptance fixtures.
+
+*** [8/20] MUST IMPLEMENT Registered task profiles
+
+A task profile binds a type-safe combinator program, leaf request compiler, optional pruning rule, composition operator, and result schema. Ship a small generic default profile bundle inspired by the paper, but keep the registry extensible and domain-neutral.
+
+*** [9/20] MUST IMPLEMENT Strict classifier envelope
+
+When no host override is supplied, permit at most one bounded classifier decision selecting a profile atom from the visible registry. The classifier does not generate code, set budgets, choose capabilities, or modify combinator implementations.
+
+Classifier failure should fall back according to trusted policy, not guess authority.
+
+*** [10/20] MUST IMPLEMENT Token-correct leaf threshold
+
+Define =tau= over the actual provider-visible request budget, not raw document characters. Charge invariant query text, system/skill sections, leaf template overhead, output reserve, and safety margin before admitting child content.
+
+Use =rlm_context_budget= and a registered exact token counter when available. A character estimate must be labeled estimated and conservative.
+
+*** [11/20] MUST IMPLEMENT Deterministic λ executor
+
+Execute =Phi(Span)= directly as trusted Prolog semantics. There is no reason to generate source code or literally evaluate a Y-combinator term in SWI-Prolog. Prolog recursion already supplies the fixed-point operational semantics.
+
+The fixed point belongs in the plan/certificate semantics; implementation should remain ordinary trusted recursion with explicit state.
+
+*** [12/20] MUST IMPLEMENT Bounded parallel MAP
+
+Independent child spans should execute through =rlm_async= with bounded parallelism and deterministic ordered join. Parallelism changes latency, not result ordering or budget authority.
+
+*** [13/20] MUST IMPLEMENT Shared global budget ledger
+
+Every leaf and any declared oracle composition/filter call must consume one shared root budget for model calls, tokens, dollars, time, and concurrent work. No subtree receives an independent fresh root budget.
+
+*** [14/20] MUST IMPLEMENT Cancellation propagation
+
+Cancelling the root λ Future must stop queued work, signal active child calls through the existing cancellation mechanism, and prevent post-cancel aggregation from being published as success.
+
+*** [15/20] MUST IMPLEMENT Guarantee tiers
+
+At minimum define:
+
+- =theorem_core=: every non-M combinator is trusted, total, deterministic, size-decreasing as required; no neural pruning/reduction; paper-style termination/cost reasoning may be claimed subject to recorded assumptions.
+- =bounded_oracle_extended=: control flow remains finite and precomputed, but filter/reduce may invoke bounded neural oracles declared in metadata; termination and worst-case resource bounds remain provable, while paper call-count/accuracy formulas are not claimed unchanged.
+- =hybrid_general=: λ execution may hand a subtree/task to the existing general typed planner under explicit policy; ordinary prolog-rlm safety/budgets apply, but λ theorem claims stop at that boundary.
+
+*** [16/20] MUST IMPLEMENT Abstract whole-tree accounting
+
+Before execution, interpret the λ plan abstractly to calculate at least maximum depth, maximum leaves, maximum oracle calls, maximum active parallel width, maximum child-content tokens, composition calls, and a cost bound when provider pricing is available.
+
+With deterministic pruning the preflight count is an upper bound unless the retained cardinality is itself knowable before execution.
+
+*** [17/20] MUST IMPLEMENT Proof-carrying trace
+
+Emit a plan certificate before execution and actual events during execution. Trace every node with span identity, rank, depth, selected combinator, child count, leaf/oracle status, usage, and parent lineage.
+
+The terminal result should include predicted-versus-actual accounting and the guarantee tier actually maintained.
+
+*** [18/20] MUST IMPLEMENT Upstream discrepancy tests
+
+Encode the arXiv/reference-code disagreements as regression fixtures rather than choosing silently:
+
+- paper v1 Theorem 4 states =k*=2= under its stated cost model;
+- reference =lambda_rlm.py= computes a square-root heuristic and caps =k= at 20;
+- paper formal assumptions say non-M combinators are deterministic;
+- reference implementation invokes the LLM in several reducers and relevance filtering.
+
+Our planner must name its policy explicitly, e.g. =paper_v1_theorem=, =reference_heuristic=, or a new =prolog_cost_solver=, and the resulting certificate must record it.
+
+*** [19/20] MUST IMPLEMENT Formal/property tests
+
+Tests must establish:
+
+- every recursive theorem-core child strictly lowers rank;
+- every leaf request fits the declared provider context budget;
+- invalid/non-progressing splitters fail before inference;
+- deterministic combinators are total over their declared closed domains;
+- predicted exact call counts equal actual counts in non-pruning theorem-core fixtures;
+- predicted upper bounds dominate actual counts with pruning/oracle extensions;
+- bounded parallel MAP is observationally equivalent to sequential MAP;
+- cancellation interrupts active descendants;
+- impossible budgets reject before first provider call;
+- no model output becomes executable Prolog or a combinator callback.
+
+*** [20/20] MUST IMPLEMENT Reproduction benchmark
+
+Add a λ benchmark lane comparing at least direct, general typed-planner RLM, and λ-RLM on controlled long-context fixtures over increasing context sizes. Record quality, calls, input/output tokens, latency, dollars when reported, plan parameters, predicted cost, actual cost, depth, and guarantee tier.
+
+Full paper-dataset reproduction is desirable but should be a separate expensive/live lane rather than a prerequisite for deterministic CI.
+
+** MIGHT CHANGE [16/16]
+
+*** [1/16] MIGHT CHANGE =rlm_completion=
+
+Do not change its current semantics in the first slice. Later it may accept a trusted =strategy(lambda_rlm)= or an =auto= dispatcher, but only after the separate λ API has conformance evidence.
+
+*** [2/16] MIGHT CHANGE =rlm_plan=
+
+The explicit typed plan AST should remain intact. It may gain a =lambda(...)= wrapper only if that improves inspection/interchange. The recursive λ interpreter should not be forced into a gigantic statically unrolled =rlm(...)= tree.
+
+*** [3/16] MIGHT CHANGE =rlm_context=
+
+Likely extension: trusted child-span/split APIs and metadata for token-countable ranges. Model-visible =context_partition= should remain bounded and should not become an unbounded data exfiltration primitive.
+
+*** [4/16] MIGHT CHANGE =rlm_context_budget=
+
+Likely extension: reusable calculation of maximum payload tokens after fixed leaf prompt sections, plus plan-time token accounting for many identical leaf request shapes.
+
+*** [5/16] MIGHT CHANGE provider metadata
+
+If provider/model context-window and pricing metadata are not already canonical, λ planning will require a trusted source for them. Do not hardcode model limits or pricing in the λ module.
+
+*** [6/16] MIGHT CHANGE =rlm_recursion_runtime=
+
+It may gain a route target for the λ strategy or consume λ plan feasibility as a routing signal. It should not absorb the λ recursive interpreter itself.
+
+*** [7/16] MIGHT CHANGE =rlm_spec_strategy=
+
+After the core API stabilizes, =lambda_rlm= can become a third strategy mode alongside =direct= and =typed_plan= for spec Observe/Verify/Repair workflows.
+
+*** [8/16] MIGHT CHANGE trace schema
+
+Existing trace envelopes may need λ-specific event kinds and certificate projection, but the repository should retain one trace transport/serialization system.
+
+*** [9/16] MIGHT CHANGE benchmark report schema
+
+Add plan/certificate fields rather than creating λ-only benchmark output.
+
+*** [10/16] MIGHT CHANGE task-profile discovery
+
+The prompt compiler or skill registry may eventually select/advertise λ task profiles. Initial realization should keep profile registry semantics separate until capability and prompt-disclosure behavior are tested.
+
+*** [11/16] MIGHT CHANGE context adapters
+
+Backends such as files, databases, or document stores may implement native span partitioning to avoid materialization. The λ core must define the abstract split contract without assuming memory-backed strings.
+
+*** [12/16] MIGHT CHANGE output schemas
+
+Existing closed-data normalization may be sufficient. Some composition operators may require a small reusable schema/codec layer for typed leaf results.
+
+*** [13/16] MIGHT CHANGE deep-recursion opt-in
+
+The current public general-RLM gate treats depth >1 as experimental. λ-RLM depth is structurally different: depth is precomputed and rank-proven. It should have its own bounded policy rather than silently inheriting the experimental general-planner flag.
+
+*** [14/16] MIGHT CHANGE concurrency budget vocabulary
+
+The completion budget already has =max_concurrent_subcalls=. Ensure it maps cleanly to λ MAP width and does not conflict with the shared =rlm_async= worker ceiling.
+
+*** [15/16] MIGHT CHANGE durable artifacts
+
+Long-running λ plans may optionally checkpoint the certificate and completed subtree results for restart/reuse. This is useful but not required to claim the core paper architecture.
+
+*** [16/16] MIGHT CHANGE public strategy facade
+
+Long term, =direct=, =typed planner=, and =lambda_rlm= may deserve a single strategy dispatcher. That is a product/API design decision after λ correctness, not a prerequisite for the first executor.
+
+* Loop 2 — Paper / Reference Implementation Reconciliation
+
+** Finding A: The formal core and released implementation are not identical
+
+The paper defines a compact typed library where every combinator except =M= is deterministic and pre-verified, and its principal recursive equation is a fixed point over deterministic SPLIT, MAP, and REDUCE with bounded leaf calls.
+
+The released Python implementation, however, calls the model from =MERGE_SUMMARIES=, =SELECT_RELEVANT=, =COMBINE_ANALYSIS=, and relevance filtering. Those are bounded calls, but they are neural composition/control helpers rather than purely symbolic operators.
+
+Inference: prolog-rlm must not attach the paper's exact accuracy/call-count guarantee to such profiles. This directly motivates =guarantee_tier=.
+
+** Finding B: The partition theorem and released planner disagree
+
+arXiv v1 Theorem 4 states that under its specified linear input/output cost and linear per-level composition model, the cost-minimizing partition factor is =k*=2=.
+
+The released Python =_plan= instead documents and implements =ceil(sqrt(n * c_in / c_compose))=, with special flat fan-out for near-free composition and a hard =k<=20= cap.
+
+The paper's ablation discussion also states that random =k= can produce =k=2= that is too small for some experiments. Therefore there is unresolved tension among theorem statement, empirical planner behavior, and released source.
+
+Decision: do not canonize any one formula as an unnamed "optimal" planner. Implement a planner-policy interface, record the selected policy in the certificate, and test each policy against its own assumptions.
+
+Recommended initial policies:
+
+- =paper_v1_binary=: =k=2= under the paper's theorem assumptions;
+- =reference_2026_04=: reference heuristic, reproduced only for compatibility experiments;
+- =prolog_cost_solver=: enumerate a bounded feasible set of integer =k= values and choose the minimum under the runtime's actual abstract cost model and hard budgets.
+
+The third policy is recommended for production. Prolog can solve the integer constrained optimization directly rather than baking in a fragile closed-form heuristic. This is a natural place to use CLPFD or bounded enumeration when the cost function is discrete/nonlinear.
+
+** Finding C: Characters are not a provider context guarantee
+
+The reference code treats context window and =tau= as character counts. v1 already has token-aware context budgeting. The Prolog realization should define the leaf base case over the complete provider-visible request budget in tokens.
+
+This changes the implementation metric but preserves the mathematical idea: a finite size metric with a precomputed safe leaf threshold and strict progress.
+
+** Finding D: The paper is intentionally less expressive than general RLM
+
+The paper reports that strong coding models and CodeQA can benefit from multi-pass reading, backtracking, code-aware chunking, repository navigation, and adaptive batch sizing that its fixed library cannot express.
+
+Inference: replacing v1's general typed planner with λ-RLM would regress an explicitly documented strength. λ-RLM should be a specialized strategy selected when a registered compositional profile applies.
+
+* Loop 3 — Proposed Architecture
+
+** 3.1 Strategy stack
+
+#+begin_src text
+                         trusted host policy
+                                |
+              +-----------------+------------------+
+              |                 |                  |
+           direct          typed planner       lambda_rlm
+                                |                  |
+                          rlm_plan AST       lambda_plan_v1
+                                                   |
+                                          validate certificate
+                                                   |
+                                          lambda executor Phi
+                                                   |
+                 +----------------+----------------+----------------+
+                 |                |                                 |
+            rlm_context        rlm_async                       rlm_chain/model
+          opaque spans          MAP fan-out                       leaf M
+#+end_src
+
+No strategy gets ambient authority. All provider calls and effects continue through canonical runtime boundaries.
+
+** 3.2 Proof-carrying λ plan
+
+The compiled plan should be closed data and independently inspectable. A validator should be able to answer before execution:
+
+- what task profile will run;
+- what metric defines progress;
+- why recursion terminates;
+- maximum depth;
+- maximum leaf count;
+- maximum neural calls including composition/filter oracles;
+- maximum parallel width;
+- whether every leaf request fits;
+- whether the run fits the root budgets;
+- which paper assumptions are satisfied;
+- which guarantee tier is therefore legal to report.
+
+This is stronger than merely storing =k/tau/d=: it makes the formal boundary observable and testable.
+
+** 3.3 Combinator algebra
+
+Keep executable predicates trusted and hidden; expose only closed descriptors. Example conceptual descriptor:
+
+#+begin_src prolog
+lambda_combinator{
+  name: concat,
+  signature: list(text) -> text,
+  total: true,
+  deterministic: true,
+  oracle_calls_upper: 0,
+  effect: pure,
+  preserves_order: true
+}
+#+end_src
+
+A neural reducer can still be legal:
+
+#+begin_src prolog
+lambda_combinator{
+  name: merge_summaries,
+  signature: list(summary) -> summary,
+  total: bounded_or_error,
+  deterministic: false,
+  oracle_calls_upper: 1,
+  effect: model,
+  preserves_order: semantic
+}
+#+end_src
+
+The second descriptor automatically excludes =theorem_core= and feeds the whole-tree cost model.
+
+** 3.4 Opaque span recursion
+
+Represent a child as an opaque span over a parent context, not copied content. The memory backend can use offsets; adapter backends may supply native subrefs.
+
+At a leaf only, render the bounded span into the provider-visible leaf request after token accounting. This preserves the RLM prompt-as-environment property throughout the recursive tree.
+
+** 3.5 Parallel actor-style MAP
+
+The paper's recursive MAP is semantically independent across children. v1 can improve practical latency by scheduling child computations as bounded Futures through =rlm_async= and joining in child-index order.
+
+Required invariants:
+
+- shared root budget;
+- bounded active children;
+- deterministic result order;
+- cancellation tree rooted at one token;
+- no duplicate leaf submission on repeated await;
+- no thread-per-child scheduler.
+
+** 3.6 Strategy admission and hybrid fallback
+
+Recommended selection policy:
+
+#+begin_src text
+explicit host strategy/profile
+  -> honor if valid
+else if input fits direct safe window
+  -> direct
+else classify among registered lambda profiles
+  -> if profile is valid and lambda preflight fits budgets: lambda_rlm
+  -> otherwise: general typed planner (if trusted policy permits)
+#+end_src
+
+The classifier is semantic advice, not authority. A profile miss should never result in ad-hoc executable code.
+
+** 3.7 Production partition solver
+
+Do not make =k= a magic constant. The production planner should evaluate feasible integer candidates against abstract cost and hard limits.
+
+Candidate objective may combine:
+
+- predicted input/output tokens;
+- model-call pricing when known;
+- bounded composition cost;
+- critical-path latency estimate;
+- maximum parallel width;
+- context-rot calibration when trusted evidence exists;
+- accuracy floor only when calibration is evidence-backed.
+
+The plan should expose the objective and all unknown terms. Unknown accuracy is preferable to invented =0.95=.
+
+* Loop 4 — Realization Sequence
+
+** Slice L0 — Contract and failing tests
+
+- add =lambda_plan_v1= closed schema and validator tests;
+- encode paper-v1 theorem fixtures and reference-implementation divergence fixtures;
+- no provider calls;
+- no public strategy integration yet.
+
+Exit: invalid rank, invalid =k/tau=, impossible budget, and non-theorem combinator profiles fail deterministically.
+
+** Slice L1 — Opaque span substrate
+
+- add host-only context span/split semantics;
+- memory implementation first;
+- provenance/stale-parent tests;
+- ensure model-visible context projections remain bounded.
+
+Exit: a 10x-provider-window text can be recursively split into opaque child refs without materializing the whole partition list as model-visible values.
+
+** Slice L2 — Deterministic theorem-core executor
+
+- SPLIT + MAP(Phi) + deterministic REDUCE;
+- direct leaf M through canonical provider execute ABI;
+- shared call/token budget;
+- sequential implementation first for simple correctness evidence.
+
+Exit: exact non-pruning leaf count and rank theorem fixtures pass.
+
+** Slice L3 — Async MAP and cancellation
+
+- bounded =rlm_async= fan-out;
+- deterministic ordered join;
+- cancellation propagation;
+- race tests use barriers/queues, not sleeps.
+
+Exit: parallel and sequential results match, budget/cancel invariants remain true.
+
+** Slice L4 — Task profiles and classifier
+
+- trusted profile registry;
+- strict finite classifier envelope;
+- host override;
+- default generic profiles inspired by paper task families.
+
+Exit: classifier cannot widen capability/budget or inject an executable combinator.
+
+** Slice L5 — Extended bounded-oracle profiles
+
+- neural filter/reducer metadata;
+- whole-tree upper-bound accounting;
+- guarantee downgrade automatically reflected in result/trace.
+
+Exit: reference-like QA/summarization profiles are supported without falsely claiming theorem-core call/accuracy equations.
+
+** Slice L6 — Cost solver and provider economics
+
+- bounded candidate =k= optimization;
+- provider token/window/pricing integration;
+- compare =paper_v1_binary=, =reference_2026_04=, and =prolog_cost_solver=.
+
+Exit: planner choice is explainable and reproducible from certificate inputs.
+
+** Slice L7 — Public API and strategy integration
+
+- export =rlm_lambda/4= and async form from =rlm=;
+- docs/examples;
+- optionally wire trusted strategy dispatch after dedicated API tests are stable.
+
+Exit: one command can run a real long-context λ task without using the general root plan generator.
+
+** Slice L8 — Benchmarks and promotion evidence
+
+- deterministic scaling matrix;
+- live provider comparison against direct and general typed RLM;
+- context buckets increasing beyond provider window;
+- paper-style task families plus at least one code/repository case that can trigger fallback.
+
+Exit: no production-default =auto= promotion until evidence demonstrates where λ is better, neutral, or harmful.
+
+* Loop 5 — Open Questions Requiring Explicit Resolution
+
+** Q1 — What exactly is the production partition objective?
+
+Recommendation: =prolog_cost_solver= with explicit cost terms and hard constraints. Preserve paper/reference policies only for reproduction.
+
+** Q2 — Is task detection always neural?
+
+Recommendation: no. Host override has precedence; deterministic profile selection may be used when the caller already knows the task. The one-call classifier is a fallback.
+
+** Q3 — Should pruning be permitted in theorem-core?
+
+Recommendation: only deterministic pruning. If pruning changes retained cardinality dynamically, report the full-tree call count as an upper bound rather than an exact count unless retained fan-out is statically known.
+
+** Q4 — How should neural reducers be modeled?
+
+Recommendation: explicit oracle combinators in =bounded_oracle_extended= with declared per-node call upper bounds and their own leaf/request budgets.
+
+** Q5 — Should λ recursion inherit =experimental_deep_recursion(true)=?
+
+Recommendation: no. General model-selected deep recursion and precompiled rank-proven λ recursion are different safety classes. λ still has hard depth/call caps, but should be governed by its plan certificate.
+
+** Q6 — Should the model be allowed to author new combinator programs?
+
+Recommendation: it may select among registered typed profiles/combinators within a closed plan grammar, but executable implementations remain trusted host code. A future profile synthesizer can emit candidate closed algebra terms that undergo the same validation; it must not emit executable Prolog.
+
+** Q7 — How should creative CodeQA/repository work interact with λ-RLM?
+
+Recommendation: hybrid strategy admission. Use λ where typed structure helps (file/function partitioning, symbolic cross products, deterministic retrieval) and preserve the general typed planner for creative navigation/backtracking. Do not force a fixed paper profile onto every code task.
+
+** Q8 — Should a literal Y-combinator exist in implementation?
+
+Recommendation: no. It is useful as denotational documentation, not as a runtime stunt. Trusted Prolog recursion is clearer, inspectable, and easier to budget. The fixed-point property should be represented in the certificate and tests.
+
+* Acceptance Experiments
+
+** A. Pure formal fixtures
+
+- =n <= tau=: exactly one leaf model call and depth zero; classifier count is tracked separately when used.
+- balanced non-pruning =k=2=: exact =k^d= leaf count, strict rank decrease, deterministic reduce.
+- large =n=: compiled plan rejected when predicted calls exceed budget before any provider call.
+- malformed splitter: rejected for lack of progress.
+- reducer tagged non-deterministic: plan cannot claim =theorem_core=.
+
+** B. Context-window fixtures
+
+- exact token counter: every rendered leaf request <= effective provider context tokens;
+- estimated counter: result explicitly records estimated metric and safety margin;
+- invariant query/template overhead is charged at every leaf;
+- opaque child spans do not copy full source into traces or plan certificates.
+
+** C. Extended-oracle fixtures
+
+- one neural reducer per internal node: predicted upper call bound includes reducer calls;
+- neural relevance filter per preview: predicted bound includes filter calls;
+- guarantee tier is =bounded_oracle_extended=;
+- cancellation during filter/reducer call stops descendants and aggregation.
+
+** D. Concurrency fixtures
+
+- sequential and parallel MAP produce identical ordered results;
+- maximum active leaves never exceeds =max_concurrent_subcalls=;
+- global model-call/token ledger is identical modulo timing;
+- repeated await does not resubmit leaf work.
+
+** E. Comparative benchmark
+
+For each fixture/context bucket report:
+
+#+begin_src text
+strategy
+provider/model
+source tokens
+profile
+k / tau / depth
+predicted leaf/model calls
+actual leaf/model calls
+predicted/actual tokens and cost
+parallel width
+wall latency
+quality metric
+guarantee tier
+fallback reason if any
+#+end_src
+
+Compare =direct=, current general =rlm_completion= typed planner, and =rlm_lambda= under matched provider/model/budget conditions.
+
+* Rejected Alternatives
+
+** Literal port of =lambda_rlm.py=
+
+Rejected. It would import character-window assumptions, hardcoded task taxonomy, opaque relative costs, Python source generation, and upstream theorem/implementation inconsistencies that v1 can model more rigorously.
+
+** Replace the current typed planner with λ-RLM
+
+Rejected. The paper itself documents tasks where fixed combinators lose to creative general RLM strategies. v1's general typed planner is already bounded and useful.
+
+** Unroll the λ recursion into the existing explicit plan AST
+
+Rejected as the canonical implementation. It creates potentially huge terms, duplicates a regular recursive structure, and weakens direct rank/cost reasoning. A compact λ certificate plus dedicated trusted executor is cleaner.
+
+** Expose higher-order Prolog callables to the model
+
+Rejected. Typed combinator descriptors may be model-visible; executable predicates remain host-owned.
+
+** Hardcode =k=2= as universally optimal
+
+Rejected. That theorem is conditional on a specific cost model and conflicts with the released implementation/experimental discussion. Keep it as a reproduction policy.
+
+** Hardcode the reference square-root planner as universally optimal
+
+Rejected. Its relative cost constants, character metric, and =k<=20= ceiling are implementation heuristics, not a general theorem.
+
+** Claim paper accuracy bounds from guessed calibration defaults
+
+Rejected. Unknown =A(n)= or =A_compose= remains unknown until backed by trusted calibration evidence.
+
+* Realization Decision Recommendation
+
+GO, with scope correction.
+
+Implement λ-RLM as a first-class additive strategy on top of prolog-rlm v1, beginning with the theorem-core deterministic fixed-point executor and proof-carrying plan certificate. Preserve the current general typed planner and direct runtime. Add bounded-oracle and hybrid extensions only after the core semantics are testable and their guarantee downgrades are explicit.
+
+The architectural north star is:
+
+#+begin_src text
+semantic freedom at selection/leaf reasoning
++
+deterministic typed structural control where a task algebra is known
++
+explicit fallback to the broader typed planner where it is not
+#+end_src
+
+This gives prolog-rlm something stronger than a paper port: a runtime that can state, for each execution, exactly which λ-RLM assumptions held, what was proven before inference, what was merely bounded, and where model-controlled semantics resumed.
+
+* Approval Boundary
+
+This record is research/design evidence only. =#+approval_state= remains =PENDING=. No code implementation, API promotion, or merge is authorized by this record itself.
