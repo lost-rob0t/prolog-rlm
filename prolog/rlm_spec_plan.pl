@@ -156,17 +156,23 @@ requirement_goal(Requirement,
                            evidence_policy:Requirement.evidence_policy}).
 
 normalize_seed(Input, Seed) :-
-    is_dict(Input),
+    (   is_dict(Input)
+    ->  true
+    ;   throw(spec_plan_api_fault(invalid_seed(Input)))
+    ),
     require_exact_keys(Input,
                        [schema_version,spec_ref,subject,goals,requirements,
                         invariants,output_contract,planning_context],
                        plan_seed),
-    Input.schema_version == 1,
+    require_schema_version(Input.schema_version, plan_seed),
     require_closed(Input, plan_seed),
     Seed = Input.
 
 normalize_candidate(Input, Candidate) :-
-    is_dict(Input),
+    (   is_dict(Input)
+    ->  true
+    ;   throw(spec_plan_api_fault(invalid_candidate(Input)))
+    ),
     require_exact_keys(Input, [plan,project_state], plan_candidate),
     require_closed(Input.plan, plan),
     require_closed(Input.project_state, project_state),
@@ -174,7 +180,10 @@ normalize_candidate(Input, Candidate) :-
                                project_state:Input.project_state}.
 
 normalize_bound_spec_plan(Frozen, Input, SpecPlan) :-
-    is_dict(Input),
+    (   is_dict(Input)
+    ->  true
+    ;   throw(spec_plan_api_fault(invalid_spec_plan(Input)))
+    ),
     require_exact_keys(Input, [spec_ref,project_state,plan], spec_plan),
     require_same_spec_ref(Frozen.ref, Input.spec_ref),
     require_closed(Input.project_state, project_state),
@@ -207,6 +216,10 @@ require_refiner(Refiner) :-
     !.
 require_refiner(Refiner) :-
     throw(spec_plan_api_fault(invalid_refiner(Refiner))).
+
+require_schema_version(1, _) :- !.
+require_schema_version(Value, Kind) :-
+    throw(spec_plan_api_fault(unsupported_schema_version(Kind, Value))).
 
 require_same_spec_ref(Expected, Actual) :-
     (   Expected == Actual
