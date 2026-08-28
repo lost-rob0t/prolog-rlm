@@ -69,8 +69,9 @@ The tracked records were migrated without inferring approval:
 | approved-for-design prose, design references, `Decision: GO`, Auto-RAGE decisions, or other model-authored prose | non-authoritative evidence | preserve prose; never translate it into approval metadata |
 
 Six UI records had no lifecycle status header; they received `#+status:
-RESEARCHED` as a neutral lifecycle migration, not an approval decision. All 19
-tracked records now have `PENDING` approval values.
+RESEARCHED` as a neutral lifecycle migration, not an approval decision. All
+migrated records retain independent `PENDING` approval values unless a later
+human approval is recorded through the canonical schema.
 
 The cross-branch audit found two distinct records reusing numeric identity 010:
 
@@ -107,6 +108,8 @@ not approval for PR #58, this record, implementation, or merge.
 - `RLM-RESEARCH-023-nim-ui.org` — Nim UI research comparing pure-Nim Illwill with OpenTUI C-ABI bindings.
 - `RLM-RESEARCH-024-emacs-ui.org` — full Emacs chat/coding UI, asynchronous process transport, optional Sweep bindings and native diff/editor integration.
 - `RLM-RESEARCH-025-lem-ui.org` — Lem editor UI and a reusable Common Lisp PrologAgent client shared with the standalone CL frontend.
+- `RLM-RESEARCH-026-task-deadlines.org` — deadline propagation and bounded task timing semantics.
+- `RLM-RESEARCH-027-lambda-rlm-realization.org` — deep ARARD for a first-class proof-carrying λ-RLM strategy on the prolog-rlm v1 runtime.
 
 The gaps are deliberate. New records must not reuse an ID already present in an open branch or PR merely because it is absent from canonical `main`.
 
