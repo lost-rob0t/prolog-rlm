@@ -4,8 +4,10 @@
             tool_register/4,
             tool_discover/2,
             tool_lookup/3,
-            tool_invoke/7,
-            tool_invoke_async/6,
+             tool_invoke/7,
+             tool_invoke_async/6,
+             tool_invoke_execute/6,
+             tool_validate_arguments/4,
             tool_registry_runtime_tools/3,
             tool_registry_runtime_tools/4,
             capabilities_normalize/2,
@@ -126,6 +128,8 @@ capability_shape(retry).
 capability_shape(checkpoint).
 capability_shape(tool(Name)) :- capability_name(Name).
 capability_shape(context(Name)) :- capability_name(Name).
+capability_shape(spec(Name)) :- capability_name(Name).
+capability_shape(plan(Name)) :- capability_name(Name).
 capability_shape(model(Name)) :- capability_name(Name).
 capability_shape(graph(Name)) :- capability_name(Name).
 capability_shape(persistence(Name)) :- capability_name(Name).
@@ -249,6 +253,19 @@ tool_lookup_(Registry, Name, Outcome) :-
                            message:"tool is not registered"
                        })
     ).
+
+tool_validate_arguments(Registry, Name, Args, Outcome) :-
+    catch(( registry_entry(Registry, Name, Schema, _, LookupOutcome),
+            validate_registered_arguments(LookupOutcome, Schema, Args, Result)
+          ),
+          Exception,
+          tool_api_exception(validate_arguments, Exception, Result)),
+    Outcome = Result.
+
+validate_registered_arguments(error(Error), _, _, error(Error)) :-
+    !.
+validate_registered_arguments(ok, Schema, Args, Outcome) :-
+    validate_schema(Schema.arguments, Args, args, Outcome).
 
 /* -------------------------------------------------------------------------
  * Invocation
@@ -2192,6 +2209,8 @@ tool_control_exception(graph_cancelled(_)).
 tool_control_exception(cancelled(_)).
 tool_control_exception('$aborted').
 tool_control_exception(abort).
+tool_control_exception(error(Inner, _)) :-
+    tool_control_exception(Inner).
 
 safe_exception(Exception, Safe) :-
     term_string(Exception, Safe, [quoted(true), numbervars(true)]).

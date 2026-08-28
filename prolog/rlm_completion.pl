@@ -7,12 +7,39 @@
             rlm_query_async/4,
             rlm_cancellation_token/1,
             rlm_cancel/1,
-            default_completion_budget/1
+            default_completion_budget/1,
+            completion_task_metadata/3,
+            require_options/1,
+            text_string/2,
+            completion_runtime_budget/2,
+            cancellation_option/3,
+            register_current_thread/1,
+            cleanup_cancellation/2,
+            acquire_context/3,
+            cleanup_context/2,
+            require_context_metadata/2,
+            provider_options/3,
+            provider_tool_projection/6,
+            completion_skill_messages/6,
+            agent_identity_message/2,
+            zero_usage/1,
+            remaining_tokens/3,
+            planner_token_limit/2,
+            model_request_options/3,
+            call_model/4,
+            response_usage/2,
+            usage_add/3,
+            budget_usage_check/3,
+            context_runtime_options/2,
+            tool_invocation_options/2,
+            plan_usage/2,
+            check_cancelled/1
           ]).
 
 /** <module> Bounded Recursive Language Model supervisor
 
-The root model selects a typed symbolic plan. Prolog owns validation,
+The root model either answers directly through the closed direct-answer
+envelope or selects a typed symbolic plan. Prolog owns validation,
 capabilities, recursion ceilings, budgets, cancellation and trajectory data.
 Recursive `rlm(...)` nodes remain closed symbolic plans; a child model call is
 still executed by the production provider registry, never by model-generated
@@ -24,12 +51,19 @@ awaits its Future. Internal recursive/model steps call canonical execution
 predicates directly and never re-enter a synchronous public facade.
 */
 
+:- use_module(library(http/json)).
 :- use_module(library(lists)).
 :- use_module(library(time)).
 :- use_module(library(uuid)).
 :- use_module(rlm_async).
 :- use_module(rlm_chain).
 :- use_module(rlm_context).
+% Canonical cycle: rlm_direct imports its shared runtime vocabulary from this
+% module, while typed-plan model steps delegated by root completion re-enter
+% the provider-native direct session through rlm_direct_model_step/10. SWI
+% module imports resolve at call time, so either load order works and no
+% duplicate native loop exists.
+:- use_module(rlm_direct, [rlm_direct_model_step/10]).
 :- use_module(rlm_plan).
 :- use_module(rlm_prompt_compiler, []).
 :- use_module(rlm_skill, []).
@@ -49,6 +83,9 @@ default_completion_budget(
                       max_cost_usd:0.25,
                       max_output_bytes:32768,
                       time_limit:30.0}).
+
+completion_runtime_budget(Options, Budget) :-
+    completion_budget(Options, Budget).
 
 /* -------------------------------------------------------------------------
  * Public API and canonical task entrypoints
@@ -204,6 +241,7 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                                Options,
                                Budget,
                                SkillMessages),
+    agent_identity_message(Options, IdentityMessage),
     runtime_tool_bindings(Options,
                           Capabilities,
                           RuntimeTools,
@@ -221,7 +259,7 @@ completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                    ToolSchemas,
                    Options,
                    Prompt),
-    planner_messages(SkillMessages, Prompt, Messages),
+    planner_messages(IdentityMessage, SkillMessages, Prompt, Messages),
     planner_projection_options(Options, Messages, PlannerOptions),
     planner_attempts(Options, Attempts),
     planner_token_limit(Options, RequestedPlannerTokens),
@@ -536,9 +574,59 @@ require_prompt_render(error(Error), _) :-
 rendered_skill_messages("", []) :- !.
 rendered_skill_messages(Text, [message{role:system, content:Text}]).
 
-planner_messages([], Prompt, [message{role:user, content:Prompt}]).
-planner_messages([System], Prompt,
-                 [System, message{role:user, content:Prompt}]).
+planner_messages(none, [], Prompt, [message{role:user, content:Prompt}]) :- !.
+planner_messages(none, [System], Prompt,
+                 [System, message{role:user, content:Prompt}]) :- !.
+planner_messages(Identity, [], Prompt,
+                 [Identity, message{role:user, content:Prompt}]) :- !.
+planner_messages(Identity, [System], Prompt,
+                 [Identity, System, message{role:user, content:Prompt}]).
+
+% Root-only agent identity. Direct rlm_completion calls are roots and carry
+% an identity system message naming the embedding app (default: this
+% library). Delegated subagent children are structurally marked delegated by
+% rlm_subagent and never widen back to root identity. The message states the
+% identity boundary only; skills and active tool schemas stay the sole
+% protocol/content channels.
+agent_identity_message(Options, Message) :-
+    option_value(agent_scope, Options, root, Scope),
+    require_agent_scope(Scope),
+    option_value(agent_name, Options, 'prolog-rlm', Name),
+    require_agent_name(Name),
+    (   Scope == delegated
+    ->  Message = none
+    ;   root_identity_text(Name, Text),
+        Message = message{role:system, content:Text}
+    ).
+
+require_agent_scope(root) :- !.
+require_agent_scope(delegated) :- !.
+require_agent_scope(Scope) :-
+    throw(completion_fault(invalid_agent_scope(Scope))).
+
+require_agent_name(Name) :-
+    nonempty_name_text(Name),
+    !.
+require_agent_name(Name) :-
+    throw(completion_fault(invalid_agent_name(Name))).
+
+nonempty_name_text(Value) :-
+    atom(Value),
+    !,
+    Value \== ''.
+nonempty_name_text(Value) :-
+    string(Value),
+    Value \== "".
+
+root_identity_text(Name0, Text) :-
+    (   atom(Name0)
+    ->  Name = Name0
+    ;   atom_string(Name, Name0)
+    ),
+    format(string(Text),
+           "You are the root agent inside ~w.\n\
+This agent runs on the prolog-rlm runtime, a reusable bounded typed RLM library. Only the core context inputs and the tools your host granted are loaded for this call; nothing else is. Stay inside those boundaries.",
+           [Name]).
 
 planner_projection_options(Options0, Messages, Options) :-
     exclude(named_option(compiled_planner_messages), Options0, Rest),
@@ -551,6 +639,26 @@ named_option(Name, Option) :-
 completion_after_planner(error(Error), _, _, _, _, _, _, _, _, _, _,
                          error(Error)) :-
     !.
+completion_after_planner(ok(Planner),
+                         _,
+                         _,
+                         _,
+                         _,
+                         _,
+                         ChildCapabilities,
+                         _,
+                         _,
+                         Budget,
+                         Token,
+                         Outcome) :-
+    Planner.decision == direct,
+    !,
+    check_cancelled(Token),
+    budget_usage_check(Budget, Planner.usage, BudgetOutcome),
+    completion_direct_finish(BudgetOutcome,
+                             Planner,
+                             ChildCapabilities,
+                             Outcome).
 completion_after_planner(ok(Planner),
                          Query,
                          ContextRef,
@@ -583,8 +691,9 @@ completion_after_planner(ok(Planner),
                                           Outcome).
 
 completion_after_recursive_validation(error(Error), _, _, _, _, _, _, _, _,
-                                      _, _, _, error(Error)) :-
+                                       _, _, _, error(Error)) :-
     !.
+
 completion_after_recursive_validation(ok(Stats),
                                       Planner,
                                       Query,
@@ -621,10 +730,19 @@ completion_after_recursive_validation(ok(Stats),
                                    BoundedPlan),
     plan_budget(Budget, RemainingCalls, PlanBudget),
     context_runtime_options(Options, ContextOptions),
+    completion_model_step_handler(ContextRef,
+                                  Capabilities,
+                                  Options,
+                                  Budget,
+                                  Planner.usage,
+                                  RemainingTokens,
+                                  Token,
+                                  ModelStepHandler),
     RuntimeOptions = [ providers([provider_ref(ProviderName, Provider)]),
                        tools(RuntimeTools),
                        context_options(ContextOptions),
-                       budget(PlanBudget)
+                       budget(PlanBudget),
+                       model_step_handler(ModelStepHandler)
                      ],
     check_cancelled(Token),
     plan_run(BoundedPlan,
@@ -678,6 +796,26 @@ completion_after_execution(ok(Result),
                       ChildCapabilities,
                       TotalUsage,
                       Outcome).
+
+completion_direct_finish(error(Error), _, _, error(Error)) :- !.
+completion_direct_finish(ok, Planner, ChildCapabilities, ok(Completion)) :-
+    direct_root_event(Planner, RootEvent),
+    Completion = completion_result{
+                     value:Planner.value,
+                     plan:none,
+                     vars:_{},
+                     transitions:[],
+                     recursion:recursion_stats{recursive_calls:0,
+                                               max_depth:0,
+                                               fingerprints:[]},
+                     child_capabilities:ChildCapabilities,
+                     usage:Planner.usage,
+                     trajectory:completion_trajectory{
+                                    root_event:RootEvent,
+                                    events:[RootEvent],
+                                    reason:"root model answered directly without plan execution"
+                                }
+                 }.
 
 execution_error_usage(Error, Usage) :-
     (   is_dict(Error),
@@ -820,6 +958,85 @@ rlm_query_result(ok(ModelResult), Depth, ok(Result)) :-
                               trajectory:ModelResult.trajectory}.
 
 /* -------------------------------------------------------------------------
+ * Root decision: direct answer envelope or typed plan
+ * ---------------------------------------------------------------------- */
+
+root_decision_parse(Input, Outcome) :-
+    plan_parse(Input, PlanOutcome),
+    root_decision_after_plan(PlanOutcome, Input, Outcome).
+
+root_decision_after_plan(ok(Plan), _, ok(root_plan(Plan))) :- !.
+root_decision_after_plan(error(PlanError), Input, Outcome) :-
+    direct_envelope_probe(Input, DirectOutcome),
+    root_decision_from_probe(DirectOutcome, PlanError, Outcome).
+
+root_decision_from_probe(ok(Answer), _, ok(root_direct(Answer))) :- !.
+root_decision_from_probe(error(DirectError), _, error(DirectError)) :- !.
+root_decision_from_probe(not_direct, PlanError, error(PlanError)).
+
+% A valid typed plan always wins; the direct envelope is recognized only as a
+% strict fallback shape with exactly the approved fields. A root object that
+% declares a mode without matching the closed envelope is an explicit
+% invalid_root_decision failure, never prose, never a native tool call.
+direct_envelope_probe(Input, Outcome) :-
+    is_dict(Input),
+    !,
+    direct_envelope_dict(Input, Outcome).
+direct_envelope_probe(Input, Outcome) :-
+    plain_text(Input),
+    !,
+    text_string(Input, Text),
+    (   catch(direct_envelope_json(Text, Dict), _, fail)
+    ->  direct_envelope_dict(Dict, Outcome)
+    ;   Outcome = not_direct
+    ).
+direct_envelope_probe(_, not_direct).
+
+plain_text(Value) :- string(Value), !.
+plain_text(Value) :- atom(Value).
+
+direct_envelope_json(Text, Dict) :-
+    rlm_plan:json_object_text(Text, JsonText),
+    atom_string(Atom, JsonText),
+    atom_json_dict(Atom, Dict, []).
+
+direct_envelope_dict(Dict, Outcome) :-
+    (   get_dict(mode, Dict, _)
+    ->  direct_envelope_strict(Dict, Outcome)
+    ;   Outcome = not_direct
+    ).
+
+direct_envelope_strict(Dict, Outcome) :-
+    dict_keys(Dict, Keys0),
+    sort(Keys0, Keys),
+    (   Keys == [answer, mode]
+    ->  direct_envelope_answer(Dict, Outcome)
+    ;   direct_envelope_error(invalid_direct_envelope_fields, Outcome)
+    ).
+
+direct_envelope_answer(Dict, Outcome) :-
+    get_dict(mode, Dict, Mode),
+    (   direct_mode(Mode)
+    ->  get_dict(answer, Dict, Answer),
+        (   nonempty_text(Answer)
+        ->  text_string(Answer, Text),
+            Outcome = ok(Text)
+        ;   direct_envelope_error(direct_answer_must_be_nonempty_text,
+                                  Outcome)
+        )
+    ;   direct_envelope_error(unsupported_root_mode, Outcome)
+    ).
+
+direct_mode(direct) :- !.
+direct_mode("direct").
+
+direct_envelope_error(Detail,
+                      error(plan_error{phase:normalize,
+                                       kind:invalid_root_decision,
+                                       detail:Detail,
+                                       message:"root decision envelope was rejected"})).
+
+/* -------------------------------------------------------------------------
  * Planner
  * ---------------------------------------------------------------------- */
 
@@ -876,7 +1093,8 @@ planner_loop(Attempt,
             option_value(compiled_planner_messages,
                          Options,
                          [message{role:user, content:Prompt}],
-                         Messages),
+                         BaseMessages),
+            planner_attempt_messages(BaseMessages, Options, Messages),
             Request = model_request{
                           messages:Messages,
                           options:RequestOptions
@@ -920,7 +1138,7 @@ planner_call_result(ok(Output),
     budget_usage_check(Budget, Usage1, UsageBudgetOutcome),
     (   UsageBudgetOutcome = error(Error)
     ->  Outcome = error(Error)
-    ;   plan_parse(PlanInput, ParseOutcome),
+    ;   root_decision_parse(PlanInput, ParseOutcome),
         planner_parse_result(ParseOutcome,
                              Summary,
                              Usage1,
@@ -936,7 +1154,26 @@ planner_call_result(ok(Output),
                              Outcome)
     ).
 
-planner_parse_result(ok(Plan),
+planner_parse_result(ok(root_direct(Answer)),
+                     Summary,
+                     Usage,
+                     Attempt,
+                     _,
+                     _,
+                     _,
+                     _,
+                     _,
+                     _,
+                     _,
+                     _,
+                     ok(Planner)) :-
+    !,
+    Planner = planner_result{decision:direct,
+                             value:Answer,
+                             attempt:Attempt,
+                             usage:Usage,
+                             provider_summary:Summary}.
+planner_parse_result(ok(root_plan(Plan)),
                      Summary,
                      Usage,
                      Attempt,
@@ -954,7 +1191,7 @@ planner_parse_result(ok(Plan),
                        ProviderName,
                        Capabilities,
                        _),
-    plan_validate(Plan, Capabilities, default, ValidationOutcome),
+    planner_validate_root_plan(Plan, Capabilities, Options, ValidationOutcome),
     planner_validation_result(ValidationOutcome,
                               Plan,
                               Summary,
@@ -969,7 +1206,7 @@ planner_parse_result(ok(Plan),
                               Budget,
                               Token,
                               Outcome).
-planner_parse_result(error(_),
+planner_parse_result(error(ParseError),
                      _,
                      Usage,
                      Attempt,
@@ -985,12 +1222,13 @@ planner_parse_result(error(_),
     Attempt < MaxAttempts,
     !,
     Next is Attempt+1,
+    planner_retry_options(Options, ParseError, RetryOptions),
     planner_loop(Next,
                  MaxAttempts,
                  Prompt,
                  ProviderName,
                  Provider,
-                 Options,
+                 RetryOptions,
                  TokenLimit,
                  Budget,
                  Token,
@@ -1003,17 +1241,18 @@ planner_parse_result(error(ParseError), _, Usage, Attempt, _, _, _, _, _, _, _, 
                              attempts:Attempt,
                              usage:Usage,
                              cause:ParseError,
-                             message:"planner responses did not contain a valid typed plan"}.
+                             message:"planner responses did not contain a valid direct answer or typed plan"}.
 
 planner_validation_result(ok(_),
-                          Plan,
-                          Summary,
-                          Usage,
-                          Attempt,
-                          _, _, _, _, _, _, _, _,
-                          ok(Planner)) :-
+                           Plan,
+                           Summary,
+                           Usage,
+                           Attempt,
+                           _, _, _, _, _, _, _, _,
+                           ok(Planner)) :-
     !,
-    Planner = planner_result{plan:Plan,
+    Planner = planner_result{decision:plan,
+                             plan:Plan,
                              attempt:Attempt,
                              usage:Usage,
                              provider_summary:Summary}.
@@ -1035,12 +1274,13 @@ planner_validation_result(error(ValidationError),
     Attempt < MaxAttempts,
     !,
     Next is Attempt+1,
+    planner_retry_options(Options, ValidationError, RetryOptions),
     planner_loop(Next,
                  MaxAttempts,
                  Prompt,
                  ProviderName,
                  Provider,
-                 Options,
+                 RetryOptions,
                  TokenLimit,
                  Budget,
                  Token,
@@ -1062,15 +1302,16 @@ planner_validation_result(error(ValidationError),
                              cause:ValidationError,
                              message:"planner responses did not contain a structurally valid typed plan"}.
 planner_validation_result(error(ValidationError),
-                          Plan,
-                          Summary,
-                          Usage,
-                          Attempt,
-                          _, _, _, _, _, _, _, _,
-                          ok(Planner)) :-
+                           Plan,
+                           Summary,
+                           Usage,
+                           Attempt,
+                           _, _, _, _, _, _, _, _,
+                           ok(Planner)) :-
     planner_deferred_validation(ValidationError),
     !,
-    Planner = planner_result{plan:Plan,
+    Planner = planner_result{decision:plan,
+                             plan:Plan,
                              attempt:Attempt,
                              usage:Usage,
                              provider_summary:Summary}.
@@ -1083,11 +1324,198 @@ planner_repairable_validation(Error) :-
     get_dict(phase, Error, validate),
     get_dict(kind, Error, invalid_plan).
 
+% Root-plan validation adds one registry-aware structural rule on top of
+% plan_validate: a field reference over a binding produced by a REGISTRY
+% tool selects from the closed tool_result envelope installed by the adapter
+% (see plan_envelope/3 in rlm_tool). A first-hop key outside that envelope
+% can never resolve, so it is rejected here as a repairable structural fault
+% instead of failing execution unrecoverably. Direct trusted host tools
+% (tools([...])) are exempt: their result shape is host-defined.
+planner_validate_root_plan(Plan, Capabilities, Options, Outcome) :-
+    plan_validate(Plan, Capabilities, default, ValidationOutcome),
+    (   ValidationOutcome = ok(_)
+    ->  registry_tool_names(Options, RegistryNames),
+        catch(tool_envelope_field_check(Plan, RegistryNames),
+              plan_validation(Fault),
+              true),
+        !,
+        (   var(Fault)
+        ->  Outcome = ValidationOutcome
+        ;   Outcome = error(plan_error{phase:validate,
+                                       kind:invalid_plan,
+                                       detail:Fault,
+                                       message:"plan failed structural validation"})
+        )
+    ;   Outcome = ValidationOutcome
+    ).
+
+registry_tool_names(Options, Names) :-
+    option_value(tool_registry, Options, none, Registry),
+    (   Registry == none
+    ->  Names = []
+    ;   rlm_tool:tool_discover(Registry, Schemas)
+    ->  maplist(schema_tool_name, Schemas, Names)
+    ;   Names = []
+    ).
+
+schema_tool_name(Schema, Name) :-
+    get_dict(name, Schema, Name).
+
+tool_envelope_field_check(plan(Steps), RegistryNames) :-
+    envelope_steps_check(Steps, [], RegistryNames).
+
+envelope_steps_check([], _, _).
+envelope_steps_check([Step|Steps], EnvelopeBinds, RegistryNames) :-
+    envelope_step_check(Step, EnvelopeBinds, NextEnvelopeBinds, RegistryNames),
+    envelope_steps_check(Steps, NextEnvelopeBinds, RegistryNames).
+
+envelope_step_check(context(Handle, _, _), Binds, Binds, Names) :-
+    !,
+    envelope_expr_check(Handle, Binds, Names).
+envelope_step_check(model(_, Prompt, _, _), Binds, Binds, Names) :-
+    !,
+    envelope_expr_check(Prompt, Binds, Names).
+envelope_step_check(tool(Name, Args, Bind), Binds0, Binds, RegistryNames) :-
+    !,
+    envelope_expr_check(Args, Binds0, RegistryNames),
+    (   memberchk(Name, RegistryNames)
+    ->  Binds = [Bind|Binds0]
+    ;   Binds = Binds0
+    ).
+envelope_step_check(rlm(Child, _), Binds, Binds, Names) :-
+    !,
+    envelope_child_check(Child, [], Names).
+envelope_step_check(parallel(Plans, _), Binds, Binds, Names) :-
+    !,
+    maplist(envelope_branch_check(Binds, Names), Plans).
+envelope_step_check(retry(_, Child, _), Binds, Binds, Names) :-
+    !,
+    envelope_child_check(Child, Binds, Names).
+envelope_step_check(checkpoint(_), Binds, Binds, _) :- !.
+envelope_step_check(final(Value), Binds, Binds, Names) :-
+    !,
+    envelope_expr_check(Value, Binds, Names).
+
+envelope_branch_check(Binds, Names, Child) :-
+    envelope_child_check(Child, Binds, Names).
+
+envelope_child_check(plan(ChildSteps), Binds, Names) :-
+    envelope_steps_check(ChildSteps, Binds, Names).
+
+envelope_expr_check(Expr, _, _) :-
+    var(Expr),
+    !.
+envelope_expr_check(Expr, _, _) :-
+    is_dict(Expr),
+    !.
+envelope_expr_check(literal(_), _, _) :-
+    !.
+envelope_expr_check(field(Base, Key), EnvelopeBinds, Names) :-
+    !,
+    (   Base = var(Name),
+        atom(Name),
+        memberchk(Name, EnvelopeBinds),
+        \+ tool_result_envelope_key(Key)
+    ->  throw(plan_validation(tool_result_envelope_field(Key, Name)))
+    ;   true
+    ),
+    envelope_expr_check(Base, EnvelopeBinds, Names).
+envelope_expr_check(Expr, EnvelopeBinds, Names) :-
+    compound(Expr),
+    !,
+    Expr =.. [_|Args],
+    forall(member(Arg, Args),
+           envelope_expr_check(Arg, EnvelopeBinds, Names)).
+envelope_expr_check(_, _, _).
+
+tool_result_envelope_key(value).
+tool_result_envelope_key(authorization).
+tool_result_envelope_key(authority).
+tool_result_envelope_key(status).
+tool_result_envelope_key(fingerprint).
+tool_result_envelope_key(approval_id).
+tool_result_envelope_key(output_bytes).
+tool_result_envelope_key(elapsed_ms).
+
 planner_deferred_validation(Error) :-
     is_dict(Error),
     get_dict(phase, Error, validate),
     get_dict(kind, Error, Kind),
     memberchk(Kind, [capability_denied, budget_exceeded]).
+
+planner_attempt_messages(BaseMessages, Options, Messages) :-
+    option_value(planner_repair_message, Options, none, Repair),
+    (   Repair == none
+    ->  Messages = BaseMessages
+    ;   append(BaseMessages, [Repair], Messages)
+    ).
+
+planner_retry_options(Options0, Error, Options) :-
+    planner_repair_message(Error, Repair),
+    exclude(named_option(planner_repair_message), Options0, Rest),
+    Options = [planner_repair_message(Repair)|Rest].
+
+planner_repair_message(Error,
+                       message{role:user,
+                               content:Content}) :-
+    planner_repair_field(Error, phase, unknown, Phase),
+    planner_repair_field(Error, kind, invalid_plan, Kind),
+    planner_repair_detail(Error, Detail),
+    format(string(Content),
+           "Previous planner candidate was rejected without execution. Return one complete new JSON root decision: either {\"mode\":\"direct\",\"answer\":\"<nonempty final text>\"} when runtime operations add no value, or the typed plan {\"steps\":[...]} when they do. Host diagnostic: phase=~w kind=~w detail=~s.",
+           [Phase, Kind, Detail]).
+
+planner_repair_field(Error, Key, Default, Value) :-
+    (   is_dict(Error),
+        get_dict(Key, Error, Found),
+        atom(Found),
+        atom_length(Found, Length),
+        Length =< 64
+    ->  Value = Found
+    ;   Value = Default
+    ).
+
+planner_repair_detail(Error, Detail) :-
+    (   is_dict(Error),
+        get_dict(detail, Error, Raw),
+        safe_planner_repair_detail(Raw, Safe)
+    ->  term_string(Safe, Detail,
+                    [quoted(false), numbervars(true)])
+    ;   Detail = "typed_plan_contract_rejected"
+    ).
+
+safe_planner_repair_detail(missing_field(Field), missing_field(Field)) :-
+    atom(Field),
+    atom_length(Field, Length),
+    Length =< 64,
+    !.
+safe_planner_repair_detail(final_must_be_unique_and_last,
+                           final_must_be_unique_and_last) :-
+    !.
+safe_planner_repair_detail(cyclic_plan, cyclic_plan) :-
+    !.
+safe_planner_repair_detail(invalid_json_text, invalid_json_text) :-
+    !.
+safe_planner_repair_detail(no_json_object, no_json_object) :-
+    !.
+safe_planner_repair_detail(direct_answer_must_be_nonempty_text,
+                           direct_answer_must_be_nonempty_text) :-
+    !.
+safe_planner_repair_detail(invalid_direct_envelope_fields,
+                           invalid_direct_envelope_fields) :-
+    !.
+safe_planner_repair_detail(unsupported_root_mode, unsupported_root_mode) :-
+    !.
+safe_planner_repair_detail(tool_result_envelope_field(Key, Name),
+                           tool_result_envelope_field(Key, Name)) :-
+    atom(Key),
+    atom(Name),
+    atom_length(Key, KeyLength),
+    KeyLength =< 64,
+    atom_length(Name, NameLength),
+    NameLength =< 64,
+    !.
+safe_planner_repair_detail(_, typed_plan_contract_rejected).
 
 call_planner(Options, Provider, Request, Outcome) :-
     option_value(planner_handler, Options, none, Handler),
@@ -1480,6 +1908,31 @@ plan_budget(Budget, RemainingModelCalls,
               time_limit:Budget.time_limit}) :-
     PlanDepth is Budget.max_recursion_depth+1.
 
+% The typed-plan model step runs one provider-native direct session against the
+% already-acquired root context handle. The child session receives the exact
+% root provider, capabilities, cancellation token, and the completion budget
+% with the root planner's spent usage already netted out. The plan runtime
+% reserves one step and one model call for the step and charges actual native
+% continuation counts, tool calls, context operations, and observation bytes.
+completion_model_step_handler(ContextRef,
+                              Capabilities,
+                              Options,
+                              Budget,
+                              PlannerUsage,
+                              RemainingTokens,
+                              Token,
+                              rlm_direct:rlm_direct_model_step(
+                                  ContextRef.handle,
+                                  Capabilities,
+                                  Options,
+                                  HandlerBudget,
+                                  Token)) :-
+    RemainingCost is max(0.0, Budget.max_cost_usd-PlannerUsage.cost_usd),
+    put_dict(_{max_total_tokens:RemainingTokens,
+               max_cost_usd:RemainingCost},
+             Budget,
+             HandlerBudget).
+
 /* -------------------------------------------------------------------------
  * Usage and trajectory
  * ---------------------------------------------------------------------- */
@@ -1646,6 +2099,13 @@ planner_event(Planner,
                           http_status:Planner.provider_summary.http_status,
                           usage:Planner.usage}).
 
+direct_root_event(Planner, Event) :-
+    planner_event(Planner, BaseEvent),
+    put_dict(reason,
+             BaseEvent,
+             "answer directly without plan execution",
+             Event).
+
 completion_model_events(_, Result, Events) :-
     get_dict(model_events, Result, Recorded),
     is_list(Recorded),
@@ -1743,25 +2203,38 @@ response_summary(Response, ProviderFallback, Channel,
  * ---------------------------------------------------------------------- */
 
 planner_prompt(Query,
-               Metadata,
-               Capabilities,
-               ChildCapabilities,
-               ToolSchemas,
-               Options,
-               Prompt) :-
+                 Metadata,
+                 Capabilities,
+                 ChildCapabilities,
+                 ToolSchemas,
+                 Options,
+                 Prompt) :-
     option_value(planner_instruction, Options, "", Instruction0),
     text_string(Instruction0, Instruction),
     format(string(Prompt),
-           "You are the root planner for a bounded Recursive Language Model runtime.\n\
-Return ONLY one JSON object accepted by the typed plan interpreter; no markdown.\n\
-The opaque context is available only through input name context. Do not invent context bytes from metadata.\n\
-Goal: ~s\n\
-Context metadata: ~q\n\
+           "You are the root answerer and controller for a bounded Recursive Language Model runtime.\n\
+Your first responsibility is to solve the user task below. Do not design a runtime plan unless runtime operations add value to the answer.\n\
+TASK (authoritative user request):\n\
+~s\n\
+\n\
+DECISION ORDER:\n\
+1. If the task can be answered from the task text and active information already shown, answer directly with {\"mode\":\"direct\",\"answer\":\"<the exact final response requested by the user>\"}. The answer string must contain the requested final payload, not a discussion of this runtime and not a plan. This is the preferred path whenever runtime operations add no value.\n\
+2. Use a typed plan only when bounded context retrieval, an authorized tool, an additional model step, or useful recursive decomposition adds information or execution that you cannot provide directly. The top-level plan shape is {\"steps\":[...]} with one final step last.\n\
+\n\
+CONTEXT AND EVIDENCE:\n\
+The task text is not automatically a transcript dump. The context input is an opaque bounded source. Its metadata describes the source only and is never evidence. If older or omitted information matters, retrieve it with a context step using input name context. A retrieval plan should normally pass the bounded result to a model step for interpretation, or return it directly only when the user asked for the raw result. A model prompt may be a JSON object/list containing earlier bindings; the runtime serializes that ground evidence as JSON before dispatch.\n\
+For a JSON context search action use {\"type\":\"search\",\"pattern\":\"needle\"}; the field is pattern, not query.\n\
+\n\
+OUTPUT RULES:\n\
+Return ONLY one JSON object; no markdown, prose, or provider-native tool call. The only accepted root decisions are the direct envelope above or the typed plan above. Never return a plan whose only purpose is to pass the original task to another model call.\n\
+CLOSED RUNTIME VOCABULARY:\n\
+The typed plan can contain these closed operations when the corresponding capability is listed: final, model, context, tool, parallel, retry, checkpoint, and rlm. Context actions are peek, slice, search, partition, map, and reduce. The top-level {\"steps\":[...]} object is the plan itself; parsing, structural validation, capability checks, budget checks, and execution ordering are host operations performed automatically, not model-emitted ops.\n\
+Context metadata (descriptor only): ~q\n\
 Root capabilities: ~q\n\
 Child capabilities: ~q\n\
 Active tool schemas: ~q\n\
 Recursive decomposition is optional. An rlm step contains a nested typed plan, and that child may use only child capabilities.\n\
-~s",
+Additional host instruction: ~s",
            [Query,
             Metadata,
             Capabilities,

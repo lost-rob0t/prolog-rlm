@@ -2,7 +2,10 @@ name: Paid OpenRouter
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -14,6 +17,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
+       github.event.pull_request.draft == false &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'push' && github.repository == 'lost-rob0t/prolog-rlm')
     runs-on: ubuntu-latest
@@ -47,6 +51,10 @@ jobs:
               exit 1
               ;;
           esac
+          test "$OPENROUTER_TEST_MODEL" = "openai/gpt-oss-120b" || {
+            echo "cache acceptance requires openai/gpt-oss-120b, got: $OPENROUTER_TEST_MODEL" >&2
+            exit 1
+          }
           printf 'paid_openrouter_model=%s\n' "$OPENROUTER_TEST_MODEL"
 
       - name: Run REAL OpenRouter core suite
@@ -54,6 +62,9 @@ jobs:
 
       - name: Run REAL OpenRouter structured repair suite
         run: swipl -q -s test/run_live_repair_openrouter.pl
+
+      - name: Run 120B compiler cache acceptance
+        run: swipl -q -s test/run_live_compiler_cache_openrouter.pl
 
       - name: Run REAL OpenRouter benchmark suite
         run: swipl -q -s benchmark/run.pl -- integration "${RUNNER_TEMP}/prolog-rlm-openrouter-benchmark.json"

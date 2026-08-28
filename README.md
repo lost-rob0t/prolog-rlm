@@ -106,6 +106,9 @@ swipl -q -s bin/prolog-rlm.pl -- trace-view /tmp/graph.json
 The same CLI supports JSONL traces and custom OpenAI-compatible endpoints. See:
 
 - `docs/cli-demo-traces.md` for commands, provider configuration, budgets, capabilities, failures, and trace format;
+- `docs/completion-runtime.md` for the task-first direct-or-plan protocol, trusted identity framing, repair, and live acceptance gates;
+- `docs/direct-runtime.md` for standard provider-native tools, opaque result contexts, SPEC/typed-plan native modes, budgets, effects, and cache boundaries;
+- `docs/conversation-runtime.md` for bounded hot/warm packing, opaque cold retrieval, scale guarantees, and current storage limits;
 - `docs/deep-recursion-experiments.md` for the explicit depth >1 experiment gate, shared-tree safety invariants, deterministic/live benchmark commands, and promotion rule;
 - `docs/skills.md` for Prolog-owned skill discovery, automatic activation, budgets, dependency rules, and third-party skill loading;
 - `examples/README.md` for reproducible direct, context, tool, recursion, graph, MCP, hosted-provider, and local-provider walkthroughs.
@@ -246,7 +249,7 @@ A confined package boundary for inert Agent Skills. It indexes bounded `SKILL.md
 
 ### `rlm_completion`
 
-The high-level RLM execution loop: root model planning, closed-plan validation, capability checks, bounded context/tool/model execution, recursive child calls, structured repair, usage aggregation, and trajectories. The root planner receives the bounded skill projection in provider instruction context; broader leaf/subagent provider projection remains tracked separately.
+The high-level RLM execution loop: task-first root model decisions, bounded context retrieval, closed-plan validation, capability checks, bounded context/tool/model execution, recursive child calls, structured repair, usage aggregation, and trajectories. The root planner receives the bounded skill projection in provider instruction context and can compose retrieved JSON evidence into later model steps; broader leaf/subagent provider projection remains tracked separately.
 
 ### `rlm_graph`
 

@@ -19,6 +19,7 @@ test(address_family_is_applied_to_completion_and_stream_connections) :-
                                        30,
                                        inet,
                                        _,
+                                       [],
                                        CompletionOptions),
     assertion(memberchk(domain(inet), CompletionOptions)),
     rlm_openai_compatible:stream_http_options(none,
@@ -26,6 +27,7 @@ test(address_family_is_applied_to_completion_and_stream_connections) :-
                                               inet6,
                                               _,
                                               _{},
+                                              [],
                                               StreamOptions),
     assertion(memberchk(domain(inet6), StreamOptions)).
 
@@ -34,6 +36,7 @@ test(automatic_address_family_leaves_socket_selection_unconstrained) :-
                                        30,
                                        auto,
                                        _,
+                                       [],
                                        Options),
     assertion(\+ memberchk(domain(_), Options)).
 

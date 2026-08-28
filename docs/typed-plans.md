@@ -1,7 +1,8 @@
 # Typed symbolic plans
 
 `rlm_plan` is the execution boundary between model-selected strategy and
-runtime-authoritative execution.
+runtime-authoritative execution. Typed plans are a first-class execution
+strategy of this runtime, not a legacy or deprecated path.
 
 A model may propose a plan, but it does not receive unrestricted Prolog
 execution. Plans are parsed into a closed AST, normalized, validated in full,
@@ -281,6 +282,59 @@ Runtime preflight then verifies that every named provider and tool appearing
 anywhere in the validated plan exists in the host registry before the first
 step executes. This prevents a late unknown-tool failure from occurring after
 an earlier context operation has already run.
+
+## Model steps: native session path and compatibility fallback
+
+A `model` step resolves its prompt to text and then runs on one of two paths.
+
+### Canonical native session path
+
+When the host runtime supplies a trusted `model_step_handler` runtime option,
+the step is executed by that handler as one bounded provider-native session.
+Root completion (`rlm_completion/4`) and direct-mode `typed_plan_execute` both
+supply the canonical `rlm_direct_model_step/10` handler, so a typed-plan model
+step gets exactly the same provider-native behavior as direct mode:
+
+- canonical query-aware prompt/compiler selection: registered tool schemas and
+  skills are projected for the step prompt, and the selected bundle is compiled
+  once per session and reused unchanged for every continuation turn;
+- provider-native `tools` and `tool_choice`, assistant `tool_calls`, and
+  correlated `role:tool` messages with exact provider call-ID preservation;
+- continuation turns after context or registered-tool observations (large tool
+  results stay behind per-call opaque result contexts and re-enter
+  `tool_invoke_execute/6`);
+- complete response and usage accounting: the final response and every provider
+  response are recorded into the plan result, and execution errors retain every
+  completed response for accounting.
+
+The plan runtime reserves one step and one model call for the step. After the
+handler reports the native execution (`iterations`, `model_calls`,
+`tool_calls`, `context_calls`, `observation_bytes`), the runtime charges
+`iterations - 1` steps, `model_calls - 1` model calls, all native tool calls
+and context operations, and the provider-facing observation bytes against the
+shared plan budget atomically before binding the final response. Binding and
+final-output byte accounting are unchanged.
+
+The handler is a trusted, module-qualified host closure. It is runtime
+configuration and is never carried in or constructed from model-controlled
+data.
+
+### Compatibility fallback
+
+Standalone `plan_run/5` without a `model_step_handler` keeps its existing
+one-call behavior: the step runs as a single raw provider call with the step's
+own request options, no native schemas, and no continuation turns. This
+fallback is a compatibility profile for host-level plan execution; the native
+session path above is the canonical behavior for runtime-integrated typed
+plans.
+
+### Per-step request options
+
+Per-step request options (for example `max_tokens` or `temperature`) are
+preserved, capped by the remaining shared token budget. Model-supplied
+`messages`, `tools`, `tool_choice`, and streaming controls are rejected before
+provider dispatch: runtime-selected schemas and session messages remain
+authoritative.
 
 ## Capabilities
 

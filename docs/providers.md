@@ -21,12 +21,25 @@ Provider = provider(openrouter,
                      credential(env('OPENROUTER_API_KEY')),
                      model('openrouter/free'),
                      timeout(30),
-                     address_family(inet)]).
+                     address_family(inet),
+                     app_title('prolog-rlm'),
+                     app_referer('https://github.com/lost-rob0t/prolog-rlm')]).
 ```
 
 The provider term stores only the environment-variable reference. The key is
 resolved with `getenv/2` at request execution time and is never added to model
 responses, errors, traces, fixtures, or logs.
+
+App attribution is descriptive identity, never authority: every OpenRouter
+request from `openrouter_provider/2` carries
+`X-OpenRouter-Title: prolog-rlm` and
+`HTTP-Referer: https://github.com/lost-rob0t/prolog-rlm` so the runtime is
+identifiable in OpenRouter rankings and per-generation analytics. Downstream
+products may set their own identity by building a provider term with
+`app_title(Title)` and `app_referer(Referer)` (nonempty atom or string;
+invalid values fail closed as a `configuration_error` before any network
+I/O). Generic OpenAI-compatible endpoints send no attribution headers unless
+a host opts in with the same keys.
 
 If `OPENROUTER_TEST_MODEL` is unset or empty, `default_openrouter_model/1`
 returns `openrouter/free`.
@@ -105,11 +118,38 @@ and secret redaction without making network requests.
 
 The separate `REAL OpenRouter integration` job runs only for trusted same-repo
 pull requests, pushes to `main`, and manual workflow dispatch. It receives the
-repository secret `OPENROUTER_API_KEY` and optional repository variable
-`OPENROUTER_TEST_MODEL`. A missing secret is a hard failure on that trusted
-path.
+repository secret `OPENROUTER_API_KEY` and repository variable
+`OPENROUTER_TEST_MODEL`. The full live runner includes the 40,000-message scale
+acceptance, which requires that variable to name a pinned paid model and
+rejects `openrouter/free` and `*:free`. A missing credential or paid model pin
+is a hard failure on that trusted path.
 
 The live smoke test performs a real HTTPS request through the production
 `rlm_chain` path. It has no fake-provider fallback. Its log prints only safe
 evidence: provider, requested model, selected model, HTTP status, whether a
 response was received, and whether usage metadata was present.
+
+The managed-conversation scale acceptance additionally prints root and child
+generation IDs plus aggregate token and cost accounting. Operators can audit
+either generation without exposing the key:
+
+```sh
+scripts/openrouter_completion.sh <gen-id>
+scripts/openrouter_completion.sh <gen-id> --content
+```
+
+`rlm_direct/4` uses the standard OpenAI-compatible native tool fields:
+`options.tools`, `tool_choice`, assistant `tool_calls`, and `role:tool` messages
+with the provider's original `tool_call_id`. Runtime calls are normalized to
+provider-neutral data before execution. Provider IDs are correlation only and
+never become capabilities, authority permits, or durable effect identities.
+
+Native schemas are deterministic and compiled once per loop, but they are still
+part of each Chat Completions request and may consume input tokens. Stable
+`all_tools` profiles can improve provider prefix-cache reuse; query-compiled
+profiles reduce cold schema tokens. Cache hits remain provider/model behavior.
+
+Routine paid evidence runs once: pull-request updates and pushes to `main` use
+the pinned `Paid OpenRouter` workflow. The equivalent live lane in the general
+CI workflow is manual-dispatch only, avoiding duplicate provider calls for the
+same commit while retaining an operator-triggered diagnostic path.

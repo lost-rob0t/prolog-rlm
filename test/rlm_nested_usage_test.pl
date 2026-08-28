@@ -101,7 +101,7 @@ test(hidden_nested_usage_can_trip_completion_token_budget) :-
     assertion(Error.used =:= 60),
     assertion(Error.limit =:= 59).
 
-test(legacy_plan_result_without_ledger_keeps_visible_response_fallback) :-
+test(plan_result_without_usage_ledger_keeps_visible_response_fallback) :-
     model_response(r1, 7, 3, 0.001, R1),
     model_response(r2, 13, 7, 0.002, R2),
     Result = plan_result{vars:vars{first:R1, duplicate:R1, second:R2}},

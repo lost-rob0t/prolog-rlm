@@ -4,6 +4,7 @@
             plan_validate/4,
             plan_execute/4,
             plan_run/5,
+            json_object_text/2,
             default_plan_budget/1
           ]).
 
@@ -753,7 +754,8 @@ plan_execute_(Validated, Options, Inputs, Outcome) :-
 runtime_config(Options,
                runtime{providers:Providers,
                        tools:Tools,
-                       context_options:ContextOptions}) :-
+                       context_options:ContextOptions,
+                       model_step_handler:ModelStepHandler}) :-
     (   is_list(Options)
     ->  true
     ;   throw(plan_execution(invalid_options(Options)))
@@ -761,12 +763,21 @@ runtime_config(Options,
     option_value(providers, Options, [], Providers),
     option_value(tools, Options, [], Tools),
     option_value(context_options, Options, [], ContextOptions),
+    option_value(model_step_handler, Options, none, ModelStepHandler),
     validate_provider_entries(Providers),
     validate_tool_entries(Tools),
+    validate_model_step_handler(ModelStepHandler),
     (   is_list(ContextOptions)
     ->  true
     ;   throw(plan_execution(invalid_context_options(ContextOptions)))
     ).
+
+validate_model_step_handler(none) :- !.
+validate_model_step_handler(Handler) :-
+    callable(Handler),
+    !.
+validate_model_step_handler(Handler) :-
+    throw(plan_execution(invalid_model_step_handler(Handler))).
 
 validate_provider_entries([]) :- !.
 validate_provider_entries([provider_ref(Name, Provider)|Rest]) :-
@@ -890,6 +901,16 @@ decrement_remaining(Name, State0, Outcome) :-
                        State0)
     ).
 
+% A model step produces the task result; it must not inherit planner-only
+% output instructions (the plan protocol). The scoped system message states
+% the step contract only: answer the step task, keep any task-requested
+% format, never emit plan JSON or provider-native tool calls.
+model_step_system_message(Message) :-
+    Message = message{
+                  role:system,
+                  content:"You are executing one bounded task step inside an RLM plan.\nThe user message is the complete task for this step. Answer it directly with the final result text for this step, following any output format the task itself requests.\nThis is not the planner: do not emit plan JSON, plan steps, or a provider-native tool call for this step."
+              }.
+
 execute_step(context(HandleExpr, Action, Bind), Runtime, Inputs, State0,
              Outcome) :-
     !,
@@ -907,22 +928,23 @@ execute_step(model(ProviderName, PromptExpr, RequestOptions, Bind), Runtime,
     resolve_expr(PromptExpr, Inputs, State0, PromptOutcome),
     (   PromptOutcome = error(Error)
     ->  Outcome = error(Error, State0)
-    ;   PromptOutcome = ok(PromptValue),
-        (   text_string(PromptValue, Prompt)
-        ->  lookup_provider(ProviderName, Runtime, Provider),
-            Request = model_request{messages:[message{role:user,
-                                                      content:Prompt}],
-                                    options:RequestOptions},
-            rlm_chain:model_complete_execute(Provider, Request, ModelOutcome),
-            handle_model_result(ModelOutcome, ProviderName, Bind, State0,
+     ;   PromptOutcome = ok(PromptValue),
+         (   model_prompt_text(PromptValue, Prompt)
+         ->  execute_model_step(Runtime,
+                                ProviderName,
+                                Prompt,
+                                RequestOptions,
+                                Bind,
+                                State0,
                                 Outcome)
         ;   Outcome = error(plan_error{phase:execute,
-                                       kind:invalid_prompt,
-                                       provider:ProviderName,
-                                       message:"model prompt did not resolve to text"},
-                           State0)
-        )
-    ).
+                                        kind:invalid_prompt,
+                                        provider:ProviderName,
+                                        message:"model prompt did not resolve to text or ground JSON data"},
+                            State0)
+         )
+     ).
+
 execute_step(rlm(Plan, Bind), Runtime, Inputs, State0, Outcome) :-
     !,
     parent_vars(State0, ParentVars),
@@ -1010,6 +1032,223 @@ execute_step(Step, _, _, State,
                               operation:Step,
                               message:"validated plan contained an unknown operation"},
                    State)).
+
+/* -------------------------------------------------------------------------
+ * Model steps
+ *
+ * A model step either runs as one raw provider call (standalone compatibility
+ * when no `model_step_handler` is configured) or delegates to the trusted
+ * native session handler supplied by the host runtime. The native path keeps
+ * provider-native tools, correlated assistant/tool messages, and one shared
+ * budget: the plan reserves one step and one model call, then charges actual
+ * continuation iterations, model calls, tool calls, context operations, and
+ * observation bytes after the handler reports the complete native execution.
+ * ---------------------------------------------------------------------- */
+
+execute_model_step(Runtime, ProviderName, Prompt, RequestOptions, Bind, State0,
+                   Outcome) :-
+    Runtime.model_step_handler == none,
+    !,
+    lookup_provider(ProviderName, Runtime, Provider),
+    model_step_system_message(System),
+    Request = model_request{messages:[System,
+                                      message{role:user,content:Prompt}],
+                            options:RequestOptions},
+    rlm_chain:model_complete_execute(Provider, Request, ModelOutcome),
+    handle_model_result(ModelOutcome, ProviderName, Bind, State0, Outcome).
+execute_model_step(Runtime, ProviderName, Prompt, RequestOptions, Bind, State0,
+                   Outcome) :-
+    native_model_budget(State0, NativeBudget),
+    Handler = Runtime.model_step_handler,
+    catch(call(Handler,
+               ProviderName,
+               Prompt,
+               RequestOptions,
+               NativeBudget,
+               NativeOutcome),
+          Exception,
+          NativeOutcome = error(model_step_handler_exception(Exception))),
+    handle_native_model_result(NativeOutcome,
+                               ProviderName,
+                               Bind,
+                               State0,
+                               Outcome).
+
+native_model_budget(State, Budget) :-
+    Remaining = State.remaining,
+    MaxIterations is Remaining.steps+1,
+    MaxModelCalls is Remaining.model_calls+1,
+    recorded_model_usage(State.model_responses, UsedTokens, UsedCost),
+    Budget = native_model_budget{
+                 max_iterations:MaxIterations,
+                 max_model_calls:MaxModelCalls,
+                 max_tool_calls:Remaining.tool_calls,
+                 max_context_ops:Remaining.context_ops,
+                 max_output_bytes:Remaining.output_bytes,
+                 used_total_tokens:UsedTokens,
+                 used_cost_usd:UsedCost
+             }.
+
+recorded_model_usage(Responses, Tokens, Cost) :-
+    recorded_model_usage(Responses, 0, Tokens, 0.0, Cost).
+
+recorded_model_usage([], Tokens, Tokens, Cost, Cost).
+recorded_model_usage([Response|Responses], Tokens0, Tokens, Cost0, Cost) :-
+    response_usage_value(Response, total_tokens, 0, ResponseTokens),
+    response_usage_value(Response, cost, 0.0, ResponseCost),
+    Tokens1 is Tokens0+ResponseTokens,
+    Cost1 is Cost0+ResponseCost,
+    recorded_model_usage(Responses, Tokens1, Tokens, Cost1, Cost).
+
+response_usage_value(Response, Key, Default, Value) :-
+    (   is_dict(Response),
+        get_dict(usage, Response, Usage),
+        is_dict(Usage),
+        get_dict(Key, Usage, Found),
+        number(Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
+
+handle_native_model_result(error(Cause), Provider, _, State0,
+                           error(Error, State)) :-
+    !,
+    native_failure_responses(Cause, Responses),
+    record_model_response_list(Responses, Provider, State0, State),
+    safe_exception_text(Cause, Safe),
+    Error = plan_error{phase:execute,
+                       kind:model_error,
+                       provider:Provider,
+                       cause:Safe,
+                       message:"native model session failed"}.
+handle_native_model_result(ok(Execution0), Provider, Bind, State0, Outcome) :-
+    (   normalize_native_model_execution(Execution0, Execution)
+    ->  record_model_response_list(Execution.responses,
+                                   Provider,
+                                   State0,
+                                   Recorded),
+        charge_native_model_execution(Execution, Recorded, ChargeOutcome),
+        continue_native_model_result(ChargeOutcome,
+                                     Execution.response,
+                                     Provider,
+                                     Bind,
+                                     Outcome)
+    ;   safe_exception_text(Execution0, Safe),
+        Error = plan_error{phase:execute,
+                           kind:invalid_model_step_result,
+                           provider:Provider,
+                           result:Safe,
+                           message:"native model handler returned an invalid execution result"},
+        Outcome = error(Error, State0)
+    ).
+handle_native_model_result(Outcome0, Provider, _, State,
+                           error(Error, State)) :-
+    safe_exception_text(Outcome0, Safe),
+    Error = plan_error{phase:execute,
+                       kind:invalid_model_step_result,
+                       provider:Provider,
+                       result:Safe,
+                       message:"native model handler returned an invalid outcome"}.
+
+% A failed native session may already have spent provider turns. Direct
+% failures retain every completed provider response, so they are recorded
+% before the step error finalizes: usage accounting and the finalized plan
+% error then include all spent calls even though no value was bound.
+native_failure_responses(Cause, Responses) :-
+    is_dict(Cause),
+    get_dict(model_responses, Cause, Found),
+    is_list(Found),
+    !,
+    Responses = Found.
+native_failure_responses(_, []).
+
+normalize_native_model_execution(Execution, Execution) :-
+    is_dict(Execution, native_model_execution),
+    get_dict(response, Execution, Response),
+    get_dict(responses, Execution, Responses),
+    is_list(Responses),
+    Responses \== [],
+    get_dict(iterations, Execution, Iterations),
+    get_dict(model_calls, Execution, ModelCalls),
+    get_dict(tool_calls, Execution, ToolCalls),
+    get_dict(context_calls, Execution, ContextCalls),
+    get_dict(observation_bytes, Execution, ObservationBytes),
+    integer(Iterations), Iterations > 0,
+    integer(ModelCalls), ModelCalls > 0,
+    integer(ToolCalls), ToolCalls >= 0,
+    integer(ContextCalls), ContextCalls >= 0,
+    integer(ObservationBytes), ObservationBytes >= 0,
+    Iterations >= ModelCalls,
+    length(Responses, ModelCalls),
+    last(Responses, Response),
+    !.
+
+record_model_response_list([], _, State, State).
+record_model_response_list([Response|Responses], Provider, State0, State) :-
+    record_model_response(Response, Provider, State0, State1),
+    record_model_response_list(Responses, Provider, State1, State).
+
+charge_native_model_execution(Execution, State0, Outcome) :-
+    ExtraSteps is Execution.iterations-1,
+    ExtraModels is Execution.model_calls-1,
+    Remaining0 = State0.remaining,
+    native_budget_amount(steps, ExtraSteps, Remaining0),
+    native_budget_amount(model_calls, ExtraModels, Remaining0),
+    native_budget_amount(tool_calls, Execution.tool_calls, Remaining0),
+    native_budget_amount(context_ops, Execution.context_calls, Remaining0),
+    native_budget_amount(output_bytes, Execution.observation_bytes, Remaining0),
+    subtract_budget_amount(steps, ExtraSteps, Remaining0, Remaining1),
+    subtract_budget_amount(model_calls, ExtraModels, Remaining1, Remaining2),
+    subtract_budget_amount(tool_calls, Execution.tool_calls,
+                           Remaining2, Remaining3),
+    subtract_budget_amount(context_ops, Execution.context_calls,
+                           Remaining3, Remaining4),
+    subtract_budget_amount(output_bytes, Execution.observation_bytes,
+                           Remaining4, Remaining),
+    put_dict(remaining, State0, Remaining, State),
+    Outcome = ok(State),
+    !.
+charge_native_model_execution(Execution, State, error(Error, State)) :-
+    native_budget_failure(Execution, State.remaining, Error).
+
+native_budget_amount(Name, Requested, Remaining) :-
+    get_dict(Name, Remaining, Available),
+    Requested =< Available.
+
+subtract_budget_amount(Name, Requested, Remaining0, Remaining) :-
+    get_dict(Name, Remaining0, Available),
+    Left is Available-Requested,
+    put_dict(Name, Remaining0, Left, Remaining).
+
+native_budget_failure(Execution, Remaining, Error) :-
+    native_execution_charge(Execution, Name, Requested),
+    get_dict(Name, Remaining, Available),
+    Requested > Available,
+    !,
+    Error = plan_error{phase:execute,
+                       kind:budget_exhausted,
+                       budget:Name,
+                       requested:Requested,
+                       remaining:Available,
+                       message:"native model session exhausted the shared plan budget"}.
+
+native_execution_charge(Execution, steps, Requested) :-
+    Requested is Execution.iterations-1.
+native_execution_charge(Execution, model_calls, Requested) :-
+    Requested is Execution.model_calls-1.
+native_execution_charge(Execution, tool_calls, Execution.tool_calls).
+native_execution_charge(Execution, context_ops, Execution.context_calls).
+native_execution_charge(Execution, output_bytes, Execution.observation_bytes).
+
+continue_native_model_result(error(Error, State), _, _, _,
+                             error(Error, State)) :-
+    !.
+continue_native_model_result(ok(State0), Response, Provider, Bind, Outcome) :-
+    bind_value(Bind, Response, State0, BindOutcome),
+    transition_result(BindOutcome, model(Provider), Bind, Outcome).
+
+safe_exception_text(Value, Text) :-
+    term_string(Value, Text, [quoted(true),numbervars(true)]).
 
 run_context_action(peek(Selector), Handle, Options, Outcome) :-
     context_peek(Handle, Selector, Options, Outcome).
@@ -1608,6 +1847,24 @@ text_string(Value, String) :-
     atom(Value),
     !,
     atom_string(Value, String).
+
+% Evidence bindings are often structured JSON-shaped values rather than text.
+% Keep the model boundary closed: only ground dicts/lists are serialized, and
+% arbitrary Prolog terms never become executable model input.
+model_prompt_text(Value, Prompt) :-
+    text_string(Value, Prompt),
+    !.
+model_prompt_text(Value, Prompt) :-
+    ground(Value),
+    (   is_dict(Value)
+    ;   is_list(Value)
+    ),
+    catch(with_output_to(string(Prompt),
+                        json_write(current_output,
+                                   Value,
+                                   [width(0)])),
+          _,
+          fail).
 
 value_bytes(Value, Bytes) :-
     term_string(Value, Text, [quoted(true), numbervars(true)]),

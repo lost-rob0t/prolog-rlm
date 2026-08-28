@@ -38,26 +38,30 @@ openai_compatible_complete(Provider, Config, Request, Outcome) :-
 complete_from_config(error(Error), _, _, error(Error)) :-
     !.
 complete_from_config(ok(Endpoint, Credential, RequestedModel, Timeout,
-                        AddressFamily),
+                        AddressFamily, Attribution),
                      Provider, Request, Outcome) :-
     request_payload(Request, RequestedModel, PayloadOutcome),
     complete_payload(PayloadOutcome, Provider, Endpoint, Credential,
-                     RequestedModel, Timeout, AddressFamily, Outcome).
+                     RequestedModel, Timeout, AddressFamily, Attribution,
+                     Outcome).
 
-complete_payload(error(Error), _, _, _, _, _, _, error(Error)) :-
+complete_payload(error(Error), _, _, _, _, _, _, _, error(Error)) :-
     !.
 complete_payload(ok(Payload), Provider, Endpoint, Credential,
-                 RequestedModel, Timeout, AddressFamily, Outcome) :-
+                 RequestedModel, Timeout, AddressFamily, Attribution,
+                 Outcome) :-
     resolve_credential(Provider, Credential, CredentialOutcome),
     execute_credentialed(CredentialOutcome, Provider, Endpoint,
-                         RequestedModel, Timeout, AddressFamily, Payload,
+                         RequestedModel, Timeout, AddressFamily,
+                         Attribution, Payload,
                          Outcome).
 
-execute_credentialed(error(Error), _, _, _, _, _, _, error(Error)) :-
+execute_credentialed(error(Error), _, _, _, _, _, _, _, error(Error)) :-
     !.
 execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
-                     AddressFamily, Payload, Outcome) :-
-    http_options(Key, Timeout, AddressFamily, Status, HttpOptions),
+                     AddressFamily, Attribution, Payload, Outcome) :-
+    http_options(Key, Timeout, AddressFamily, Status, Attribution,
+                 HttpOptions),
     catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),
           Exception,
           transport_exception_handler(Exception)),
@@ -72,7 +76,7 @@ execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
                                        response_received:false})
     ).
 
-http_options(Key, Timeout, AddressFamily, Status, Options) :-
+http_options(Key, Timeout, AddressFamily, Status, Attribution, Options) :-
     credential_http_options(Key, CredentialOptions),
     address_family_http_options(AddressFamily, AddressOptions),
     append([CredentialOptions,
@@ -82,7 +86,8 @@ http_options(Key, Timeout, AddressFamily, Status, Options) :-
               json_object(dict),
               request_header('Accept'='application/json'),
               user_agent('prolog-rlm/0.1')
-            ]],
+            ],
+            Attribution],
            Options).
 
 /* -------------------------------------------------------------------------
@@ -115,7 +120,7 @@ openai_compatible_stream(Provider, Config, Request, EventHandler, Outcome) :-
 stream_from_config(error(Error), _, _, _, error(Error)) :-
     !.
 stream_from_config(ok(Endpoint, Credential, RequestedModel, Timeout,
-                      AddressFamily),
+                      AddressFamily, Attribution),
                    Provider, Request, EventHandler, Outcome) :-
     request_payload(Request, RequestedModel, PayloadOutcome),
     stream_payload(PayloadOutcome,
@@ -125,13 +130,15 @@ stream_from_config(ok(Endpoint, Credential, RequestedModel, Timeout,
                    RequestedModel,
                    Timeout,
                    AddressFamily,
+                   Attribution,
                    EventHandler,
                    Outcome).
 
-stream_payload(error(Error), _, _, _, _, _, _, _, error(Error)) :-
+stream_payload(error(Error), _, _, _, _, _, _, _, _, error(Error)) :-
     !.
 stream_payload(ok(Payload0), Provider, Endpoint, Credential,
-               RequestedModel, Timeout, AddressFamily, EventHandler,
+               RequestedModel, Timeout, AddressFamily, Attribution,
+               EventHandler,
                Outcome) :-
     put_dict(stream_request{stream:true,
                             stream_options:stream_options{include_usage:true}},
@@ -144,17 +151,20 @@ stream_payload(ok(Payload0), Provider, Endpoint, Credential,
                                 RequestedModel,
                                 Timeout,
                                 AddressFamily,
+                                Attribution,
                                 Payload,
                                 EventHandler,
                                 Outcome).
 
-execute_stream_credentialed(error(Error), _, _, _, _, _, _, _, error(Error)) :-
+execute_stream_credentialed(error(Error), _, _, _, _, _, _, _, _,
+                            error(Error)) :-
     !.
 execute_stream_credentialed(ok(Key), Provider, Endpoint, RequestedModel,
-                            Timeout, AddressFamily, Payload, EventHandler,
+                            Timeout, AddressFamily, Attribution, Payload,
+                            EventHandler,
                             Outcome) :-
     stream_http_options(Key, Timeout, AddressFamily, Status, Payload,
-                        HttpOptions),
+                        Attribution, HttpOptions),
     catch(setup_call_cleanup(
               http_open(Endpoint, In, HttpOptions),
               stream_http_result(Status,
@@ -176,7 +186,8 @@ execute_stream_credentialed(ok(Key), Provider, Endpoint, RequestedModel,
                                        response_received:false})
     ).
 
-stream_http_options(Key, Timeout, AddressFamily, Status, Payload, Options) :-
+stream_http_options(Key, Timeout, AddressFamily, Status, Payload,
+                    Attribution, Options) :-
     credential_http_options(Key, CredentialOptions),
     address_family_http_options(AddressFamily, AddressOptions),
     append([CredentialOptions,
@@ -186,7 +197,8 @@ stream_http_options(Key, Timeout, AddressFamily, Status, Payload, Options) :-
               status_code(Status),
               request_header('Accept'='text/event-stream'),
               user_agent('prolog-rlm/0.1')
-            ]],
+            ],
+            Attribution],
            Options).
 
 credential_http_options(none, []) :-
@@ -692,8 +704,11 @@ provider_config(Provider, Config, Outcome) :-
         config_value(credential, Config, none, Credential),
         config_value(timeout, Config, 30, Timeout),
         config_value(address_family, Config, auto, AddressFamily),
+        config_value(app_title, Config, none, AppTitle),
+        config_value(app_referer, Config, none, AppReferer),
         validate_provider_config(Provider, Endpoint, Model, Credential,
-                                 Timeout, AddressFamily, Outcome)
+                                 Timeout, AddressFamily, AppTitle,
+                                 AppReferer, Outcome)
     ;   Outcome = error(provider_error{provider:Provider,
                                        kind:configuration_error,
                                        field:config,
@@ -733,7 +748,7 @@ validate_provider_config(Provider, _, _, _, Timeout, _, error(Error)) :-
                            field:timeout,
                            message:"timeout must be a positive number",
                            response_received:false}.
-validate_provider_config(Provider, _, _, _, _, AddressFamily, error(Error)) :-
+validate_provider_config(Provider, _, _, _, _, AddressFamily, _, _, error(Error)) :-
     \+ memberchk(AddressFamily, [auto, inet, inet6]),
     !,
     Error = provider_error{provider:Provider,
@@ -741,10 +756,52 @@ validate_provider_config(Provider, _, _, _, _, AddressFamily, error(Error)) :-
                            field:address_family,
                            message:"address_family must be auto, inet, or inet6",
                            response_received:false}.
+validate_provider_config(Provider, _, _, _, _, _, AppTitle, _, error(Error)) :-
+    \+ valid_attribution_spec(AppTitle),
+    !,
+    Error = provider_error{provider:Provider,
+                           kind:configuration_error,
+                           field:app_title,
+                           message:"app_title must be a nonempty atom or string",
+                           response_received:false}.
+validate_provider_config(Provider, _, _, _, _, _, _, AppReferer, error(Error)) :-
+    \+ valid_attribution_spec(AppReferer),
+    !,
+    Error = provider_error{provider:Provider,
+                           kind:configuration_error,
+                           field:app_referer,
+                           message:"app_referer must be a nonempty atom or string",
+                           response_received:false}.
 validate_provider_config(_, Endpoint, Model, Credential, Timeout,
-                         AddressFamily,
+                         AddressFamily, AppTitle, AppReferer,
                          ok(Endpoint, Credential, Model, Timeout,
-                            AddressFamily)).
+                            AddressFamily, Attribution)) :-
+    attribution_http_options(app_title, AppTitle, TitleOptions),
+    attribution_http_options(app_referer, AppReferer, RefererOptions),
+    append(TitleOptions, RefererOptions, Attribution).
+
+% OpenRouter app attribution: optional descriptive identity headers. They
+% never grant authority; the provider validates credentials and payloads
+% exactly as before. `none` sends no header, so custom OpenAI-compatible
+% endpoints are unchanged unless a host opts in.
+valid_attribution_spec(none).
+valid_attribution_spec(Value) :-
+    nonempty_header_text(Value).
+
+nonempty_header_text(Value) :-
+    atom(Value),
+    !,
+    Value \== ''.
+nonempty_header_text(Value) :-
+    string(Value),
+    Value \== "".
+
+attribution_http_options(_, none, []) :-
+    !.
+attribution_http_options(app_title, Value,
+                         [request_header('X-OpenRouter-Title'=Value)]).
+attribution_http_options(app_referer, Value,
+                         [request_header('HTTP-Referer'=Value)]).
 
 valid_credential_spec(none).
 valid_credential_spec(env(Name)) :-

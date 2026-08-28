@@ -36,10 +36,16 @@ message_role(Message, Role) :-
     Role = Message.role.
 
 request_system_content(Request, Content) :-
-    Request.messages = [System, User],
+    Request.messages = [Identity, System, User],
+    assertion(Identity.role == system),
     assertion(System.role == system),
     assertion(User.role == user),
-    Content = System.content.
+    text_content(Identity.content, IdentityText),
+    text_content(System.content, SystemText),
+    atomics_to_string([IdentityText, SystemText], "\n", Content).
+
+text_content(Text, Text) :- string(Text), !.
+text_content(Atom, Text) :- atom(Atom), atom_string(Atom, Text).
 
 occurrence_count(Text, Needle, Count) :-
     findall(Start, sub_string(Text, Start, _, _, Needle), Starts),
@@ -102,6 +108,145 @@ test(direct_non_recursive_completion,
     completion_test_support:planner_calls(Calls),
     assertion(Calls =:= 1).
 
+test(root_answers_directly_without_plan_execution,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:direct_root_answer, Options),
+    rlm_completion("answer without planning",
+                   text("opaque context body"),
+                   Options,
+                   Outcome),
+    expect_ok(Outcome, Result),
+    assertion(Result.value == "direct-root-ok"),
+    assertion(Result.plan == none),
+    dict_keys(Result.vars, []),
+    assertion(Result.transitions == []),
+    assertion(Result.recursion.recursive_calls =:= 0),
+    assertion(Result.recursion.max_depth =:= 0),
+    assertion(Result.usage.model_calls =:= 1),
+    assertion(Result.trajectory.reason ==
+              "root model answered directly without plan execution"),
+    assertion(Result.trajectory.events = [Result.trajectory.root_event]),
+    completion_test_support:planner_calls(Calls),
+    assertion(Calls =:= 1).
+
+test(direct_root_answer_must_be_nonempty_text,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:empty_direct_answer, Base),
+    Options = [planner_attempts(1)|Base],
+    rlm_completion("reject an empty direct answer",
+                   text("opaque context body"),
+                   Options,
+                   Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.phase == planner),
+    assertion(Error.kind == plan_parse_failed),
+    assertion(Error.cause.kind == invalid_root_decision),
+    assertion(Error.cause.detail == direct_answer_must_be_nonempty_text),
+    assertion(Error.usage.model_calls =:= 1).
+
+test(direct_envelope_rejects_unapproved_fields,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:extra_field_direct_answer, Base),
+    Options = [planner_attempts(1)|Base],
+    rlm_completion("reject a direct envelope with extra fields",
+                   text("opaque context body"),
+                   Options,
+                   Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.phase == planner),
+    assertion(Error.kind == plan_parse_failed),
+    assertion(Error.cause.kind == invalid_root_decision),
+    assertion(Error.cause.detail == invalid_direct_envelope_fields).
+
+test(direct_envelope_rejects_unsupported_root_mode,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:unsupported_mode_direct_answer,
+                 Base),
+    Options = [planner_attempts(1)|Base],
+    rlm_completion("reject an unsupported root decision mode",
+                   text("opaque context body"),
+                   Options,
+                   Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.phase == planner),
+    assertion(Error.kind == plan_parse_failed),
+    assertion(Error.cause.kind == invalid_root_decision),
+    assertion(Error.cause.detail == unsupported_root_mode).
+
+test(root_prompt_offers_direct_answer_before_symbolic_plan,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Options),
+    rlm_completion("ordinary unrelated task", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_planner_request(Request),
+    Request.messages = [_, _, User],
+    sub_string(User.content, DirectAt, _, _, "{\"mode\":\"direct\""),
+    sub_string(User.content, PlanAt, _, _, "{\"steps\":[...]}"),
+    assertion(DirectAt < PlanAt),
+    assertion(sub_string(User.content, _, _, _,
+                          "runtime operations add no value")),
+    assertion(sub_string(User.content, _, _, _,
+                          "unless runtime operations add value to the answer")),
+    assertion(\+ sub_string(User.content, _, _, _,
+                             "unless runtime operations add no value to the answer")).
+
+test(context_request_still_selects_and_executes_a_plan,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_caps(Caps),
+    base_child_caps(ChildCaps),
+    Options = [ planner_handler(completion_test_support:context_slice_planner),
+                capabilities([context(slice)|Caps]),
+                child_capabilities(ChildCaps)
+              ],
+    rlm_completion("use the opaque context",
+                   text("CONTEXT_EVIDENCE_OK: body"),
+                   Options,
+                   Outcome),
+    expect_ok(Outcome, Result),
+    assertion(Result.plan \== none),
+    assertion(Result.value == "context-plan-ok"),
+    assertion(member(plan_transition{operation:context(slice),
+                                     status:ok,
+                                     bind:evidence,
+                                     sequence:_},
+                     Result.transitions)),
+    assertion(get_dict(evidence, Result.vars, "CONTEXT_EVIDENCE_OK: body")),
+    assertion(Result.usage.model_calls =:= 1),
+    completion_test_support:planner_calls(Calls),
+    assertion(Calls =:= 1).
+
+test(typed_plan_model_step_runs_provider_native_session,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_caps(Caps),
+    base_child_caps(ChildCaps),
+    Options = [ planner_handler(completion_test_support:model_step_planner),
+                capabilities(Caps),
+                child_capabilities(ChildCaps),
+                model_handler(completion_test_support:capture_model)
+              ],
+    rlm_completion("run one native model step",
+                   text("opaque context body"),
+                   Options,
+                   Outcome),
+    expect_ok(Outcome, Result),
+    assertion(Result.value == "CAPTURED_MODEL_OK"),
+    assertion(Result.usage.model_calls =:= 2),
+    assertion(Result.usage.total_tokens =:= 5),
+    completion_test_support:model_calls(1),
+    completion_test_support:planner_calls(1),
+    completion_test_support:last_model_request(Request),
+    Request.messages = [Identity, DirectSystem, Task],
+    assertion(sub_string(Identity.content, _, _, _, "root agent inside")),
+    assertion(sub_string(DirectSystem.content, _, _, _,
+                         "bounded direct agent")),
+    assertion(sub_string(Task.content, _, _, _,
+                         "native step task: fetch the token")),
+    assertion(member(plan_transition{operation:model(openrouter),
+                                     status:ok,
+                                     bind:reply,
+                                     sequence:_},
+                     Result.transitions)).
+
 test(default_skills_reach_one_system_message_on_unrelated_input,
      [setup(completion_test_support:reset_calls)]) :-
     base_options(completion_test_support:capture_planner, Options),
@@ -113,7 +258,13 @@ test(default_skills_reach_one_system_message_on_unrelated_input,
            ( assertion(sub_string(System, _, _, _, Name)),
              assertion(sub_string(System, _, _, _, Marker))
            )),
-    maplist(message_role, Request.messages, [system, user]).
+    assertion(sub_string(System, _, _, _,
+                         "{\"op\":\"context\",\"handle\":{\"ref\":\"input\",\"name\":\"context\"}")),
+    assertion(sub_string(System, _, _, _,
+                         "{\"op\":\"tool\",\"name\":\"<active-tool-name>\",\"args\":")),
+    assertion(sub_string(System, _, _, _,
+                         "{\"ref\":\"field\",\"value\":")),
+    maplist(message_role, Request.messages, [system, system, user]).
 
 test(natural_language_disable_cannot_remove_default_skills,
      [setup(completion_test_support:reset_calls)]) :-
@@ -128,14 +279,80 @@ test(natural_language_disable_cannot_remove_default_skills,
              assertion(sub_string(System, _, _, _, Marker))
            )).
 
-test(trusted_global_skill_opt_out_preserves_single_user_message,
+test(trusted_global_skill_opt_out_keeps_identity_system_only,
      [setup(completion_test_support:reset_calls)]) :-
     base_options(completion_test_support:capture_planner, Base),
     Options = [skill_mode(off)|Base],
     rlm_completion("plain", text("ctx"), Options, Outcome),
     expect_ok(Outcome, _),
     completion_test_support:last_planner_request(Request),
-    assertion(Request.messages = [message{role:user, content:_}]).
+    Request.messages = [Identity, User],
+    assertion(Identity.role == system),
+    assertion(sub_string(Identity.content, _, _, _,
+                         "root agent inside prolog-rlm")),
+    assertion(User.role == user),
+    assertion(\+ sub_string(Identity.content, _, _, _, "RLM_OPERATE_BODY")).
+
+test(root_call_carries_identity_system_before_skills,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Options),
+    rlm_completion("plain", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_planner_request(Request),
+    Request.messages = [Identity, Skills, User],
+    assertion(Identity.role == system),
+    assertion(sub_string(Identity.content, _, _, _,
+                         "root agent inside prolog-rlm")),
+    assertion(sub_string(Identity.content, _, _, _, "prolog-rlm")),
+    assertion(Skills.role == system),
+    assertion(sub_string(Skills.content, _, _, _, "RLM_OPERATE_BODY")),
+    assertion(User.role == user).
+
+test(downstream_agent_name_formats_identity,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Base),
+    Options = [agent_name('agentProlog')|Base],
+    rlm_completion("plain", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_planner_request(Request),
+    Request.messages = [Identity, _Skills, _User],
+    assertion(sub_string(Identity.content, _, _, _,
+                         "root agent inside agentProlog")),
+    assertion(\+ sub_string(Identity.content, _, _, _,
+                            "root agent inside prolog-rlm")).
+
+test(delegated_scope_omits_identity_system_message,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Base),
+    Options = [agent_scope(delegated)|Base],
+    rlm_completion("plain", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, _),
+    completion_test_support:last_planner_request(Request),
+    Request.messages = [Skills, User],
+    assertion(Skills.role == system),
+    assertion(User.role == user),
+    assertion(\+ sub_string(Skills.content, _, _, _,
+                            "root agent inside")).
+
+test(invalid_agent_name_fails_before_planner,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Base),
+    Options = [agent_name('')|Base],
+    rlm_completion("plain", text("ctx"), Options, Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.kind == completion_fault),
+    completion_test_support:planner_calls(Calls),
+    assertion(Calls =:= 0).
+
+test(invalid_agent_scope_fails_before_planner,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(completion_test_support:capture_planner, Base),
+    Options = [agent_scope(sidekick)|Base],
+    rlm_completion("plain", text("ctx"), Options, Outcome),
+    expect_error(Outcome, Error),
+    assertion(Error.kind == completion_fault),
+    completion_test_support:planner_calls(Calls),
+    assertion(Calls =:= 0).
 
 test(trusted_per_skill_disable_removes_only_named_skill,
      [setup(completion_test_support:reset_calls)]) :-
@@ -157,7 +374,8 @@ test(custom_relevant_skill_uses_compiler_relevance,
     rlm_completion("Tell me about the weather", text("ctx"), Options, First),
     expect_ok(First, _),
     completion_test_support:last_planner_request(Unrelated),
-    assertion(Unrelated.messages = [message{role:user, content:_}]),
+    assertion(Unrelated.messages = [message{role:system, content:_},
+                                    message{role:user, content:_}]),
     rlm_completion("Build this feature test first with integration tests",
                    text("ctx"), Options, Second),
     expect_ok(Second, _),
@@ -218,12 +436,36 @@ test(planner_retry_reuses_skill_projection_without_duplicate_body,
     rlm_completion("retry", text("ctx"), Options, Outcome),
     expect_ok(Outcome, _),
     completion_test_support:planner_requests([First, Second]),
-    assertion(First.messages == Second.messages),
+    First.messages = [FirstIdentity, FirstSystem, FirstUser],
+    Second.messages = [SecondIdentity, SecondSystem, SecondUser, Repair],
+    assertion(FirstIdentity == SecondIdentity),
+    assertion(FirstSystem == SecondSystem),
+    assertion(FirstUser == SecondUser),
+    assertion(Repair.role == user),
+    assertion(sub_string(Repair.content, _, _, _,
+                         "Previous planner candidate was rejected")),
+    assertion(sub_string(Repair.content, _, _, _, "invalid_plan")),
     request_system_content(First, System),
     forall(default_skill_marker(_, Marker),
            ( occurrence_count(System, Marker, Count),
              assertion(Count =:= 1)
            )).
+
+test(planner_retry_reports_missing_tool_name_without_echoing_candidate,
+     [setup(completion_test_support:reset_calls)]) :-
+    base_options(
+        completion_test_support:capture_missing_name_retry_planner,
+        Base),
+    Options = [planner_attempts(2)|Base],
+    rlm_completion("retry missing tool name", text("ctx"), Options, Outcome),
+    expect_ok(Outcome, Result),
+    assertion(Result.value == "repaired"),
+    completion_test_support:planner_requests([_, Second]),
+    last(Second.messages, Repair),
+    assertion(sub_string(Repair.content, _, _, _, "missing_field(name)")),
+    assertion(\+ sub_string(Repair.content, _, _, _, "MUST_NOT_ECHO")),
+    string_length(Repair.content, Length),
+    assertion(Length =< 1024).
 
 test(caller_planner_instruction_survives_skill_opt_out,
      [setup(completion_test_support:reset_calls)]) :-
@@ -233,7 +475,8 @@ test(caller_planner_instruction_survives_skill_opt_out,
     rlm_completion("plain", text("ctx"), Options, Outcome),
     expect_ok(Outcome, _),
     completion_test_support:last_planner_request(Request),
-    Request.messages = [message{role:user, content:Prompt}],
+    Request.messages = [message{role:system, content:_},
+                        message{role:user, content:Prompt}],
     assertion(sub_string(Prompt, _, _, _, "CALLER_INSTRUCTION_SENTINEL")).
 
 test(raw_llm_query_remains_single_user_message_with_default_skills,

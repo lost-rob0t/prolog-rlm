@@ -1,6 +1,12 @@
 :- module(completion_test_support,
-          [ direct_planner/2,
-            depth_two_planner/2,
+           [ direct_planner/2,
+             direct_root_answer/2,
+             empty_direct_answer/2,
+             extra_field_direct_answer/2,
+             unsupported_mode_direct_answer/2,
+             context_slice_planner/2,
+             depth_two_planner/2,
+            model_step_planner/2,
             duplicate_recursive_planner/2,
             anonymous_dict_grandchild_tool_planner/2,
             nonground_recursive_planner/2,
@@ -9,6 +15,7 @@
              invalid_planner/2,
              capture_planner/2,
              capture_retry_planner/2,
+             capture_missing_name_retry_planner/2,
              capture_model/2,
              last_planner_request/1,
              planner_requests/1,
@@ -61,6 +68,43 @@ planner_output(Plan,
 direct_planner(_, ok(Output)) :-
     bump_planner,
     Plan = plan([final(literal("direct-ok"))]),
+    planner_output(Plan, Output).
+
+direct_root_answer(_, ok(Response)) :-
+    bump_planner,
+    fake_response("{\"mode\":\"direct\",\"answer\":\"direct-root-ok\"}",
+                  Response).
+
+empty_direct_answer(_, ok(Response)) :-
+    bump_planner,
+    fake_response("{\"mode\":\"direct\",\"answer\":\"\"}",
+                  Response).
+
+extra_field_direct_answer(_, ok(Response)) :-
+    bump_planner,
+    fake_response("{\"mode\":\"direct\",\"answer\":\"x\",\"extra\":1}",
+                  Response).
+
+unsupported_mode_direct_answer(_, ok(Response)) :-
+    bump_planner,
+    fake_response("{\"mode\":\"auto\",\"answer\":\"x\"}",
+                  Response).
+
+context_slice_planner(_, ok(Output)) :-
+    bump_planner,
+    Plan = plan([context(input(context),
+                         slice(0, 1024),
+                         evidence),
+                 final(literal("context-plan-ok"))]),
+    planner_output(Plan, Output).
+
+model_step_planner(_, ok(Output)) :-
+    bump_planner,
+    Plan = plan([model(openrouter,
+                       literal("native step task: fetch the token"),
+                       _{},
+                       reply),
+                 final(field(var(reply), text))]),
     planner_output(Plan, Output).
 
 depth_two_planner(_, ok(Output)) :-
@@ -135,6 +179,18 @@ capture_retry_planner(Request, ok(Output)) :-
     (   Call =:= 1
     ->  fake_response("not a typed plan", Output)
     ;   Plan = plan([final(literal("captured-retry"))]),
+        planner_output(Plan, Output)
+    ).
+
+capture_missing_name_retry_planner(Request, ok(Output)) :-
+    bump_planner,
+    planner_calls(Call),
+    assertz(captured_planner_request(Call, Request)),
+    (   Call =:= 1
+    ->  fake_response(
+            "{\"steps\":[{\"op\":\"tool\",\"args\":{\"private\":\"MUST_NOT_ECHO\"},\"bind\":\"result\"},{\"op\":\"final\",\"value\":1}]}",
+            Output)
+    ;   Plan = plan([final(literal("repaired"))]),
         planner_output(Plan, Output)
     ).
 

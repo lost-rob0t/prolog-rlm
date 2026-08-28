@@ -271,6 +271,36 @@ run_failed_execution_regression(Port) :-
     assertion(Error.kind == model_error),
     assertion(\+ get_dict(value, Error, _)).
 
+test(model_step_carries_scoped_system_message,
+     []) :-
+    with_handoff_server(run_system_message_regression).
+
+run_system_message_regression(Port) :-
+    completion_options(
+        Port,
+        completion_final_handoff_support:final_handoff_planner,
+        Options0),
+    append([skill_mode(off)], Options0, Options),
+    rlm_completion("produce the task result", text("opaque"), Options,
+                   Outcome),
+    expect_ok(Outcome, _),
+    final_handoff_requests([Request]),
+    get_dict(messages, Request, [Identity, System, User]),
+    get_dict(role, Identity, "system"),
+    get_dict(content, Identity, IdentityText),
+    get_dict(role, System, "system"),
+    get_dict(content, System, SystemText),
+    assertion(sub_string(SystemText, _, _, _, "bounded direct agent")),
+    assertion(\+ sub_string(SystemText, _, _, _, "{\"steps\":")),
+    assertion(\+ sub_string(SystemText, _, _, _, "RLM_OPERATE_BODY")),
+    assertion(\+ sub_string(SystemText, _, _, _, "\"mode\":\"direct\"")),
+    assertion(\+ sub_string(IdentityText, _, _, _, "{\"steps\":")),
+    assertion(\+ sub_string(IdentityText, _, _, _, "RLM_OPERATE_BODY")),
+    get_dict(role, User, "user"),
+    get_dict(content, User, UserText),
+    assertion(sub_string(UserText, _, _, _, "produce the task result")),
+    assertion(\+ sub_string(UserText, _, _, _, "{\"steps\":[...]")).
+
 test(native_tool_call_is_not_a_planner_or_final_result) :-
     completion_options(
         0,
