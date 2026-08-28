@@ -20,6 +20,188 @@ plan_run(+PlanLike, +Capabilities, +RuntimeOptions, +Inputs, -Outcome).
 
 `Outcome` is `ok(...)` or `error(plan_error{...})`.
 
+## Planned direction: SPEC-seeded symbolic planning
+
+Typed plans should not invent their own goal state. The canonical Frozen Spec
+is the authority for desired state and acceptance requirements; planning uses
+that spec as its seed.
+
+The intended dependency direction is:
+
+```text
+requirements
+    |
+    v
+SPEC source
+    |
+    v
+canonical Frozen Spec / SpecRef
+    |
+    v
+symbolic plan seed
+    |
+    v
+planner / expert-system refinement
+    |
+    v
+whole-plan validation
+    |
+    v
+bounded execution
+    |
+    v
+SPEC verification
+```
+
+The seed is not a second specification and is not automatically executable. It
+is a typed planning skeleton derived from the Frozen Spec: required outcomes,
+invariants that constrain execution, output contracts, known dependencies, and
+other planning-relevant facts exposed by trusted providers. It may also contain
+initial intents implied by those requirements.
+
+The live planner may expand, decompose, reorder, retry, or replace execution
+steps as observations arrive, but it remains bound to the same Frozen Spec. A
+replan changes *how* the system attempts the task, not *what counts as done*.
+Changing acceptance requirements requires a new Spec version rather than a plan
+mutation.
+
+This gives SPEC and PLAN deliberately different jobs:
+
+- **SPEC** owns desired state, invariants, evidence requirements, and output
+  contracts.
+- **PLAN** owns the current execution strategy, dependencies, expert selection,
+  retries, checkpoints, and next executable actions.
+- **VERIFY** decides whether observed state satisfies the Frozen Spec.
+
+A future API may expose this separation explicitly, for example:
+
+```prolog
+plan_seed_from_spec(+FrozenSpec, +PlanningContext, -Outcome).
+plan_refine(+SeedPlan, +PlannerInput, -Outcome).
+plan_validate_against_spec(+Plan, +FrozenSpec, +Capabilities, +Budget, -Outcome).
+plan_replan(+FrozenSpec, +ExecutionState, +PlannerInput, -Outcome).
+```
+
+These predicates are design targets, not claims about the current public API.
+The existing `plan_*` predicates above remain the implemented interface until a
+runtime change lands separately.
+
+### Symbolic control loop around the LLM
+
+The model should be a bounded reasoning operator inside the runtime rather than
+the authority for execution state.
+
+```text
+user/model intent
+      |
+      v
+structured candidate intent / plan patch
+      |
+      v
+symbolic planner + expert selection
+      |
+      v
+constraint / capability / failure-path validation
+      |
+      v
+bounded LLM, context, or tool operation
+      |
+      v
+symbolic state transition
+      |
+      v
+SPEC verification
+```
+
+The LLM remains useful where ambiguity and induction are useful: interpreting a
+request, proposing decompositions, suggesting repairs, generating code or text,
+and mapping observations into candidate structured facts. Symbolic machinery
+handles the parts that should not depend on model memory or persuasion:
+
+- dependency ordering and legal next actions;
+- capability and authority checks;
+- invariant enforcement;
+- plan-state persistence across model calls;
+- deterministic expert/tool routing where rules are sufficient;
+- budget and recursion limits;
+- rejection of known bad execution paths;
+- verification against the Frozen Spec.
+
+The planner therefore does not need to stuff the whole long-horizon task into
+every model context. It can select the next ready intent from symbolic state,
+compile only the relevant context and expert knowledge for that intent, ask the
+model for a bounded contribution, then validate the result before updating the
+plan state.
+
+### Failure-path knowledge
+
+Known failures can become executable planning constraints instead of passive
+notes. A conceptual knowledge base might contain facts such as:
+
+```prolog
+known_failure(
+    code_pattern(global_mutable_cache),
+    context(concurrent_runtime),
+    race_condition
+).
+
+reject(Candidate, Reason) :-
+    candidate_property(Candidate, Property),
+    candidate_context(Candidate, Context),
+    known_failure(Property, Context, Reason).
+```
+
+A generated candidate that matches a proven bad path can be rejected before it
+is executed. Repairs can then be proposed against the explicit rejection
+reason rather than relying on the model to remember an earlier failure from
+conversation history.
+
+Embedding search may complement this mechanism when exact symbolic matching is
+too narrow. Similar historical failures can be retrieved as candidate evidence,
+but similarity alone should not become execution authority. A trusted rule,
+validator, or explicit plan decision should determine whether the retrieved
+failure actually constrains the current candidate.
+
+This creates a useful learning path:
+
+```text
+execution failure
+    -> durable failure artifact
+    -> optional embedding retrieval for analogous failures
+    -> candidate symbolic rule or constraint
+    -> validation / approval
+    -> durable planning knowledge
+```
+
+Over time, repeated model mistakes can therefore migrate out of prompt text and
+into inspectable symbolic invariants.
+
+### Plan authority and re-planning
+
+A plan can be dynamic without becoming model-authoritative. The runtime should
+be able to derive a relation such as `ready(Intent)` from persisted plan state
+and dependencies, then ask the appropriate expert or model only for that bounded
+intent.
+
+Conceptually:
+
+```prolog
+ready(Intent) :-
+    planned_intent(Intent),
+    \+ completed(Intent),
+    forall(depends(Intent, Dependency), completed(Dependency)).
+```
+
+The exact predicates and task representation remain an implementation choice,
+but the authority boundary is not: the symbolic runtime owns the durable plan
+state, while model output proposes typed updates that must pass validation.
+
+This also preserves direct mode. A caller may still run a normal direct model
+interaction when symbolic planning is unnecessary. Symbolic planning is an
+available execution mode for tasks that benefit from durable state, dependency
+reasoning, constrained expert selection, or long-horizon verification; it is
+not a requirement that every model call become an agentic workflow.
+
 ## Closed AST
 
 The initial executable forms are:
