@@ -1050,13 +1050,14 @@ peek_selector(Dict, Selector) :-
     !.
 peek_selector(_, _) :- argument_fault(invalid_selector).
 
-peek_selector_type(metadata, Dict, metadata) :- allowed_args(Dict, [type]).
+peek_selector_type(metadata, Dict, metadata) :-
+    allowed_args(Dict, [type,index,count]).
 peek_selector_type(head, Dict, head(N)) :-
-    allowed_args(Dict,[type,count]), required_positive(Dict,count,N).
+    allowed_args(Dict,[type,index,count]), required_positive(Dict,count,N).
 peek_selector_type(tail, Dict, tail(N)) :-
-    allowed_args(Dict,[type,count]), required_positive(Dict,count,N).
+    allowed_args(Dict,[type,index,count]), required_positive(Dict,count,N).
 peek_selector_type(item, Dict, item(N)) :-
-    allowed_args(Dict,[type,index]), required_nonnegative(Dict,index,N).
+    allowed_args(Dict,[type,index,count]), required_nonnegative(Dict,index,N).
 peek_selector_type(_, _, _) :- argument_fault(unsupported_selector).
 
 argument_fault(Detail) :-
