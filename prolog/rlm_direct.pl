@@ -1062,14 +1062,51 @@ peek_selector(Dict, Selector) :-
 peek_selector(_, _) :- argument_fault(invalid_selector).
 
 peek_selector_type(metadata, Dict, metadata) :-
-    allowed_args(Dict, [type,index,count]).
+    allowed_args(Dict, [type,index,count]),
+    optional_positive(Dict, count).
 peek_selector_type(head, Dict, head(N)) :-
-    allowed_args(Dict,[type,index,count]), required_positive(Dict,count,N).
+    allowed_args(Dict,[type,index,count]),
+    optional_nonnegative(Dict, index),
+    positive_or_default(Dict, count, N).
 peek_selector_type(tail, Dict, tail(N)) :-
-    allowed_args(Dict,[type,index,count]), required_positive(Dict,count,N).
+    allowed_args(Dict,[type,index,count]),
+    optional_nonnegative(Dict, index),
+    positive_or_default(Dict, count, N).
 peek_selector_type(item, Dict, item(N)) :-
-    allowed_args(Dict,[type,index,count]), required_nonnegative(Dict,index,N).
+    allowed_args(Dict,[type,index,count]),
+    optional_positive(Dict, count),
+    nonnegative_or_default(Dict, index, N).
 peek_selector_type(_, _, _) :- argument_fault(unsupported_selector).
+
+% Shared peek-selector defaults. The projected JSON schema marks only
+% "type" as required and advertises index (minimum 0) and count (minimum 1)
+% as optional shared selector fields, so native validation must supply the
+% same defaults instead of rejecting the advertised shape (issue #312).
+peek_default_count(128).
+
+optional_positive(Dict, Key) :-
+    (   get_dict(Key, Dict, _)
+    ->  required_positive(Dict, Key, _)
+    ;   true
+    ).
+
+optional_nonnegative(Dict, Key) :-
+    (   get_dict(Key, Dict, _)
+    ->  required_nonnegative(Dict, Key, _)
+    ;   true
+    ).
+
+positive_or_default(Dict, Key, Value) :-
+    (   get_dict(Key, Dict, _)
+    ->  required_positive(Dict, Key, Value)
+    ;   peek_default_count(Value)
+    ).
+
+nonnegative_or_default(Dict, Key, Value) :-
+    (   get_dict(Key, Dict, _)
+    ->  required_nonnegative(Dict, Key, Value)
+    ;   Value = 0
+    ).
 
 argument_fault(Detail) :-
     throw(direct_fault(direct_error{

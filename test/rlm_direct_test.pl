@@ -119,6 +119,19 @@ scenario_response(duplicate_context_id, 2, Request, "", [ToolCall], "") :-
     request_tool_message(Request, "same_1", context_search, _),
     native_call("same_1", "context_search", _{query:"needle"}, ToolCall).
 
+scenario_response(peek_head_count_index, 1, _, "", [ToolCall], "") :-
+    native_call("peek_head_1", "context_peek",
+                _{context:"input",
+                  selector:_{count:20, index:0, type:"head"}},
+                ToolCall).
+scenario_response(peek_head_count_index, 2, _, "HEAD_PEEK_DONE", [], "").
+
+scenario_response(peek_head_default, 1, _, "", [ToolCall], "") :-
+    native_call("peek_head_d1", "context_peek",
+                _{context:"input", selector:_{type:"head"}},
+                ToolCall).
+scenario_response(peek_head_default, 2, _, "HEAD_DEFAULT_DONE", [], "").
+
 scenario_response(two_context_calls, 1, _, "", [ToolCall], "") :-
     native_call("ctx_1", "context_search", _{query:"needle"}, ToolCall).
 scenario_response(two_context_calls, 2, _, "", [ToolCall], "") :-
@@ -840,5 +853,33 @@ test(cancellation_interrupts_active_registered_tool) :-
               tool_registry_destroy(Registry))
         ),
         message_queue_destroy(Queue)).
+
+
+test(native_context_peek_executes_reported_head_count_index_shape) :-
+    reset_direct(peek_head_count_index),
+    direct_provider_options([context(peek)], [], Options),
+    rlm_direct("Peek the head", text("HEAD_PEEK_NEEDLE payload"), Options,
+               ok(Result)),
+    assertion(Result.value == "HEAD_PEEK_DONE"),
+    assertion(Result.context_calls =:= 1),
+    assertion(Result.turns =:= 2),
+    direct_request(1, FirstRequest),
+    member(Schema, FirstRequest.options.tools),
+    assertion(Schema.function.name == "context_peek"),
+    direct_request(2, SecondRequest),
+    request_tool_message(SecondRequest, "peek_head_1", context_peek, Content),
+    assertion(sub_string(Content, _, _, _, "HEAD_PEEK_NEEDLE")).
+
+test(native_context_peek_head_omitted_count_executes_with_default) :-
+    reset_direct(peek_head_default),
+    direct_provider_options([context(peek)], [], Options),
+    rlm_direct("Peek the head", text("HEAD_DEFAULT_NEEDLE payload"), Options,
+               ok(Result)),
+    assertion(Result.value == "HEAD_DEFAULT_DONE"),
+    assertion(Result.context_calls =:= 1),
+    assertion(Result.turns =:= 2),
+    direct_request(2, SecondRequest),
+    request_tool_message(SecondRequest, "peek_head_d1", context_peek, Content),
+    assertion(sub_string(Content, _, _, _, "HEAD_DEFAULT_NEEDLE")).
 
 :- end_tests(rlm_direct).
