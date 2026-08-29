@@ -81,6 +81,10 @@
     'SPEC compilation never widens the host capability set; observation capability never implies mutation authority', validated)).
 :- assertz(spec_plan_refinement_kb:kb_decision(d11, dec_patch_revalidate,
     'plan patches re-run full validation against the same frozen ref; dropping an obligation is always rejected', validated)).
+:- assertz(spec_plan_refinement_kb:kb_decision(d12, dec_forward_projection,
+    'durability is forward projection, never compaction: append-only logs with monotone ids, cursor advances, boundary summaries carry the covered id range, prior ranges stay addressable', validated)).
+:- assertz(spec_plan_refinement_kb:kb_decision(d06, dec_multi_run_state,
+    'no mode one-shots: every model/harness exchange re-projects current project state into the model context (direct recompiles per turn, experts retrieve before each proposal, subplans get current projections)', validated)).
 :- assertz(spec_plan_refinement_kb:kb_decision(d14, dec_gate_not_presence,
     'the design gate validates normative examples through real merged parsers; presence-only checks are false-green and removed', validated)).
 

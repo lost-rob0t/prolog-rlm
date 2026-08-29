@@ -455,6 +455,32 @@ admitted only through `rlm_recursion_policy` routes and guards.
 - `recursive_symbolic` — typed_plan plus admitted subplans/subagents
   (`rlm/2` steps, `delegate/2`, `rlm_recursion_policy` routes).
 
+### 7.3 Continuous project-state readability across modes (hard requirement)
+
+No mode may one-shot. Execution is a multi-run dialog between the model and
+the harness, and in **every** mode the model must be able to read the CURRENT
+project state at each exchange:
+
+- `direct` — the native loop re-compiles provider-visible context per turn
+  from the live conversation and project inputs (merged contextual
+  compilation, bounded `rlm_context` projections); each model iteration sees
+  freshly observed state, never a frozen snapshot.
+- `typed_plan` — expert loops retrieve via host retrieval experts
+  (`locate/search/read`) and the context compiler before each model proposal;
+  plan-graph results and observations are bound and fed back into the same
+  session, so the next proposal is made against observed changed state.
+- `recursive_symbolic` — subplans/subagents receive bounded projections of
+  the parent's CURRENT state view (never a stale copy) and return results
+  that are re-projected into the parent's next exchange.
+
+Continuity across runs and restarts is provided by the forward-projection
+model of Section 12.3: the model-visible boundary message carries the covered
+message-id range, and any prior range stays re-readable through bounded
+context ops. RED-test obligations: S5 (expert loop observes changed state and
+feeds it back before the next proposal), S10 (direct loop re-reads state
+across provider turns), S11 (projection cursor + id range survive restart;
+the model can still address prior project reads after resume).
+
 ## 8. Experts, dataflow, and the iterative coding loop
 
 ### 8.1 Expert contract (NEW)
@@ -835,7 +861,36 @@ forcing re-seed. Restart mid-step: expert loops resume from their last
 observation stay conservatively `indeterminate` (merged effect rule) and are
 never implicitly resubmitted. `abandoned` is terminal.
 
-### 12.2 Long-horizon research/design KB
+### 12.2 Forward projection, never compaction
+
+Transcript and event logs are append-only and authoritative; context growth
+is handled by advancing a projection cursor, never by rewriting history:
+
+- the durable transcript keeps monotone message sequence ids (merged
+  `rlm_conversation_persist` already assigns them), and provider-visible
+  context remains a compiled projection of that transcript (removing a
+  message from a context pack never removes it from the conversation);
+- when the visible window exceeds its bound, the watermark advances and the
+  model-visible boundary message becomes a bounded summary carrying the
+  covered message-id range (`covers:[seq_lo, seq_hi]`);
+- prior ranges remain addressable through bounded context ops
+  (peek/search/slice by sequence), so earlier observations, bindings, and
+  project reads can be re-read EXACTLY whenever verification, repair, or the
+  model needs them — summaries are `derived_claim` over a `trusted_runtime`
+  range and are always re-derivable;
+- plan-KB snapshots carry the covered event-sequence range with the same
+  semantics; snapshots are forward projections, never history rewrites;
+- compaction-as-rewrite is therefore forbidden. The merged
+  `rlm_conversation_warm` compaction producer is superseded in S11 by the
+  forward-projection boundary; this resolves the former open question about
+  event compaction policy.
+
+This mechanism is what makes the multi-run model↔harness dialog of
+Section 7.3 safe: the model can always read current project state, and can
+always recover exact prior state by id range without trusting a lossy
+summary.
+
+### 12.3 Long-horizon research/design KB
 
 `research/spec-plan-refinement-kb.pl` is the working control plane for this
 design process. Hardened rules (implemented in the same slice as this
@@ -869,7 +924,7 @@ edges).
 | S8 | `plan_validate_against_spec/4` + patches + replan safety | S0, S5, `rlm_spec` | S6 |
 | S9 | durable plan KB (bindings, checkpoints, resume) | S0, S5, `rlm_graph_persist` | S5 |
 | S10 | strategy adoption: merge `rlm_direct`/`rlm_spec_strategy`; expert-loop `model_step_handler` wiring | S5, `rlm_plan` native handler | S5 |
-| S11 | `rlm_spec_workflow` integration, docs, roadmap reconciliation | S6–S10 | S10 |
+| S11 | `rlm_spec_workflow` integration; forward-projection context boundary (id-ranged summaries, superseding `rlm_conversation_warm` compaction); docs, roadmap reconciliation | S6–S10 | S10 |
 
 Networking providers (S7) depend on the assertion/evidence substrate
 (IMPLEMENTED), not on project write (S4). Write (S4) depends on normalized
@@ -959,5 +1014,7 @@ cut-committed alternatives).
    confirm with operator input.
 4. Whether `public_api_compatible` needs per-language visibility rules beyond
    the 13-atom kind set — revisit after S2 extraction lands.
-5. Plan-KB event compaction policy for very long runs (append-only history
-   vs. bounded retention) — S9 concern.
+
+(The former plan-KB compaction question is resolved by Section 12.2:
+forward projection with injected id ranges; compaction-as-rewrite is
+forbidden.)
