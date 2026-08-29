@@ -34,6 +34,9 @@ jobs:
       - name: Validate research approval metadata
         run: swipl -q -s scripts/validate_research_approval.pl
 
+      - name: Run SPEC/PLAN design gate
+        run: swipl -q -s scripts/design_gate.pl
+
       - name: Static load live integration test definitions
         env:
           OPENROUTER_API_KEY: ""

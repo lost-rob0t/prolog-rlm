@@ -1,680 +1,963 @@
-# SPEC/PLAN authority architecture (refinement of PR #290)
+# SPEC / VALIDATE / PLAN architecture (rewrite of the PR #290 design)
 
-Status: design record. This document refines, and where stated supersedes, the
-sketch in `docs/typed-plans.md` ("Planned direction: SPEC-seeded symbolic
-planning"). It defines the concrete schemas, validation gates, and runtime
-boundaries for the INTENT → SPEC → PLAN → EXPERT loop before implementation
-slices are opened. Evidence base: merged `main` at `a89175b` (PR #286 runtime
-consolidation) plus the plan-graph slice on `rage/288-spec-plan-graph-executor`
-(closed project vocabulary, dependency-graph executor, `symbolRef`/`sourceSpan`
-contract). The working research KB for this refinement is
-`research/spec-plan-refinement-kb.pl`.
+Status: design record. This document completely replaces the previous
+PR #290 refinement, which failed adversarial review with BLOCKER-level schema
+contradictions (a second `spec/2` root, two incompatible diff grammars,
+undefined argument types such as `change_spec`/`content_ref`/`delete_target`,
+and a `signature` field that silently conflated arity) and with a missing
+execution dataflow (dependency edges without typed bindings).
 
-Design input that is already merged and must not be reinvented:
+This rewrite is grounded in a fresh inventory of merged `main`. Every concept
+is classified `IMPLEMENTED` (exists merged), `UNMERGED` (exists on a branch;
+adoption is an explicit design decision), or `NEW DESIGN TARGET` (does not
+exist anywhere). The executable authority for the normative grammars in this
+document is `scripts/design_gate.pl`, which validates the examples in this
+document against the real merged parsers rather than copies of them.
 
-| Area | Merged evidence | Predicates (selection) |
-|---|---|---|
-| SPEC authoring language | `prolog/rlm_spec_lang.pl` | `spec_source_normalize/2`, `spec_source_compile/4`, `spec_language_catalog/2` |
-| Frozen Spec identity | `prolog/rlm_spec.pl` | `spec_validate/3`, `spec_freeze/3`, `spec_fingerprint/2`, `spec_publish/5`, `spec_resolve/3` |
-| Verification | `prolog/rlm_verify.pl` | `spec_verify/4`, `spec_observe_execute/5`, `spec_observe_async/5` |
-| Assertion providers | `prolog/rlm_assertion.pl` | `assertion_provider/6` (host), `assertion_validate/3`, `assertion_registry_validate/2` |
-| Evidence model | `prolog/rlm_evidence.pl` | `evidence_policy_normalize/2`, `evidence_policy_accepts/3`, `observation_normalize/2` |
-| Strategy composition | `prolog/rlm_spec_strategy.pl` | `spec_strategy_bind/5`, `spec_strategy_execute/5`, `spec_strategy_workflow_run/3` (direct/typed_plan + bounded repair) |
-| Direct native loop | `prolog/rlm_direct.pl` | `rlm_direct/4`, `rlm_direct_async/4`, `rlm_direct_model_step/10`, native ops `spec_*`/`typed_plan_execute` |
-| Typed plan IR | `prolog/rlm_plan.pl` | `plan_parse/2`, `plan_validate/4`, `plan_execute/4`, `plan_run/5`, `default_plan_budget/1` |
-| Recursion policy | `prolog/rlm_recursion_policy.pl` | `recursion_route/3`, `recursion_guard/5`, `recursion_signals` dict |
-| Context compiler | `prolog/rlm_prompt_compiler.pl`, `rlm_context_budget.pl` | `prompt_compile/4`, `context_pack/4`, `compiled_context{}` |
-| Parser substrate | `prolog/rlm_tree_sitter.pl`, `rlm_project_source.pl` | `ts_*` FFI, grammar/file/language registries, `parser_for_file/3` |
-| Durable graph state | `prolog/rlm_graph.pl`, `rlm_graph_persist.pl` | `graph_compile/4`, `graph_run/4`, `graph_checkpoint/3`, `graph_resume/6` |
-| Project plan vocabulary + ready-state | `prolog/rlm_plan_graph.pl` (rage/288 slice) | `plan_graph_parse/2`, `plan_graph_validate/4`, `plan_graph_ready/3`, `plan_graph_run/5` |
-
-Not yet implemented anywhere (confirmed by survey): intent
-parsing/classification, `plan_seed_from_spec/3` derivation, plan-to-spec
-compatibility validation, project retrieval/write/validation engines over
-normalized references, symbol extraction on top of the tree-sitter FFI
-(#96–#99), ready-state derivation in durable form, known-failure knowledge,
-and a long-horizon research/design KB. Every "target" below designates one of
-these gaps; every "exists" cites the table above.
-
-## 1. Corrected authority flow (primary correction)
-
-The refined flow is:
+Lifecycle:
 
 ```text
-USER / MODEL SEMANTICS
-        |
-        v
-      INTENT                 (typed features + candidate intents; model
-        |                     annotations are model_claim until validated)
-        v
-       SPEC                   (model may draft; host validates)
-        |
-        v
-   VALIDATE SPEC              (first-class HARD GATE, environment-aware)
-        |
-        +-- invalid --> structured diagnostics (spec_fault list) / repair
-        |               (repair edits the SPEC SOURCE, never a plan)
-        v
-VALIDATED / FROZEN SPEC          (frozen_spec{ref:spec_ref{series,version,fingerprint}})
-        |
-        v
-   PLAN COMPILER                (plan_seed_from_spec/3, host-deterministic;
-        |                        accepts ONLY a fingerprint-checked frozen_spec{})
-        v
- INITIAL PLAN KB                 (plan_seed -> plan_graph steps/edges)
-        |
-        v
-EXPERT-DRIVEN EXECUTION          (ready-step loop; bounded model/expert work)
-        |
-        v
- STATE / EVIDENCE UPDATE         (observations, effects, plan-state transitions)
-        |
-        v
- SPEC VALIDATION                 (spec_verify/4 over collected observations)
-        |
-        +-- unmet --> replan (same frozen ref) or continue
-        v
-      FINAL
+INTENT
+   ↓
+SPEC (model may draft; inert data)
+   ↓
+VALIDATE SPEC (hard gate, trusted assertion registry)
+   ↓
+FROZEN SPEC (spec_ref{series, version, fingerprint})
+   ↓
+PLAN (closed op vocabulary + typed dataflow; inert data)
+   ↓
+PLAN KB (validated, durable, bindings included)
+   ↓
+EXPERT EXECUTION (bounded local loops; effect boundary for external effects)
+   ↓
+OBSERVATIONS / STATE (trusted observers, normalized evidence)
+   ↓
+SPEC VERIFY (pure reconciliation over observations)
+   ↓
+FINAL (verification_report{status:passed} or rejected)
 ```
 
-Hard-gate invariants:
+Hard-gate invariants carried forward:
 
-- G1. A PLAN MUST NOT be seeded from anything but a frozen spec whose
-  fingerprint re-verifies (`spec_fingerprint/2`, tamper check already in
-  `normalize_frozen_spec/2`). Seeding from a parsed-but-unvalidated source,
-  from diagnostics, or from a stale artifact is a fault, never a fallback.
-- G2. Validation is a first-class gate, not a logging step:
-  `spec_source_compile/4` already orders normalize → validate → freeze; the
-  refinement makes validation environment-aware (Section 4) and
-  diagnostics-complete (all faults collected, not fail-fast).
-- G3. Model-authored SPEC text and model-authored PLAN text are both inert
-  data until the corresponding validator accepts them. Neither can widen
-  authority, invent vocabulary, or bypass the other's gate.
-- G4. Repair after failed SPEC validation produces a new SPEC source version;
-  repair after failed verification during execution (strategy workflow
-  repair node, bounded by `max_repairs`) keeps `spec_ref` unchanged. The two
-  repair loops are distinct and must not be conflated.
-- G5. FINAL requires a `verification_report{status:passed}` for the bound
-  frozen spec; a completed plan with unmet requirements is not final.
+- G1. Plans are seeded only from a frozen spec whose fingerprint re-verifies
+  (`spec_fingerprint/2` + `normalize_frozen_spec/2` tamper check).
+- G2. SPEC validation is a first-class gate, not a logging step.
+- G3. Model-authored SPEC text and model-authored PLAN text are inert data
+  until the corresponding validator accepts them. Neither can widen authority,
+  invent vocabulary, or bypass the other's gate.
+- G4. SPEC-source repair (invalid SPEC) and execution repair (failed
+  verification) are distinct loops. SPEC repair edits SPEC source; execution
+  repair keeps the same frozen ref and may only change HOW.
+- G5. FINAL requires `verification_report{status:passed}` for the bound frozen
+  spec. A completed plan with unmet required requirements is not final.
 
-## 2. Execution modes (direct mode stays first-class)
+---
 
-Three modes exist; all are first-class and host-selectable:
+## 1. Authority rules (unchanged, restated normatively)
 
-| Mode | Existing substrate | When |
+```text
+SPEC defines WHAT must become true.
+PLAN defines HOW to attempt it.
+LLM performs semantic reasoning and generation.
+Experts execute bounded domain-specific work.
+Prolog owns validation, authority, dependencies, readiness,
+capabilities, state, budgets, persistence, acceptance.
+Observers collect real evidence.
+Verification decides whether the Frozen SPEC is satisfied.
+```
+
+- Model output is inert data. SPEC never grants executable authority.
+- A requirement involving network, filesystem, process, Git, credentials, or
+  any other effect does NOT grant that effect. Only trusted host capability
+  configuration grants execution authority (`rlm_tool` capability shapes;
+  `rlm_authority` tiers `approve_diff < allow_once < allow_session <
+  dangerous`).
+- Tool/schema availability is separate from capability possession.
+- Expert capability mappings state requirements; they never grant anything.
+
+## 2. Inventory and classification
+
+### 2.1 IMPLEMENTED (merged `main`)
+
+| Substrate | Module | Key contracts |
 |---|---|---|
-| `direct` | `rlm_direct/4` native loop with contextual compilation | bounded, single-session, conversational or small bounded tasks; no durable multi-step state needed |
-| `symbolic` | `spec_strategy` `typed_plan` mode over `rlm_plan` (+ project plan-graph ops) | multi-step, durable state, dependencies, capability-scoped experts, spec verification |
-| `recursive_symbolic` | symbolic mode with `rlm/3` subplans + `rlm_recursion_policy` routes (`recursive_rlm`, `delegated_subagent`) | high context pressure / branch diversity with admitted depth budget |
+| SPEC authoring language | `prolog/rlm_spec_lang.pl` | root `spec(Forms)`; closed structural forms; desugaring; forbidden-functor blocklist; closed ground data |
+| Spec normalize/validate/freeze/publish/resolve | `prolog/rlm_spec.pl` | `frozen_spec{ref:spec_ref{series,version,fingerprint}}`; SHA-256 semantic fingerprint; monotonic publish versions; tamper check |
+| Trusted assertion registry | `prolog/rlm_assertion.pl` | `assertion_provider(Kind, SchemaVersion, Validator, Evaluator, Observer, Metadata)`; no public registration path for model data |
+| Evidence model | `prolog/rlm_evidence.pl` | `evidence_policy{required_evidence, source_classes, trust_classes, freshness, coherence, state_ref}` with narrowing; `rlm_observation{...}`; statuses incl. `indeterminate/1`; trust classes `trusted/observed/model_claim/derived/unresolved` |
+| Pure verification + observation ABI | `prolog/rlm_verify.pl` | `spec_verify/4` (pure), `spec_observe/5`, `spec_observe_async/5`, `spec_observe_execute/5`; verifier/collector identity binding; coherence enforcement |
+| Typed plan runtime | `prolog/rlm_plan.pl` | closed AST `context/3, model/4, rlm/2, tool/3, parallel/2, retry/3, checkpoint/1, final/1`; expressions `input/1, var/1, field/2, literal/1, list/1, object/1`; capability subset validation; `plan_budget`; native `model_step_handler` with charge-back |
+| Structured outcomes + bounded repair | `prolog/rlm_outcome.pl` | `plan_outcome/5`, `plan_repair/6` |
+| Durable graph orchestration | `prolog/rlm_graph.pl`, `prolog/rlm_graph_persist.pl` | declarative node/edge specs; SWI persistency checkpoints + event history; resume |
+| Spec workflow composition | `prolog/rlm_spec_workflow.pl` | prepare→execute→observe→verify→repair→finish; `spec_plan_bind/4`; graph id includes frozen fingerprint |
+| Recursion/routing policy | `prolog/rlm_recursion_policy.pl` | route `direct_continuation` vs symbolic routes; recursion guard/fingerprints |
+| Project/source registry | `prolog/rlm_project_source.pl` | Project/File/Language records; language evidence; parser selection; epistemic identities only |
+| Tree-sitter FFI | `prolog/rlm_tree_sitter.pl` | native parse ABI; grammar loading is operator-only |
+| Authority tiers | `prolog/rlm_authority.pl` | `approve_diff < allow_once < allow_session < dangerous`; pending approvals; no `yolo` |
+| Durable effect boundary | `prolog/rlm_effect*.pl` | normalized fingerprint → admission → `dispatching` → authoritative observation or conservative indeterminate; idempotency keys; no implicit resubmission |
+| Capability model | `prolog/rlm_tool.pl` | `capability_shape` incl. `tool(Name), network(Name), filesystem(Name), process(Name), model(Name), mcp(Name)`; narrowing only |
+| Durable artifacts | `prolog/rlm_artifact.pl` | content-addressed store used by spec publish/resolve |
+| Result acceptance | `prolog/rlm_result_accept.pl` | proof-carrying child acceptance; evidence-bound verifier outcomes |
+| Structured outcome vocabulary | `prolog/rlm_outcome.pl` | one serializable outcome surface |
 
-Selection is host policy (Section 17). A caller may always pin the mode
-explicitly (`strategy(Mode, Payload)` already accepts this). Nothing in this
-design forces ordinary model interaction through planning.
+### 2.2 UNMERGED — adoption is an explicit design decision
 
-## 3. SPEC grammar (design target D1)
+| Substrate | Branch | Decision |
+|---|---|---|
+| `prolog/rlm_plan_graph.pl` closed project-op vocabulary, ready-step executor, `symbol_ref`/`source_span` contracts, contract script, tests | `rage/288-spec-plan-graph-executor` | **ADOPT AS BASE** for the PLAN layer (Section 6). The reconciliation implementation slice owns every delta listed in Section 6.4. |
+| `prolog/rlm_direct.pl` bounded provider-native direct loop; `prolog/rlm_native_tool.pl`; `rlm_direct_model_step/10` as the `rlm_plan` `model_step_handler` | `docs/spec-seeded-symbolic-plans` (PR #290 branch) | **ADOPT** as the native model-session provider for expert inner loops and direct mode. Merging it is its own slice (S10). |
+| `prolog/rlm_spec_strategy.pl` strategy bind/execute with modes `direct` and `typed_plan` | same branch | **ADOPT** with one normalization boundary (Section 7.1). |
 
-The base language is the merged closed symbol set of `rlm_spec_lang`
-(`spec(Forms)`, `schema_version/1`, `subject/1`, `require/2,3`,
-`optional/2,3`, `invariant/1`, `output_contract/1`, `provenance/1`,
-`assertion/2,3`, `evidence_policy/1` as requirement option) with its
-desugaring, closed-data and executable-shape checks. The refinement adds the
-minimal delta needed to express WHAT must become true without encoding
-strategy:
+### 2.3 NEW DESIGN TARGETS (exist nowhere today)
 
-| New symbol | Shape | Desugars to (normalized spec) | Purpose |
+intent classification; typed expert dataflow bindings; expert contracts;
+`edit_action` schema; iterative coding-expert loop state; assertion-kind packs
+for language/symbol/build/test/TDD/HTTP/network; normalized HTTP observation;
+`plan_validate_against_spec/4`; plan patches + replan safety; durable plan KB
+with bindings; evidence-gated research KB completion; the design gate itself.
+
+## 3. Canonical SPEC language
+
+### 3.1 Decision: the merged grammar IS the grammar
+
+The canonical SPEC source grammar is the merged `rlm_spec_lang` grammar,
+unchanged. Root: `spec(Forms)` with `Forms` a list of:
+
+| Form | Arity | Role | Singleton |
 |---|---|---|---|
-| `input/2` | `input(Name, InputType)` | new normalized field `inputs:[spec_input{name,type}]` | declares required execution inputs; missing at validate time → `missing_input(Name)` |
-| `artifact/2,3` | `artifact(Id, Kind)` or `artifact(Id, Kind, Options)` | new normalized field `artifacts:[spec_artifact{id,kind,options}]` | expected artifact contract; obligations for the plan compiler and validation engine |
-| `forbidden/1` | `forbidden(Effect)` | `invariant(forbidden_effect(Effect))` + normalized `forbidden:[Effect]` | forbidden effects; contradicts conflicting requires (Section 5) |
-| `ordering/2` | `ordering(ReqA, ReqB)` | new normalized field `relations:[relation{type:ordering, from, to}]` | requirement A must be established before B; feeds plan-seed edges |
-| `conflicts/2` | `conflicts(ReqA, ReqB)` | `relations:[relation{type:conflict, from, to}]` | A and B cannot both be required; validate-time contradiction |
-| `evidence_policy/1` (spec level) | singleton, like `schema_version/1` | default policy; requirement-level option overrides | spec-wide evidence floor |
+| `schema_version(V)` | 1 | metadata, positive integer | yes (default 1) |
+| `subject(S)` | 1 | required, ground closed data | yes (required) |
+| `require(Id, Assertion)` / `require(Id, Assertion, Options)` | 2–3 | required requirement | n/a |
+| `optional(Id, Assertion)` / `optional(Id, Assertion, Options)` | 2–3 | inspectable requirement | n/a |
+| `invariant(D)` | 1 | declarative invariant data (never executed) | no (append) |
+| `output_contract(C)` | 1 | declarative output shape | yes |
+| `provenance(P)` | 1 | dict provenance | yes (both spec and requirement level) |
+| `assertion(Kind, Args)` / `assertion(Kind, Version, Args)` | 2–3 | trusted registered assertion kind + closed ground args | n/a |
+| `evidence_policy(P)` | 1 | requirement option (max one per requirement) | yes per requirement |
 
-Deliberately NOT added (prompt seeds, reconciled to existing forms):
-`goal(...)` → `subject/1` is the goal; `validate(...)` → a `require/2,3` with
-an assertion whose provider has an observer IS the validation obligation;
-`success(...)` → all `required` requirements passed + `output_contract`
-satisfaction (this is exactly `spec_verify/4` semantics); `constraint(...)` →
-`invariant/1`; `evidence(...)` → `evidence_policy/1`. Two names for one
-concept would double the vocabulary for zero authority.
+Merged rules stay in force: unique requirement ids, `subject` required,
+requirements non-empty, executable-shaped functors rejected
+(`:-`, `call`, `catch`, `assertz`, `open`, `process_create`, `,`, `->`, …),
+all data ground and acyclic, assertion kinds must resolve in the host registry
+at `spec_validate/3` time, evidence policies narrow (never widen).
 
-`InputType` and `Kind` are typed atoms from closed domains (Section 4).
-Example (target shape, all inert data):
+Consequences:
 
-```prolog
-spec(
-    updateFoo,
-    [
-        subject(update(symbol(foo))),
-        schema_version(1),
-        input(base_revision, revision_ref),
-        require(remote_synchronized, assertion(remote_state, in_sync(origin))),
-        require(project_indexed,     assertion(project_index, current)),
-        require(foo_satisfies_x,     assertion(symbol_semantics, satisfies_x(symbol(foo))),
-                [evidence_policy(evidence_policy{freshness:current})]),
-        ordering(remote_synchronized, foo_satisfies_x),
-        invariant(preserve_public_api),
-        forbidden(delete(file('src/foo.py'))),
-        artifact(test_report, test_report),
-        evidence_policy(evidence_policy{source_classes:[trusted_runtime, external_observation]}),
-        provenance(_{author:"design", ticket:"290"})
-    ]
-).
-```
+- There is **no** `spec(Id, Forms)` root. Spec identity belongs to
+  `frozen_spec.ref = spec_ref{series, version, fingerprint}` only.
+- There are **no** new top-level structural forms — not `ordering/2`,
+  not `forbidden/1`, not `artifact/2`, not `input/2`. Domains are expressed
+  as typed trusted assertions (Section 4). Rationale: the merged desugaring,
+  fingerprinting, and validation already cover identity, singletons, and
+  closed data; new top-level forms would fork the grammar to express what
+  assertion argument schemas express more precisely, and would require a
+  fingerprint-format migration for zero added authority.
+- SPEC-level cross-requirement ordering is deliberately NOT a SPEC concept:
+  SPEC states WHAT; PLAN states WHEN (dependencies). Process invariants such
+  as RED-before-GREEN are encoded inside the `tdd_evidence` assertion
+  contract (Section 9), not in SPEC structure.
 
-## 4. SPEC type system (design target D2)
+### 3.2 Validations environment
 
-Three tiers, all checked before freeze:
+Validation remains `spec_source_compile/4` (normalize → validate → freeze).
+Environment-awareness lives in the trusted assertion providers: each
+provider's `validator/1` checks its argument schema, and each provider's
+`evidence_policy/1` metadata states the evidence floor for that kind.
+Anything the environment cannot observe is a validation-time diagnostic from
+the provider validator (e.g. unknown toolchain kind), not a deferred runtime
+surprise.
 
-1. **Structural types** (exists): closed symbol/arity table, singleton rules,
-   unique requirement ids, one `subject/1`, desugaring order,
-   `safe_source_data/1` + forbidden-functor blocklist, ground `closed_data/1`.
-2. **Argument types** (target): per-symbol closed domains. Key domains:
-   - `symbol_ref`: `symbolRef{name(A), kind(K), owner(O)?, arity(N)?, signature(S)?}` with `K ∈ {function, predicate, method, class, module, type, variable}` (Section 10);
-   - `revision_ref`: Section 11 grammar;
-   - `path_ref`: `file(Path)`, `dir(Path)` with path patterns kept as inert atoms (no `open/1`-shaped terms; forbidden-functor blocklist already rejects them);
-   - `effect`: closed effect terms `delete(Ref)`, `write(Ref)`, `rename(From,To)`, `run(Command)`, `network(Host)`;
-   - `assertion_kind` / `capability` / `artifact_kind` / `input_type`: registered atoms, validated against the assertion registry / environment (below).
-3. **Reference types** (target): every id mentioned must resolve. Requirement
-   ids in `ordering/2`, `conflicts/2` resolve within the spec; `input` names
-   resolve against the validation environment's declared inputs;
-   `assertion(Kind, _)` kinds resolve in the host assertion registry;
-   capabilities resolve in the environment capability set. Unresolved
-   references are diagnostics, not exceptions (Section 5).
+### 3.3 SPEC input declarations and the input mapping table
 
-The normalized spec gains fields `inputs`, `artifacts`, `relations`,
-`forbidden` alongside existing `requirements`, `invariants`,
-`output_contract`, `provenance`; the frozen fingerprint covers all of them
-(canonicalization already sorts dict pairs).
+SPEC may declare execution inputs *inside assertion argument schemas* as
+ground data: an `input_decl{name, type, required}` list plus `input(Name)`
+marker terms at value positions. These are inert references that the runtime
+must bind; they grant nothing.
 
-## 5. validateSpec: the hard gate (design target D3)
+The five input layers are distinct and never conflated:
 
-Target signature (extends the existing `spec_validate/3`):
+| Layer | Form | Owner | Binding time |
+|---|---|---|---|
+| SPEC input declaration | `input_decl{name,type,required}` + `input(Name)` markers inside assertion args | frozen spec data | declared at validate |
+| runtime PLAN input | graph execution input dict keys | host at `plan_graph_execute/5` | plan start |
+| expert input | resolved op args term (expr leaves substituted) | plan-graph executor | step admission |
+| HTTP request body | built by the trusted observer from `body_contract` + fixtures/inputs | trusted observer | observation time |
+| LLM prompt input | context-compiler projection of expert context | expert context compiler | model session start |
 
-```prolog
-validateSpec(+Spec, +Environment, -Outcome)
-% Outcome = ok(validated_spec{normalized, diagnostics:[]})
-%         | error(spec_error{phase:validate, kind:spec_rejected,
-%                            diagnostics:[spec_fault(...)], message:"..."})
-```
+Mapping rules:
 
-`Environment = spec_validation_environment{capabilities:[...], inputs:[...],
-assertion_registry, project_state}` is trusted host data. Validation runs
-normalize → structural checks (existing) → type checks → reference checks →
-semantic checks, collecting ALL diagnostics (only parse errors abort early):
+1. A SPEC `input(Name)` marker is satisfied iff the runtime PLAN input dict
+   has key `Name` (checked by `plan_validate_against_spec/4`, Section 11).
+2. Expert input substitution takes precedence over raw inputs; both must be
+   closed ground data after substitution.
+3. HTTP request bodies are constructed by the observer exclusively from
+   `body_contract` + `fixtures` + bound inputs; prompt projections are
+   derived views and never authoritative.
+4. Model output is never an input layer. It is a bound result value that must
+   pass an expert input schema (Section 8.3) before any expert consumes it.
 
-| Check | Diagnostic (`spec_fault/1` detail) | Status |
+## 4. SPEC domains via trusted assertion kinds
+
+All domain requirements below are `require/2,3` entries whose assertion kind
+is registered by a trusted host provider pack. Each kind defines: exact
+argument keys and types (validated by `validator/1`), an optional observer
+(`Observer` callable with a declared observation capability), and a pure
+`evaluator/3` that reconciles `rlm_observation` payloads against the declared
+contract. Every argument type referenced below is defined in Section 5.
+
+### 4.1 Project / language requirements
+
+| Kind | Args (exact keys) | Observation |
 |---|---|---|
-| schema/arity/parse, single term, closed ground data, executable-shaped data, duplicate ids/singletons, spec-lang cycles | existing `spec_lang_fault(...)` family | exists |
-| unknown assertion kind | `unknown_assertion_kind(Kind)` | target |
-| missing capability for a requirement's assertion | `missing_capability(Cap)` | target |
-| requirement conflicts with `forbidden/1` or another require via `conflicts/2` | `contradiction(Req, Offender)` | target |
-| provably unsatisfiable requirement (e.g. assertion requires a mechanism the environment lacks) | `impossible_requirement(Req, Reason)` | target |
-| dangling `ordering/2`, `conflicts/2`, `artifact/2,3`, `input/2` references | `unknown_reference(Ref)` | target |
-| declared `input/2` absent from environment | `missing_input(Name)` | target |
-| `output_contract` violates its typed domain | `invalid_output_contract(Reason)` | target |
-| two constraints mutually unsatisfiable | `incompatible_constraints(A, B)` | target |
-| forbidden effect equals a required effect | `forbidden_effect_conflict(Effect, Req)` | target |
-| cycle among `ordering` relations (ordering cycles are invalid; `dependsOn` plan cycles remain a PLAN concern) | `cycle(ReqIds)` | target |
-| no assertion provider supplies a validator/observer for a requirement | `no_validation_mechanism(Req)` | target |
+| `file_language` | `path`, `language` | parse result from `rlm_project_source` language evidence + tree-sitter parse status |
+| `parses_as` | `path`, `language` | tree-sitter parse with zero error nodes |
+| `toolchain_version` | `kind`, `constraint` | toolchain probe observation |
+| `project_language` | `language`, `min_files` | per-file language census |
 
-Diagnostics are structured data (`spec_fault(Detail)` inside
-`spec_error{...}`, same style as `spec_lang_error{detail:spec_lang_fault(_)}`)
-— prose `message` fields are display-only, never authoritative. Repair loop:
-model proposes a patched SPEC SOURCE (candidate, `model_claim` provenance) →
-`validateSpec` again → host freezes on empty required-diagnostics. A plan may
-never be the repair vehicle for an invalid spec (G4).
+`project must build under SBCL >= N` = `build_ok` (Section 4.3) with
+`toolchain{kind:sbcl, version_constraint{min:"N"}}`. `module Y must be
+Prolog` = `file_language`. None of these grant read/write authority; their
+observers require `filesystem(observation)` at most.
 
-## 6. Frozen Spec semantics (design target D4)
+### 4.2 Source / symbol requirements
 
-Frozen identity already exists: `frozen_spec{schema_version, ref:
-spec_ref{series, version, fingerprint}, subject, requirements, invariants,
-output_contract, provenance}`, publish/resolve with strictly increasing
-versions, fingerprint recomputation + tamper fault, changed-requirement = new
-version. The refinement adds gate-ordering semantics:
+| Kind | Args | Verifies |
+|---|---|---|
+| `symbol_exists` | `symbol`, `occurrence?` | named symbol exists (kind-aware) |
+| `symbol_kind` | `symbol`, `expected` | symbol has expected kind |
+| `symbol_arity` | `symbol`, `arity` | symbol has expected arity (integer concept) |
+| `symbol_signature` | `symbol`, `signature` | structured signature matches (distinct from arity) |
+| `symbol_owner` | `symbol`, `owner` | symbol belongs to expected owner/scope |
+| `symbol_absent` | `symbol` | symbol does not exist |
+| `public_api_compatible` | `baseline`, `policy`, `scope?` | public API compatible with baseline revision |
+| `symbol_behavior` | `symbol`, `evidence` | required behavior is tested by a trusted test (never a model claim) |
 
-1. Source → normalize → `validateSpec(+Source, +Environment, _)` (zero
-   required diagnostics) → `spec_freeze/3` → optional `spec_publish/5`.
-2. `plan_seed_from_spec/3` accepts only a value for which
-   `spec_fingerprint(Frozen, F)` succeeds and, when the seed is resumed from
-   durable state, the persisted fingerprint matches.
-3. Execution-time repair (strategy workflow `repair` node) keeps `spec_ref`;
-   re-planning (Section 8) targets the same ref; changing acceptance requires
-   a new spec version (existing publish discipline).
+`symbol_exists` / `symbol_kind` / `symbol_owner` / `public_api_compatible`
+observers use the project index (S2, Section 13) — `project(read)`
+capability. `symbol_behavior` composes `behavior_tested` evidence: the
+referenced test must exist, pass, and cover the symbol per host static
+coverage analysis.
 
-## 7. SPEC → PLAN compiler (design target D5)
+### 4.3 Build requirements
 
-```prolog
-plan_seed_from_spec(+FrozenSpec, +PlanningContext, -Outcome)
-% PlanningContext = planning_context{capabilities, environment, project_state,
-%                                    known_symbols, retrieval_available}
-% Outcome = ok(plan_seed{plan_id, spec_ref, steps, edges, obligations,
-%                        capabilities, unresolved})
-%         | error(plan_graph_error{phase:seed, kind:seed_fault(...), ...})
-```
+| Kind | Args | Verifies |
+|---|---|---|
+| `build_ok` | `target`, `toolchain`, `configuration?`, `artifact?`, `warnings?`, `exit_status?` | project/target builds under the declared toolchain with declared constraints |
 
-Host-deterministic derivation rules (no model involvement):
+Semantics: `target = all | target_id`; `exit_status` defaults to 0;
+`warnings = any | none | below(N)`; `artifact` asserts identity/type/path of
+a produced artifact. The build observer runs the build in an isolated scratch
+output directory. It requires `process(observation)` + `filesystem(observation)`
+and never modifies project files: **observation capability ≠ project-write
+authority.**
 
-- every required requirement with an observing assertion → one `validate`
-  obligation step (grouped when the same assertion kind + scope allows it);
-- `artifact/2,3` → produce-or-verify obligation steps (verify step references
-  the artifact id);
-- `ordering(ReqA, ReqB)` → edge from A's establishing steps to B's;
-  requirement → step mapping recorded in the seed;
-- `forbidden/1` → plan-level constraints carried into
-  `plan_validate_against_spec` (Section 9), not steps;
-- spec-level + per-requirement evidence policies → obligation step budgets
-  (freshness/coherence propagate to observation steps);
-- capabilities: intersection of environment-granted capabilities and
-  capabilities implied by requirement assertions → seed capability set;
-  anything implied but not granted → `unresolved` entry
-  (`unresolved_goal{kind:capability, detail}`), never a step;
-- inputs declared by the spec and absent from `PlanningContext` →
-  `unresolved_goal{kind:input, detail}`.
+### 4.4 Test requirements
 
-The seed is a starting symbolic structure, not the whole plan: it feeds
-`plan_graph_parse/2` → `plan_graph_validate/4` unchanged, and the live loop
-may add/refine steps via validated plan patches. Model-proposed decompositions
-are candidates with fresh validation, never direct mutations.
+| Kind | Args | Verifies |
+|---|---|---|
+| `test_passes` | `scope = all | suite(A) | test(T)` | suite/test/suite+test passes |
+| `test_exists` | `test`, `kind` | a regression/unit/integration/property test exists |
+| `behavior_tested` | `symbol`, `test` | the declared behavior of a symbol is exercised by the test (host static coverage) |
+| `negative_test_exists` | `test`, `behavior` | an error-path/negative test exists |
+| `tdd_evidence` | Section 9 | RED → edit → GREEN evidence pair |
 
-## 8. PLAN grammar (design target D6)
+### 4.5 HTTP / networking (first-class)
 
-Two layers, one authority chain:
+HTTP requirements are typed assertion contracts, not `network(Host)` flags
+and not bare `assertion(http_status, 200)` scalars. See Section 10 for the
+full contract, observation, and authority model.
 
-1. **Execution IR** (exists, merged): the `rlm_plan` closed AST
-   (`context/3`, `model/4`, `rlm/2`, `tool/3`, `parallel/2`, `retry/3`,
-   `checkpoint/1`, `final/1`; expressions `literal/1`, `input/1`, `var/1`,
-   `field/2`, `list/1`, `object/1`; `spawn_agent/3` desugars to a
-   `tool(spawn_agent, ...)` step). Model output may be plan terms or one JSON
-   object; never `read_term` execution.
-2. **Project plan vocabulary** (rage/288 slice, inert step data desugaring to
-   layer 1): the closed op set with typed arguments:
+## 5. Canonical reference grammar (one hierarchy)
 
-| Op | Typed args (exact keys) | Capability | Expert intent | Desugars to |
-|---|---|---|---|---|
-| `sync_remote` | `remote(atom)` | `project(sync)` | source_control | `tool(git_sync, literal(args))` |
-| `index` | `scope(index_scope)` | `project(read)` | project_retrieval | `tool(project_index, ...)` |
-| `search` | `pattern(atom)`, `scope(index_scope)` | `project(read)` | project_retrieval | `tool(project_search, ...)` |
-| `locate` | `symbol(symbol_ref)` | `project(read)` | project_retrieval | `tool(project_locate, ...)` |
-| `read` | `source(source_ref)` | `project(read)` | project_retrieval | `tool(project_read, ...)` |
-| `diff` | `left(diff_endpoint)`, `right(diff_endpoint)` | `project(read)` | project_retrieval | `tool(project_diff, ...)` |
-| `edit` | `target(edit_target)`, `change(change_spec)`, `satisfies(req_id)?` | `project(write)` | project_write | `tool(project_edit, ...)` |
-| `create` | `path(path_ref)`, `content(content_ref)` | `project(write)` | project_write | `tool(project_create, ...)` |
-| `delete` | `target(delete_target)` | `project(write)` + authority tier | project_write | `tool(project_delete, ...)` |
-| `run` | `command(command_spec)` | `project(run)` (host-defined) | project_run | `tool(project_run, ...)` |
-| `validate` | `spec(spec_ref)` | `project(validate)` | project_validation | observe + `spec_verify/4` steps |
-| `delegate` | `spec(agent_spec)`, `capabilities([cap])` | existing delegation authority | delegation | `spawn_agent/3` |
-
-`source_ref` = `symbolRef/1 | span/1 | path/1 | revision/1`; `edit_target` =
-`symbolRef/1 | span/1`; `diff_endpoint` = Section 11 grammar. Plans may be
-written in Prolog term syntax or JSON (both already supported by
-`plan_graph_parse/2`); conceptual shape:
+A named semantic symbol and an arbitrary syntax node are different things.
+One normalized reference model serves SPEC assertions, PLAN ops, index
+results, and diff endpoints:
 
 ```prolog
-plan([
-    sync_remote(origin),
-    index(project),
-    locate(symbolRef{name(foo), kind(function)}),
-    diff(symbol(foo), revision(remote('origin','main'))),
-    edit(symbol(foo), change(satisfy(updateFoo)), satisfies(updateFoo)),
-    validate(updateFoo)
-]).
+path_ref      := Atom                    % project-relative, no '..' segments
+source_span   := source_span{file:path_ref, start_byte:>=0, end_byte:>=0}
+                                        % start_byte =< end_byte
+syntax_ref    := syntax_ref{file:path_ref, node_type:atom,
+                            start_byte:>=0, end_byte:>=0}
+                                        % a source_span + parser node_type
+symbol_ref    := symbol_ref{name:atom, kind:symbol_kind,
+                            arity?:>=0, owner?:atom,
+                            occurrence?:definition|reference|any}
+symbol_kind   ∈ {function, method, constructor, predicate, rule, macro,
+                 operator, class, field, property, type, module, annotation}
+revision_ref  := head | working | committed(Sha) | branch(Name)
+               | remote(Name, Branch)
+value_type    := any | integer | string | boolean | number | object | array | null
+               | registered language type atom
+signature     := signature{params:[value_type], returns?:value_type}
 ```
 
-## 9. PLAN schema validation (design target D7)
+- `symbol_ref` — *named semantic symbol* resolved through the project index.
+  `arity` is the count of parameters/clauses and is the only integer concept;
+  `signature` is a structured value used only inside `symbol_signature`
+  assertion args. They are never conflated.
+- `syntax_ref` — arbitrary parser/AST node: a span plus parser-specific
+  `node_type`. Tree-sitter node types are language-adapter metadata beneath
+  the normalized contract; they never appear as plan op names or SPEC kinds.
+- `source_span` — byte range only.
+- Languages without a grammar resolve to `unsupported` (a diagnosable state),
+  never a guessed span. The bounded 13-atom `symbol_kind` set avoids a
+  universal enumeration; language adapters map their constructs onto it or
+  report `unsupported`.
 
-Base validation exists twice over: `rlm_plan` whole-plan validation (closed
-vocabulary, single final, binding discipline, allow-listed selectors,
-capability subset, recursive estimate, budget fit) and the plan-graph slice
-(structure, duplicates, unknown/ghost dependencies, cycles, vocabulary-before-desugar,
-argument shapes, per-op capability, expert registry preflight, aggregate
-budget, exact per-op key sets). The refinement adds one deterministic pass:
+Diff sides (ONE grammar; symbols are not direct diff endpoints — they resolve
+first through the index to source snapshots/spans):
 
 ```prolog
-plan_validate_against_spec(+ValidatedGraph, +FrozenSpec, +Environment, -Outcome)
+diff_side  := path(path_ref) | ref(symbol_ref(SymbolRefDict))
+            | span(source_span) | revision(revision_ref)
 ```
 
-Checks (all fail-closed, structured `plan_graph_error{kind:spec_compat(...)}`):
+The `ref/1` side wraps a `symbol_ref/1` term whose argument is the
+`symbol_ref` dict itself (`ref(symbol_ref{...})` in plan data). Plan data is
+parsed by the BASE module under a groundness requirement, so every dict in
+plan terms must carry a bound tag (`symbol_ref{...}`, `source_span{...}`);
+anonymous-tag dicts (`_{...}`) are NOT ground and are rejected by the parser.
 
-- every `edit/create/delete` step is justified: its `satisfies(req_id)`
-  resolves to a required requirement, or it produces a declared artifact;
-  otherwise `unjustified_mutation(StepId)`;
-- step effects ∩ `forbidden/1` effects → `forbidden_effect_in_plan(StepId, Effect)`;
-- `validate` steps reference the bound `spec_ref` (fingerprint match) →
-  otherwise `foreign_spec_reference(StepId)`;
-- plan capability set ⊆ (spec-implied ∩ host-granted) →
-  `capability_widen(StepId, Cap)` (model output cannot widen authority);
-- seed obligations coverage: each seed obligation is either still present or
-  explicitly resolved by an accepted patch → `dropped_obligation(ReqId)`;
-- budget fit under the aggregate plan-graph budget (exists).
+`diff(A, B)` resolves both sides through the retrieval engine and returns a
+normalized `diff_report{unified, hunks, symbol_changes}`. `path` sides are
+resolved in the working tree; `ref`/`span` sides resolve to their containing
+file+range at the step's snapshot; `revision` sides resolve to the snapshot of
+that revision.
 
-Model plan patches are typed data: `plan_patch{op:add|remove|replace,
-step:Step, edges:[Edge], reason, provenance:model_claim}`. A patch is applied
-only after re-running the full validation chain (plan schema +
-`plan_validate_against_spec`). Readiness, ordering, and acceptance never come
-from the model.
+## 6. Canonical PLAN language
 
-## 10. Dependency representation (design target D8)
+### 6.1 Two layers, one authority chain
 
-Exists in the plan-graph slice and is the target representation:
-`plan_graph{steps:[step{id, op, args, bind?, requires:[ReqId]}], edges:[graph_edge{step, requires}]}`,
-edges derived from dependency-merged steps (ghost/duplicate `depends_on`
-rejected), acyclicity via three-color DFS, `ready_step/3` deriving runnable
-steps (`completed` prerequisites only), terminal `abandoned` on abort, no
-silent retry. SPEC `ordering/2` relations map to seed edges; the model can
-only propose edges through validated patches. Invariant: **LLM proposes plan
-structure; Prolog owns plan state and readiness.**
+1. **Execution IR (IMPLEMENTED)**: the merged `rlm_plan` closed AST.
+2. **Project plan graph (BASE = rage/288)**: inert step/dependency data that
+   desugars mechanically into layer 1. Model output may be Prolog term syntax
+   or one JSON object; it is never read as executable Prolog.
 
-## 11. Plan-state representation (design target D9)
-
-Durable form follows the `rlm_graph_persist` pattern:
+### 6.2 BASE grammar (from `rage/288-spec-plan-graph-executor`, ADOPTED)
 
 ```prolog
-plan_kb_record(plan_id:atom, spec_fingerprint:atom, snapshot:any).  % one per plan, replaced
-plan_kb_event_record(plan_id:atom, sequence:integer, event:any).    % append-only replay
+plan_graph(steps([step(Id, Op, Args, Bind), ...]),
+           depends_on([depends_on(StepId, [ReqStepId, ...]), ...]))
 ```
 
-`snapshot` carries steps/edges/status map/result map/aggregate budget.
-Resume requires fingerprint match with the bound frozen spec (stale plan KB
-against a new spec version is refused, forcing re-seed). Step states:
-`pending | running | succeeded | failed | abandoned`; `abandoned` is
-terminal; externally effectful steps stay subject to the durable effect
-boundary (#53/#79): process restart must not implicitly resubmit an admitted
-effect attempt; transport failure remains conservative/indeterminate.
+JSON: `{"steps": [{"id", "op", "args", "bind"}], "depends_on": [{"step", "requires"}]}`.
+Ids/binds are atoms and unique. Edges are derived from dependency entries;
+ghost/duplicate dependencies rejected; acyclicity via three-color DFS;
+`abandoned` is terminal state, never retry authorization; aggregate budget
+feeds forward per step via the merged plan budget.
 
-## 12. Normalized references (design target D10)
+BASE op vocabulary with exact arg wrappers, required capability, effect class
+(desugar target `tool(Op, literal(Args), Bind)` per ready step):
+
+| Op | Args | Capability | Effect class |
+|---|---|---|---|
+| `sync_remote/1` | `sync_remote(op(A))` | `tool(sync_remote)` | external_effect |
+| `index/1` | `index(scope(S))`, `S = all \| path(A)` | `tool(index)` | observation |
+| `search/2` | `search(pattern(P), scope(S))` | `tool(search)` | observation |
+| `locate/1` | `locate(symbol_ref(Ref))` | `tool(locate)` | observation |
+| `read/1` | `read(path(A))` *(BASE; generalized by D6-3)* | `tool(read)` | observation |
+| `diff/2` | `diff(L, R)`, sides per Section 5 | `tool(diff)` | observation |
+| `edit/2` | `edit(target(T), content(C))` *(D6-2)* | `tool(edit)` | external_effect |
+| `create/2` | `create(path(A), content(C))` *(D6-2)* | `tool(create)` | external_effect |
+| `delete/1` | `delete(path(A))` | `tool(delete)` | external_effect |
+| `run/1` | `run(command(argv([atom,...])))` *(D6-4)* | `tool(run)` | external_effect |
+| `validate/1` | `validate(spec(fingerprint(A)))` | `tool(validate)` | orchestration |
+| `delegate/2` | `delegate(task(A), caps(C))`, caps narrowed ⊆ plan caps | `tool(spawn_agent)` | orchestration |
+
+Every type used above is defined: `A`/`P` atoms; `T ∈ path/1 | ref/1 | span/1`
+(edit targets); `C` per D6-2; `Ref` a `symbol_ref` dict; `source_span` per
+Section 5; caps are merged `rlm_tool` capability shapes with JSON decoding
+restricted to `tool(Name)`. There is no `change_spec`, no `content_ref` as an
+undefined atom, no `delete_target` beyond `delete(path(A))`, no `index_scope`
+beyond `all | path(A)`, no `agent_spec` beyond `delegate(task(A), caps(C))`.
+
+### 6.3 D6 DELTAS (each owned by the reconciliation slice)
+
+- **D6-1 typed dataflow (`expr/1` leaves).** Any arg leaf position may be
+  `expr(E)` where `E` is a term from the merged `rlm_plan` expression
+  grammar restricted to the graph level:
+
+  ```prolog
+  graph_expr := input(atom) | field(graph_expr, atom)
+              | literal(ground) | list([graph_expr]) | object([atom-graph_expr])
+  ```
+
+  `var/1` is reserved to the desugared `rlm_plan` layer (`final(var(Bind))`).
+  Resolution is admission-time substitution by the plan-graph executor:
+  `input(Name)` resolves from the execution input dict, else from the result
+  of a *completed* step whose `bind == Name` (dependency closure required);
+  `field/2` projects dict results (merged `resolve_expr` semantics). Dangling
+  references are validation faults (`dangling_input`), as are references to
+  steps outside the step's transitive dependency closure.
+- **D6-2 typed write content.** `edit(target(T), content(C))`,
+  `create(path(A), content(C))` with `C = literal(Text) | expr(E)` where the
+  resolved value must be text or a valid `edit_action` dict (Section 8.3).
+  Replaces BASE `replacement(A)` / `literal(L)`.
+- **D6-3 read selector.** `read(source(S))` with
+  `S = path(path_ref) | span(source_span) | ref(symbol_ref)` (JSON key
+  `source` unchanged from BASE).
+- **D6-4 structured command.** `run(command(argv([atom,...])))` — argv list,
+  no shell strings, no ambient shell.
+- **D6-5 obligation linkage.** Third optional graph component
+  `plan_graph(steps(...), depends_on(...), obligations(...))` with
+  `obligation(step:StepId, satisfies:ReqId)` records (JSON top-level
+  `"obligations": [{"step", "satisfies"}]`). This is the ONLY
+  plan↔SPEC-requirement linkage mechanism; op arities stay at BASE.
+- **D6-6 `rename` is NOT a plan op.** It is an internal write-engine
+  primitive: an atomic move executed by the write expert (single effect
+  admission). Plan-visible rename would double the effect accounting for one
+  logical change; compose it in experts instead.
+- **D6-7 `generate` is NOT a plan op.** Model generation is owned by expert
+  inner loops (Section 8.2). A plan-visible generate op would split budget
+  authority between two schedulers.
+- **D6-8 expert contracts + inner capabilities.** Every op maps mechanically
+  to an expert (`plan_capability_required/2` from BASE). The expert registry
+  supplies `expert_contract{}` records (Section 8.1) whose
+  `inner_capabilities` (e.g. `model(P)` for write experts) must be a subset
+  of environment-granted capabilities and are validated at preflight.
+
+### 6.4 Diff endpoint decision
+
+Diff sides are **resolvable source selectors** (Section 5); symbols and syntax
+nodes are not direct diff endpoints. `path` selects working-tree files;
+`ref`/`span` resolve through the index; `revision` selects a snapshot
+(`head`, `working`, `committed/1`, `branch/1`, `remote/2`). One grammar, no
+prose wrappers outside it.
+
+## 7. Execution strategies
+
+### 7.1 Mode names — one normalization boundary
+
+The conceptual strategies `direct`, `symbolic`, `recursive_symbolic` map to
+runtime atoms through ONE normalization predicate owned by the adopted
+`rlm_spec_strategy` slice:
 
 ```prolog
-symbolRef(name(Name), kind(Kind), owner(Owner)?, arity(Arity)?, signature(Sig)?)
-sourceSpan(file(Path), bytes(Start, End))
-sourceSpan(file(Path), bytes(Start, End), point(StartLine:StartCol, EndLine:EndCol))
+strategy_mode(direct, direct).
+strategy_mode(symbolic, typed_plan).
+strategy_mode(recursive_symbolic, typed_plan).   % + recursion policy routes
 ```
 
-`Kind ∈ {function, predicate, method, class, module, type, variable, rule}`.
-Plans reason in `symbolRef` terms; `sourceSpan` and byte offsets are
-indexer-internal projection:
+`typed_plan` is the canonical runtime atom (as in the UNMERGED
+`rlm_spec_strategy`); `symbolic` and `recursive_symbolic` are interface
+names. Nothing in the runtime claims unimplemented mode atoms: there is no
+`symbolic` atom in runtime data, and recursion inside `typed_plan` is
+admitted only through `rlm_recursion_policy` routes and guards.
+
+### 7.2 Mode responsibilities
+
+- `direct` — bounded single-session native loop (`rlm_direct/4`, UNMERGED);
+  contextual compilation; no durable multi-step state.
+- `typed_plan` — `rlm_plan` AST and/or adopted plan graph; durable state;
+  capability-scoped experts; spec verification and bounded repair.
+- `recursive_symbolic` — typed_plan plus admitted subplans/subagents
+  (`rlm/2` steps, `delegate/2`, `rlm_recursion_policy` routes).
+
+## 8. Experts, dataflow, and the iterative coding loop
+
+### 8.1 Expert contract (NEW)
+
+Every expert is a host closure registered against a tool name; the contract
+is trusted host data:
+
+```prolog
+expert_contract{op:Op/Arity,                       % mechanical mapping from plan_capability_required/2
+                capabilities:[capability],          % REQUIRED, must ⊆ environment grants
+                input_schema:args_schema,           % resolved op args term shape
+                output_schema:bind_schema,          % bound value shape
+                effects:[observation|external_effect|orchestration],
+                authority_tier:approve_diff|allow_once|allow_session|dangerous,
+                model_policy:none | model_policy{provider:atom, max_iterations:N},
+                budget_policy:shared_step_budget,
+                completion:[condition], failure:[condition]}
+```
+
+Expert capability requirements never grant capabilities; the host checks them
+against the environment before preflight admits the expert.
+
+### 8.2 Iterative coding expert loop — ownership decision
+
+The owning runtime boundary is the **expert pack executed inside the
+desugared `rlm_plan` step**. The plan-graph executor owns macro scheduling
+(ready-step admission, dependency state, aggregate budget, cancellation); the
+expert owns the bounded local loop:
 
 ```text
-language parser/indexer (tree-sitter grammars; prolog = swi_native)
-        -> normalized project index (project_kb provenance class)
-        -> symbolRef resolution (unresolved | ambiguous | unsupported | ok)
-        -> sourceSpan
+retrieve current context (host retrieval tools)
+→ model proposes next bounded action (native session via model_step_handler)
+→ validate action against closed edit_action schema
+→ apply/read/tool action (external effects only through the effect boundary)
+→ observe changed state
+→ feed observation to the same expert session
+→ next model action …
+→ completed | blocked(structured reason) | failed
 ```
 
-The tree-sitter FFI and grammar/file/language registries already exist; symbol
-extraction is the #96–#99 gap. Languages without an available grammar resolve
-to `unsupported` (a diagnosable state), never to a guessed span.
+Mechanically, the expert's inner loop runs as a nested `rlm_plan` execution
+(validate + execute ABIs) whose capability set is
+`[tool(Op) | expert_contract.inner_capabilities]` and whose steps may include
+merged `model/4` steps — the merged native `model_step_handler` (provided by
+UNMERGED `rlm_direct_model_step/10` once S10 merges) executes provider-native
+sessions with charge-back into the shared step budget
+(`charge_native_model_execution/2`). Loop state:
 
-## 13. Project retrieval engine + diff semantics (design targets D12/D13)
-
-Module target `rlm_project_index` exposing a trusted execute ABI (canonical
-direction `*_execute -> Future -> synchronous await`, per the async invariant):
-
-```prolog
-project_index_execute(+Op, +Context, +Options, -Outcome)
-% Op in index(scope), locate(symbolRef), search(pattern, scope),
-%            read(source_ref), diff(left_endpoint, right_endpoint)
-```
-
-Results are normalized dicts with observation provenance
-(`rlm_observation{}` shapes reuse the evidence module). Diff endpoints
-(language-independent grammar; exact typed set):
-
-```prolog
-working_tree | index_stage | commit(Sha) | branch(Name) | remote(Remote, Branch)
-artifact(Ref) | symbol_version(symbolRef, N) | span(sourceSpan) | candidate(Id)
-```
-
-`diff(A, B)` resolves both endpoints through the index and returns
-`diff_report{unified, hunks, symbol_changes:[symbol_change{symbol, before, after, status}]}`.
-`diff(symbol(foo), revision(remote('origin','main')))` is the intended
-conceptual call. No language-specific syntax ever appears in plan terms.
-
-## 14. Project write engine (design target D14)
-
-Module target `rlm_project_write`:
-
-```prolog
-project_write_execute(+Op, +Context, +Options, -Outcome)
-% Op in edit(target, change), create(path_ref, content_ref),
-%            rename(source_ref, dest_ref), delete(target)
-```
-
-Gate order per operation (no step may reorder these):
-
-1. plan-graph validation (op known, args typed, dependency satisfied);
-2. capability validation (`project(write)`; `delete` additionally requires
-   its authority tier through the existing #53 authority boundary);
-3. durable effect attempt admission + dispatch intent (#79 effect boundary —
-   file mutations are external effects; retries are new linked attempts);
-4. SPEC constraint check: effect ∩ `forbidden/1` → reject before dispatch;
-5. adapter boundary → authoritative observation (post-write index refresh,
-   evidence refs) or conservative uncertainty.
-
-Writes land in the working tree/index/branch; protected refs (e.g. `main`)
-require explicit host authority and are never implied by plan validation.
-
-## 15. Project validation engine (design target D15)
-
-`validate(spec_ref)` steps route through the existing observe + `spec_verify/4`
-machinery. Additional assertion kinds become host assertion providers
-(`assertion_provider/6` registry; validators/observers are trusted host
-closures): `tests_pass`, `build_ok`, `lint_clean`, `schema_valid`,
-`static_clean`, `diff_clean`, `artifact_exists(Id)`, `forbidden_absent(Effect)`,
-`spec_invariant(Invariant)`. Each returns `rlm_observation{}` evidence;
-`evidence_policy_accepts/3` remains the single acceptance authority. PLAN
-issues `validate(spec001)`; the engine decides mechanism, order, and evidence.
-
-## 16. Expert mapping + context compiler integration (design targets D16/D17)
-
-Expert selection is data-driven, not a frozen taxonomy:
-
-```prolog
-expert_intent(sync_remote, intent(source_control)).
-expert_intent(index, intent(project_retrieval)).
-expert_intent(locate, intent(project_retrieval)).
-expert_intent(read, intent(project_retrieval)).
-expert_intent(diff, intent(project_retrieval)).
-expert_intent(edit, intent(project_write)).
-expert_intent(create, intent(project_write)).
-expert_intent(delete, intent(project_write)).
-expert_intent(run, intent(project_run)).
-expert_intent(validate, intent(project_validation)).
-expert_intent(delegate, intent(delegation)).
-```
-
-Facts are registered/validated by the host (plan-graph preflight already
-verifies the expert registry before first execution). Per ready step the
-runtime compiles a bounded bundle with the existing compiler:
-
-```text
-ready_step -> expert_intent(Op) -> expert capability set
-           -> prompt_compile(Catalog,
-                 prompt_input{text: step task + linked observations,
-                              selected: expert units},
-                 [capabilities(ExpertCaps ∩ PlanCaps ∩ SpecCaps), pack(true)])
-           -> compiled_context{tool_schemas, context_units, token_ledger}
-           -> native model step (rlm_direct_model_step/10 handler)
-           -> observation/effect -> plan-state transition
-```
-
-New convention: an "expert unit" is a prompt-compiler catalog unit tagged
-with the expert intent; the frozen-spec excerpt relevant to the step
-(requirement text, forbidden effects) is compiled as a `derived` trust-class
-unit. The model sees only its expert's public API; capability narrowing never
-widens across the loop.
-
-## 17. Intent system + strategy selection (design targets D17/D18)
-
-Intent layer (target `rlm_intent`):
-
-```prolog
-intent_parse(+Request, +IntentContext, -Outcome)
-% Outcome = ok(intent_features{tokens:[...], entities:[entity(Kind, Value, Span)],
-%                              numbers, repo_refs, symbol_refs, commands,
-%                              confidence, ambiguous:[...]})
-%         | error(intent_error{phase, kind:...})
-intent_candidates(+Features, +IntentContext, -Candidates)
-% Candidates = [candidate_intent{kind, features_used, confidence}]
-```
-
-Entity kinds: `number/1`, `repo_ref/1`, `symbol_ref/1`, `path_ref/1`,
-`command/1`, `revision_ref/1`, plus word/typed tokens. Token co-occurrence
-(`token(review)`, `token(pr)`, `number(286)`) contributes evidence toward
-candidate kinds such as `review_pr(286)` but never alone decides it.
-Model-produced semantic annotations are candidate facts with `model_claim`
-provenance; host validation rules (typed entity resolution — a PR number must
-resolve in the repo context, a symbolRef must resolve or be explicitly
-allowed as new) decide admission. Multiple intents, confidence, and explicit
-ambiguity are first-class outputs; ambiguity requires user/model
-disambiguation before SPEC drafting proceeds.
-
-Intent feeds three consumers: SPEC drafting (model proposes spec source;
-Section 5 gate applies), strategy selection (below), and plan patches
-(Section 9).
-
-Strategy selection (target `strategy_select/3`, extending
-`spec_strategy_bind/5` callers):
-
-```prolog
-strategy_select(+TaskFeatures, +SelectionContext, -Mode)
-% Mode in {direct, symbolic, recursive_symbolic}
-```
-
-Deterministic decision table over existing recursion signals
-(`task_complexity`, `context_pressure`, `uncertainty`, `branch_diversity`,
-budget availability) plus intent-derived features (entity count, command
-presence, durable-state requirement, verification requirement):
-
-| Condition (host-evaluated) | Mode |
+| Aspect | Contract |
 |---|---|
-| explicit caller mode given | that mode |
-| bounded single-session task; no durable state; low complexity signals | `direct` |
-| multi-step, dependencies, artifacts, spec verification needed | `symbolic` |
-| symbolic + high context pressure/diversity + admitted recursion depth | `recursive_symbolic` |
+| loop state | step exec state (vars, model responses, remaining budget) + expert session record |
+| bindings | step `bind` value = expert output per `output_schema` |
+| budget | shared step budget (steps/model/tool/context/output bytes); no second scheduler |
+| model-call limit | native session budget + `model_policy.max_iterations` |
+| tool-call limit | step budget `tool_calls` |
+| context budget | context compiler projection; bounded packed context |
+| effect boundaries | file/process/network effects only via `rlm_effect_*` admission → dispatch → observe-or-indeterminate |
+| checkpointing | `expert_checkpoint` events appended to the plan KB at iteration boundaries (bounded closed data) |
+| completion | `completed(edit_result)` / `blocked(reason)` / `failed(reason)` |
+| restart | resume from last expert checkpoint; admitted external effects are never resubmitted; model sessions may re-run (new linked calls, budget-charged) |
 
-`recursive_symbolic` is not a new runtime: it is symbolic mode whose subplans
-use `rlm/3` with `rlm_recursion_policy` route selection
-(`recursive_rlm`, `delegated_subagent`) under existing depth/fingerprint/progress
-guards. The model may suggest a mode as a candidate; host policy decides.
+PLAN handles macro work/dependencies; the expert loop handles bounded local
+iterative execution. There is exactly one scheduler (`rlm_async`); no
+one-thread-per-Future designs are introduced.
 
-## 18. λ-RLM / RLM combinator mapping (design target D19)
+### 8.3 `edit_action` — LLM output into the write expert (closed schema)
 
-Mapping onto the plan architecture (no λ-RLM syntax is reproduced):
-
-| λ-RLM concept | Becomes | Evidence/target |
-|---|---|---|
-| task classification | intent features + strategy table | Section 17 |
-| strategy selection | `strategy_select/3` | Section 17 (exists partially: caller-pinned modes) |
-| split | `context_partition/4` for context; independent ready steps / `parallel/2` for work | exists (context ops, plan combinator); plan-graph fan-out target |
-| map | `context_map/4`; `parallel` subplans | exists |
-| filter | allow-listed context reducer `filter(Predicate)` (new closed transform) | target, follows `context_map` admission pattern |
-| reduce | `context_reduce/4` | exists |
-| recursive solve | `rlm/2` subplan + `recursive_rlm` route | exists (policy + runtime) |
-| leaf solve | direct `model/4` step or `tool/3` step via expert | exists |
-| recursion thresholds | `recursion_policy{max_recursion_depth, min_progress, cost_weight, ...}` + `recursion_guard/5` fingerprints | exists |
-| cost/context bounds | `plan_budget{}` netting + `completion_budget{}` child netting (native session path) | exists |
-| termination | spec verification pass (G5) + no-progress guard + budget exhaustion → structured abort | exists (verify, guards, plan-graph abort) |
-| when NOT to recurse | `deterministic_context` route preference; low `task_complexity`/`branch_diversity` → stay direct | exists in route ranking; surfaced in strategy table |
-
-Direct mode remains the default when none of the durable-state, dependency,
-or verification triggers fire.
-
-## 19. Long-horizon Prolog control (design target D20)
-
-The working instance for this refinement is
-`research/spec-plan-refinement-kb.pl`; the generalized schema:
+Model output destined for a write expert is bound as inert data and must pass
+the write expert's input schema:
 
 ```prolog
-kb_task(Id, Kind, Title, Status).        % Status in pending|in_progress|done
-kb_depends(Id, DependencyId).
-kb_evidence(Id, Reference).              % file:line / artifact ref
-kb_decision(Id, DecisionId, Summary, Status).   % candidate | validated
-kb_open_question(Id, Question).
-kb_blocked_by(Id, Dep, Why).
-kb_ready(Id), kb_remaining(Id), kb_dependency_closure(Id, Deps), kb_next(Id).
+edit_action{target: edit_target,                % ref(symbol_ref) | span(source_span)
+            operation: replace | insert_before | insert_after | delete_block,
+            content: text | none,               % required unless delete_block
+            basis: revision_ref | none,         % source state the proposal was computed against
+            satisfies: [requirement_id]}        % model_claim until verified by evidence
 ```
 
-Statuses move via explicit host operations (`kb_mark/2`,
-`kb_validate_decision/2`); only `validated` decisions are authoritative
-planning knowledge (provenance `project_kb`/`trusted`, not `model_claim`).
-The model queries the KB (`kb_next/1`) to pick the next research/design task;
-the full task graph is never carried in prompt context. Durable form follows
-the plan-KB record pattern (Section 11) with the same fingerprint discipline.
+Flow: `locate` binds a `symbol_ref`; `read` binds source; the write expert's
+model session produces a candidate `edit_action`; the expert validates it
+(target resolvable in the current index, `basis` freshness checked, content
+required per operation, `satisfies` ids resolve in the bound spec); only then
+does the write engine admit the file mutation through the durable effect
+boundary with a normalized fingerprint of
+`(target, operation, content, basis)`. A changed payload is a new linked
+attempt with fresh authority semantics.
 
-## 20. Failure knowledge (design target D21)
+Normative multi-step dataflow (expr leaves in italics resolve at admission):
 
-Preserves the PR #290 flow with explicit authority gates:
+```prolog
+plan_graph(steps([
+    step(find_foo, locate,
+         locate(symbol_ref(symbol_ref{name:foo, kind:function, arity:2,
+                                      occurrence:definition})),
+         foo_loc),
+    step(read_foo, read,
+         read(source(span(expr(field(input(foo_loc), span))))),
+         foo_src),
+    step(patch_foo, edit,
+         edit(target(ref(symbol_ref(symbol_ref{name:foo, kind:function,
+                                               arity:2}))),
+              content(expr(input(foo_src)))),
+         foo_edit),
+    step(check_spec, validate,
+         validate(spec(fingerprint('spec-sha256-…'))),
+         verified)
+  ]),
+  depends_on([depends_on(read_foo,   [find_foo]),
+              depends_on(patch_foo,  [read_foo]),
+              depends_on(check_spec, [patch_foo])]),
+  obligations([obligation(step:patch_foo, satisfies:foo_behavior_x)]))
+```
 
-```text
-execution failure -> durable failure artifact (evidence refs, structured cause)
-  -> retrieval: symbolic match (known_failure/3) first; embedding similarity as
-     candidate evidence only (trust class derived)
-  -> candidate constraint (candidate status)
-  -> validation against current environment + approval
-  -> trusted planning knowledge (validated status)
+Here `read_foo` consumes the *exact bound output* of `find_foo`
+(`field(input(foo_loc), span)`), and `patch_foo` consumes the bound source
+text. The desugared form of each ready step remains the merged
+`plan([tool(Op, literal(ResolvedArgs), Bind), final(var(Bind))])`.
+
+## 9. TDD / RED-first evidence (separate from final SPEC)
+
+The final SPEC describes acceptance; RED-first is a process invariant encoded
+in one evidence contract:
+
+```prolog
+tdd_evidence (assertion kind, schema_version 1)
+args: _{requirement: requirement_id,       % same-spec requirement id
+        test: test_ref,                    % {suite, id} | path(path_ref)
+        pre_revision: revision_ref,        % RED base  (e.g. head before work)
+        post_revision: revision_ref}       % GREEN state (e.g. working)
+```
+
+Observer contract (requires `process(observation)` + `filesystem(observation)`,
+writes only to isolated scratch):
+
+1. Materialize `pre_revision` read-only; run the identified test →
+   `red_observation{status, output_ref}`.
+2. Materialize `post_revision` read-only; run the same test →
+   `green_observation{status, output_ref}`.
+
+The observer reports `status:passed` when COLLECTION completed (both runs
+executed); the pure evaluator then reconciles the pair (merged `rlm_verify`
+semantics: observation status gates only whether the evaluator runs).
+Evaluator: `passed` iff `red.status == failed` **and** `green.status ==
+passed` and both observations share the same test identity and fresh state
+refs. A test that already passes at `pre_revision` yields
+`indeterminate(evidence_not_red)`; missing or partial runs yield
+`indeterminate(incomplete_tdd_evidence)`. The pair, not a model statement, is
+the acceptance contract. The two revisions are identified by `revision_ref`
+values carried in the assertion args; hosts pin the plan-start revision as
+`pre_revision` (typically `head`) and the produced state as `post_revision`
+(typically `working`). `edit`/`create` steps that implement the requirement
+must record obligations (D6-5) so coverage ties the code change to the
+evidence.
+
+## 10. HTTP / network model
+
+### 10.1 `http_endpoint` assertion kind (NEW, schema_version 1)
+
+```prolog
+args: _{service: atom,
+        request:  http_request_contract,
+        responses: [http_response_contract]}        % ≥1, unique scenarios
+```
+
+**Request contract** (exact keys; unknown keys rejected by the validator):
+
+```prolog
+http_request_contract{method: get|post|put|patch|delete|head|options,
+                      path: path_template,          % string with {name} templates
+                      path_params: {name: integer|string|uuid|boolean},
+                      query: [query_param{name, type, required}],
+                      headers: [header_contract{name(lowercase atom),
+                                                value?: string,
+                                                forbidden?: boolean}],
+                      content_type: media_type | none,
+                      accept: [media_type],
+                      body: body_contract | none,   % absent ⇒ empty body required
+                      auth: auth_contract{scheme: bearer|basic|api_key|none,
+                                          scope?: atom} | none,
+                      inputs: [input_decl{name, type, required}],
+                      fixtures: {name: body_value | schema},
+                      idempotency: none | required}
+```
+
+Request bodies are typed schema references, never opaque strings:
+`body_contract{type: json|form|text, schema: schema | schema_ref(Atom),
+ref?: input(Name)}`. The closed inline `schema` vocabulary is
+`{type: object|array|string|integer|number|boolean|null, properties?, required?,
+items?, enum?, minimum?, maximum?, min_length?, max_length?}` or a
+`schema_ref(Atom)` naming a host-registered schema.
+
+**Response contract** (one per independently verifiable behavior):
+
+```prolog
+http_response_contract{scenario: valid_request | invalid_body | unauthenticated
+                                     | forbidden | missing_resource | conflict
+                                     | rate_limited | server_error,
+                       status: exact(I in 100..599) | class(1xx|2xx|3xx|4xx|5xx),
+                       headers: [header_contract],
+                       body: body_contract | none,  % none ⇒ empty body required
+                       location?: path_template,    % 201/3xx Location
+                       cache?: no_store | no_cache | max_age(N),
+                       pagination?: {kind: cursor|page_number, fields:[atom]}}
+```
+
+Scenario derivability (validated at assertion validate time):
+`invalid_body` requires a request body schema; `unauthenticated` requires
+`auth ≠ none`; `forbidden` requires `auth.scope`; `conflict` requires
+`idempotency:required`; `missing_resource` requires non-empty `path_params`.
+A non-derivable scenario is a validator fault. The observer reproduces each
+negative scenario mechanically from the declared contract (strip auth, mutate
+body to violate the schema, reuse the fixture for `conflict`, …);
+`rate_limited`/`server_error` are passive (uninducible ⇒ `indeterminate`,
+never silently passed).
+
+Example — one endpoint, four behavioral requirements (201 / 400 / 401 / 409):
+
+```prolog
+require(create_user,
+    assertion(http_endpoint, _{service:user_api,
+        request:_{method:post, path:"/users",
+                  content_type:"application/json", accept:["application/json"],
+                  auth:_{scheme:bearer}, idempotency:required,
+                  body:_{type:json,
+                         schema:_{type:object,
+                                  properties:_{name:_{type:string},
+                                               email:_{type:string}},
+                                  required:[name, email]}}},
+                  inputs:[input_decl{name:user_payload, type:json, required:true}]},
+        responses:[
+            _{scenario:valid_request,   status:201,
+              headers:[header_contract{name:location, value:"/users/{id}"}],
+              body:_{type:json, schema:_{type:object,
+                                        properties:_{id:_{type:integer}},
+                                        required:[id]}}},
+            _{scenario:invalid_body,    status:400,
+              body:_{type:json, schema:_{type:object,
+                                         properties:_{error:_{type:string}}}}},
+            _{scenario:unauthenticated, status:401},
+            _{scenario:conflict,        status:409}
+        ]}))
+```
+
+### 10.2 Network protocol extension points
+
+Additional trusted assertion kinds, each with closed arg schemas and
+observers declaring `network(observation)`: `dns_resolves{name, expected?}`,
+`tcp_reachable{host, port, timeout_ms}`, `port_listening{host, port,
+protocol:tcp|udp}`, `tls_certificate{host, port, identity?, min_protocol?,
+valid_window_days?}`, `http_redirect{request, max_hops}`, `websocket_upgrade{
+url, subprotocol?}`, `sse_stream{url, min_events?, within_ms}`,
+`latency_bound{…, p95_ms}`, `proxy_behavior{…, via}`,
+`network_isolated{hosts}` (negative observation: requests must fail). None
+are forced onto projects; all share the registry/evidence path of Section 4.
+
+### 10.3 Network authority (closed mapping)
+
+| Concept | Owner |
+|---|---|
+| network behavior required by SPEC | frozen assertion data only |
+| network observation capability | `network(observation)` — required by the observer, declared in the trusted provider-pack side table (`observer_required_capabilities/2`), checked by host, NEVER added by spec compilation (the merged `assertion_provider/6` metadata schema is closed and carries no capability field) |
+| network execution capability | `tool(sync_remote)` etc. for plan ops + durable effect admission + `rlm_authority` tier |
+| network mutation/effect authority | effect boundary dispatch under an explicit tier; observation capability never implies it |
+
+`SPEC requires HTTPS endpoint to return 200` does NOT imply arbitrary internet
+access. Compiling such a spec leaves the host capability set unchanged; if the
+observer lacks `network(observation)` the observation is
+`indeterminate(policy_denied)`, not a pass and not a retry authorization.
+
+### 10.4 Normalized HTTP observation
+
+The observer returns an `rlm_observation` payload (merged evidence contract)
+whose `value` is:
+
+```prolog
+http_observation{requirement_id, scenario, service,
+                 request{method, resolved_url, resolved_path, query,
+                         headers_ref, body_ref | bounded_inline},
+                 status, response_headers_ref, body_ref | bounded_inline,
+                 body_schema_result: match | mismatch(Detail) | not_checked,
+                 redirect_chain:[url],
+                 timing{connect_ms, ttfb_ms, total_ms},
+                 tls{verified, identity, protocol} | none,
+                 state_ref, freshness, provenance, evidence_refs}
+```
+
+Body representation: `body_ref` (artifact/evidence ref) preferred; bounded
+inline only under a fixed byte cap; oversized ⇒ ref only. The pure evaluator
+consumes this payload only. Model prose is never an HTTP observation: payloads
+must carry `trust_class:observed` / `source_class:external_observation`; a
+`model_claim` payload is rejected by the evaluator.
+
+## 11. PLAN → SPEC compatibility (ONE canonical API)
+
+```prolog
+plan_validate_against_spec(+ValidatedPlanGraph, +FrozenSpec,
+                           +Environment, -Outcome)
+Environment = plan_environment{capabilities:[capability],
+                               inputs:dict,
+                               expert_registry:[expert_contract]}
+```
+
+There is exactly one predicate with this name and arity. Fail-closed checks
+(structured `plan_graph_error{kind:spec_compat(...)}`):
+
+1. `foreign_spec_reference` — every `validate/1` step fingerprint equals
+   `FrozenSpec.ref.fingerprint`.
+2. `dropped_obligation(ReqId)` — every **required** requirement whose
+   assertion kind is declared `plan_established` by a trusted host mapping
+   (S8's closed `requirement_establishment/2` table; e.g. `tdd_evidence`
+   requires a code change; observation-only kinds like `build_ok`,
+   `test_passes`, `http_endpoint` require none) must be covered by an
+   `obligation(step:S, satisfies:ReqId)` where `S` is an establishing step
+   (`edit/create/delete/run`). A `validate/1` step VERIFIES the frozen spec;
+   it never ESTABLISHES a requirement, so a patch cannot hide a dropped
+   obligation behind a validate step.
+3. `forbidden_effect_in_plan(StepId, Effect)` — step effect classes checked
+   against the spec's invariant data; desugared invariants are stored
+   UNWRAPPED (`forbidden_effect(Effect)` terms inside `invariants`).
+4. `capability_widen(StepId, Cap)` — per-op capability requirements ⊆
+   environment capabilities; `delegate/2` narrowing enforced (BASE).
+5. `dangling_input(StepId, Name)` — expr `input(Name)` markers resolve from
+   environment inputs or dependency-closure step binds (D6-1).
+6. `unknown_expert(ToolName)` — expert registry preflight (BASE).
+7. spec-declared `input_decl{name, required:true}` values must be present in
+   `Environment.inputs` (`missing_spec_input(Name)`). Assertion arguments are
+   normalized by the merged `canonical_data` pipeline, which retags every
+   dict to `assertion_args`; compatibility checkers therefore match input
+   declarations by their normalized key set (`name`/`type`/`required`),
+   never by the authoring tag.
+
+### 11.1 Replanning
+
+A plan patch is typed data:
+
+```prolog
+plan_patch{op: add | remove | replace, step: Step,
+           edges: [depends_on], obligations: [obligation],
+           reason: atom, provenance: model_claim}
+```
+
+Application re-runs the full chain: parse → plan-graph validation →
+`plan_validate_against_spec/4` against the **same** frozen spec. A patch may
+change HOW, never WHAT: removing or replacing a step that is the sole
+establisher of a required obligation fails with `dropped_obligation`, and
+there is no "accepted patch" path around it. If acceptance requirements
+change: new SPEC source → validate → freeze **new version** → new plan.
+No plan authority weakens the frozen spec; the graph id/resume binding keeps
+checkpoints spec-fingerprint-bound (merged `rlm_spec_workflow` rule).
+
+## 12. Durability
+
+### 12.1 Durable PLAN KB
+
+Follows the merged `rlm_graph_persist` pattern (SWI persistency, one
+checkpoint per run + append-only ordered events):
+
+```prolog
+plan_kb_record(plan_id:atom, spec_fingerprint:atom, snapshot:any).   % replaced per plan
+plan_kb_event_record(plan_id:atom, sequence:integer, event:any).     % append-only
 ```
 
 ```prolog
-known_failure(Property, Context, Reason).
-reject(Candidate, Reason) :-
-    candidate_property(Candidate, Property),
-    candidate_context(Candidate, Context),
-    known_failure(Property, Context, Reason).
+plan_kb_snapshot{spec_ref, graph, statuses, results,
+                 bindings,                 % bind-name → value (closed data)
+                 expert_checkpoints, budget_remaining, position,
+                 repair_count, failure_refs, evidence_refs,
+                 effect_attempt_refs}
 ```
 
-Rejection happens before execution of the candidate step. Similarity alone
-never becomes authority (trust-class rule); an embedding hit without a
-validated rule is a lead, not a constraint.
+Events: `step_transition`, `expert_checkpoint`, `observation_ref`,
+`effect_attempt_ref`, `patch_event{accepted|rejected, patch}`, `repair`.
+Persisted bindings mean a restart cannot lose generated content a downstream
+write expert needs. Resume rule: the stored `spec_fingerprint` must match the
+bound frozen spec; a stale plan KB against a newer spec version is refused,
+forcing re-seed. Restart mid-step: expert loops resume from their last
+`expert_checkpoint`; effect attempts found in `dispatching` without an
+observation stay conservatively `indeterminate` (merged effect rule) and are
+never implicitly resubmitted. `abandoned` is terminal.
 
-## 21. End-state walkthrough (target behavior)
+### 12.2 Long-horizon research/design KB
 
-Given the Section 3 example spec: `spec_source_normalize` →
-`validateSpec(Source, Env, ok(...))` (all diagnostics empty; capabilities
-present; inputs resolved) → `spec_freeze/3` →
-`plan_seed_from_spec(Frozen, Ctx, ok(Seed))` with steps
-`[sync_remote, index, observe/verify ×3, artifact_verify(test_report)]` and
-edges from `ordering/2` → model proposes the Section 8 plan (candidate,
-`model_claim`) → `plan_graph_parse` → `plan_graph_validate` →
-`plan_validate_against_spec` (mutations justified by `satisfies(updateFoo)`;
-no forbidden effects; capabilities unchanged) → ready-step loop with
-expert-scoped compilation and native model steps → observations collected →
-`spec_verify/4` → `verification_report{status:passed}` → FINAL. Any failed
-verification routes to bounded repair with `spec_ref` unchanged; any failed
-spec validation routes to spec-source repair before any plan exists.
+`research/spec-plan-refinement-kb.pl` is the working control plane for this
+design process. Hardened rules (implemented in the same slice as this
+document):
 
-## 22. Open questions
+- persisted state includes tasks, status, dependencies, evidence refs,
+  decisions with validation state, open questions, provenance;
+- `kb_task_done/1` requires status `done` **and** completion evidence
+  (`kb_evidence/2`) or a validated decision (`kb_decision/4` in state
+  `validated`). A bare `status(done)` fact is not authoritative;
+- the design gate checks KB consistency (no evidence-free `done`, no
+  candidate-only decisions treated as validated, dependency closure sound).
 
-- Q1: `run/1` command specifications: closed allow-list form vs host-registered
-  command kinds (recommend the latter; command text never plan-controlled).
-- Q2: `symbol_version/2` retention policy for historical symbol snapshots.
-- Q3: grouping granularity for validation obligations (per requirement vs per
-  assertion kind) — affects step counts; decide during slice S3 with the
-  aggregate budget in hand.
-- Q4: intent feature extraction for non-English requests (defer; feature
-  schema is language-agnostic).
+## 13. Implementation dependency DAG
 
-## 23. Implementation dependency graph (design target D22)
+Slices are ordered after the architecture. Each slice carries RED tests →
+implementation → GREEN validation. Provided/consumed APIs are matched
+mechanically by the design gate (no cycles, no ghosts, no missing provider
+edges).
 
-Implementation happens in separately-gated slices; nothing here is merged by
-this document:
+| Slice | Provides | Consumes | Depends on |
+|---|---|---|---|
+| S0 | plan-graph BASE (`rlm_plan_graph` unmodified) | `rlm_plan`, `rlm_tool`, `rlm_async` | — (merge rage/288) |
+| S1 | `rlm_project_reference` (Section 5 grammar normalization/validation) | — | S0 |
+| S2 | project index/retrieval engine: symbol extraction, locate/search/read/diff execute ABI + observations | `rlm_project_source`, `rlm_tree_sitter`, `rlm_evidence` | S1 |
+| S3 | diff sides incl. `revision/1` resolution | S1, S2 | S2 |
+| S4 | write engine: `edit_action` application, effect-boundary integration | `rlm_effect_*`, `rlm_authority`, S1 | S1 |
+| S5 | D6 deltas: expr dataflow, content/obligations, expert contracts + inner capabilities | S0, S2, S4 | S4 |
+| S6 | assertion provider pack: language/build/test/symbol/TDD | `rlm_assertion`, S1, S2, S3 | S5 |
+| S7 | HTTP/network provider pack + normalized observation | `rlm_assertion`, `rlm_evidence` | S5 |
+| S8 | `plan_validate_against_spec/4` + patches + replan safety | S0, S5, `rlm_spec` | S6 |
+| S9 | durable plan KB (bindings, checkpoints, resume) | S0, S5, `rlm_graph_persist` | S5 |
+| S10 | strategy adoption: merge `rlm_direct`/`rlm_spec_strategy`; expert-loop `model_step_handler` wiring | S5, `rlm_plan` native handler | S5 |
+| S11 | `rlm_spec_workflow` integration, docs, roadmap reconciliation | S6–S10 | S10 |
 
-```text
-S1 spec-language delta + environment-aware validateSpec + diagnostics
-   (rlm_spec_lang/rlm_spec; gate G2)                     [no deps]
-S2 reconcile plan-graph slice onto current main (plan JSON args,
-   native session handlers, budget netting)               [no deps]
-S3 plan_seed_from_spec + plan-KB persistence/resume       [S1, S2]
-S4 plan_validate_against_spec + typed plan patches        [S2, S3]
-S5 project index engine: symbol extraction (#96-#99), locate/read/diff
-   endpoints + resolution states                          [S2]
-S6 project write engine via durable effect boundary       [S5]
-S7 validation engine assertion kinds (tests/build/lint/...) [S5]
-S8 expert mapping catalog + expert-scoped context compilation [S3, S5, S6]
-S9 intent system + strategy_select mode chooser           [S8]
-S10 long-horizon KB + failure-knowledge durable flows     [S3]
-```
+Networking providers (S7) depend on the assertion/evidence substrate
+(IMPLEMENTED), not on project write (S4). Write (S4) depends on normalized
+target resolution (S1). Expert dataflow (S5) exists before any expert that
+consumes generated outputs (S6/S7 consumers, S10 wiring). Durable execution
+(S9) persists bindings before long-horizon resume is claimed (S11).
 
-Each slice lands with TDD tests, deterministic-suite greenness, and doc
-updates per repository discipline; slices touching external effects require
-the effect-boundary conformance checks.
+RED-test highlights per slice: S0 — adopted rage/288 suite; S1 — reference
+grammar counterexamples; S2 — symbol resolution unresolved/ambiguous cases;
+S4 — duplicate-edit effect admission (externally observable counter);
+S5 — two-step bind/consume round trip; S6 — fresh SWI process tdd_evidence
+fixture (real failing→passing test, red observation proven externally); S7 —
+malformed contract rejections + capability-absent observation refusal; S8 —
+obligation-drop rejection; S9 — fresh-process restart with a bound generated
+edit; S10 — native session budget charge-back under the step budget.
+
+## 14. Design gate
+
+`scripts/design_gate.pl` (deterministic; no model/API/network calls) replaces
+the presence-only #288 contract script. It validates the normative design
+through real implementations and currently runs 47 checks in 10 groups:
+
+- **spec_grammar_checks (10)** — the normative SPEC examples (dataset,
+  language+symbol+build+test domain, TDD, HTTP endpoint) compile through the
+  real `spec_source_compile/4` with a gate host registry implementing the
+  Section 4/10 argument schemas; the BLOCKER counterexamples from the failed
+  PR #290 design (`spec/2` root, unknown form, wrong form arity, duplicate
+  ids, executable-shaped data, unknown assertion kind) are rejected by the
+  real merged parser.
+- **plan_base_checks (7)** — BASE plan graphs parse and validate through the
+  ADOPTED `rlm_plan_graph` module; unknown op, delete-with-four-args,
+  malformed symbol ref, capability denial, delegate widening, and JSON
+  unknown-capability counterexamples are rejected by its real validator.
+- **d6_delta_checks (5)** — the D6 grammar (expr leaves, read selector, edit
+  content, obligations) validates through the gate checker; dangling input,
+  non-grammar expr (`expr(call(...))`), shell-string command, and ghost
+  obligation counterexamples are rejected.
+- **dataflow_checks (1)** — the full typed dataflow round trip: the locate
+  step executes through the MERGED `rlm_plan` ABI, binds `foo_loc`; the read
+  step resolves `field(input(foo_loc), span)` to that exact span, executes,
+  binds source text; the resolved edit carries the bound content — proving
+  step A output is consumed by step B through the declared grammar.
+- **capability_safety_checks (2)** — compiling an HTTP-required spec leaves
+  the environment capability set unchanged; observing without
+  `network(observation)` lands as a conservative `indeterminate(policy_denied)`
+  evidence payload via the real `observation_normalize/2`, never a pass.
+- **replan_safety_checks (5)** — `plan_validate_against_spec_gate` accepts
+  the obligation-preserving graph; rejects a patch removing the sole
+  obligation-establishing step (`dropped_obligation`) even though the
+  validate step remains; rejects foreign spec fingerprints, missing required
+  SPEC inputs, and steps hitting `forbidden_effect` invariants.
+- **tdd_evidence_checks (4)** — the evaluator directly (red-failed +
+  green-passed ⇒ passed; red-passed ⇒ `indeterminate(evidence_not_red)`) and
+  through the REAL `spec_verify/4` pipeline with registry identity binding
+  (passed ⇒ report passed; not-red ⇒ report rejected).
+- **http_contract_checks (4)** — status 700, status class 6xx, non-derivable
+  conflict (idempotency stripped), and body-without-schema are rejected by
+  the designed schema.
+- **edit_action_checks (5)** — `edit_action` accepted/rejected cases;
+  expert contract accepted; capability widening rejected.
+- **durability_checks + kb_dag_checks (3)** — a `plan_kb_snapshot` with a
+  bound generated edit survives a real persistency round trip
+  (`rlm_graph_persist`); the research KB discipline check (no evidence-free
+  done, no ghost deps, no cycles, candidate decisions not counted as
+  validated); the S0–S11 slice DAG check (no cycles, no ghosts, S0 root).
+
+CI: the gate runs as a deterministic step in the canonical GitHub Actions
+workflow (`ci.yml`, after research-approval validation; no paid model calls).
+Engineering notes from building it, now encoded as gate checks: SWI
+partial-key dict patterns never unify with full dicts (use `get_dict/3`);
+clause-level variable sharing between check goals silently compares one
+check's binding against the previous check's (every check goal must be a
+self-contained helper predicate); anonymous dict tags (`_{...}`) are fresh
+variables, so they are not ground (plan data and evidence payloads must use
+bound tags); and outcome-style predicates must be called with a fresh
+variable, then matched (direct `error(_)` unification fails against
+cut-committed alternatives).
+
+## 15. Open questions
+
+1. Snapshot materialization for `tdd_evidence` pre-revisions on large
+   repositories (checkout vs. overlay) — performance envelope to be measured
+   in S6.
+2. `schema_ref` registry governance for HTTP schemas (who registers, review
+   path) — owner decision needed before S7.
+3. Bounded inline representation cap for HTTP bodies (default 4096 bytes) —
+   confirm with operator input.
+4. Whether `public_api_compatible` needs per-language visibility rules beyond
+   the 13-atom kind set — revisit after S2 extraction lands.
+5. Plan-KB event compaction policy for very long runs (append-only history
+   vs. bounded retention) — S9 concern.
