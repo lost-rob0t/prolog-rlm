@@ -87,7 +87,7 @@ Verification decides whether the Frozen SPEC is satisfied.
 | Trusted assertion registry | `prolog/rlm_assertion.pl` | `assertion_provider(Kind, SchemaVersion, Validator, Evaluator, Observer, Metadata)`; no public registration path for model data |
 | Evidence model | `prolog/rlm_evidence.pl` | `evidence_policy{required_evidence, source_classes, trust_classes, freshness, coherence, state_ref}` with narrowing; `rlm_observation{...}`; statuses incl. `indeterminate/1`; trust classes `trusted/observed/model_claim/derived/unresolved` |
 | Pure verification + observation ABI | `prolog/rlm_verify.pl` | `spec_verify/4` (pure), `spec_observe/5`, `spec_observe_async/5`, `spec_observe_execute/5`; verifier/collector identity binding; coherence enforcement |
-| Typed plan runtime | `prolog/rlm_plan.pl` | closed AST `context/3, model/4, rlm/2, tool/3, parallel/2, retry/3, checkpoint/1, final/1`; expressions `input/1, var/1, field/2, literal/1, list/1, object/1`; capability subset validation; `plan_budget`; native `model_step_handler` with charge-back |
+| Typed plan runtime | `prolog/rlm_plan.pl` | closed AST `context/3, model/4, rlm/2, tool/3, parallel/2, retry/3, checkpoint/1, final/1`; expressions `input/1, var/1, field/2, literal/1, list/1, object/1`; capability subset validation; `plan_budget` |
 | Structured outcomes + bounded repair | `prolog/rlm_outcome.pl` | `plan_outcome/5`, `plan_repair/6` |
 | Durable graph orchestration | `prolog/rlm_graph.pl`, `prolog/rlm_graph_persist.pl` | declarative node/edge specs; SWI persistency checkpoints + event history; resume |
 | Spec workflow composition | `prolog/rlm_spec_workflow.pl` | prepare→execute→observe→verify→repair→finish; `spec_plan_bind/4`; graph id includes frozen fingerprint |
@@ -107,6 +107,8 @@ Verification decides whether the Frozen SPEC is satisfied.
 |---|---|---|
 | `prolog/rlm_plan_graph.pl` closed project-op vocabulary, ready-step executor, `symbol_ref`/`source_span` contracts, contract script, tests | `rage/288-spec-plan-graph-executor` | **ADOPT AS BASE** for the PLAN layer (Section 6). The reconciliation implementation slice owns every delta listed in Section 6.4. |
 | `prolog/rlm_direct.pl` bounded provider-native direct loop; `prolog/rlm_native_tool.pl`; `rlm_direct_model_step/10` as the `rlm_plan` `model_step_handler` | `docs/spec-seeded-symbolic-plans` (PR #290 branch) | **ADOPT** as the native model-session provider for expert inner loops and direct mode. Merging it is its own slice (S10). |
+| `prolog/rlm_plan.pl` native `model_step_handler` hook with `charge_native_model_execution/2` charge-back (merged `rlm_plan` has neither; `git show main:prolog/rlm_plan.pl`) | same branch | **ADOPT via S10** together with `rlm_direct_model_step/10`: the branch-only hook is UNMERGED-adoption surface, not merged-main capability. |
+| `prolog/rlm_tool.pl` extra `capability_shape(spec/1)` and `capability_shape(plan/1)` shapes (merged `rlm_tool` has neither) | same branch | **ADOPT via S10** as part of the strategy adoption slice; until merged, capability data using these shapes is validated against this checkout's modules, not merged main. |
 | `prolog/rlm_spec_strategy.pl` strategy bind/execute with modes `direct` and `typed_plan` | same branch | **ADOPT** with one normalization boundary (Section 7.1). |
 
 ### 2.3 NEW DESIGN TARGETS (exist nowhere today)
@@ -564,10 +566,12 @@ retrieve current context (host retrieval tools)
 Mechanically, the expert's inner loop runs as a nested `rlm_plan` execution
 (validate + execute ABIs) whose capability set is
 `[tool(Op) | expert_contract.inner_capabilities]` and whose steps may include
-merged `model/4` steps — the merged native `model_step_handler` (provided by
-UNMERGED `rlm_direct_model_step/10` once S10 merges) executes provider-native
-sessions with charge-back into the shared step budget
-(`charge_native_model_execution/2`). Loop state:
+merged `model/4` steps — the native `model_step_handler` executes
+provider-native sessions with charge-back into the shared step budget
+(`charge_native_model_execution/2`). Both the handler hook and the charge-back
+predicate are UNMERGED (§2.2): they exist on this branch's `rlm_plan.pl` and
+are provided by UNMERGED `rlm_direct_model_step/10`; merged `rlm_plan` has
+neither. Adoption is S10. Loop state:
 
 | Aspect | Contract |
 |---|---|
