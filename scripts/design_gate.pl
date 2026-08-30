@@ -719,6 +719,7 @@ dataflow_round_trip :-
     dataflow_graph_plan_graph(Input),
     dataflow_env_inputs(EnvInputs),
     d6_validate_graph(Input, EnvInputs, Graph),
+    d6_resolve_step_args(find_foo, Graph, empty_inputs{}, LocateArgs),
     % 1. Execute the locate step through the MERGED rlm_plan ABI.
     d6_desugar(find_foo, locate, Graph, _{}, PlanLocate),
     plan_validate(PlanLocate, [tool(locate)], default, ok(VLocate)),
@@ -734,6 +735,10 @@ dataflow_round_trip :-
     put_dict(foo_loc, empty_inputs{}, FooBinding, Binding1),
     d6_resolve_step_args(read_foo, Graph, Binding1, ReadArgs),
     ReadArgs == read(source(span(LocSpan))),
+    % Resolved values are re-validated against the strict post-admission
+    % shape, not merely compared for equality.
+    d6_args_shape_resolved(locate, LocateArgs),
+    d6_args_shape_resolved(read, ReadArgs),
     % 3. Desugar + execute the read step; the handler only succeeds when it
     %    receives exactly the locate span.
     d6_desugar_with_args(read, ReadArgs, foo_src, PlanRead),
@@ -750,7 +755,8 @@ dataflow_round_trip :-
     EditArgs = edit(target(ref(symbol_ref(EditRef))),
                     content(EditContent)),
     get_dict(name, EditRef, foo),
-    EditContent == "function foo(a, b) { ... }".
+    EditContent == "function foo(a, b) { ... }",
+    d6_args_shape_resolved(edit, EditArgs).
 
 locate_handler(locate(symbol_ref(Ref)),
                symbol_binding{span:Span,
@@ -1667,11 +1673,9 @@ d6_args_shape_resolved(read, read(source(S))) :- d6_source_selector(S).
 d6_args_shape_resolved(diff, diff(L, R)) :- d6_diff_side(L), d6_diff_side(R).
 d6_args_shape_resolved(edit, edit(target(T), content(C))) :-
     d6_edit_target(T),
-    (   atom(C), C \== '' -> true
-    ;   is_dict(C) -> edit_action_ok(C)
-    ).
+    d6_text_value(C).
 d6_args_shape_resolved(create, create(path(A), content(C))) :-
-    path_atom(A), atom(C), C \== ''.
+    path_atom(A), d6_text_value(C).
 d6_args_shape_resolved(delete, delete(path(A))) :- path_atom(A).
 d6_args_shape_resolved(run, run(command(argv(L)))) :-
     is_list(L), L \== [], forall(member(X, L), atom(X)).
@@ -1682,8 +1686,10 @@ d6_args_shape_resolved(delegate, delegate(task(A), caps(C))) :-
 d6_scope(all).
 d6_scope(path(A)) :- path_atom(A).
 
-% Any typed leaf position may be expr(E) statically; the resolved value is
-% re-validated against the strict type after admission-time substitution.
+% Any typed leaf position may be expr(E) statically. Post-resolution strict
+% shapes are enforced by d6_args_shape_resolved/2; the dataflow round trip
+% applies it to every resolved step it executes, so admission-time
+% substitution is followed by strict re-validation.
 d6_leaf(expr(E), _) :- !, d6_graph_expr(E).
 d6_leaf(V, Check) :- call(Check, V).
 
@@ -1709,8 +1715,19 @@ d6_edit_target(ref(symbol_ref(Leaf))) :-
     d6_leaf(Leaf, design_gate:symbol_ref_dict).
 d6_edit_target(span(Leaf)) :- d6_leaf(Leaf, design_gate:span_value).
 
-d6_content(literal(Text)) :- atom(Text).
+d6_content(literal(Text)) :- d6_text_value(Text).
 d6_content(expr(E)) :- d6_graph_expr(E).
+
+% Text values are atoms or SWI strings (never ''), matching the doc's
+% "text or a valid edit_action dict" content contract (D6-2). A resolved
+% edit content may also be a validated edit_action dict.
+d6_text_value(Text) :-
+    (   atom(Text) ; string(Text)
+    ),
+    Text \== ''.
+d6_text_value(C) :-
+    is_dict(C),
+    edit_action_ok(C).
 
 % Closed graph-level expression grammar (merged rlm_plan expressions minus
 % var/1, which belongs to the desugared layer).
