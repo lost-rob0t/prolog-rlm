@@ -705,14 +705,17 @@ d6_obligations_of(Source, Obligations) :-
 
 dataflow_checks :-
     check(d6_dataflow_round_trip,
-          dataflow_round_trip).
+          dataflow_round_trip),
+    check(spec_input_env_dataflow,
+          spec_input_env_dataflow_run).
 
 % Self-contained so every variable is fresh per invocation (clause-level
 % sharing of the earlier inline form made this check compare bindings from
 % the previous invocation).
 dataflow_round_trip :-
     dataflow_graph_plan_graph(Input),
-    d6_validate_graph(Input, Graph),
+    dataflow_env_inputs(EnvInputs),
+    d6_validate_graph(Input, EnvInputs, Graph),
     % 1. Execute the locate step through the MERGED rlm_plan ABI.
     d6_desugar(find_foo, locate, Graph, _{}, PlanLocate),
     plan_validate(PlanLocate, [tool(locate)], default, ok(VLocate)),
@@ -754,6 +757,36 @@ locate_handler(locate(symbol_ref(Ref)),
 
 read_handler(read(source(span(Span))), "function foo(a, b) { ... }") :-
     Span == source_span{file:'src/foo.pl', start_byte:10, end_byte:20}.
+
+% §3.3/§11.5: the canonical way a plan step consumes a SPEC-declared
+% input_decl — expr(input(<spec_input>)) resolved from environment inputs.
+spec_input_graph(plan_graph(
+    steps([step(store_payload, create,
+                create(path('out/payload.txt'),
+                       content(expr(input(user_payload)))),
+                payload)]))).
+
+% Positive round trip: the graph validates when user_payload is present in
+% the environment inputs and the resolved create content IS the bound
+% environment value. Negative: with the environment missing the input the
+% same graph dangles at validation (no step-reference rescue exists), and
+% the compat layer faults missing_spec_input regardless of the step
+% reference — the inverted escape hatch is removed (§11 item 7).
+spec_input_env_dataflow_run :-
+    dataflow_env_inputs(EnvInputs),
+    spec_input_graph(Input),
+    d6_validate_graph(Input, EnvInputs, Graph),
+    d6_resolve_step_args(store_payload, Graph, EnvInputs, Resolved),
+    Resolved = create(path('out/payload.txt'), content(Payload)),
+    get_dict(name, Payload, "n"),
+    \+ d6_validate_graph(Input, empty_inputs{}, _),
+    frozen_design_spec(Frozen),
+    d6_parse_graph(Input, Decoded),
+    d6_compat_checks(Decoded, Frozen,
+                     plan_environment{capabilities:[], inputs:gate_inputs{}},
+                     Faults),
+    member(missing_spec_input(user_payload), Faults),
+    member(dangling_input(store_payload, user_payload), Faults).
 
 /* ------------------------------------------------------------------ */
 /* Capability safety: SPEC grants nothing                              */
@@ -1425,13 +1458,19 @@ d6_decode_obligation(O, _) :-
     throw(gate_fault(d6_invalid_obligation(O))).
 
 d6_validate_graph(Input, Graph) :-
+    d6_validate_graph(Input, empty_inputs{}, Graph).
+
+% Environment-aware validation (D6-1): the execution input dict is part of
+% the graph's binding context, so expr input(Name) leaves resolve from
+% Environment.inputs FIRST, then from dependency-closure step binds.
+d6_validate_graph(Input, EnvInputs, Graph) :-
     d6_parse_graph(Input, Decoded),
     get_dict(steps, Decoded, Steps),
     get_dict(deps, Decoded, Deps),
     d6_check_vocabulary(Steps),
     d6_check_ids(Steps),
     d6_check_arg_shapes(Steps),
-    d6_check_closure(Steps, Deps, _{}),
+    d6_check_closure(Steps, Deps, EnvInputs),
     d6_check_obligations(Decoded),
     Graph = Decoded.
 
@@ -1565,7 +1604,7 @@ symbol_ref_dict(Ref) :-
     ;   true
     ).
 
-d6_check_closure(Steps, Deps, _Inputs) :-
+d6_check_closure(Steps, Deps, EnvInputs) :-
     maplist(d6_dep_pair, Deps, DepPairs),
     forall(member(Step, Steps),
            (   get_dict(id, Step, Id),
@@ -1573,16 +1612,20 @@ d6_check_closure(Steps, Deps, _Inputs) :-
                get_dict(args, Step, Args),
                d6_expr_inputs(Args, Refs),
                forall(member(Ref, Refs),
-                      d6_resolvable(Id, B, Ref, Steps, DepPairs))
+                      d6_resolvable(Id, B, Ref, Steps, DepPairs, EnvInputs))
            )).
 
-% A reference resolves when it names a step bind reachable through the
-% dependency closure (self-reference is dangling).
-d6_resolvable(Id, B, Ref, Steps, DepPairs) :-
-    Ref \== B,
-    member(Step, Steps),
-    get_dict(bind, Step, Ref),
-    reachable_bind(Id, Ref, Steps, DepPairs, [Id]).
+% D6-1 resolution order: environment inputs first, then a step bind
+% reachable through the dependency closure (self-reference is dangling).
+d6_resolvable(Id, B, Ref, Steps, DepPairs, EnvInputs) :-
+    (   is_dict(EnvInputs),
+        get_dict(Ref, EnvInputs, _)
+    ->  true
+    ;   Ref \== B,
+        member(Step, Steps),
+        get_dict(bind, Step, Ref),
+        reachable_bind(Id, Ref, Steps, DepPairs, [Id])
+    ).
 
 reachable_bind(Id, Ref, Steps, DepPairs, Seen) :-
     member(Id-Rs, DepPairs),
@@ -1759,8 +1802,8 @@ d6_compat_checks(Graph, Frozen, Env, Faults) :-
     d6_compat_foreign_refs(Graph, Frozen, Faults0),
     d6_compat_obligations(Graph, Frozen, Faults1),
     d6_compat_forbidden(Graph, Frozen, Faults2),
-    d6_compat_dangling(Graph, Faults3),
-    d6_compat_spec_inputs(Frozen, Env, Graph, Faults4),
+    d6_compat_dangling(Graph, Env, Faults3),
+    d6_compat_spec_inputs(Frozen, Env, Faults4),
     append([Faults0, Faults1, Faults2, Faults3, Faults4], Faults).
 
 d6_compat_foreign_refs(Graph, Frozen, Faults) :-
@@ -1824,9 +1867,10 @@ d6_step_effects(run, _, [process(run)]).
 d6_step_effects(sync_remote, _, [network(git)]).
 d6_step_effects(_, _, []).
 
-d6_compat_dangling(Graph, Faults) :-
+d6_compat_dangling(Graph, Env, Faults) :-
     get_dict(deps, Graph, Deps),
     get_dict(steps, Graph, Steps),
+    get_dict(inputs, Env, EnvInputs),
     maplist(d6_dep_pair, Deps, DepPairs),
     findall(dangling_input(StepId, Name),
             (   member(Step, Steps),
@@ -1835,24 +1879,21 @@ d6_compat_dangling(Graph, Faults) :-
                 get_dict(args, Step, Args),
                 d6_expr_inputs(Args, Refs),
                 member(Name, Refs),
-                \+ d6_resolvable(StepId, B, Name, Steps, DepPairs)
+                \+ d6_resolvable(StepId, B, Name, Steps, DepPairs, EnvInputs)
             ),
             Faults).
 
-d6_compat_spec_inputs(Frozen, Env, Graph, Faults) :-
+% §11 item 7: a required SPEC input declaration must be present in
+% Environment.inputs. Period. Whether any step happens to reference the
+% name is irrelevant — the reference-based escape hatch is removed.
+d6_compat_spec_inputs(Frozen, Env, Faults) :-
     spec_declared_inputs(Frozen, Decls),
-    get_dict(steps, Graph, Steps),
     get_dict(inputs, Env, EnvInputs),
     findall(missing_spec_input(Name),
             (   member(Decl, Decls),
                 get_dict(name, Decl, Name),
                 get_dict(required, Decl, true),
-                \+ get_dict(Name, EnvInputs, _),
-                \+ (   member(Step, Steps),
-                       get_dict(args, Step, Args),
-                       d6_expr_inputs(Args, Refs),
-                       member(Name, Refs)
-                   )
+                \+ get_dict(Name, EnvInputs, _)
             ),
             Faults).
 
