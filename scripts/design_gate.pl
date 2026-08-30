@@ -383,6 +383,9 @@ observer_required_capabilities(tdd_evidence, [process(observation),
 observer_required_capabilities(file_language, [filesystem(observation)]).
 observer_required_capabilities(symbol_exists, [filesystem(observation)]).
 observer_required_capabilities(symbol_arity, [filesystem(observation)]).
+observer_required_capabilities(record_count, [filesystem(observation)]).
+observer_required_capabilities(public_api_compatible,
+                               [filesystem(observation)]).
 
 % Trusted host configuration (S8): which assertion kinds require a plan
 % establishing step. Model data cannot change this mapping.
@@ -837,7 +840,13 @@ capability_safety_checks :-
     % reconciliation: the observation is indeterminate(policy_denied),
     % never passed, and the report is rejected. The granted twin proves the
     % refusal branch is computed, not pre-set.
-    check(host_observation_refusal, host_observation_refusal_run).
+    check(host_observation_refusal, host_observation_refusal_run),
+
+    % The provider-pack side table is complete: every registry kind
+    % declares its required observation capabilities, every required
+    % capability is a valid merged capability shape, and every one is
+    % observation-scoped (observation capability is never write authority).
+    check(observer_side_table_complete, observer_side_table_complete_run).
 
 frozen_http_spec(Frozen) :-
     design_registry(Registry),
@@ -964,6 +973,20 @@ frozen_subterm(Term, Sub) :-
     Term =.. [_|Args],
     member(Arg, Args),
     frozen_subterm(Arg, Sub).
+
+observer_side_table_complete_run :-
+    design_registry(Registry),
+    forall(member(Provider, Registry),
+           (   Provider = assertion_provider(Kind, _, _, _, _, _),
+               observer_required_capabilities(Kind, Required),
+               Required \== [],
+               forall(member(Cap, Required),
+                      (   rlm_tool:capability_shape(Cap),
+                          Cap =.. [Scope, Name],
+                          Name == observation,
+                          memberchk(Scope, [network, filesystem, process])
+                      ))
+           )).
 
 /* ------------------------------------------------------------------ */
 /* PLAN → SPEC compatibility + replan safety (gate-local checkers; S8) */

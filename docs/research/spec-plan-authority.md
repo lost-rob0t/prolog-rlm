@@ -233,11 +233,21 @@ observers require `filesystem(observation)` at most.
 | `public_api_compatible` | `baseline`, `policy`, `scope?` | public API compatible with baseline revision |
 | `symbol_behavior` | `symbol`, `evidence` | required behavior is tested by a trusted test (never a model claim) |
 
-`symbol_exists` / `symbol_kind` / `symbol_owner` / `public_api_compatible`
-observers use the project index (S2, Section 13) — `project(read)`
-capability. `symbol_behavior` composes `behavior_tested` evidence: the
-referenced test must exist, pass, and cover the symbol per host static
-coverage analysis.
+`symbol_exists` / `symbol_kind` / `symbol_owner` / `symbol_arity` /
+`public_api_compatible` observers read through the project index (S2,
+Section 13) and the source tree. The merged capability model is closed over
+`rlm|parallel|retry|checkpoint|tool|context|model|graph|persistence|network|
+filesystem|process|mcp` — there is no `project/1` shape — so index-backed
+symbol observers require `filesystem(observation)` at most, exactly as
+declared in the gate's provider-pack side table
+(`observer_required_capabilities/2`), which covers every registry kind,
+including `record_count` and `public_api_compatible`. A dedicated
+index-observation capability (e.g. `index(observation)`) is a NEW DESIGN
+TARGET for S2: it must be added to the merged capability model before any
+observer can declare it; until then index reads are `filesystem(observation)`.
+`symbol_behavior` composes `behavior_tested` evidence: the referenced test
+must exist, pass, and cover the symbol per host static coverage analysis.
+No observer capability ever implies project-write authority.
 
 ### 4.3 Build requirements
 
