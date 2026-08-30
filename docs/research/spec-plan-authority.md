@@ -390,6 +390,11 @@ Section 5; caps are merged `rlm_tool` capability shapes with JSON decoding
 restricted to `tool(Name)`. There is no `change_spec`, no `content_ref` as an
 undefined atom, no `delete_target` beyond `delete(path(A))`, no `index_scope`
 beyond `all | path(A)`, no `agent_spec` beyond `delegate(task(A), caps(C))`.
+Two Section 5 features are DELTAS rather than BASE features, and the doc does
+not claim them as BASE: `revision/1` diff sides (D6-9 — BASE `side_valid/1`
+admits `path|ref|span` only) and the closed 13-atom `symbol_kind` set
+(D6-10 — BASE symbol-ref decoding admits any non-empty atom kind). Both are
+enforced at the D6 layer and owned by the reconciliation slices.
 
 ### 6.3 D6 DELTAS (each owned by the reconciliation slice)
 
@@ -435,6 +440,17 @@ beyond `all | path(A)`, no `agent_spec` beyond `delegate(task(A), caps(C))`.
   supplies `expert_contract{}` records (Section 8.1) whose
   `inner_capabilities` (e.g. `model(P)` for write experts) must be a subset
   of environment-granted capabilities and are validated at preflight.
+- **D6-9 revision diff sides.** BASE diff sides are `path|ref|span` only
+  (`side_valid/1` in `rlm_plan_graph` has no `revision/1` clause). The D6
+  grammar adds `revision(revision_ref)` sides (Section 5); reconciliation
+  slice S3 owns revision resolution in the executor. Until S3 lands, a plan
+  using revision sides validates at the D6 layer and is rejected by the
+  unchanged BASE validator (`diff_revision_side` pins both directions).
+- **D6-10 closed `symbol_kind` at reconciliation.** The BASE symbol-ref
+  decoder accepts any non-empty atom `kind`; the D6 layer enforces the
+  closed 13-atom `symbol_kind` set (Section 5) at graph validation
+  (`symbol_kind_closed`), and S1's normalized reference layer carries the
+  closed set forward.
 
 ### 6.4 Diff endpoint decision
 

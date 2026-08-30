@@ -693,9 +693,56 @@ d6_delta_checks :-
                                                        start_byte:0,
                                                        end_byte:3})),
                                content(literal(new))),
-                      done)]),
+                          done)]),
               depends_on([]),
-              obligations([obligation(step:ghost, satisfies:x)])))).
+              obligations([obligation(step:ghost, satisfies:x)])))),
+
+    % D6-10: symbol_ref.kind is enforced as the closed 13-atom set at
+    % reconciliation (the BASE decoder accepts any non-empty atom kind —
+    % declared divergence, so this pin guards the D6 layer).
+    check(symbol_kind_closed, symbol_kind_closed_enforced),
+
+    % D6-9: diff sides gain revision(revision_ref) at the D6 layer (BASE
+    % side_valid/1 has no revision clause — declared divergence owned by
+    % S3 resolution): valid revision sides validate, invalid ones are
+    % rejected, and the unchanged BASE validator still rejects them.
+    check(diff_revision_side, diff_revision_side_delta).
+
+symbol_kind_closed_enforced :-
+    d6_accepts(plan_graph(
+        steps([step(l, locate,
+                    locate(symbol_ref(symbol_ref{name:foo, kind:function,
+                                                 occurrence:definition})),
+                    loc)])),
+        _),
+    d6_rejects(plan_graph(
+        steps([step(l, locate,
+                    locate(symbol_ref(symbol_ref{name:foo, kind:frobnicate,
+                                                 occurrence:definition})),
+                    loc)]))).
+
+diff_revision_side_delta :-
+    d6_accepts(plan_graph(
+        steps([step(d, diff,
+                    diff(revision(head), revision(working)), df1)])),
+        _),
+    d6_accepts(plan_graph(
+        steps([step(d, diff,
+                    diff(revision(committed('abc123')),
+                         revision(branch('feature/x'))), df2)])),
+        _),
+    d6_accepts(plan_graph(
+        steps([step(d, diff,
+                    diff(revision(remote('origin', 'main')), revision(head)),
+                    df3)])),
+        _),
+    d6_rejects(plan_graph(
+        steps([step(d, diff,
+                    diff(revision(bogus), revision(head)), df4)]))),
+    \+ plan_graph_accepts(plan_graph(
+        steps([step(d, diff,
+                    diff(revision(head), revision(working)), df5)])),
+        [tool(diff)]).
 
 d6_obligations_of(Source, Obligations) :-
     call(Source, Input),
