@@ -173,9 +173,6 @@ report_exception(Id, gate_fault(Detail)) :- !,
 report_exception(Id, Exception) :-
     format("  FAIL ~w (exception: ~w)~n", [Id, Exception]).
 
-require_ok(ok(Value), Value) :- !.
-require_ok(Outcome, _) :- throw(gate_fault(expected_ok(Outcome))).
-
 % Self-contained check helpers: each creates fresh local variables per
 % invocation so clause-level variable sharing between check goals is
 % impossible (the failure mode that made earlier revisions of this gate
@@ -766,48 +763,174 @@ capability_safety_checks :-
     design_registry(Registry),
     http_endpoint_args_ok(HttpArgs),
     check(capability_unchanged,
-          (   base_all_caps(EnvCaps0),
-              compile_spec(spec([subject(service(user_api)),
+          (   compile_spec(spec([subject(service(user_api)),
                                  require(create_user,
                                          assertion(http_endpoint, HttpArgs))]),
                            Registry,
-                           ok(_)),
-              base_all_caps(EnvCaps1),
-              EnvCaps0 == EnvCaps1,
-              % The registry declares the required observation capability as
-              % trusted host configuration; it is not part of any compile
-              % outcome.
-              observer_required_capabilities(http_endpoint,
-                                             [network(observation)])
+                           ok(Frozen)),
+               % The compiled outcome is the actual surface compilation
+               % produces: no term inside it is capability-shaped per the
+               % closed merged capability model, so compiling a spec that
+               % requires network work cannot grant or reference a grant.
+               \+ ( frozen_subterm(Frozen, Term),
+                    rlm_tool:capability_shape(Term) ),
+               % The required observation capability is trusted host
+               % side-table data checked at observation time; compilation
+               % does not add it to (or remove it from) the environment set.
+               observer_required_capabilities(http_endpoint,
+                                              [network(observation)]),
+               base_all_caps(EnvCaps),
+               \+ memberchk(network(observation), EnvCaps)
+           )),
+
+    % The closed merged metadata schema carries no capability field: a
+    % registry provider whose metadata attempts one is rejected by the real
+    % rlm_assertion normalization. The clean twin proves the rejection is
+    % attributable to the capability field alone.
+    check(metadata_capability_rejected,
+          (   metadata_registry([capability-[tool(create)]], CapRegistry),
+              assertion_registry_validate(CapRegistry, error(CapError)),
+              get_dict(detail, CapError, CapDetail),
+              gate_term_contains(CapDetail, capability),
+              metadata_registry([], CleanRegistry),
+              assertion_registry_validate(CleanRegistry, ok(_))
           )),
 
-    % An HTTP observation without network(observation) is refused by host
-    % policy and lands as a conservative indeterminate evidence payload,
-    % never a pass.
-    check(http_observe_denied_without_cap,
-          (   environment_allows([], [network(observation)], denied),
-              observation_normalize(_{requirement_id:create_user,
-                                      assertion:rlm_assertion{
-                                          kind:http_endpoint,
-                                          schema_version:1,
-                                          args:http_args{}},
-                                      status:indeterminate(policy_denied),
-                                      value:none,
-                                      evidence_refs:[],
-                                      source_class:observer_control,
-                                      trust_class:unresolved,
-                                      verifier:_{id:http_endpoint,
-                                                 version:1},
-                                      collector:_{id:http_endpoint,
-                                                  version:1}},
-                                  ok(Obs)),
-              get_dict(status, Obs, indeterminate(policy_denied))
-          )).
+    % Real refusal path: the trusted capability-gated observer derives its
+    % requirement from the provider-pack side table and the environment
+    % capability set carried in the observation sources, and refuses by
+    % returning a conservative indeterminate payload. Driven through the
+    % real spec_observe_execute/5 collect ABI and the real spec_verify/4
+    % reconciliation: the observation is indeterminate(policy_denied),
+    % never passed, and the report is rejected. The granted twin proves the
+    % refusal branch is computed, not pre-set.
+    check(host_observation_refusal, host_observation_refusal_run).
 
-environment_allows(EnvCaps, Required, allowed) :-
-    forall(member(Cap, Required), memberchk(Cap, EnvCaps)).
-environment_allows(EnvCaps, Required, denied) :-
-    \+ environment_allows(EnvCaps, Required, allowed).
+frozen_http_spec(Frozen) :-
+    design_registry(Registry),
+    frozen_http_spec_registry(Registry, Frozen).
+
+frozen_http_spec_registry(Registry, Frozen) :-
+    http_endpoint_args_ok(HttpArgs),
+    compile_spec(spec([subject(service(user_api)),
+                       require(create_user,
+                               assertion(http_endpoint, HttpArgs))]),
+                 Registry,
+                 ok(Frozen)).
+
+host_observation_refusal_run :-
+    observe_registry(ObserveRegistry),
+    frozen_http_spec_registry(ObserveRegistry, Frozen),
+    spec_observe_execute(Frozen,
+                         observation_sources{environment_capabilities:
+                                             [network(observation)]},
+                         ObserveRegistry,
+                         [],
+                         ok(Granted)),
+    member(GrantedObs, Granted),
+    get_dict(status, GrantedObs, passed),
+    spec_verify(Frozen, Granted, ObserveRegistry, ok(GrantedReport)),
+    get_dict(status, GrantedReport, passed),
+    spec_observe_execute(Frozen,
+                         observation_sources{environment_capabilities:[]},
+                         ObserveRegistry,
+                         [],
+                         ok(Denied)),
+    member(DeniedObs, Denied),
+    get_dict(status, DeniedObs, indeterminate(policy_denied)),
+    get_dict(trust_class, DeniedObs, unresolved),
+    get_dict(source_class, DeniedObs, observer_control),
+    spec_verify(Frozen, Denied, ObserveRegistry, ok(DeniedReport)),
+    get_dict(status, DeniedReport, rejected).
+
+% Trusted gate observer (collector ABI): required observation capabilities
+% come from the side table, the environment capability set from the
+% observation sources. Refusal is computed here — never pre-set in a payload.
+http_capability_observer(Requirement, Sources, _, Raw) :-
+    get_dict(assertion, Requirement, RequirementAssertion),
+    get_dict(kind, RequirementAssertion, Kind),
+    observer_required_capabilities(Kind, Required),
+    get_dict(environment_capabilities, Sources, EnvCaps),
+    (   forall(member(Cap, Required), memberchk(Cap, EnvCaps))
+    ->  Raw = _{status:passed,
+                value:http_observation{scenario:valid_request, status:200},
+                evidence_refs:[evidence:http_probe],
+                source_class:external_observation,
+                trust_class:observed,
+                state_ref:revision(working)}
+    ;   findall(Missing,
+                (   member(Missing, Required),
+                    \+ memberchk(Missing, EnvCaps)
+                ),
+                MissingCaps),
+        Raw = _{status:indeterminate(policy_denied),
+                value:none,
+                evidence_refs:[],
+                source_class:observer_control,
+                trust_class:unresolved,
+                provenance:_{reason:capability_absent(Kind),
+                             missing:MissingCaps}}
+    ).
+
+% Observe-side registry: trusted collector/observer pair for the
+% capability-gated HTTP observer (merged ABI requires collector and
+% observer to be jointly none or jointly present).
+observe_registry([assertion_provider(http_endpoint, 1,
+                                     design_gate:http_endpoint_args,
+                                     design_gate:http_evaluator,
+                                     design_gate:http_capability_observer,
+                                     _{verifier:_{id:http_endpoint, version:1},
+                                       collector:_{id:http_endpoint, version:1},
+                                       evidence_policy:default,
+                                       latency:pure,
+                                       description:"capability-gated HTTP observer"})]).
+
+% Registry-builder for metadata probes; Extra pairs are merged into the
+% provider metadata so a probe can attempt a capability field.
+metadata_registry(Extra, [assertion_provider(record_count, 1,
+                                              design_gate:record_count_args,
+                                              design_gate:count_evaluator,
+                                              none,
+                                              Metadata)]) :-
+    append([verifier-_{id:cap_probe, version:1},
+            collector-_{id:none, version:0},
+            evidence_policy-default,
+            latency-pure,
+            description:"capability probe"], Extra, Pairs),
+    dict_create(Metadata, metadata_probe, Pairs).
+
+gate_term_contains(Term, Needle) :-
+    subsumes_term(Needle, Term), !.
+gate_term_contains(Term, Needle) :-
+    is_dict(Term), !,
+    dict_pairs(Term, _, Pairs),
+    member(_-V, Pairs),
+    gate_term_contains(V, Needle).
+gate_term_contains(Term, Needle) :-
+    is_list(Term), !,
+    member(Element, Term),
+    gate_term_contains(Element, Needle).
+gate_term_contains(Term, Needle) :-
+    compound(Term), !,
+    Term =.. [_|Args],
+    member(Arg, Args),
+    gate_term_contains(Arg, Needle).
+
+frozen_subterm(Term, Term).
+frozen_subterm(Term, Sub) :-
+    is_dict(Term), !,
+    dict_pairs(Term, _, Pairs),
+    member(_-V, Pairs),
+    frozen_subterm(V, Sub).
+frozen_subterm(Term, Sub) :-
+    is_list(Term), !,
+    member(Element, Term),
+    frozen_subterm(Element, Sub).
+frozen_subterm(Term, Sub) :-
+    compound(Term), !,
+    Term =.. [_|Args],
+    member(Arg, Args),
+    frozen_subterm(Arg, Sub).
 
 /* ------------------------------------------------------------------ */
 /* PLAN → SPEC compatibility + replan safety (gate-local checkers; S8) */

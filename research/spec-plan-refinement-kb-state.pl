@@ -50,7 +50,8 @@
 :- assertz(spec_plan_refinement_kb:kb_evidence(d09, 'gate:http_malformed_rejected')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d10, 'design:spec-plan-authority#s10-3-network-authority')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d10, 'gate:capability_unchanged')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d10, 'gate:http_observe_denied_without_cap')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d10, 'gate:metadata_capability_rejected')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d10, 'gate:host_observation_refusal')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d11, 'design:spec-plan-authority#s11-plan-spec-compatibility')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d11, 'gate:replan_drop_rejected')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d11, 'gate:replan_preserve_ok')).
