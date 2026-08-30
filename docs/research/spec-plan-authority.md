@@ -337,6 +337,14 @@ that revision.
 
 ### 6.2 BASE grammar (from `rage/288-spec-plan-graph-executor`, ADOPTED)
 
+BASE = branch `rage/288-spec-plan-graph-executor` @ pinned commit
+`71a10ae238dd0fa288005bf10892dc8d865ef2f3`. The gate resolves the BASE
+through an explicit candidate list (pinned object id, `refs/heads/<branch>`,
+`refs/remotes/origin/<branch>`, `refs/remotes/github/<branch>`) — a bare
+branch ref does not resolve in canonical CI clones — and asserts the resolved
+object equals the pinned id (`base_ref_resolvable` check). CI fetches the
+branch non-fatally; the pinned id remains the authority.
+
 ```prolog
 plan_graph(steps([step(Id, Op, Args, Bind), ...]),
            depends_on([depends_on(StepId, [ReqStepId, ...]), ...]))

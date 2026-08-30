@@ -69,22 +69,72 @@ load_merged_modules :-
            ;   throw(gate_fault(missing_merged_module(File)))
            )).
 
+/* BASE adoption input: the BASE object id is PINNED. Ref names are only
+ * hints for locating that object in whatever clone the gate runs in:
+ * canonical CI clones carry only refs/remotes/REMOTE/BRANCH entries for
+ * branches that exist on the CI remote, so a bare local branch name
+ * (git DWIM) does not resolve there. The pinned id remains the authority
+ * even if a ref moves; the gate fails loudly when no candidate locates it.
+ */
+base_branch('rage/288-spec-plan-graph-executor').
+base_pinned_commit('71a10ae238dd0fa288005bf10892dc8d865ef2f3').
+
+base_ref_candidates([Pinned, Heads, Origin, Github]) :-
+    base_branch(Branch),
+    base_pinned_commit(Pinned),
+    atomic_list_concat(['refs/heads/', Branch], Heads),
+    atomic_list_concat(['refs/remotes/origin/', Branch], Origin),
+    atomic_list_concat(['refs/remotes/github/', Branch], Github).
+
+% First candidate (in declared order) that names a commit object present in
+% this clone. Fails when no candidate resolves; callers report the list.
+first_resolvable_candidate(Candidates, Candidate) :-
+    member(Candidate, Candidates),
+    base_candidate_commit(Candidate, _),
+    !.
+
+% git rev-parse --verify CANDIDATE^{commit} resolves the candidate to a
+% commit AND looks the object up in this clone: a bare full object id is
+% echoed by rev-parse even when absent, but the ^{commit} peel forces the
+% object lookup (nonzero exit, empty stdout when missing). library(process)
+% raises process_error/2 when the reaped child exits nonzero, so an
+% unresolvable candidate is a clean failure, never an escape.
+base_candidate_commit(Candidate, ObjectId) :-
+    gate_root(Root),
+    atomic_list_concat([Candidate, '^', '{commit}'], CommitSpec),
+    catch(base_candidate_commit_(Root, CommitSpec, ObjectId), _, fail).
+
+base_candidate_commit_(Root, CommitSpec, ObjectId) :-
+    setup_call_cleanup(
+        process_create(path(git),
+                       ['rev-parse', '--verify', CommitSpec],
+                       [stdout(pipe(Out)), stderr(null), cwd(Root)]),
+        (   read_line_to_string(Out, Line),
+            Line \== end_of_file,
+            split_string(Line, " ", "", [First|_]),
+            atom_string(ObjectId, First)
+        ),
+        close(Out)).
+
 extract_unmerged_base(Path) :-
     gate_root(Root),
     atomic_list_concat([Root, '/prolog'], PrologDir),
     current_prolog_flag(pid, Pid),
     atomic_list_concat([PrologDir, '/design_gate_tmp_', Pid, '.pl'], Path),
-    setup_call_cleanup(
-        process_create(path(git),
-                       ['cat-file', 'blob',
-                        'rage/288-spec-plan-graph-executor:prolog/rlm_plan_graph.pl'],
-                       [stdout(pipe(Out)), cwd(Root)]),
-        setup_call_cleanup(open(Path, write, Sink),
-                           copy_stream_data(Out, Sink),
-                           close(Sink)),
-        close(Out)),
-    size_file(Path, Size),
-    Size > 10000.
+    base_ref_candidates(Candidates),
+    first_resolvable_candidate(Candidates, Candidate),
+    atomic_list_concat([Candidate, ':prolog/rlm_plan_graph.pl'], ObjectSpec),
+    catch((setup_call_cleanup(
+               process_create(path(git),
+                              ['cat-file', 'blob', ObjectSpec],
+                              [stdout(pipe(Out)), stderr(null), cwd(Root)]),
+               setup_call_cleanup(open(Path, write, Sink),
+                                  copy_stream_data(Out, Sink),
+                                  close(Sink)),
+               close(Out)),
+           size_file(Path, Size),
+           Size > 10000),
+          _, fail).
 
 load_unmerged_base :-
     (   extract_unmerged_base(Path)
@@ -95,9 +145,10 @@ load_unmerged_base :-
         setup_call_cleanup(true,
                            use_module(Path),
                            catch(delete_file(Path), _, true))
-    ;   format(user_error,
-               "design-gate: rage/288 BASE module unavailable; adoption input missing~n",
-               []),
+    ;   base_ref_candidates(Candidates),
+        format(user_error,
+               "design-gate: rage/288 BASE module unavailable; adoption input missing~ndesign-gate: BASE candidates tried (pinned id is the authority): ~q~n",
+               [Candidates]),
         halt(1)
     ).
 
@@ -223,6 +274,7 @@ run_all_checks :-
                      ))
            )).
 
+design_gate_group(base_adoption_checks).
 design_gate_group(spec_grammar_checks).
 design_gate_group(plan_base_checks).
 design_gate_group(d6_delta_checks).
@@ -339,6 +391,20 @@ observer_required_capabilities(symbol_arity, [filesystem(observation)]).
 % establishing step. Model data cannot change this mapping.
 requirement_establishment(tdd_evidence, plan_established).
 requirement_establishment(_, none).
+
+/* ------------------------------------------------------------------ */
+/* BASE adoption: pinned ref resolution (canonical CI resolvability)    */
+/* ------------------------------------------------------------------ */
+
+base_adoption_checks :-
+    check(base_ref_resolvable, base_ref_resolves_to_pinned_id).
+
+base_ref_resolves_to_pinned_id :-
+    base_pinned_commit(Pinned),
+    base_ref_candidates(Candidates),
+    first_resolvable_candidate(Candidates, Candidate),
+    base_candidate_commit(Candidate, ObjectId),
+    ObjectId == Pinned.
 
 /* ------------------------------------------------------------------ */
 /* SPEC grammar checks (through merged rlm_spec_lang/rlm_spec)         */

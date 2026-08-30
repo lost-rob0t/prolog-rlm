@@ -34,6 +34,16 @@ jobs:
       - name: Validate research approval metadata
         run: swipl -q -s scripts/validate_research_approval.pl
 
+      - name: Fetch SPEC/PLAN design gate BASE branch
+        run: |
+          # The design gate extracts its BASE from a pinned object id;
+          # ref names are only hints. Until the BASE branch exists on this
+          # remote this fetch is non-fatal: the pinned id remains the
+          # authority and the gate reports the candidate list if the object
+          # is not present.
+          git fetch origin rage/288-spec-plan-graph-executor || \
+            echo "BASE branch not on origin yet; pinned object id remains the authority"
+
       - name: Run SPEC/PLAN design gate
         run: swipl -q -s scripts/design_gate.pl
 
