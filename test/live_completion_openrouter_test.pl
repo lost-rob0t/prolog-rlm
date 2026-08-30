@@ -36,6 +36,11 @@ run_live_completion_case(Registry) :-
                 planner_instruction(Instruction),
                 planner_attempts(2),
                 planner_max_tokens(1400),
+                % Propagated into every model step incl. the depth-one
+                % child (enforce_plan_reasoning_effort/2); without it the
+                % pinned reasoning model can burn the child's completion
+                % budget on reasoning before emitting the token.
+                reasoning_effort(minimal),
                 context_options([max_bytes(2048), time_limit(1.0)]),
                 budget(_{max_iterations:12,
                          max_recursion_depth:1,
@@ -60,14 +65,14 @@ live_completion_instruction(
 "For this CI acceptance case you MUST return exactly this plan shape, changing nothing except JSON whitespace.\n\
 1. Slice the opaque context input from start 0 for length 180 and bind it as snippet.\n\
 2. Invoke project_read on test/fixtures/tool-readable.txt and bind it as file.\n\
-3. Execute exactly one rlm child plan. The child plan must call provider openrouter with prompt snippet, max_tokens 128, bind child_response, then final child_response. Bind the rlm result as child.\n\
+3. Execute exactly one rlm child plan. The child plan must call provider openrouter with prompt snippet, max_tokens 512, bind child_response, then final child_response. Bind the rlm result as child.\n\
 4. Final child.\n\
 Return ONLY this JSON object:\n\
 {\"steps\":[\
 {\"op\":\"context\",\"handle\":{\"ref\":\"input\",\"name\":\"context\"},\"action\":{\"type\":\"slice\",\"start\":0,\"length\":180},\"bind\":\"snippet\"},\
 {\"op\":\"tool\",\"name\":\"project_read\",\"args\":{\"path\":\"test/fixtures/tool-readable.txt\"},\"bind\":\"file\"},\
 {\"op\":\"rlm\",\"plan\":{\"steps\":[\
-{\"op\":\"model\",\"provider\":\"openrouter\",\"prompt\":{\"ref\":\"var\",\"name\":\"snippet\"},\"options\":{\"max_tokens\":128},\"bind\":\"child_response\"},\
+{\"op\":\"model\",\"provider\":\"openrouter\",\"prompt\":{\"ref\":\"var\",\"name\":\"snippet\"},\"options\":{\"max_tokens\":512},\"bind\":\"child_response\"},\
 {\"op\":\"final\",\"value\":{\"ref\":\"var\",\"name\":\"child_response\"}}]},\"bind\":\"child\"},\
 {\"op\":\"final\",\"value\":{\"ref\":\"var\",\"name\":\"child\"}}]}" ).
 
