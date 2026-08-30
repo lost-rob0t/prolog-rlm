@@ -255,8 +255,18 @@ http_contract_checker(OkReq, body_without_schema) :-
              _, fail).
 
 http_contract_checks :-
-    http_endpoint_args_ok(OkArgs),
-    get_dict(request, OkArgs, OkReq),
+    design_registry(Registry),
+    http_endpoint_args_ok(OkReq),
+    % Positive contract with an EMBEDDED path template: {id} occurs inside
+    % "/users/{id}" (m4).
+    check(http_path_param_ok,
+          (   http_path_endpoint_args_ok(PathArgs),
+              spec_compiles(spec([subject(service(user_api)),
+                                  require(get_user,
+                                          assertion(http_endpoint,
+                                                    PathArgs))]),
+                            Registry)
+          )),
     check(http_reject_status_700, http_contract_checker(OkReq, status_700)),
     check(http_reject_class_6xx, http_contract_checker(OkReq, class_6xx)),
     check(http_reject_nonderivable_conflict,
@@ -557,6 +567,24 @@ http_endpoint_args_ok(_{service:user_api,
                             _{scenario:unauthenticated, status:401},
                             _{scenario:conflict, status:409}
                         ]}).
+
+% GET endpoint with an embedded {id} template in the path and a
+% missing_resource response (derivable: path_params non-empty).
+http_path_endpoint_args_ok(_{service:user_api,
+                             request:_{method:get,
+                                      path:"/users/{id}",
+                                      path_params:_{id:integer},
+                                      accept:["application/json"],
+                                      auth:_{scheme:bearer}},
+                             responses:[
+                                 _{scenario:valid_request, status:200,
+                                   body:_{type:json,
+                                          schema:_{type:object,
+                                                   properties:_{id:_{type:integer},
+                                                                name:_{type:string}},
+                                                   required:[id, name]}}},
+                                 _{scenario:missing_resource, status:404}
+                             ]}).
 
 /* ------------------------------------------------------------------ */
 /* PLAN BASE checks (through the adopted rage/288 module)              */
@@ -2720,15 +2748,23 @@ http_request_ok(Req) :-
     ),
     request_binding_ok(Req).
 
+% Succeeds when {Name} occurs as a path template inside Path — embedded
+% ("/users/{id}") or a whole-path template ("/{id}") — with a non-empty
+% alphanumeric name. A declared path_param without a matching {Name}
+% occurrence fails.
 path_template_name(Name, Path) :-
     (   atom(Path) -> atom_codes(Path, Codes) ; string_codes(Path, Codes) ),
-    append(Open, Rest0, Codes),
-    append("{", NameCodes0, Open),
-    append(NameCodes, "}", NameCodes0),
-    Rest0 == [],
+    template_occurrence(Codes, NameCodes),
     NameCodes \== [],
     atom_codes(Name, NameCodes),
     forall(member(C, NameCodes), char_type(C, alnum)).
+
+% Open is a suffix of Codes starting at some '{'; the template closes at
+% the next '}' with NameCodes in between. (Code-char lists: SWI strings
+% are not lists.)
+template_occurrence(Codes, NameCodes) :-
+    append(_Pre, Open, Codes),
+    append([0'{|NameCodes], [0'}], Open).
 
 request_binding_ok(Req) :-
     (   get_dict(body, Req, B), is_dict(B),
