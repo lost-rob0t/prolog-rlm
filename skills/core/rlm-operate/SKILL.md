@@ -35,6 +35,7 @@ A typed plan is an ordered list of steps. Every step is one call to a closed run
 - `tool` — invoke an active tool. `name` must exactly match an active tool schema and `args` must match that schema. Seeing a schema does not grant permission: call a tool only when its capability is listed. A successful tool step binds an envelope object whose `value` field holds the schema-conforming result, so select nested result fields through chained references. For example, to return a tool's `content` field as the final value:
    `{"op":"tool","name":"<active-tool-name>","args":{},"bind":"tool_result"}`
    `{"op":"final","value":{"ref":"field","value":{"ref":"field","value":{"ref":"var","name":"tool_result"},"key":"value"},"key":"content"}}`
+   A one-hop field straight from the tool binding to a result key — `{"ref":"field","value":{"ref":"var","name":"tool_result"},"key":"content"}` — is always rejected (`tool_result_envelope_field`): the envelope's `value` key must be selected first.
 - `parallel` — run multiple complete child plans concurrently when the capability is granted. Each child has its own final step; the parallel binding is the list of child values.
    `{"op":"parallel","plans":[{"steps":[{"op":"final","value":1}]}],"bind":"results"}`
 - `retry` — explicitly retry one complete child plan when the capability is granted. Retries are bounded and each child has its own final step.

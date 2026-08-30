@@ -274,7 +274,13 @@ test(tool_envelope_field_hop_is_repairable_without_execution,
           planner_request(2, SecondRequest),
           append(FirstRequest.messages, [Repair], SecondRequest.messages),
           assertion(sub_string(Repair.content, _, _, _,
-                               "tool_result_envelope_field(content,evidence)"))
+                               "tool_result_envelope_field(content, evidence)")),
+          assertion(sub_string(Repair.content, _, _, _,
+                               "\"key\":\"value\"")),
+          assertion(sub_string(Repair.content, _, _, _,
+                               "\"key\":\"content\"")),
+          string_length(Repair.content, Length),
+          assertion(Length =< 1024)
         ),
         tool_registry_destroy(Registry)).
 

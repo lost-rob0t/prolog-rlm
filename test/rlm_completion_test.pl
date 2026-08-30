@@ -2,11 +2,28 @@
 
 :- use_module('../prolog/rlm_completion').
 :- use_module('../prolog/rlm_skill').
+:- use_module('../prolog/rlm_tool').
 :- use_module('support/completion_test_support').
 :- use_module(library(filesex)).
 
 base_caps([rlm, model(openrouter)]).
 base_child_caps([rlm, model(openrouter)]).
+
+probe_schema(tool_schema{name:probe,
+                         description:"Deterministic probe tool for envelope-repair tests",
+                         capability:tool(probe),
+                         effect:read,
+                         arguments:_{
+                             type:object,
+                             required:[],
+                             additional_properties:false,
+                             properties:_{}},
+                         result:_{
+                             type:object,
+                             required:[content],
+                             additional_properties:false,
+                             properties:_{
+                                 content:_{type:string}}}}).
 
 base_options(Planner, Options) :-
     base_caps(Caps),
@@ -466,6 +483,45 @@ test(planner_retry_reports_missing_tool_name_without_echoing_candidate,
     assertion(\+ sub_string(Repair.content, _, _, _, "MUST_NOT_ECHO")),
     string_length(Repair.content, Length),
     assertion(Length =< 1024).
+
+test(planner_retry_explains_tool_result_envelope_field,
+     [setup(completion_test_support:reset_calls)]) :-
+    tool_registry_create(Registry),
+    probe_schema(Schema),
+    setup_call_cleanup(
+        (   tool_register(Registry,
+                          Schema,
+                          completion_test_support:fake_model,
+                          ok(_))
+        ->  true
+        ;   throw(error(probe_tool_registration_failed,
+                        context(rlm_completion_test, envelope_repair)))
+        ),
+        (   base_options(
+                completion_test_support:capture_envelope_retry_planner,
+                Base),
+            Options = [planner_attempts(2),
+                       tool_registry(Registry),
+                       capabilities([tool(probe)]),
+                       child_capabilities([])|Base],
+            rlm_completion("retry one-hop tool field", text("ctx"),
+                           Options, Outcome),
+            expect_ok(Outcome, Result),
+            assertion(Result.value == "envelope_repaired"),
+            completion_test_support:planner_requests([_, Second]),
+            last(Second.messages, Repair),
+            assertion(Repair.role == user),
+            assertion(sub_string(Repair.content, _, _, _,
+                                 "tool_result_envelope_field(content, result)")),
+            assertion(sub_string(Repair.content, _, _, _, "envelope")),
+            assertion(sub_string(Repair.content, _, _, _,
+                                 '"key":"value"')),
+            assertion(sub_string(Repair.content, _, _, _,
+                                 '"key":"content"')),
+            string_length(Repair.content, Length),
+            assertion(Length =< 1024)
+        ),
+        tool_registry_destroy(Registry)).
 
 test(caller_planner_instruction_survives_skill_opt_out,
      [setup(completion_test_support:reset_calls)]) :-
