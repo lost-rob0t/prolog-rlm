@@ -975,10 +975,17 @@ through real implementations and currently runs 47 checks in 10 groups:
   step resolves `field(input(foo_loc), span)` to that exact span, executes,
   binds source text; the resolved edit carries the bound content — proving
   step A output is consumed by step B through the declared grammar.
-- **capability_safety_checks (2)** — compiling an HTTP-required spec leaves
-  the environment capability set unchanged; observing without
-  `network(observation)` lands as a conservative `indeterminate(policy_denied)`
-  evidence payload via the real `observation_normalize/2`, never a pass.
+- **capability_safety_checks (4)** — compiling an HTTP-required spec produces
+  an outcome containing no capability-shaped term (closed merged
+  `rlm_tool` capability model as oracle) and leaves the environment
+  capability set unchanged; a registry provider whose metadata attempts a
+  `capability` field is rejected by the real merged `rlm_assertion`
+  normalization (with a clean twin proving the attribution); observing
+  without `network(observation)` drives the real capability-gated observer
+  through `spec_observe_execute/5` and lands as a conservative
+  `indeterminate(policy_denied)` evidence payload — never a pass — with
+  `spec_verify/4` reporting rejected, and the granted twin proves the
+  refusal branch is computed, not pre-set.
 - **replan_safety_checks (5)** — `plan_validate_against_spec_gate` accepts
   the obligation-preserving graph; rejects a patch removing the sole
   obligation-establishing step (`dropped_obligation`) even though the
