@@ -142,6 +142,13 @@ normalize_native_schema(Input, Schema) :-
 json_schema(Input, Output) :-
     require_dict(Input, json_schema),
     require_key(Input, type, Type0, json_schema),
+    json_schema_type(Type0, Input, Output).
+
+json_schema_type(any, Input, Output) :-
+    !,
+    json_schema_pairs(Input, Pairs),
+    dict_pairs(Output, json, Pairs).
+json_schema_type(Type0, Input, Output) :-
     schema_type(Type0, Type),
     json_schema_pairs(Input, Pairs),
     dict_pairs(Fields, json, Pairs),
