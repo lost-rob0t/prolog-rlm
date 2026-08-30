@@ -201,6 +201,16 @@ authorization and is left to the integrator before the next required CI run.
   deterministically authoring one-hop `tool_result_envelope_field(content,…)`
   references (4/4 local reproductions; main fails identically at `b654831`,
   and this branch's lane failed the same way before this slice at `5bb2817` /
-  `7c9e007`). This is a model-vs-guidance authoring gap to be fixed in a
-  dedicated slice with 120B live evidence; it is not claimed green here, and
-  the `z-ai/glm-5.3-flash` 11/11 run is not offered as evidence for that lane.
+  `7c9e007`). Two principled diagnostic improvements landed for the repair
+  loop (`14b6ec7`): `tool_result_envelope_field` retries now teach the
+  corrected two-hop envelope form, `capability_denied` retries now name the
+  denied capability and the granted capability list, and the rlm-operate
+  skill body states the one-hop rejection rule up front (deterministic suite
+  1067/1067; regression checks green on 120b live completion and glm
+  planner-context). The lane itself remains red on 120b, honestly: three
+  consecutive runs failed at three DIFFERENT stages (one-hop envelope
+  fields, ungranted `parallel` op, malformed step) — stochastic authoring
+  fragility under this harness, not a single deterministic defect, and
+  prompt-chasing it per run would be model overfitting. It stays a dedicated
+  follow-up slice with 120B-specific evidence; the glm-5.3-flash 11/11 run
+  is not offered as evidence for this lane.
