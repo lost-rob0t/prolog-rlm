@@ -997,8 +997,12 @@ edit; S10 — native session budget charge-back under the step budget.
 
 `scripts/design_gate.pl` (deterministic; no model/API/network calls) replaces
 the presence-only #288 contract script. It validates the normative design
-through real implementations and currently runs 47 checks in 10 groups:
+through real implementations and currently runs 59 checks in 13 groups:
 
+- **base_adoption_checks (1)** — the BASE is resolved through an explicit
+  candidate list anchored at a pinned object id (§6.2) and the resolved
+  commit must equal the pin (`base_ref_resolvable`); canonical CI clones
+  fetch the BASE branch non-fatally before this gate runs.
 - **spec_grammar_checks (10)** — the normative SPEC examples (dataset,
   language+symbol+build+test domain, TDD, HTTP endpoint) compile through the
   real `spec_source_compile/4` with a gate host registry implementing the
@@ -1010,15 +1014,23 @@ through real implementations and currently runs 47 checks in 10 groups:
   ADOPTED `rlm_plan_graph` module; unknown op, delete-with-four-args,
   malformed symbol ref, capability denial, delegate widening, and JSON
   unknown-capability counterexamples are rejected by its real validator.
-- **d6_delta_checks (5)** — the D6 grammar (expr leaves, read selector, edit
+- **d6_delta_checks (7)** — the D6 grammar (expr leaves, read selector, edit
   content, obligations) validates through the gate checker; dangling input,
   non-grammar expr (`expr(call(...))`), shell-string command, and ghost
-  obligation counterexamples are rejected.
-- **dataflow_checks (1)** — the full typed dataflow round trip: the locate
+  obligation counterexamples are rejected; D6-10's closed `symbol_kind` set
+  and D6-9's `revision/1` diff sides — including the unchanged BASE's
+  rejection of revision sides — are pinned (`symbol_kind_closed`,
+  `diff_revision_side`).
+- **dataflow_checks (2)** — the full typed dataflow round trip: the locate
   step executes through the MERGED `rlm_plan` ABI, binds `foo_loc`; the read
   step resolves `field(input(foo_loc), span)` to that exact span, executes,
-  binds source text; the resolved edit carries the bound content — proving
-  step A output is consumed by step B through the declared grammar.
+  binds source text; the resolved edit carries the bound content and every
+  resolved step is re-validated against the strict post-admission shape.
+  The second check is the SPEC-input round trip: a step consuming
+  `expr(input(<spec_input>))` validates from environment inputs alone,
+  dangles when the environment lacks it, and the compat layer faults
+  `missing_spec_input` regardless of step references
+  (`spec_input_env_dataflow`).
 - **capability_safety_checks (4)** — compiling an HTTP-required spec produces
   an outcome containing no capability-shaped term (closed merged
   `rlm_tool` capability model as oracle) and leaves the environment
@@ -1029,38 +1041,48 @@ through real implementations and currently runs 47 checks in 10 groups:
   through `spec_observe_execute/5` and lands as a conservative
   `indeterminate(policy_denied)` evidence payload — never a pass — with
   `spec_verify/4` reporting rejected, and the granted twin proves the
-  refusal branch is computed, not pre-set.
-- **replan_safety_checks (5)** — `plan_validate_against_spec_gate` accepts
+  refusal branch is computed, not pre-set; and the provider-pack side table
+  is complete for every registry kind with observation-scoped merged
+  capability shapes (`observer_side_table_complete`).
+- **replan_safety_checks (7)** — `plan_validate_against_spec_gate` accepts
   the obligation-preserving graph; rejects a patch removing the sole
   obligation-establishing step (`dropped_obligation`) even though the
-  validate step remains; rejects foreign spec fingerprints, missing required
+  validate step remains, through the full post-patch chain (parse +
+  env-aware graph validation + compat); rejects the no-op run-step mutation
+  graph and a causally disconnected establishing step
+  (`obligation_causal_link`); rejects a patch whose patched graph dangles
+  (`patch_full_chain`); rejects foreign spec fingerprints, missing required
   SPEC inputs, and steps hitting `forbidden_effect` invariants.
 - **tdd_evidence_checks (4)** — the evaluator directly (red-failed +
   green-passed ⇒ passed; red-passed ⇒ `indeterminate(evidence_not_red)`) and
   through the REAL `spec_verify/4` pipeline with registry identity binding
   (passed ⇒ report passed; not-red ⇒ report rejected).
-- **http_contract_checks (4)** — status 700, status class 6xx, non-derivable
+- **http_contract_checks (5)** — status 700, status class 6xx, non-derivable
   conflict (idempotency stripped), and body-without-schema are rejected by
-  the designed schema.
-- **edit_action_checks (5)** — `edit_action` accepted/rejected cases;
-  expert contract accepted; capability widening rejected.
-- **durability_checks + kb_dag_checks (3)** — a `plan_kb_snapshot` with a
-  bound generated edit survives a real persistency round trip
-  (`rlm_graph_persist`); the research KB discipline check (no evidence-free
+  the designed schema; a positive GET contract with an embedded `{id}` path
+  template and a derivable `missing_resource` response compiles
+  (`http_path_param_ok`).
+- **edit_action_checks (6)** — `edit_action` accepted/rejected cases;
+  expert contract accepted; capability widening (op capabilities and
+  `inner_capabilities`) rejected; and the contract schema is closed:
+  required `inner_capabilities`, `model_policy{provider, max_iterations > 0}`
+  shape, closed `budget_policy`/completion/failure condition atoms, and
+  merged capability-shape validity are enforced (`expert_contract_shape`).
+- **durability_checks + state_readability_checks (3)** — a `plan_kb_snapshot`
+  with a bound generated edit survives a real persistency round trip
+  (`rlm_graph_persist`); the §12.2 forward-projection data model (snapshot
+  `covers:[event_lo, event_hi]`, boundary-summary id range as derived data
+  over a `trusted_runtime` range) is exercised
+  (`forward_projection_snapshot`); the §7.3 mode table pins the single §7.1
+  normalization boundary with per-exchange re-projection obligations owned
+  by declared slices (`multi_run_reprojection`).
+- **kb_dag_checks (3)** — the research KB discipline check (no evidence-free
   done, no ghost deps, no cycles, candidate decisions not counted as
-  validated); the S0–S11 slice DAG check (no cycles, no ghosts, S0 root).
-
-CI: the gate runs as a deterministic step in the canonical GitHub Actions
-workflow (`ci.yml`, after research-approval validation; no paid model calls).
-Engineering notes from building it, now encoded as gate checks: SWI
-partial-key dict patterns never unify with full dicts (use `get_dict/3`);
-clause-level variable sharing between check goals silently compares one
-check's binding against the previous check's (every check goal must be a
-self-contained helper predicate); anonymous dict tags (`_{...}`) are fresh
-variables, so they are not ground (plan data and evidence payloads must use
-bound tags); and outcome-style predicates must be called with a fresh
-variable, then matched (direct `error(_)` unification fails against
-cut-committed alternatives).
+  validated); the S0–S11 slice DAG check (no cycles, no ghosts, S0 root);
+  and every persisted KB evidence ref resolves: `gate:<Id>` refs name check
+  ids this gate defines, `design:<anchor>` refs name anchors parsed from
+  this document's headings, and `source:` refs name checkout files, defined
+  predicates, or the loaded pinned BASE module (`kb_evidence_refs_resolve`).
 
 ## 15. Open questions
 

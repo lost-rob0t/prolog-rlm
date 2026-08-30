@@ -1704,7 +1704,7 @@ kb_evidence_refs_resolve_run :-
     forall(spec_plan_refinement_kb:kb_evidence(_Task, EvidenceRef),
            evidence_ref_resolves(EvidenceRef, Slugs)).
 
-evidence_ref_resolves(EvidenceRef, Slugs) :-
+evidence_ref_resolves(EvidenceRef, _Slugs) :-
     atom_concat('gate:', CheckId, EvidenceRef),
     !,
     check_defined(CheckId).
