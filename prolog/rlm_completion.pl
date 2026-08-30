@@ -1451,16 +1451,17 @@ planner_attempt_messages(BaseMessages, Options, Messages) :-
     ).
 
 planner_retry_options(Options0, Error, Options) :-
-    planner_repair_message(Error, Repair),
+    planner_repair_message(Error, Options0, Repair),
     exclude(named_option(planner_repair_message), Options0, Rest),
     Options = [planner_repair_message(Repair)|Rest].
 
 planner_repair_message(Error,
+                       Options,
                        message{role:user,
                                content:Content}) :-
     planner_repair_field(Error, phase, unknown, Phase),
     planner_repair_field(Error, kind, invalid_plan, Kind),
-    planner_repair_detail(Error, Detail),
+    planner_repair_detail(Error, Options, Detail),
     format(string(Content),
            "Previous planner candidate was rejected without execution. Return one complete new JSON root decision: either {\"mode\":\"direct\",\"answer\":\"<nonempty final text>\"} when runtime operations add no value, or the typed plan {\"steps\":[...]} when they do. Host diagnostic: phase=~w kind=~w detail=~s.",
            [Phase, Kind, Detail]).
@@ -1475,7 +1476,31 @@ planner_repair_field(Error, Key, Default, Value) :-
     ;   Value = Default
     ).
 
-planner_repair_detail(Error, Detail) :-
+% An ungranted op must be told which capabilities ARE granted: otherwise
+% planner retries keep inventing ops outside the granted set.
+planner_repair_detail(Error, Options, Detail) :-
+    is_dict(Error),
+    get_dict(kind, Error, capability_denied),
+    get_dict(capability, Error, Denied),
+    ground(Denied),
+    !,
+    option_value(capabilities, Options, [], Granted),
+    format(string(Detail),
+           "capability_denied(~w): the plan uses a capability that was not granted. Granted capabilities: ~w. Return a plan whose steps use ONLY ops granted by that capability list.",
+           [Denied, Granted]).
+% A tool binding is an envelope whose schema-conforming result lives under
+% the "value" key; a first-hop selection of a result key can never resolve.
+% The repair diagnostic must teach the corrected two-hop form, not merely
+% echo the fault term — otherwise planner retries repeat the same mistake.
+planner_repair_detail(Error, _Options, Detail) :-
+    is_dict(Error),
+    get_dict(detail, Error, tool_result_envelope_field(Key, Name)),
+    safe_envelope_repair_pair(Key, Name),
+    !,
+    format(string(Detail),
+           "tool_result_envelope_field(~w, ~w): a tool step binds an envelope whose result lives under its \"value\" key, so a result field must be selected through two chained field references — first \"value\", then the result key. Correct form: {\"ref\":\"field\",\"value\":{\"ref\":\"field\",\"value\":{\"ref\":\"var\",\"name\":\"~w\"},\"key\":\"value\"},\"key\":\"~w\"}. A one-hop field straight from the tool binding is rejected.",
+           [Key, Name, Name, Key]).
+planner_repair_detail(Error, _Options, Detail) :-
     (   is_dict(Error),
         get_dict(detail, Error, Raw),
         safe_planner_repair_detail(Raw, Safe)
@@ -1483,6 +1508,14 @@ planner_repair_detail(Error, Detail) :-
                     [quoted(false), numbervars(true)])
     ;   Detail = "typed_plan_contract_rejected"
     ).
+
+safe_envelope_repair_pair(Key, Name) :-
+    atom(Key),
+    atom(Name),
+    atom_length(Key, KeyLength),
+    KeyLength =< 64,
+    atom_length(Name, NameLength),
+    NameLength =< 64.
 
 safe_planner_repair_detail(missing_field(Field), missing_field(Field)) :-
     atom(Field),

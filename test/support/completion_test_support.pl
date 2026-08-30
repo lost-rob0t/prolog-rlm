@@ -16,6 +16,7 @@
              capture_planner/2,
              capture_retry_planner/2,
              capture_missing_name_retry_planner/2,
+             capture_envelope_retry_planner/2,
              capture_model/2,
              last_planner_request/1,
              planner_requests/1,
@@ -192,6 +193,23 @@ capture_missing_name_retry_planner(Request, ok(Output)) :-
             Output)
     ;   Plan = plan([final(literal("repaired"))]),
         planner_output(Plan, Output)
+    ).
+
+% Attempt 1 selects a tool-result key directly from the tool binding
+% (one hop); the runtime must reject it with the envelope fault and the
+% repair message must teach the corrected two-hop form. Attempt 2 answers
+% directly so the test never executes the tool.
+capture_envelope_retry_planner(Request, ok(Output)) :-
+    bump_planner,
+    planner_calls(Call),
+    assertz(captured_planner_request(Call, Request)),
+    (   Call =:= 1
+    ->  format(string(BadPlan),
+               "{\"steps\":[{\"op\":\"tool\",\"name\":\"probe\",\"args\":{},\"bind\":\"result\"},{\"op\":\"final\",\"value\":{\"ref\":\"field\",\"value\":{\"ref\":\"var\",\"name\":\"result\"},\"key\":\"content\"}}]}",
+               []),
+        fake_response(BadPlan, Output)
+    ;   fake_response("{\"mode\":\"direct\",\"answer\":\"envelope_repaired\"}",
+                      Output)
     ).
 
 planner_requests(Requests) :-
