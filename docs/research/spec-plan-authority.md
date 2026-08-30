@@ -499,13 +499,19 @@ is trusted host data:
 ```prolog
 expert_contract{op:Op/Arity,                       % mechanical mapping from plan_capability_required/2
                 capabilities:[capability],          % REQUIRED, must ⊆ environment grants
+                inner_capabilities:[capability],    % REQUIRED, expert inner-loop grants
+                                                    % (e.g. model(P)); distinct from the
+                                                    % op's own required capabilities; must
+                                                    % ⊆ environment grants, checked at preflight
                 input_schema:args_schema,           % resolved op args term shape
                 output_schema:bind_schema,          % bound value shape
                 effects:[observation|external_effect|orchestration],
                 authority_tier:approve_diff|allow_once|allow_session|dangerous,
-                model_policy:none | model_policy{provider:atom, max_iterations:N},
-                budget_policy:shared_step_budget,
-                completion:[condition], failure:[condition]}
+                model_policy:none | model_policy{provider:atom,
+                                                 max_iterations:positive_integer},
+                budget_policy:shared_step_budget,   % closed atom
+                completion:[applied_and_observed],  % closed condition atoms
+                failure:[blocked | failed]}         % closed condition atoms
 ```
 
 Expert capability requirements never grant capabilities; the host checks them

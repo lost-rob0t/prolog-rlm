@@ -1307,7 +1307,8 @@ edit_action_checks :-
     check(edit_action_rejects_unknown_operation, edit_action_rejects_rewrite),
     check(edit_action_rejects_missing_content, edit_action_rejects_no_content),
     check(expert_contract_ok, expert_contract_accepted),
-    check(expert_contract_widening_denied, expert_contract_widening_rejected).
+    check(expert_contract_widening_denied, expert_contract_widening_rejected),
+    check(expert_contract_shape, expert_contract_shape_rejections).
 
 edit_action_accepts_valid :-
     edit_action_ok(_{target:ref(symbol_ref(symbol_ref{name:foo,
@@ -1337,34 +1338,68 @@ edit_action_rejects_no_content :-
                         satisfies:[]}).
 
 expert_contract_accepted :-
-    expert_contract_ok(_{op:edit/2,
-                         capabilities:[tool(edit), model(main)],
-                         input_schema:edit_action,
-                         output_schema:write_result,
-                         effects:[external_effect],
-                         authority_tier:allow_once,
-                         model_policy:_{'provider':main,
-                                        'max_iterations':8},
-                         budget_policy:shared_step_budget,
-                         completion:[applied_and_observed],
-                         failure:[blocked, failed]},
-                        plan_environment{capabilities:[tool(edit),
-                                                       model(main)],
-                                         inputs:empty_env{}}).
+    expert_contract_base(Base),
+    expert_contract_ok(Base,
+                       plan_environment{capabilities:[tool(edit),
+                                                      model(main)],
+                                        inputs:empty_env{}}).
+
+% Schema-valid contract (§8.1); mutated per negative case in
+% expert_contract_shape_rejections.
+expert_contract_base(_{op:edit/2,
+                       capabilities:[tool(edit), model(main)],
+                       inner_capabilities:[model(main)],
+                       input_schema:edit_action,
+                       output_schema:write_result,
+                       effects:[external_effect],
+                       authority_tier:allow_once,
+                       model_policy:_{'provider':main,
+                                      'max_iterations':8},
+                       budget_policy:shared_step_budget,
+                       completion:[applied_and_observed],
+                       failure:[blocked, failed]}).
+
+expert_contract_env(plan_environment{capabilities:[tool(edit), model(main)],
+                                     inputs:empty_env{}}).
+
+expert_contract_shape_rejections :-
+    expert_contract_base(Base),
+    expert_contract_env(Env),
+    % inner_capabilities is a required schema field (D6-8).
+    del_dict(inner_capabilities, Base, _, NoInner),
+    \+ expert_contract_ok(NoInner, Env),
+    % inner_capabilities must stay within environment grants.
+    put_dict(inner_capabilities, Base,
+             [model(main), tool(sync_remote)], WideInner),
+    \+ expert_contract_ok(WideInner, Env),
+    % model_policy{provider, max_iterations} is shape-checked, not any-dict.
+    get_dict(model_policy, Base, MP0),
+    put_dict(max_iterations, MP0, 0, MPBadMax),
+    put_dict(model_policy, Base, MPBadMax, ContractBadMax),
+    \+ expert_contract_ok(ContractBadMax, Env),
+    del_dict(provider, MP0, _, MPNoProvider),
+    put_dict(model_policy, Base, MPNoProvider, ContractNoProvider),
+    \+ expert_contract_ok(ContractNoProvider, Env),
+    % budget_policy is a closed atom.
+    put_dict(budget_policy, Base, unlimited, ContractBadBudget),
+    \+ expert_contract_ok(ContractBadBudget, Env),
+    % completion/failure condition values are closed atoms.
+    put_dict(completion, Base, [somehow_done], ContractBadCompletion),
+    \+ expert_contract_ok(ContractBadCompletion, Env),
+    put_dict(failure, Base, [gave_up], ContractBadFailure),
+    \+ expert_contract_ok(ContractBadFailure, Env).
 
 expert_contract_widening_rejected :-
-    \+ expert_contract_ok(_{op:edit/2,
-                            capabilities:[tool(edit), model(main)],
-                            input_schema:edit_action,
-                            output_schema:write_result,
-                            effects:[external_effect],
-                            authority_tier:allow_once,
-                            model_policy:none,
-                            budget_policy:shared_step_budget,
-                            completion:[applied_and_observed],
-                            failure:[blocked, failed]},
-                           plan_environment{capabilities:[tool(edit)],
-                                            inputs:empty_env{}}).
+    expert_contract_base(Base),
+    % Both the op's own required capabilities and the expert's inner
+    % capabilities must stay within environment grants.
+    \+ expert_contract_ok(Base,
+                          plan_environment{capabilities:[tool(edit)],
+                                           inputs:empty_env{}}),
+    put_dict(inner_capabilities, Base, [model(main)], InnerOnly),
+    \+ expert_contract_ok(InnerOnly,
+                          plan_environment{capabilities:[tool(edit)],
+                                           inputs:empty_env{}}).
 
 /* ------------------------------------------------------------------ */
 /* Durability: durable bindings through the merged persistency layer   */
@@ -2092,22 +2127,55 @@ expert_contract_ok(Contract, Env) :-
     is_dict(Contract),
     dict_keys(Contract, Keys),
     forall(member(K, Keys),
-           memberchk(K, [op, capabilities, input_schema, output_schema,
-                         effects, authority_tier, model_policy,
-                         budget_policy, completion, failure])),
+           memberchk(K, [op, capabilities, inner_capabilities,
+                         input_schema, output_schema, effects,
+                         authority_tier, model_policy, budget_policy,
+                         completion, failure])),
     get_dict(op, Contract, Op),
     (   atom(Op) -> true ; Op = Name/Arity, atom(Name), integer(Arity) ),
     get_dict(capabilities, Contract, Caps),
-    is_list(Caps),
+    expert_capability_list(Caps),
+    % D6-8: inner capabilities are the expert's own inner-loop grants
+    % (e.g. model(P) for write experts); they are distinct from the op's
+    % own required capability set and validated against the environment at
+    % preflight like every other requirement.
+    get_dict(inner_capabilities, Contract, InnerCaps),
+    expert_capability_list(InnerCaps),
     get_dict(capabilities, Env, EnvCapabilities),
     forall(member(C, Caps), memberchk(C, EnvCapabilities)),
+    forall(member(C, InnerCaps), memberchk(C, EnvCapabilities)),
     get_dict(effects, Contract, Effects),
+    Effects \== [],
     forall(member(E, Effects),
            memberchk(E, [observation, external_effect, orchestration])),
     get_dict(authority_tier, Contract, Tier),
     memberchk(Tier, [approve_diff, allow_once, allow_session, dangerous]),
     get_dict(model_policy, Contract, MP),
-    (   MP == none -> true ; is_dict(MP) ).
+    model_policy_ok(MP),
+    get_dict(budget_policy, Contract, BudgetPolicy),
+    memberchk(BudgetPolicy, [shared_step_budget]),
+    get_dict(completion, Contract, Completion),
+    is_list(Completion), Completion \== [],
+    forall(member(C, Completion), memberchk(C, [applied_and_observed])),
+    get_dict(failure, Contract, Failure),
+    is_list(Failure), Failure \== [],
+    forall(member(F, Failure), memberchk(F, [blocked, failed])).
+
+expert_capability_list(Caps) :-
+    is_list(Caps),
+    Caps \== [],
+    forall(member(C, Caps), rlm_tool:capability_shape(C)).
+
+model_policy_ok(none) :- !.
+model_policy_ok(Policy) :-
+    is_dict(Policy),
+    dict_keys(Policy, Keys),
+    forall(member(K, Keys), memberchk(K, [provider, max_iterations])),
+    get_dict(provider, Policy, Provider),
+    atom(Provider), Provider \== '',
+    get_dict(max_iterations, Policy, MaxIterations),
+    integer(MaxIterations),
+    MaxIterations > 0.
 
 /* ------------------------------------------------------------------ */
 /* Design validators (trusted host assertion argument schemas)          */
