@@ -1028,22 +1028,36 @@ replan_safety_checks :-
     % establish.
     check(replan_drop_rejected,
           (   d6_validate_graph(Input, Graph),
-              d6_apply_patch(Graph,
-                             plan_patch{op:remove,
-                                        step:step(patch_foo, edit, _, _),
-                                        edges:[],
-                                        obligations:[],
-                                        reason:"simplify",
-                                        provenance:model_claim},
-                             Patched),
-              plan_validate_against_spec_gate(Patched, Frozen,
-                                              plan_environment{
-                                                  capabilities:[],
-                                                  inputs:EnvInputs},
-                                              error(Dropped)),
+              d6_apply_patch_full_chain(Graph,
+                                        plan_patch{op:remove,
+                                                   step:step(patch_foo,
+                                                             edit, _, _),
+                                                   edges:[],
+                                                   obligations:[],
+                                                   reason:"simplify",
+                                                   provenance:model_claim},
+                                        Frozen,
+                                        plan_environment{capabilities:[],
+                                                         inputs:EnvInputs},
+                                        error(Dropped)),
               get_dict(detail, Dropped, DroppedFaults),
               member(dropped_obligation(foo_behavior_x), DroppedFaults)
           )),
+
+    % Permanent negative check for the review's mutation graph: a no-op run
+    % step wired to the validate step cannot satisfy a tdd_evidence
+    % obligation, and a disconnected establishing step cannot either
+    % (§9/§11.2: establishing ops for code-change evidence are edit|create
+    % AND the step must be causally required by a validate step of the
+    % bound spec).
+    check(obligation_causal_link, obligation_causal_link_rejected),
+
+    % §11.1: patch application re-runs the full chain (parse + graph
+    % validation + compat, including dangling-input re-check) on the
+    % patched graph — a patch that leaves the graph structurally invalid
+    % is rejected at the validation phase, not waved through by the
+    % compat-only re-check.
+    check(patch_full_chain, patch_full_chain_rejected),
 
     % A validate step referencing a foreign spec fingerprint is rejected.
     check(spec_compat_foreign_ref,
@@ -1128,6 +1142,70 @@ rebind_validate_fingerprint(F,
                                     args:validate(spec(fingerprint(F))),
                                     bind:B}) :- !.
 rebind_validate_fingerprint(_, Step, Step).
+
+% The review's mutation graph: a no-op run step claims the tdd_evidence
+% obligation and the validate step depends on it. Permanent negative check.
+mutation_graph_input(Fingerprint, plan_graph(
+    steps([step(fake_work, run, run(command(argv([true]))), noop),
+           step(check_spec, validate,
+                validate(spec(fingerprint(Fingerprint))), verified)]),
+    depends_on([depends_on(check_spec, [fake_work])]),
+    obligations([obligation(step:fake_work, satisfies:foo_behavior_x)]))).
+
+% Second mutation: a genuinely code-writing step that satisfies the
+% obligation but is NOT causally required by any validate step of the bound
+% spec. The obligation linkage must not count it.
+disconnected_graph_input(Fingerprint, plan_graph(
+    steps([step(patch_foo, edit,
+                edit(target(ref(symbol_ref(symbol_ref{name:foo,
+                                                      kind:function,
+                                                      arity:2}))),
+                     content(literal(new))),
+                done),
+           step(check_spec, validate,
+                validate(spec(fingerprint(Fingerprint))), verified)]),
+    depends_on([]),
+    obligations([obligation(step:patch_foo, satisfies:foo_behavior_x)]))).
+
+obligation_causal_link_rejected :-
+    frozen_tdd_spec(Frozen),
+    get_dict(ref, Frozen, FrozenRef),
+    get_dict(fingerprint, FrozenRef, Fingerprint),
+    plan_environment{capabilities:[], inputs:gate_inputs{}} = NoEnv,
+    mutation_graph_input(Fingerprint, MutationInput),
+    d6_validate_graph(MutationInput, MutationGraph),
+    plan_validate_against_spec_gate(MutationGraph, Frozen, NoEnv,
+                                    error(MutationErrors)),
+    get_dict(detail, MutationErrors, MutationFaults),
+    member(dropped_obligation(foo_behavior_x), MutationFaults),
+    disconnected_graph_input(Fingerprint, DisconnectedInput),
+    d6_validate_graph(DisconnectedInput, DisconnectedGraph),
+    plan_validate_against_spec_gate(DisconnectedGraph, Frozen, NoEnv,
+                                    error(DisconnectedErrors)),
+    get_dict(detail, DisconnectedErrors, DisconnectedFaults),
+    member(dropped_obligation(foo_behavior_x), DisconnectedFaults).
+
+patch_full_chain_rejected :-
+    frozen_tdd_spec(Frozen),
+    get_dict(ref, Frozen, FrozenRef),
+    get_dict(fingerprint, FrozenRef, Fingerprint),
+    dataflow_graph_plan_graph(Input0),
+    set_validate_fingerprint(Input0, Fingerprint, Input),
+    dataflow_env_inputs(EnvInputs),
+    d6_validate_graph(Input, Graph),
+    d6_apply_patch_full_chain(Graph,
+                              plan_patch{op:remove,
+                                         step:step(find_foo, locate, _, _),
+                                         edges:[],
+                                         obligations:[],
+                                         reason:"drop locate",
+                                         provenance:model_claim},
+                              Frozen,
+                              plan_environment{capabilities:[],
+                                               inputs:EnvInputs},
+                              error(ValidationError)),
+    get_dict(phase, ValidationError, plan_validation),
+    get_dict(kind, ValidationError, patched_graph_invalid).
 
 /* ------------------------------------------------------------------ */
 /* TDD evidence evaluation (§9) through the real evidence pipeline     */
@@ -1709,6 +1787,21 @@ d6_dep_nonempty(Dep) :-
     Rs \== [].
 d6_obl_step(StepId, Obl) :- get_dict(step, Obl, StepId).
 
+% §11.1: applying a patch re-runs the FULL chain on the patched graph —
+% parse + plan-graph validation (env-aware, so dangling-input re-checking
+% is included) + spec compat — never the compat layer alone.
+d6_apply_patch_full_chain(Graph, Patch, Frozen, Env, Outcome) :-
+    d6_apply_patch(Graph, Patch, Patched),
+    d6_graph_to_input(Patched, PatchedInput),
+    get_dict(inputs, Env, EnvInputs),
+    (   catch(d6_validate_graph(PatchedInput, EnvInputs, PatchedGraph),
+              _, fail)
+    ->  plan_validate_against_spec_gate(PatchedGraph, Frozen, Env, Outcome)
+    ;   Outcome = error(plan_graph_error{phase:plan_validation,
+                                         kind:patched_graph_invalid,
+                                         detail:none})
+    ).
+
 d6_desugar(StepId, Op, Graph, Binding, Plan) :-
     get_dict(steps, Graph, Steps),
     member(Step, Steps),
@@ -1823,6 +1916,10 @@ d6_compat_obligations(Graph, Frozen, Faults) :-
     get_dict(requirements, Frozen, Requirements),
     get_dict(obligations, Graph, Obligations),
     get_dict(steps, Graph, Steps),
+    get_dict(deps, Graph, Deps),
+    maplist(d6_dep_pair, Deps, DepPairs),
+    get_dict(ref, Frozen, FrozenRef),
+    get_dict(fingerprint, FrozenRef, ExpectedFingerprint),
     findall(dropped_obligation(ReqId),
             (   member(Req, Requirements),
                 get_dict(severity, Req, required),
@@ -1836,15 +1933,38 @@ d6_compat_obligations(Graph, Frozen, Faults) :-
                        member(Step, Steps),
                        get_dict(id, Step, S),
                        get_dict(op, Step, Op),
-                       establishing_op(Op)
+                       establishing_op(ReqKind, Op),
+                       validate_causally_reaches(S, Steps, DepPairs,
+                                                 ExpectedFingerprint)
                    )
             ),
             Faults).
 
-establishing_op(edit).
-establishing_op(create).
-establishing_op(delete).
-establishing_op(run).
+% §9/§11.2: which plan ops can establish a requirement of the given
+% assertion kind. tdd_evidence's evidence contract is a code change, so
+% only project-writing steps qualify — a run step proves nothing about a
+% RED/GREEN pair.
+establishing_op(tdd_evidence, edit).
+establishing_op(tdd_evidence, create).
+
+% An establishing step satisfies an obligation only when its work is
+% causally connected to the verification it feeds: the step must be
+% transitively required by a validate/1 step bound to the frozen spec.
+validate_causally_reaches(StepId, Steps, DepPairs, Fingerprint) :-
+    member(Step, Steps),
+    get_dict(id, Step, ValidateId),
+    get_dict(op, Step, validate),
+    get_dict(args, Step, validate(spec(fingerprint(Fingerprint)))),
+    requires_transitively(ValidateId, StepId, DepPairs, [ValidateId]).
+
+requires_transitively(From, Target, DepPairs, Seen) :-
+    member(From-Rs, DepPairs),
+    member(R, Rs),
+    (   R == Target
+    ->  true
+    ;   \+ memberchk(R, Seen),
+        requires_transitively(R, Target, DepPairs, [R|Seen])
+    ).
 
 d6_compat_forbidden(Graph, Frozen, Faults) :-
     get_dict(steps, Graph, Steps),

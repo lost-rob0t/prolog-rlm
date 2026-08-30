@@ -641,7 +641,9 @@ values carried in the assertion args; hosts pin the plan-start revision as
 `pre_revision` (typically `head`) and the produced state as `post_revision`
 (typically `working`). `edit`/`create` steps that implement the requirement
 must record obligations (D6-5) so coverage ties the code change to the
-evidence.
+evidence; only `edit`/`create` steps can satisfy a `tdd_evidence` obligation,
+and the linkage is causal — the establishing step must be transitively
+required by a `validate/1` step of the bound spec (Section 11).
 
 ## 10. HTTP / network model
 
@@ -802,9 +804,14 @@ There is exactly one predicate with this name and arity. Fail-closed checks
    requires a code change; observation-only kinds like `build_ok`,
    `test_passes`, `http_endpoint` require none) must be covered by an
    `obligation(step:S, satisfies:ReqId)` where `S` is an establishing step
-   (`edit/create/delete/run`). A `validate/1` step VERIFIES the frozen spec;
-   it never ESTABLISHES a requirement, so a patch cannot hide a dropped
-   obligation behind a validate step.
+   for that kind — for `tdd_evidence` only `edit|create` qualify, since its
+   evidence contract is a code change — AND `S` is causally connected to
+   the bound spec's verification: a `validate/1` step carrying the frozen
+   fingerprint transitively requires `S` in the dependency graph. A
+   `validate/1` step VERIFIES the frozen spec; it never ESTABLISHES a
+   requirement, so a patch cannot hide a dropped obligation behind a
+   validate step, and a disconnected or no-op establishing step does not
+   count.
 3. `forbidden_effect_in_plan(StepId, Effect)` — step effect classes checked
    against the spec's invariant data; desugared invariants are stored
    UNWRAPPED (`forbidden_effect(Effect)` terms inside `invariants`).
