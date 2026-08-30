@@ -16,11 +16,14 @@
  * replacing the presence-only #288 contract script (which was false-green).
  *
  * Layers, explicitly labeled:
- *   - IMPLEMENTED: merged main modules (rlm_spec_lang, rlm_spec,
+ *   - IMPLEMENTED: merged-main modules (rlm_spec_lang, rlm_spec,
  *     rlm_assertion, rlm_evidence, rlm_verify, rlm_plan, rlm_tool,
- *     rlm_graph_persist) are loaded from this checkout; every SPEC grammar,
+ *     rlm_graph_persist) are loaded FROM THIS CHECKOUT; every SPEC grammar,
  *     expression-grammar, desugared-plan, evidence and persistency check
- *     runs through their real code.
+ *     runs through their real code. This checkout also carries branch-only
+ *     features (e.g. rlm_plan's model_step_handler hook,
+ *     rlm_tool's capability_shape(spec/1|plan/1)); those are validated as
+ *     UNMERGED-adoption surface (design record §2.2), NOT as merged main.
  *   - UNMERGED BASE: prolog/rlm_plan_graph.pl is extracted from the
  *     rage/288-spec-plan-graph-executor git object and loaded; BASE plan
  *     graphs validate through its real code. If the branch is missing the
