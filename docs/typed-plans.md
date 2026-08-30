@@ -218,13 +218,14 @@ This also preserves direct mode. Three modes are first-class and
 host-selectable: `direct` (native bounded loop, the default for ordinary
 model interaction), `symbolic` (typed plans over the SPEC/PLAN/VERIFY
 boundary), and `recursive_symbolic` (symbolic mode whose subplans use
-`rlm/3` with the existing recursion-policy routes). Selection is deterministic
-host policy (`strategy_select/3` design target in
-`docs/research/spec-plan-authority.md`); a caller may always pin the mode
-explicitly. Symbolic planning is an available execution mode for tasks that
-benefit from durable state, dependency reasoning, constrained expert
-selection, or long-horizon verification; it is not a requirement that every
-model call become an agentic workflow.
+`rlm/2` with the existing recursion-policy routes). Selection is deterministic
+host policy: the interface names normalize through the single
+`strategy_mode/2` boundary defined in `docs/research/spec-plan-authority.md`
+(§7.1) to the runtime atoms `direct` and `typed_plan`; a caller may always
+pin the mode explicitly. Symbolic planning is an available execution mode for
+tasks that benefit from durable state, dependency reasoning, constrained
+expert selection, or long-horizon verification; it is not a requirement that
+every model call become an agentic workflow.
 
 ## Closed AST
 
