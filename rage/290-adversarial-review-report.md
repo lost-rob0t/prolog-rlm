@@ -180,3 +180,27 @@ reachable ref). The fetch step is non-fatal and the pinned id remains the
 authority; absent the object, the gate halts 1 with the exact candidate
 list. This push is an operational step outside this design slice's
 authorization and is left to the integrator before the next required CI run.
+
+### Resolution addendum (post-review packaging)
+
+- The BASE branch `rage/288-spec-plan-graph-executor` was pushed to the
+  GitHub remote (head = pinned id `71a10ae…`), so the CI fetch step now
+  locates the object. Verified in a fresh `--no-local` GitHub clone of the PR
+  head: the verbatim CI fetch step + design gate complete 59/59 green.
+- The deterministic unit lane additionally exposed a pre-existing main-side
+  break: main's commits `25c0194`/`eea576f` added
+  `rlm_direct_context_peek_contract_test.pl` and `rlm_native_any_schema_test.pl`
+  without `deterministic_corpus.pl` entries, red on main itself
+  (unit runs at `b654831`, `eb2411a`) and on every PR merge checkout. Fixed
+  here by merging main (`cb1b0a7`) and adding the two manifest entries
+  (`9b492d3`); gate-report mode completes 1066/1066 in 92 suites.
+- CI state at `9b492d3`: **Deterministic unit and load checks = success**
+  (design gate included), Nix/Tree-sitter/Pack lanes = success. Paid
+  OpenRouter lane remains red on exactly one pre-existing item:
+  `live_planner_context_openrouter_test` with the pinned `openai/gpt-oss-120b`
+  deterministically authoring one-hop `tool_result_envelope_field(content,…)`
+  references (4/4 local reproductions; main fails identically at `b654831`,
+  and this branch's lane failed the same way before this slice at `5bb2817` /
+  `7c9e007`). This is a model-vs-guidance authoring gap to be fixed in a
+  dedicated slice with 120B live evidence; it is not claimed green here, and
+  the `z-ai/glm-5.3-flash` 11/11 run is not offered as evidence for that lane.
