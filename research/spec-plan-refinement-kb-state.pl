@@ -6,6 +6,11 @@
  * Implementation slices s00..s11 remain pending until their slices land.
  * A bare status(done) with no evidence/validated decision is a gate
  * violation (kb_violation/1), so this file must always pair them.
+ *
+ * Evidence refs are machine-checked by the design gate
+ * (kb_evidence_refs_resolve): every gate:<Id> ref names a check id the
+ * gate defines; every design:spec-plan-authority#<anchor> ref names an
+ * anchor parsed from the design record's headings.
  */
 :- assertz(spec_plan_refinement_kb:kb_status(d01, done)).
 :- assertz(spec_plan_refinement_kb:kb_status(d02, done)).
@@ -22,47 +27,58 @@
 :- assertz(spec_plan_refinement_kb:kb_status(d13, done)).
 :- assertz(spec_plan_refinement_kb:kb_status(d14, done)).
 
-:- assertz(spec_plan_refinement_kb:kb_evidence(d01, 'design:spec-plan-authority#s2-inventory')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d02, 'design:spec-plan-authority#s3-canonical-spec-language')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d01, 'design:spec-plan-authority#2-inventory-and-classification')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d02, 'design:spec-plan-authority#3-canonical-spec-language')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d02, 'gate:spec_reject_spec2')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d02, 'source:prolog/rlm_spec_lang.pl')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d03, 'design:spec-plan-authority#s5-reference-grammar')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d03, 'design:spec-plan-authority#5-canonical-reference-grammar-one-hierarchy')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d03, 'gate:plan_reject_bad_ref')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d03, 'source:rage288:prolog/rlm_plan_graph.pl')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d04, 'design:spec-plan-authority#s6-canonical-plan-language')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d04, 'design:spec-plan-authority#6-canonical-plan-language')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d04, 'design:spec-plan-authority#63-d6-deltas-each-owned-by-the-reconciliation-slice')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d04, 'gate:plan_base_ok')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d04, 'gate:plan_reject_unknown_op')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d04, 'gate:plan_reject_bad_arity')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d05, 'design:spec-plan-authority#s8-3-dataflow')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d05, 'gate:d6_dataflow_ok')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d05, 'design:spec-plan-authority#83-edit_action--llm-output-into-the-write-expert-closed-schema')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d05, 'gate:d6_dataflow_round_trip')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d05, 'gate:spec_input_env_dataflow')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d05, 'gate:d6_dangling_rejected')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d05, 'source:prolog/rlm_plan.pl:resolve_expr')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d06, 'design:spec-plan-authority#s8-experts-and-loop')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d06, 'design:spec-plan-authority#8-experts-dataflow-and-the-iterative-coding-loop')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d06, 'design:spec-plan-authority#73-continuous-project-state-readability-across-modes-hard-requirement')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d06, 'gate:edit_action_ok')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d06, 'gate:expert_contract_ok')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d07, 'design:spec-plan-authority#s4-spec-domains')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d06, 'gate:expert_contract_shape')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d06, 'gate:multi_run_reprojection')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d07, 'design:spec-plan-authority#4-spec-domains-via-trusted-assertion-kinds')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d07, 'gate:spec_compile_domain_ok')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d08, 'design:spec-plan-authority#s9-tdd-evidence')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d08, 'design:spec-plan-authority#9-tdd--red-first-evidence-separate-from-final-spec')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d08, 'gate:tdd_red_green')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d08, 'gate:tdd_not_red_rejected')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d09, 'design:spec-plan-authority#s10-http-model')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d09, 'gate:http_schema_ok')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d09, 'gate:http_malformed_rejected')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d10, 'design:spec-plan-authority#s10-3-network-authority')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d09, 'design:spec-plan-authority#10-http--network-model')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d09, 'gate:spec_compile_http_ok')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d09, 'gate:http_reject_status_700')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d09, 'gate:http_reject_body_without_schema')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d10, 'design:spec-plan-authority#103-network-authority-closed-mapping')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d10, 'gate:capability_unchanged')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d10, 'gate:metadata_capability_rejected')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d10, 'gate:host_observation_refusal')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d11, 'design:spec-plan-authority#s11-plan-spec-compatibility')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d11, 'design:spec-plan-authority#11-plan--spec-compatibility-one-canonical-api')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d11, 'gate:replan_drop_rejected')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d11, 'gate:obligation_causal_link')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d11, 'gate:patch_full_chain')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d11, 'gate:replan_preserve_ok')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d11, 'gate:spec_compat_foreign_ref')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d12, 'design:spec-plan-authority#s12-durability')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d12, 'design:spec-plan-authority#12-durability')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d12, 'design:spec-plan-authority#122-forward-projection-never-compaction')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d12, 'gate:resume_snapshot_ok')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d12, 'gate:forward_projection_snapshot')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d12, 'gate:kb_discipline_ok')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d13, 'design:spec-plan-authority#s13-implementation-dag')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d13, 'design:spec-plan-authority#13-implementation-dependency-dag')).
 :- assertz(spec_plan_refinement_kb:kb_evidence(d13, 'gate:dag_ok')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d14, 'design:spec-plan-authority#s14-design-gate')).
-:- assertz(spec_plan_refinement_kb:kb_evidence(d14, 'gate:design_gate_passes')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d14, 'design:spec-plan-authority#14-design-gate')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d14, 'gate:kb_discipline_ok')).
+:- assertz(spec_plan_refinement_kb:kb_evidence(d14, 'gate:base_ref_resolvable')).
 
 :- assertz(spec_plan_refinement_kb:kb_decision(d02, dec_no_spec2,
     'Keep merged spec(Forms) root; spec identity belongs to frozen_spec.ref only; no spec(Id,Forms)', validated)).
@@ -73,7 +89,7 @@
 :- assertz(spec_plan_refinement_kb:kb_decision(d04, dec_generate_not_op,
     'model generation is owned by expert inner loops; no plan-visible generate op', validated)).
 :- assertz(spec_plan_refinement_kb:kb_decision(d05, dec_admission_binding,
-    'expr leaves resolve at step admission from inputs plus dependency-closure step binds; desugared rlm_plan AST unchanged', validated)).
+    'expr leaves resolve at step admission from environment inputs plus dependency-closure step binds; desugared rlm_plan AST unchanged', validated)).
 :- assertz(spec_plan_refinement_kb:kb_decision(d06, dec_expert_owned_loop,
     'iterative coding loop owned by the expert pack inside the desugared step; one rlm_async scheduler; native model_step_handler charge-back', validated)).
 :- assertz(spec_plan_refinement_kb:kb_decision(d08, dec_pair_evidence,

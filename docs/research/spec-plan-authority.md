@@ -879,7 +879,8 @@ plan_kb_snapshot{spec_ref, graph, statuses, results,
                  bindings,                 % bind-name → value (closed data)
                  expert_checkpoints, budget_remaining, position,
                  repair_count, failure_refs, evidence_refs,
-                 effect_attempt_refs}
+                 effect_attempt_refs,
+                 covers:[seq_lo, seq_hi]}  % covered event-sequence range (§12.2)
 ```
 
 Events: `step_transition`, `expert_checkpoint`, `observation_ref`,

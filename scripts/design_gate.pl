@@ -41,6 +41,7 @@
 
 :- dynamic(gate_root/1).
 :- dynamic(check_failure/2).
+:- dynamic(check_defined/1).
 
 :- prolog_load_context(file, GateFile),
    file_directory_name(GateFile, GateDir),
@@ -156,9 +157,8 @@ load_unmerged_base :-
 /* Gate harness                                                        */
 /* ------------------------------------------------------------------ */
 
-:- dynamic(check_failure/2).
-
 check(Id, Goal) :-
+    assertz(check_defined(Id)),
     (   catch(Goal, Exception,
               (   report_exception(Id, Exception),
                   fail
@@ -282,6 +282,7 @@ design_gate_group(tdd_evidence_checks).
 design_gate_group(http_contract_checks).
 design_gate_group(edit_action_checks).
 design_gate_group(durability_checks).
+design_gate_group(state_readability_checks).
 design_gate_group(kb_dag_checks).
 
 /* ------------------------------------------------------------------ */
@@ -1456,7 +1457,14 @@ durability_checks :-
                   ),
                   graph_persist_close),
               catch(delete_file(TmpDb), _, true)
-          )).
+          )),
+    % §12.2 forward projection data model (d12): the plan-KB snapshot
+    % carries the covered event-sequence range [event_lo, event_hi]; the
+    % model-visible boundary summary carries the covered message-id range
+    % as derived data over a trusted_runtime range; prior ranges stay
+    % addressable because the summary is a projection of [1, Hi], never a
+    % history rewrite.
+    check(forward_projection_snapshot, forward_projection_data_model).
 
 design_snapshot(plan_kb_snapshot{
     spec_ref:spec_ref{series:design,
@@ -1482,7 +1490,8 @@ design_snapshot(plan_kb_snapshot{
     repair_count:0,
     failure_refs:[],
     evidence_refs:[],
-    effect_attempt_refs:[]}).
+    effect_attempt_refs:[],
+    covers:[1, 10]}).
 
 plan_kb_snapshot_schema_ok(Snapshot) :-
     is_dict(Snapshot),
@@ -1491,18 +1500,93 @@ plan_kb_snapshot_schema_ok(Snapshot) :-
            memberchk(Key, [spec_ref, graph, statuses, results, bindings,
                            expert_checkpoints, budget_remaining, position,
                            repair_count, failure_refs, evidence_refs,
-                           effect_attempt_refs])),
+                           effect_attempt_refs, covers])),
     forall(member(Required, [spec_ref, graph, statuses, results, bindings,
-                             budget_remaining, position, repair_count]),
+                             budget_remaining, position, repair_count,
+                             covers]),
            get_dict(Required, Snapshot, _)),
     get_dict(spec_ref, Snapshot, SpecRef),
     is_dict(SpecRef),
     get_dict(fingerprint, SpecRef, Fingerprint),
-    atom_concat('spec-sha256-', _, Fingerprint).
+    atom_concat('spec-sha256-', _, Fingerprint),
+    get_dict(covers, Snapshot, Covers),
+    covers_range_ok(Covers).
 
 dict_keys(Dict, Keys) :-
     dict_pairs(Dict, _, Pairs),
     maplist(arg(1), Pairs, Keys).
+
+forward_projection_data_model :-
+    design_snapshot_forward(Snapshot),
+    plan_kb_snapshot_schema_ok(Snapshot),
+    get_dict(covers, Snapshot, SnapshotCovers),
+    covers_range_ok(SnapshotCovers),
+    boundary_summary_ok(boundary_summary{kind:boundary_summary,
+                                         covers:SnapshotCovers,
+                                         trust_class:derived,
+                                         source_class:trusted_runtime}),
+    get_dict(covers, Snapshot, [_, Hi]),
+    covers_range_ok([1, Hi]).
+
+covers_range_ok([Lo, Hi]) :-
+    integer(Lo), integer(Hi),
+    Lo >= 1,
+    Lo =< Hi.
+
+boundary_summary_ok(Summary) :-
+    is_dict(Summary),
+    dict_keys(Summary, Keys),
+    forall(member(K, Keys),
+           memberchk(K, [kind, covers, trust_class, source_class])),
+    get_dict(kind, Summary, boundary_summary),
+    get_dict(covers, Summary, Covers),
+    covers_range_ok(Covers),
+    get_dict(trust_class, Summary, derived),
+    get_dict(source_class, Summary, trusted_runtime).
+
+% §12.2 snapshot variant: same closed snapshot schema with the covered
+% event-sequence range advanced (forward projection, never compaction).
+design_snapshot_forward(Snapshot) :-
+    design_snapshot(Snapshot0),
+    put_dict(covers, Snapshot0, [1, 10], Snapshot).
+
+/* ------------------------------------------------------------------ */
+/* Multi-run readability (§7.3): no mode one-shots                      */
+/* ------------------------------------------------------------------ */
+
+state_readability_checks :-
+    check(multi_run_reprojection, multi_run_reprojection_table).
+
+% §7.1: interface names normalize to runtime atoms through ONE boundary
+% (the adopted rlm_spec_strategy normalize_mode admits exactly these).
+design_strategy_mode(direct, direct).
+design_strategy_mode(symbolic, typed_plan).
+design_strategy_mode(recursive_symbolic, typed_plan).
+
+% §7.3 mode table (design data): per-exchange project-state re-projection
+% obligation per runtime mode/route, owned by the declared slice that
+% implements it.
+mode_reprojection(direct, per_turn_recompile, s10).
+mode_reprojection(typed_plan, retrieve_before_proposal, s05).
+mode_reprojection(typed_plan, bounded_current_projection, s11).
+
+multi_run_reprojection_table :-
+    design_strategy_mode(direct, direct),
+    design_strategy_mode(symbolic, typed_plan),
+    design_strategy_mode(recursive_symbolic, typed_plan),
+    % The normalization boundary admits no other interface names.
+    \+ (   design_strategy_mode(Interface, _),
+           \+ memberchk(Interface, [direct, symbolic, recursive_symbolic])
+       ),
+    % Every §7.3 obligation is present and owned by a declared slice:
+    % direct re-compiles provider-visible context per provider turn; expert
+    % loops retrieve changed state before each proposal; subplans receive
+    % bounded projections of the parent's CURRENT view.
+    mode_reprojection(direct, per_turn_recompile, s10),
+    mode_reprojection(typed_plan, retrieve_before_proposal, s05),
+    mode_reprojection(typed_plan, bounded_current_projection, s11),
+    declared_slice_set(Slices),
+    forall(mode_reprojection(_, _, Slice), memberchk(Slice, Slices)).
 
 /* ------------------------------------------------------------------ */
 /* Research KB discipline + implementation DAG                         */
@@ -1523,14 +1607,125 @@ kb_dag_checks :-
               % pointing outside must target a completed design task.
               forall(( kb_depends(S, Dep),
                        sub_atom(S, 0, 1, _, s) ),
-                    (   memberchk(S, Slices),
-                        (   memberchk(Dep, Slices)
-                        ;   kb_task_done(Dep)
-                        )
-                    )),
+                     (   memberchk(S, Slices),
+                         (   memberchk(Dep, Slices)
+                         ;   kb_task_done(Dep)
+                         )
+                     )),
               \+ kb_slice_cycle,
               findall(D, kb_depends(s00, D), [d04])
-          )).
+          )),
+    % Every persisted kb_evidence ref must resolve: gate:<Id> refs name
+    % check ids this gate defines; design:spec-plan-authority#<anchor> refs
+    % name anchors parsed from the design record's own headings. Runs last
+    % so every referenced check id has been registered.
+    check(kb_evidence_refs_resolve, kb_evidence_refs_resolve_run).
+
+kb_evidence_refs_resolve_run :-
+    doc_anchor_slugs(Slugs),
+    forall(spec_plan_refinement_kb:kb_evidence(_Task, EvidenceRef),
+           evidence_ref_resolves(EvidenceRef, Slugs)).
+
+evidence_ref_resolves(EvidenceRef, Slugs) :-
+    atom_concat('gate:', CheckId, EvidenceRef),
+    !,
+    check_defined(CheckId).
+evidence_ref_resolves(EvidenceRef, Slugs) :-
+    atom_concat('design:spec-plan-authority#', Anchor, EvidenceRef),
+    !,
+    memberchk(Anchor, Slugs).
+evidence_ref_resolves(EvidenceRef, _) :-
+    atom_concat('source:', SourceRef, EvidenceRef),
+    !,
+    source_ref_resolves(SourceRef).
+
+% source:<path> | source:<path>:<symbol> name checkout files (and a
+% defined predicate inside them); source:rage288:<path> names the pinned
+% BASE object, which is loaded as the rlm_plan_graph module.
+source_ref_resolves(SourceRef) :-
+    atom_concat('rage288:', _, SourceRef),
+    !,
+    current_module(rlm_plan_graph).
+source_ref_resolves(SourceRef) :-
+    (   atomic_list_concat([FilePart, Symbol], ':', SourceRef)
+    ->  true
+    ;   FilePart = SourceRef,
+        Symbol = none
+    ),
+    gate_root(Root),
+    atomic_list_concat([Root, '/', FilePart], FilePath),
+    exists_file(FilePath),
+    source_symbol_resolves(FilePart, Symbol).
+
+source_symbol_resolves(_, none) :- !.
+source_symbol_resolves(FilePart, Symbol) :-
+    atomic_list_concat(PathSegments, '/', FilePart),
+    last(PathSegments, BaseFile),
+    atom_concat(Module, '.pl', BaseFile),
+    current_predicate(Module:Symbol/_).
+
+% GitHub-style anchor slugs parsed from the design record's headings.
+doc_anchor_slugs(Slugs) :-
+    gate_root(Root),
+    atomic_list_concat([Root, '/docs/research/spec-plan-authority.md'],
+                       DocFile),
+    setup_call_cleanup(
+        open(DocFile, read, In),
+        (   read_heading_lines_(In, Headings),
+            maplist(github_anchor, Headings, Slugs0),
+            sort(Slugs0, Slugs)
+        ),
+        close(In)).
+
+read_heading_lines_(In, Headings) :-
+    read_line_to_string(In, Line),
+    (   Line == end_of_file
+    ->  Headings = []
+    ;   (   sub_atom(Line, 0, _, _, '#')
+        ->  Headings = [Line|Rest]
+        ;   Headings = Rest
+        ),
+        read_heading_lines_(In, Rest)
+    ).
+
+% Markdown "## 2.1 Title — Sub" → GitHub anchor "21-title--sub":
+% lowercase ASCII letters/digits, underscore and hyphen kept, spaces become
+% hyphens, every other code point dropped (so punctuation, arrows and
+% em-dashes vanish, leaving the surrounding space hyphens in place).
+github_anchor(Line, Anchor) :-
+    atom_codes(Line, Codes0),
+    skip_hashes_(Codes0, Codes1),
+    % Drop the single markdown heading space (explicit code list: " " is a
+    % SWI string, not a code list).
+    (   Codes1 = [32|Codes2] -> true ; Codes2 = Codes1 ),
+    slugify_(Codes2, SlugCodes),
+    atom_codes(Anchor, SlugCodes).
+
+skip_hashes_([0'#|T], R) :- !, skip_hashes_(T, R).
+skip_hashes_(R, R).
+
+slug_keep_(C) :- between(0'0, 0'9, C).
+slug_keep_(C) :- between(0'a, 0'z, C).
+slug_keep_(C) :- between(0'A, 0'Z, C).
+slug_keep_(0'_).
+slug_keep_(0'-).
+
+slugify_([], []).
+slugify_([C|T], [0'-|R]) :-
+    (   C == 0'  ; C == 0'\t
+    ),
+    !,
+    slugify_(T, R).
+slugify_([C|T], [C2|R]) :-
+    slug_keep_(C),
+    !,
+    (   between(0'A, 0'Z, C)
+    ->  C2 is C + 32
+    ;   C2 = C
+    ),
+    slugify_(T, R).
+slugify_([_|T], R) :-
+    slugify_(T, R).
 
 declared_slice_set([s00, s01, s02, s03, s04, s05, s06, s07, s08, s09, s10,
                     s11]).
