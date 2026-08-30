@@ -185,12 +185,6 @@ validate_child_response(ModelResponse, RequestedModel) :-
     get_dict(selected_model, ModelResponse, SelectedModel),
     assertion(selected_model_matches(RequestedModel, SelectedModel)).
 
-all_steps_ok(Transitions) :-
-    forall(member(T, Transitions),
-           (   get_dict(status, T, Status),
-               Status == ok
-           )).
-
 print_live_uuid_evidence :-
     forall(live_uuid_evidence(test, TestUUID),
            format(user_error,
@@ -351,14 +345,14 @@ require_pinned_paid_model(Model) :-
     ).
 
 selected_model_matches(Model, Model) :- !.
-
-is_ok_search_transition(T) :-
-    get_dict(operation, T, context(search)),
-    get_dict(status, T, ok).
 selected_model_matches(Requested, Selected) :-
     atom(Requested),
     string(Selected),
     atom_string(Requested, Selected).
+
+is_ok_search_transition(T) :-
+    get_dict(operation, T, context(search)),
+    get_dict(status, T, ok).
 
 log_live_scale_evidence(RequestedModel, Completion, Turn, Elapsed) :-
     format('conversation_scale_provider: openrouter~n', []),
