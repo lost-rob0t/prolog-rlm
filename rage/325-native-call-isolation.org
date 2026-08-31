@@ -163,3 +163,23 @@ The full repository gate passed before the final evidence-record commit:
 
 The final candidate head must repeat the exact-head gate after this record is
 committed; GitHub Actions remains canonical.
+
+* Exact-head gate (candidate f49e638 + evidence record)
+The exact-head gate was repeated after the wire-safety hardening and the docs
+precision commit, before publication:
+
+- deterministic PlUnit :: 93 suites; 1138 discovered/planned/completed/passed;
+  0 failed, timeout, blocked, or fixme (the +1 test is the new non-wire-term
+  fail-closed regression);
+- deterministic benchmark :: 16/16 passed;
+- deep experiment :: 15/15 passed;
+- runtime/load, research-approval validator (19 tracked files), and SPEC/PLAN
+  design gate :: passed;
+- aggregate main-ownership probe and runner-integrity suite :: 19/19 passed;
+- CLI demo plus graph trace-view smoke :: passed;
+- fresh-process graph and durable-artifact restart fixtures :: passed;
+- =git diff --check= :: passed.
+
+GitHub Actions on the published exact head remains the canonical full gate,
+including the credentialed REAL OpenRouter lane that fake providers never
+replace.
