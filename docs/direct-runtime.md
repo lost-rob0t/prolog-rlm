@@ -325,8 +325,11 @@ names, and duplicate IDs all reject the complete batch before execution.
 Argument parsing is isolated only after the call envelope, ID, type, and tool
 name have normalized. `native_tool_calls_classify/2` returns an ordered inert
 fault entry for that exact `normalize/malformed_arguments` case while retaining
-the original argument payload for assistant-message integrity checks. The
-strict `native_tool_call_normalize/2` and `native_tool_calls_normalize/2` APIs
+the original raw argument text for assistant-message integrity checks. A
+malformed argument payload that is not actual wire text (for example a
+host-supplied closed Prolog term) has no assistant-message wire
+representation and remains batch-fatal. The strict
+`native_tool_call_normalize/2` and `native_tool_calls_normalize/2` APIs
 remain all-or-nothing. Direct mode resolves an attributable fault entry against
 trusted bindings only to retain effect metadata; it never invents placeholder
 arguments or gives the faulted call an execution path.
