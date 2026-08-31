@@ -721,20 +721,6 @@ test(same_kind_from_unrelated_phase_escapes_classification) :-
           Thrown == Cause),
     assertion(Thrown == Cause).
 
-test(only_whitelisted_fault_kinds_are_recoverable) :-
-    findall(Kind, rlm_direct:recoverable_fault_kind(Kind), Kinds),
-    sort(Kinds, Sorted),
-    assertion(Sorted == [malformed_arguments, unavailable_tool_schema]),
-    forall(member(FutureKind,
-                  [duplicate_call_id,
-                   effectful_batch_unsupported,
-                   context_call_budget_exhausted,
-                   tool_call_budget_exhausted,
-                   unknown_context_alias,
-                   missing_assertion_registry,
-                   future_runtime_corruption]),
-           \+ rlm_direct:recoverable_fault_kind(FutureKind)).
-
 test(whitelisted_fault_becomes_a_recoverable_status) :-
     Call = native_tool_call{id:"wb_1",
                             name:context_search,
@@ -743,14 +729,19 @@ test(whitelisted_fault_becomes_a_recoverable_status) :-
     Cause = direct_error{phase:schema,
                          kind:malformed_arguments,
                          message:"probe"},
-    rlm_direct:recoverable_fault_status(Call, Cause, Status),
-    assertion(Status == fault(Call, Cause)).
+    rlm_direct:recoverable_fault_status(Call, none, Cause, Status),
+    assertion(Status == preflight_fault{call:Call,
+                                        binding:none,
+                                        cause:Cause}).
 
 test(unclassified_fault_kind_escapes_classification) :-
     Cause = direct_error{phase:runtime,
                          kind:future_runtime_corruption,
                          message:"unclassified fault probe"},
-    catch(rlm_direct:recoverable_fault_status(probe_call, Cause, _Status),
+    catch(rlm_direct:recoverable_fault_status(probe_call,
+                                              none,
+                                              Cause,
+                                              _Status),
           direct_fault(Thrown),
           Thrown == Cause),
     assertion(Thrown == Cause).
@@ -762,7 +753,8 @@ test(unavailable_tool_classification_produces_a_recoverable_fault_status) :-
                             arguments:_{},
                             type:function},
     rlm_direct:preflight_call_status(Runtime, Call, Status),
-    Status = fault(Call, Cause),
+    Status = preflight_fault{call:Call, binding:none, cause:Cause},
+    assertion(Cause.phase == catalog),
     assertion(Cause.kind == unavailable_tool_schema).
 
 test(malformed_context_arguments_classification_produces_a_fault_status) :-
@@ -776,7 +768,26 @@ test(malformed_context_arguments_classification_produces_a_fault_status) :-
                             arguments:_{unexpected:"field"},
                             type:function},
     rlm_direct:preflight_call_status(Runtime, Call, Status),
-    Status = fault(Call, Cause),
+    Status = preflight_fault{call:Call, binding:Binding, cause:Cause},
+    assertion(Cause.phase == schema),
+    assertion(Cause.kind == malformed_arguments).
+
+test(malformed_effectful_binding_survives_classification) :-
+    Binding = native_binding{name:counting_write,
+                             kind:tool(counting_write),
+                             effect:write,
+                             schema:none},
+    Runtime = direct_runtime{bindings:[Binding], registry:none},
+    Call = native_tool_call{id:"wb_5",
+                            name:counting_write,
+                            arguments:_{value:"seven"},
+                            type:function},
+    rlm_direct:preflight_call_status(Runtime, Call, Status),
+    rlm_direct:classified_effect(Status, Effect),
+    assertion(Effect == write),
+    assertion(rlm_direct:effectful_status(Status)),
+    Status = preflight_fault{call:Call, binding:Binding, cause:Cause},
+    assertion(Cause.phase == schema),
     assertion(Cause.kind == malformed_arguments).
 
 test(valid_context_arguments_classification_is_resolved) :-

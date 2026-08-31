@@ -659,34 +659,70 @@ classify_calls(Calls, Runtime, State, Classification) :-
           direct_fault(Cause),
           Classification = fatal(Cause)).
 
-% One per-call classification step. A direct fault becomes a recoverable,
-% model-repairable fault status only when its kind is explicitly listed in
-% recoverable_fault_kind/1; every other direct fault escapes classification
-% and is batch-fatal (positive recoverability policy, issue #313).
+% One per-call classification step. Resolution first establishes the
+% trusted catalog binding; argument validation is classified separately so
+% a recoverable schema fault retains the resolved binding. The binding must
+% survive recoverable faults: effect isolation is evaluated against the
+% ORIGINAL requested batch, including calls whose arguments failed
+% validation. Recoverable never means executable (a malformed effectful
+% call never executes and an unavailable call has no binding), and per-call
+% recovery cannot shrink an unsafe requested batch into an executable one.
 preflight_call_status(Runtime, Call, Status) :-
-    catch(( resolve_call(Runtime.bindings, Call, Resolved),
-            validate_call_arguments(Runtime, Resolved),
-            Status = Resolved
+    classify_resolution(Runtime, Call, Resolution),
+    classify_validation(Runtime, Call, Resolution, Status).
+
+% Resolution step: runs resolve_call exactly once. A faulting resolution is
+% remembered as a fault resolution with no binding; nothing is re-run.
+classify_resolution(Runtime, Call, Resolution) :-
+    catch(( resolve_call(Runtime.bindings, Call,
+                          resolved_call{call:Call, binding:Binding}),
+            Resolution = resolved(Binding)
           ),
           direct_fault(Cause),
-          recoverable_fault_status(Call, Cause, Status)).
+          Resolution = fault(Cause)).
 
-recoverable_fault_status(Call, Cause, fault(Call, Cause)) :-
-    recoverable_fault_kind(Cause.kind),
+% Validation step: runs validate_call_arguments exactly once for calls that
+% resolved. A recoverable fault keeps the resolved binding; a faulting
+% resolution is classified against the policy with no binding at all.
+classify_validation(Runtime, Call, Resolution, Status) :-
+    (   Resolution = resolved(Binding)
+    ->  Resolved = resolved_call{call:Call, binding:Binding},
+        catch(( validate_call_arguments(Runtime, Resolved),
+                Status = Resolved
+              ),
+              direct_fault(Cause),
+              recoverable_fault_status(Call, Binding, Cause, Status))
+    ;   Resolution = fault(Cause)
+    ->  recoverable_fault_status(Call, none, Cause, Status)
+    ).
+
+% A per-call direct fault becomes a recoverable, model-repairable fault
+% status only when its phase and kind are explicitly whitelisted in
+% recoverable_fault/2; every other direct fault escapes classification and
+% is batch-fatal (positive recoverability policy, issue #313).
+recoverable_fault_status(Call, Binding, Cause,
+                         preflight_fault{call:Call,
+                                         binding:Binding,
+                                         cause:Cause}) :-
+    recoverable_fault(Cause.phase, Cause.kind),
     !.
-recoverable_fault_status(_, Cause, _) :-
+recoverable_fault_status(_, _, Cause, _) :-
     throw(direct_fault(Cause)).
 
 % Centralized positive recoverability policy for per-call native preflight
-% faults. Everything not listed here is batch-fatal by default; a new direct
-% fault kind must be added explicitly once it is verified to be a
+% faults, keyed by the fault's phase AND kind so a same-kind fault emitted
+% by an unrelated runtime phase can never become model-repairable by
+% accident. Everything not listed here is batch-fatal by default; a new
+% direct fault must be added explicitly once it is verified to be a
 % model-repairable schema fault.
-recoverable_fault_kind(malformed_arguments).
-recoverable_fault_kind(unavailable_tool_schema).
+recoverable_fault(schema, malformed_arguments).
+recoverable_fault(catalog, unavailable_tool_schema).
 
 % Effect isolation is checked against the ORIGINAL requested batch: an
 % effectful call in a multi-call model request fails the whole batch even
-% when sibling calls failed preflight, and the effectful handler never runs.
+% when sibling calls failed preflight, and the effectful handler never
+% runs. The resolved binding survives recoverable faults, so a malformed
+% effectful call still counts as a requested effectful operation.
 validate_requested_effect_batch(Calls, Statuses) :-
     include(effectful_status, Statuses, Effectful),
     (   Effectful == []
@@ -699,9 +735,17 @@ validate_requested_effect_batch(Calls, Statuses) :-
                               message:"effectful native calls must be requested singly"}))
     ).
 
-effectful_status(Status) :-
+classified_effect(Status, Effect) :-
     is_dict(Status, resolved_call),
-    Status.binding.effect \== read.
+    Effect = Status.binding.effect.
+classified_effect(Status, Effect) :-
+    is_dict(Status, preflight_fault),
+    is_dict(Status.binding),
+    Effect = Status.binding.effect.
+
+effectful_status(Status) :-
+    classified_effect(Status, Effect),
+    Effect \== read.
 
 resolved_status(Status) :-
     is_dict(Status, resolved_call).
@@ -851,11 +895,12 @@ preflight_fault_trace(Call, Cause,
 execute_calls([], Runtime, State, Outcome) :-
     !,
     direct_loop(Runtime, State, Outcome).
-execute_calls([fault(Call, Cause)|Calls], Runtime, State0, Outcome) :-
+execute_calls([Status|Calls], Runtime, State0, Outcome) :-
+    is_dict(Status, preflight_fault),
     !,
     check_cancelled(Runtime.token),
-    preflight_fault_observation(Call, Cause, Event, Result),
-    append_observation(Call, Result, Event, Runtime, State0, StateOutcome),
+    preflight_fault_observation(Status.call, Status.cause, Event, Result),
+    append_observation(Status.call, Result, Event, Runtime, State0, StateOutcome),
     continue_observation(StateOutcome, Calls, Runtime, Outcome).
 execute_calls([Resolved|Calls], Runtime, State0, Outcome) :-
     check_cancelled(Runtime.token),
