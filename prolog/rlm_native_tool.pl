@@ -251,8 +251,7 @@ native_tool_schema_wire(Format, Schema, Outcome) :-
           ),
           native_tool_fault(Error),
           Result = error(Error)),
-    Outcome = ResultOutcome,
-    ResultOutcome = Result.
+    Outcome = Result.
 
 native_schema_wire(openai_compatible, Schema, Wire) :-
     require_native_schema(Schema),
