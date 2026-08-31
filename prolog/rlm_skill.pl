@@ -874,6 +874,14 @@ path_atom(P,_) :- throw(skill_fault(invalid_path(P))).
 option_value(Name,Options,Default,Value) :-
     (member(O,Options),nonvar(O),O=..[Name,Found] -> Value=Found ; Value=Default).
 
+% A completion wall-time limit that fires inside a skill operation must
+% propagate unwrapped: converting it into a skill_error hides the timeout
+% behind a phase fault (the session's own deadline machinery maps the bare
+% exception to a timeout envelope).
+skill_exception(Phase, Exception, _) :-
+    time_limit_exception(Exception),
+    !,
+    throw(Exception).
 skill_exception(Phase,skill_fault(Detail),
     error(skill_error{kind:skill_fault,phase:Phase,detail:Detail,
                       message:"skill operation rejected"})) :- !.
@@ -882,3 +890,6 @@ skill_exception(Phase,E,
                       message:"skill operation failed"})) :-
     catch(term_string(E,Safe,[quoted(true),numbervars(true),max_depth(8)]),_,
           Safe="<unprintable exception>").
+
+time_limit_exception(time_limit_exceeded).
+time_limit_exception(time_limit_exceeded(_)).
