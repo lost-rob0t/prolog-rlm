@@ -49,6 +49,7 @@ Provider-neutral native data is exposed by `rlm_native_tool`:
 ```prolog
 native_tool_call_normalize(+WireCall, -Outcome).
 native_tool_calls_normalize(+WireCalls, -Outcome).
+native_tool_calls_classify(+WireCalls, -Outcome).
 native_tool_schema_normalize(+RuntimeSchema, -Outcome).
 native_tool_schema_wire(+Format, +NativeSchema, -Outcome).
 native_tool_result_message(+Call, +Result, -Outcome).
@@ -317,7 +318,18 @@ authority remains an explicit host operation outside the model loop.
 
 The complete native batch returned by one provider response is normalized
 first (closed JSON objects, bounded protocol tokens, unique call IDs).
-Normalization failures are terminal for the run.
+Normalization failures remain terminal when the batch or call envelope cannot
+be safely attributed: malformed lists, fields, IDs, types, function objects,
+names, and duplicate IDs all reject the complete batch before execution.
+
+Argument parsing is isolated only after the call envelope, ID, type, and tool
+name have normalized. `native_tool_calls_classify/2` returns an ordered inert
+fault entry for that exact `normalize/malformed_arguments` case while retaining
+the original argument payload for assistant-message integrity checks. The
+strict `native_tool_call_normalize/2` and `native_tool_calls_normalize/2` APIs
+remain all-or-nothing. Direct mode resolves an attributable fault entry against
+trusted bindings only to retain effect metadata; it never invents placeholder
+arguments or gives the faulted call an execution path.
 
 After normalization, the runtime performs one side-effect-free
 classification pass that resolves every call against the trusted catalog
@@ -349,10 +361,10 @@ validation fails recoverably, so a malformed effectful call still counts
 as a requested effectful operation. Per-call recovery can never shrink an
 unsafe requested batch into a safe executable batch.
 
-Only two per-call preflight/schema fault classes are explicitly
+Only three per-call normalization/preflight fault classes are explicitly
 whitelisted as recoverable, keyed by fault phase and kind
-(`recoverable_fault/2`): schema-phase `malformed_arguments` and
-catalog-phase `unavailable_tool_schema`. Every other direct fault is
+(`recoverable_fault/2`): normalize-phase `malformed_arguments`, schema-phase
+`malformed_arguments`, and catalog-phase `unavailable_tool_schema`. Every other direct fault is
 batch-fatal by default; a new fault becomes repairable only by an
 explicit policy change. Each whitelisted fault becomes one bounded
 repair observation carrying the original call ID, tool name, stable

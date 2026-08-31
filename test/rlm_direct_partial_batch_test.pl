@@ -241,6 +241,19 @@ partial_response(malformed_read_then_malformed_effectful, 1, _, "", [Bad, Effect
     partial_native_call("eff_1", "counting_write", _{value:"seven"}, Effect).
 partial_response(malformed_read_then_malformed_effectful, 2, _, "PARTIAL_FORBIDDEN", [], "").
 
+partial_response(raw_malformed_effectful_then_read, 1, _, "", [Effect, Good], "") :-
+    partial_raw_native_call("eff_1", "counting_write",
+                            "{\"value\":7,\"value\":8}", Effect),
+    partial_native_call("ctx_1", "context_search",
+                        _{query:"PARTIAL_NEEDLE"}, Good).
+partial_response(raw_malformed_effectful_then_read, 2, _, "PARTIAL_FORBIDDEN", [], "").
+
+partial_response(read_then_raw_malformed_effectful, 1, _, "", [Good, Effect], "") :-
+    partial_native_call("probe_1", "partial_probe", _{}, Good),
+    partial_raw_native_call("eff_1", "counting_write",
+                            "{\"value\":7,\"value\":8}", Effect).
+partial_response(read_then_raw_malformed_effectful, 2, _, "PARTIAL_FORBIDDEN", [], "").
+
 % Singleton malformed effectful call: no multi-call effect-batch violation,
 % so its schema fault stays a bounded per-call repair observation.
 partial_response(malformed_effectful_singleton, 1, _, "", [Effect], "") :-
@@ -633,6 +646,29 @@ test(malformed_read_call_with_malformed_effectful_sibling_is_batch_fatal) :-
     partial_call_count(1),
     \+ partial_request(2, _).
 
+test(raw_malformed_effectful_call_with_read_sibling_is_batch_fatal) :-
+    effectful_batch(raw_malformed_effectful_then_read,
+                    [context(search), tool(counting_write)],
+                    error(Error)),
+    assertion(Error.kind == effectful_batch_unsupported),
+    assertion(Error.context_calls =:= 0),
+    assertion(Error.tool_calls =:= 0),
+    tool_effect_test_support:tool_mutation_count(0),
+    partial_call_count(1),
+    \+ partial_request(2, _).
+
+test(read_sibling_does_not_execute_for_raw_malformed_effectful_call) :-
+    effectful_batch(read_then_raw_malformed_effectful,
+                    [tool(partial_probe), tool(counting_write)],
+                    error(Error)),
+    assertion(Error.kind == effectful_batch_unsupported),
+    assertion(Error.context_calls =:= 0),
+    assertion(Error.tool_calls =:= 0),
+    partial_probe_count(0),
+    tool_effect_test_support:tool_mutation_count(0),
+    partial_call_count(1),
+    \+ partial_request(2, _).
+
 % Singleton malformed effectful call: no multi-call effect-batch violation,
 % so the schema fault remains a bounded per-call repair observation, the
 % write handler never runs, and no binding/handler metadata leaks into the
@@ -748,10 +784,10 @@ test(only_phase_kind_whitelisted_faults_are_recoverable) :-
     findall(Phase-Kind, rlm_direct:recoverable_fault(Phase, Kind), Pairs),
     sort(Pairs, Sorted),
     assertion(Sorted == [catalog-unavailable_tool_schema,
+                         normalize-malformed_arguments,
                          schema-malformed_arguments]),
     forall(member(Phase-Kind,
-                  [normalize-malformed_arguments,
-                   runtime-malformed_arguments,
+                  [runtime-malformed_arguments,
                    catalog-malformed_arguments,
                    schema-unavailable_tool_schema,
                    schema-duplicate_call_id,
@@ -761,7 +797,7 @@ test(only_phase_kind_whitelisted_faults_are_recoverable) :-
            \+ rlm_direct:recoverable_fault(Phase, Kind)).
 
 test(same_kind_from_unrelated_phase_escapes_classification) :-
-    Cause = direct_error{phase:normalize,
+    Cause = direct_error{phase:runtime,
                          kind:malformed_arguments,
                          message:"same kind, unrelated phase"},
     catch(rlm_direct:recoverable_fault_status(probe_call,

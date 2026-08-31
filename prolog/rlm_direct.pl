@@ -604,7 +604,7 @@ normalize_response_calls(Response, Outcome) :-
     (   is_dict(Response),
         get_dict(tool_calls, Response, RawCalls),
         is_list(RawCalls)
-    ->  native_tool_calls_normalize(RawCalls, Outcome)
+    ->  native_tool_calls_classify(RawCalls, Outcome)
     ;   Outcome = error(native_tool_error{
                             kind:unsupported_tool_call_format,
                             phase:normalize,
@@ -619,13 +619,14 @@ after_call_normalization(error(Cause), _, _, State, error(Error)) :-
 after_call_normalization(ok([]), Response, Runtime, State, Outcome) :-
     !,
     finish_direct(Response, Runtime, State, Outcome).
-after_call_normalization(ok(Calls), Response, Runtime, State0, Outcome) :-
-    classify_calls(Calls, Runtime, State0, Classification),
+after_call_normalization(ok(Entries), Response, Runtime, State0, Outcome) :-
+    native_entries_calls(Entries, Calls),
+    classify_calls(Entries, Calls, Runtime, State0, Classification),
     (   Classification = fatal(Cause)
     ->  preflight_batch_error(State0, Cause, Error),
         Outcome = error(Error)
     ;   Classification = classified(Statuses)
-    ->  assistant_message(Response, Calls, AssistantOutcome),
+    ->  assistant_message(Response, Entries, AssistantOutcome),
         after_assistant_message(AssistantOutcome,
                                 Calls,
                                 Statuses,
@@ -649,15 +650,40 @@ preflight_batch_error(State, Cause, Error) :-
 % policy below), effectful calls inside a multi-call request, and exhausted
 % context/tool budgets. Per-call recovery must never shrink an unsafe
 % requested batch into an executable one.
-classify_calls(Calls, Runtime, State, Classification) :-
+classify_calls(Entries, Calls, Runtime, State, Classification) :-
     catch(( fresh_call_ids(Calls, State.seen_call_ids),
-            maplist(preflight_call_status(Runtime), Calls, Statuses),
+            maplist(preflight_entry_status(Runtime), Entries, Statuses),
             validate_requested_effect_batch(Calls, Statuses),
             resolved_batch_budget(Statuses, Runtime, State),
             Classification = classified(Statuses)
           ),
           direct_fault(Cause),
           Classification = fatal(Cause)).
+
+native_entries_calls(Entries, Calls) :-
+    maplist(native_entry_call, Entries, Calls).
+
+native_entry_call(Entry, Entry.call).
+
+preflight_entry_status(Runtime, Entry, Status) :-
+    (   Entry.status == normalized
+    ->  preflight_call_status(Runtime, Entry.call, Status)
+    ;   Entry.status = fault(Cause)
+    ->  classify_resolution(Runtime, Entry.call, Resolution),
+        classify_normalization_fault(Entry.call,
+                                     Cause,
+                                     Resolution,
+                                     Status)
+    ).
+
+% A raw argument-parse fault has no executable arguments. Resolution is used
+% only to retain trusted effect metadata for original-request isolation. If
+% the name is absent from the active catalog, the existing catalog fault is
+% the more actionable repair observation.
+classify_normalization_fault(Call, Cause, resolved(Binding), Status) :-
+    recoverable_fault_status(Call, Binding, Cause, Status).
+classify_normalization_fault(Call, _, fault(Cause), Status) :-
+    recoverable_fault_status(Call, none, Cause, Status).
 
 % One per-call classification step. Resolution first establishes the
 % trusted catalog binding; argument validation is classified separately so
@@ -716,6 +742,7 @@ recoverable_fault_status(_, _, Cause, _) :-
 % direct fault must be added explicitly once it is verified to be a
 % model-repairable schema fault.
 recoverable_fault(schema, malformed_arguments).
+recoverable_fault(normalize, malformed_arguments).
 recoverable_fault(catalog, unavailable_tool_schema).
 
 % Effect isolation is checked against the ORIGINAL requested batch: an
@@ -822,10 +849,10 @@ batch_budget(Resolved, Runtime, State) :-
 context_call(R) :- R.binding.kind = context(_).
 tool_call(R) :- R.binding.kind \= context(_).
 
-assistant_message(Response, Calls, Outcome) :-
+assistant_message(Response, Entries, Outcome) :-
     (   get_dict(assistant, Response, Assistant0)
     ->  message_normalize(Assistant0, Normalized),
-        validate_assistant_message(Normalized, Calls, Outcome)
+        validate_assistant_message(Normalized, Entries, Outcome)
     ;   Outcome = error(direct_error{
                             phase:provider,
                             kind:missing_assistant_message,
@@ -834,11 +861,11 @@ assistant_message(Response, Calls, Outcome) :-
 
 validate_assistant_message(error(Cause), _, error(Cause)) :-
     !.
-validate_assistant_message(ok(Assistant), Calls, Outcome) :-
+validate_assistant_message(ok(Assistant), Entries, Outcome) :-
     (   Assistant.role == assistant,
         get_dict(tool_calls, Assistant, RawCalls),
-        native_tool_calls_normalize(RawCalls, ok(AssistantCalls)),
-        AssistantCalls == Calls
+        native_tool_calls_classify(RawCalls, ok(AssistantEntries)),
+        AssistantEntries == Entries
     ->  Outcome = ok(Assistant)
     ;   Outcome = error(direct_error{
                             phase:provider,

@@ -1,6 +1,7 @@
 :- module(rlm_native_tool,
           [ native_tool_call_normalize/2,
             native_tool_calls_normalize/2,
+            native_tool_calls_classify/2,
             native_tool_schema_normalize/2,
             native_tool_schema_wire/3,
             native_tool_result_message/3
@@ -34,7 +35,30 @@ native_tool_calls_normalize(Inputs, Outcome) :-
           Result = error(Error)),
     Outcome = Result.
 
+% Normalize one provider batch while retaining attributable argument-parse
+% faults as inert ordered entries. Envelope, identity, type, name, and
+% duplicate-ID failures remain batch-fatal. The strict normalization APIs
+% above keep their existing all-or-nothing contract.
+native_tool_calls_classify(Inputs, Outcome) :-
+    catch(( require_call_list(Inputs),
+            maplist(classify_native_call, Inputs, Entries),
+            maplist(native_call_entry_call, Entries, Calls),
+            require_unique_call_ids(Calls),
+            Result = ok(Entries)
+          ),
+          native_tool_fault(Error),
+          Result = error(Error)),
+    Outcome = Result.
+
 normalize_native_call(Input, Call) :-
+    normalize_native_call_parts(Input, Id, Name, Arguments0),
+    normalize_arguments(Arguments0, Arguments),
+    Call = native_tool_call{id:Id,
+                            name:Name,
+                            arguments:Arguments,
+                            type:function}.
+
+normalize_native_call_parts(Input, Id, Name, Arguments0) :-
     require_ground_acyclic(Input, call),
     require_dict(Input, call),
     require_allowed_keys(Input, [id,type,function,index], call),
@@ -53,12 +77,31 @@ normalize_native_call(Input, Call) :-
     require_allowed_keys(Function, [name,arguments], function),
     require_key(Function, name, Name0, function),
     normalize_tool_name(Name0, Name),
-    require_key(Function, arguments, Arguments0, function),
-    normalize_arguments(Arguments0, Arguments),
-    Call = native_tool_call{id:Id,
-                            name:Name,
-                            arguments:Arguments,
-                            type:function}.
+    require_key(Function, arguments, Arguments0, function).
+
+classify_native_call(Input, Entry) :-
+    normalize_native_call_parts(Input, Id, Name, Arguments0),
+    Identity = native_tool_call{id:Id,name:Name,type:function},
+    catch(normalize_arguments(Arguments0, Arguments),
+          native_tool_fault(Cause),
+          true),
+    classified_native_call(Cause, Identity, Arguments0, Arguments, Entry).
+
+classified_native_call(Cause, Identity, Arguments0, _, Entry) :-
+    nonvar(Cause),
+    !,
+    (   Cause.phase == normalize,
+        Cause.kind == malformed_arguments
+    ->  Entry = native_call_entry{call:Identity,
+                                  status:fault(Cause),
+                                  arguments:Arguments0}
+    ;   throw(native_tool_fault(Cause))
+    ).
+classified_native_call(_, Identity, _, Arguments,
+                       native_call_entry{call:Call,status:normalized}) :-
+    put_dict(arguments, Identity, Arguments, Call).
+
+native_call_entry_call(Entry, Entry.call).
 
 require_call_list(Inputs) :-
     (   is_list(Inputs)

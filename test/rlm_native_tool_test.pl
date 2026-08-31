@@ -36,6 +36,60 @@ test(rejects_duplicate_ids_before_returning_batch) :-
     assertion(Error.kind == duplicate_call_id),
     assertion(Error.call_id == "call_1").
 
+test(classifies_attributable_argument_fault_without_weakening_strict_api) :-
+    Good = _{id:"call_1",
+             type:"function",
+             function:_{name:"lookup",arguments:"{\"city\":\"Oslo\"}"}},
+    BadArguments = "{\"city\":\"Oslo\",\"city\":\"Bergen\"}",
+    Bad = _{id:"call_2",
+            type:"function",
+            function:_{name:"lookup",arguments:BadArguments}},
+    native_tool_calls_normalize([Good, Bad], error(StrictError)),
+    assertion(StrictError.kind == malformed_arguments),
+    native_tool_calls_classify([Good, Bad], ok([GoodEntry, BadEntry])),
+    assertion(GoodEntry.status == normalized),
+    assertion(GoodEntry.call.arguments == json{city:"Oslo"}),
+    BadEntry.status = fault(Cause),
+    assertion(Cause.phase == normalize),
+    assertion(Cause.kind == malformed_arguments),
+    assertion(BadEntry.call == native_tool_call{id:"call_2",
+                                                name:lookup,
+                                                type:function}),
+    assertion(BadEntry.arguments == BadArguments).
+
+test(classified_faults_still_participate_in_duplicate_id_rejection) :-
+    Good = _{id:"call_1",
+             type:"function",
+             function:_{name:"lookup",arguments:"{}"}},
+    Bad = _{id:"call_1",
+            type:"function",
+            function:_{name:"lookup",
+                       arguments:"{\"x\":1,\"x\":2}"}},
+    native_tool_calls_classify([Good, Bad], error(Error)),
+    assertion(Error.kind == duplicate_call_id),
+    assertion(Error.call_id == "call_1").
+
+test(classified_argument_faults_retain_payload_identity) :-
+    First = _{id:"call_1",
+              type:"function",
+              function:_{name:"lookup",
+                         arguments:"{\"x\":1,\"x\":2}"}},
+    Second = _{id:"call_1",
+               type:"function",
+               function:_{name:"lookup",
+                          arguments:"{\"x\":3,\"x\":4}"}},
+    native_tool_calls_classify([First], ok([FirstEntry])),
+    native_tool_calls_classify([Second], ok([SecondEntry])),
+    assertion(FirstEntry \== SecondEntry).
+
+test(classified_batch_keeps_malformed_envelopes_batch_fatal) :-
+    Wire = _{id:"bad id",
+             type:"function",
+             function:_{name:"lookup",
+                        arguments:"{\"x\":1,\"x\":2}"}},
+    native_tool_calls_classify([Wire], error(Error)),
+    assertion(Error.kind == malformed_call_id).
+
 test(rejects_unsupported_native_call_type) :-
     Wire = _{id:"call_1",
              type:"computer",
