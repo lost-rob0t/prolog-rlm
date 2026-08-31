@@ -313,11 +313,63 @@ in-progress, reconciliation-required, or terminal effect state as a terminal
 failure rather than interpreting it as retry permission. Fresh retry/resample
 authority remains an explicit host operation outside the model loop.
 
-The loop fails closed for malformed or unknown calls, unavailable schemas,
-capability or authority denial, invalid confinement, exhausted budgets,
-unsupported formats, oversized observations, cancellation, and missing final
-text. Text accompanying malformed calls never converts that response into a
-success.
+## Native call batches: classification, isolation, and repair
+
+The complete native batch returned by one provider response is normalized
+first (closed JSON objects, bounded protocol tokens, unique call IDs).
+Normalization failures are terminal for the run.
+
+After normalization, the runtime performs one side-effect-free
+classification pass that resolves every call against the trusted catalog
+and validates its arguments, then evaluates batch-fatal invariants against
+the ORIGINAL requested batch before anything executes:
+
+```text
+complete native batch normalized
+-> one side-effect-free classification pass
+-> batch-fatal invariants evaluated against original request
+-> explicitly whitelisted per-call preflight/schema faults become
+   repair observations
+-> valid read siblings may execute
+-> effectful multi-call requests remain entirely batch-fatal even when
+   the effectful call itself has malformed arguments
+```
+
+Batch-fatal conditions (whole requested batch is rejected, nothing
+executes, no repair observations are produced): duplicate call IDs
+(within one batch or across turns), an effectful call anywhere in a
+multi-call requested batch, exhausted context/tool budgets,
+assistant-message integrity failures, unsupported formats, unclassified
+faults, cancellation, and missing final text. Text accompanying malformed
+calls never converts that response into a success.
+
+Effect isolation is evaluated on the original request: every call that
+resolves to a trusted binding retains that binding even when its argument
+validation fails recoverably, so a malformed effectful call still counts
+as a requested effectful operation. Per-call recovery can never shrink an
+unsafe requested batch into a safe executable batch.
+
+Only two per-call preflight/schema fault classes are explicitly
+whitelisted as recoverable, keyed by fault phase and kind
+(`recoverable_fault/2`): schema-phase `malformed_arguments` and
+catalog-phase `unavailable_tool_schema`. Every other direct fault is
+batch-fatal by default; a new fault becomes repairable only by an
+explicit policy change. Each whitelisted fault becomes one bounded
+repair observation carrying the original call ID, tool name, stable
+fault kind, and bounded repair-relevant detail; observations are
+returned in the original requested call order and the bounded loop
+continues so the model can repair the rejected call on the next bounded
+provider turn. Faulted calls are never charged as tool or context
+operations, but observations and turns stay inside the output, model
+call, and iteration budgets.
+
+Recoverable does not mean executable, and visible does not mean
+authorized: a malformed effectful call never executes and its handler
+never runs; an unavailable call has no binding at all; repair
+observations carry no binding, capability, authority, or handler data.
+The loop still fails closed for capability or authority denial, invalid
+confinement, oversized observations, cancellation, replayed effects, and
+missing final text.
 
 ## Optional Spec composition
 
