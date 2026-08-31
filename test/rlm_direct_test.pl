@@ -868,7 +868,9 @@ test(native_context_peek_executes_reported_head_count_index_shape) :-
     assertion(Schema.function.name == "context_peek"),
     direct_request(2, SecondRequest),
     request_tool_message(SecondRequest, "peek_head_1", context_peek, Content),
-    assertion(sub_string(Content, _, _, _, "HEAD_PEEK_NEEDLE")).
+    assertion(sub_string(Content, _, _, _, "HEAD_PEEK_NEEDLE")),
+    assertion(sub_string(Content, _, _, _, "\"truncated\":true")),
+    assertion(\+ sub_string(Content, _, _, _, "payload")).
 
 test(native_context_peek_head_omitted_count_executes_with_default) :-
     reset_direct(peek_head_default),
@@ -880,6 +882,6 @@ test(native_context_peek_head_omitted_count_executes_with_default) :-
     assertion(Result.turns =:= 2),
     direct_request(2, SecondRequest),
     request_tool_message(SecondRequest, "peek_head_d1", context_peek, Content),
-    assertion(sub_string(Content, _, _, _, "HEAD_DEFAULT_NEEDLE")).
+    assertion(sub_string(Content, _, _, _, "HEAD_DEFAULT_NEEDLE payload")).
 
 :- end_tests(rlm_direct).
