@@ -15,7 +15,7 @@
 :- prolog_load_context(directory, TestDirectory),
    assertz(cache_test_directory(TestDirectory)).
 
-test(ten_fresh_explicit_all_tools_compilations_report_provider_cache_hits) :-
+test(fifteen_fresh_explicit_all_tools_compilations_report_provider_cache_hits) :-
     require_cache_environment(Model, Key),
     cache_skill_catalog(SkillCatalog),
     tool_registry_create(ToolRegistry),
@@ -61,8 +61,8 @@ run_cache_turns(Turn, Last, Model, Key, SkillCatalog, ToolRegistry,
                         max_context_ops:0,max_total_tokens:8192,
                         max_cost_usd:0.25,max_output_bytes:1024,
                         time_limit:90.0}),
-                planner_max_tokens(256),temperature(0),
-                reasoning_effort(minimal)],
+               planner_max_tokens(256),temperature(0),
+               reasoning_effort(minimal)],
     rlm_direct(Query, ContextRef, Options, Outcome),
     require_cache_completion(Outcome, Expected, Result),
     GenerationId = Result.response.response_id,
