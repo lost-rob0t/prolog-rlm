@@ -620,32 +620,98 @@ after_call_normalization(ok([]), Response, Runtime, State, Outcome) :-
     !,
     finish_direct(Response, Runtime, State, Outcome).
 after_call_normalization(ok(Calls), Response, Runtime, State0, Outcome) :-
-    preflight_calls(Calls, Runtime, State0, Preflight),
-    (   Preflight = error(Cause)
-    ->  error_kind(Cause, native_call_rejected, Kind),
-        state_error(State0, native_call, Kind, _{cause:Cause},
-                    "native call batch failed preflight", Error),
+    classify_calls(Calls, Runtime, State0, Classification),
+    (   Classification = fatal(Cause)
+    ->  preflight_batch_error(State0, Cause, Error),
         Outcome = error(Error)
-    ;   Preflight = ok(Resolved),
-        assistant_message(Response, Calls, AssistantOutcome),
+    ;   Classification = classified(Statuses)
+    ->  assistant_message(Response, Calls, AssistantOutcome),
         after_assistant_message(AssistantOutcome,
                                 Calls,
-                                Resolved,
+                                Statuses,
                                 Runtime,
                                 State0,
                                 Outcome)
     ).
 
-preflight_calls(Calls, Runtime, State, Outcome) :-
+preflight_batch_error(State, Cause, Error) :-
+    error_kind(Cause, native_call_rejected, Kind),
+    state_error(State, native_call, Kind, _{cause:Cause},
+                "native call batch failed preflight", Error).
+
+% One side-effect-free classification pass over the entire requested batch.
+% It produces either a batch-fatal cause or the per-call statuses that every
+% later phase consumes; preflight is never re-run, and nothing executes
+% before the batch-fatal invariants have passed.
+%
+% Batch-fatal invariants are evaluated against the ORIGINAL requested batch:
+% duplicate call IDs, unclassified per-call faults (positive recoverability
+% policy below), effectful calls inside a multi-call request, and exhausted
+% context/tool budgets. Per-call recovery must never shrink an unsafe
+% requested batch into an executable one.
+classify_calls(Calls, Runtime, State, Classification) :-
     catch(( fresh_call_ids(Calls, State.seen_call_ids),
-            maplist(resolve_call(Runtime.bindings), Calls, Resolved),
-            validate_effect_batch(Resolved),
-            maplist(validate_call_arguments(Runtime), Resolved),
-            batch_budget(Resolved, Runtime, State),
-            Outcome = ok(Resolved)
+            maplist(preflight_call_status(Runtime), Calls, Statuses),
+            validate_requested_effect_batch(Calls, Statuses),
+            resolved_batch_budget(Statuses, Runtime, State),
+            Classification = classified(Statuses)
           ),
-          direct_fault(Error),
-          Outcome = error(Error)).
+          direct_fault(Cause),
+          Classification = fatal(Cause)).
+
+% One per-call classification step. A direct fault becomes a recoverable,
+% model-repairable fault status only when its kind is explicitly listed in
+% recoverable_fault_kind/1; every other direct fault escapes classification
+% and is batch-fatal (positive recoverability policy, issue #313).
+preflight_call_status(Runtime, Call, Status) :-
+    catch(( resolve_call(Runtime.bindings, Call, Resolved),
+            validate_call_arguments(Runtime, Resolved),
+            Status = Resolved
+          ),
+          direct_fault(Cause),
+          recoverable_fault_status(Call, Cause, Status)).
+
+recoverable_fault_status(Call, Cause, fault(Call, Cause)) :-
+    recoverable_fault_kind(Cause.kind),
+    !.
+recoverable_fault_status(_, Cause, _) :-
+    throw(direct_fault(Cause)).
+
+% Centralized positive recoverability policy for per-call native preflight
+% faults. Everything not listed here is batch-fatal by default; a new direct
+% fault kind must be added explicitly once it is verified to be a
+% model-repairable schema fault.
+recoverable_fault_kind(malformed_arguments).
+recoverable_fault_kind(unavailable_tool_schema).
+
+% Effect isolation is checked against the ORIGINAL requested batch: an
+% effectful call in a multi-call model request fails the whole batch even
+% when sibling calls failed preflight, and the effectful handler never runs.
+validate_requested_effect_batch(Calls, Statuses) :-
+    include(effectful_status, Statuses, Effectful),
+    (   Effectful == []
+    ->  true
+    ;   Calls = [_]
+    ->  true
+    ;   throw(direct_fault(direct_error{
+                              phase:native_call,
+                              kind:effectful_batch_unsupported,
+                              message:"effectful native calls must be requested singly"}))
+    ).
+
+effectful_status(Status) :-
+    is_dict(Status, resolved_call),
+    Status.binding.effect \== read.
+
+resolved_status(Status) :-
+    is_dict(Status, resolved_call).
+
+% Batch budget admission counts the calls that will execute (resolved
+% classifications). Faulted calls never execute, are never charged, and stay
+% bounded by the model-call, iteration, token and output budgets.
+resolved_batch_budget(Statuses, Runtime, State) :-
+    include(resolved_status, Statuses, Resolved),
+    batch_budget(Resolved, Runtime, State).
 
 fresh_call_ids([], _).
 fresh_call_ids([Call|Calls], Seen) :-
@@ -665,18 +731,6 @@ resolve_call(Bindings, Call, resolved_call{call:Call,binding:Binding}) :-
                               tool:Call.name,
                               message:"call is absent from active native schemas"}))
     ).
-
-validate_effect_batch(Resolved) :-
-    include(effectful_call, Resolved, Effectful),
-    ( Effectful == [] -> true
-    ; Resolved = [_] -> true
-    ; throw(direct_fault(direct_error{
-                             phase:native_call,
-                             kind:effectful_batch_unsupported,
-                             message:"effectful native calls must be requested singly"}))
-    ).
-
-effectful_call(Resolved) :- Resolved.binding.effect \== read.
 
 validate_call_arguments(Runtime, Resolved) :-
     Resolved.binding.kind = tool(Name),
@@ -754,16 +808,55 @@ after_assistant_message(error(Cause), _, _, _, State, error(Error)) :-
     state_error(State, provider, Kind,
                 _{cause:Cause},
                 "provider assistant tool-call message is malformed", Error).
-after_assistant_message(ok(Assistant), Calls, Resolved, Runtime, State0, Outcome) :-
+after_assistant_message(ok(Assistant), Calls, Statuses, Runtime, State0, Outcome) :-
     append(State0.messages, [Assistant], Messages),
     findall(Id, (member(Call, Calls), Id=Call.id), Ids),
     append(Ids, State0.seen_call_ids, Seen),
     put_dict(_{messages:Messages,seen_call_ids:Seen}, State0, State),
-    execute_calls(Resolved, Runtime, State, Outcome).
+    execute_calls(Statuses, Runtime, State, Outcome).
+
+% Calls rejected during preflight produce a structured tool message so the
+% provider can repair exactly the malformed call; valid siblings still run.
+% The observation carries the original call ID, the tool name, the stable
+% fault kind, and bounded repair-relevant detail. Internal exception
+% structures never reach the model message.
+preflight_fault_observation(Call, Cause,
+                            direct_event{type:native_call_rejected,
+                                         call_id:Call.id,
+                                         name:Call.name,
+                                         status:error,
+                                         kind:Cause.kind,
+                                         message:Cause.message},
+                            native_tool_result{call_id:Call.id,
+                                               name:Call.name,
+                                               operation:Call.name,
+                                               value:Value,
+                                               truncated:false,
+                                               trace:Trace}) :-
+    preflight_fault_value(Cause, Value),
+    preflight_fault_trace(Call, Cause, Trace).
+
+preflight_fault_value(Cause, Value) :-
+    Base = _{error:Cause.kind, message:Cause.message},
+    (   get_dict(detail, Cause, Detail)
+    ->  put_dict(detail, Base, Detail, Value)
+    ;   Value = Base
+    ).
+
+preflight_fault_trace(Call, Cause,
+                      preflight_trace{phase:Cause.phase,
+                                      kind:Cause.kind,
+                                      tool:Call.name}).
 
 execute_calls([], Runtime, State, Outcome) :-
     !,
     direct_loop(Runtime, State, Outcome).
+execute_calls([fault(Call, Cause)|Calls], Runtime, State0, Outcome) :-
+    !,
+    check_cancelled(Runtime.token),
+    preflight_fault_observation(Call, Cause, Event, Result),
+    append_observation(Call, Result, Event, Runtime, State0, StateOutcome),
+    continue_observation(StateOutcome, Calls, Runtime, Outcome).
 execute_calls([Resolved|Calls], Runtime, State0, Outcome) :-
     check_cancelled(Runtime.token),
     charge_call(Resolved, State0, State1),

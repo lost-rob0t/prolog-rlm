@@ -105,6 +105,10 @@ scenario_response(registered_tool(Token), 3, Request, Token, [], "") :-
 
 scenario_response(malicious_call(Name, Args), 1, _, "", [ToolCall], "") :-
     native_call("bad_1", Name, Args, ToolCall).
+% Issue #313: an unavailable native tool is a per-call recoverable fault, so
+% the bounded loop continues after the structured fault observation instead
+% of rejecting the whole batch.
+scenario_response(malicious_call(_, _), 2, _, "CALL_REJECTED", [], "").
 
 scenario_response(malformed_with_text, 1, _, "MUST_NOT_SUCCEED",
                   [_{id:"bad id",type:"function",
@@ -712,9 +716,14 @@ test(schema_not_active_fails_before_registered_handler) :-
     setup_call_cleanup(
         register_runtime_token(Registry),
         ( direct_provider_options([], [tool_registry(Registry)], Options),
-          rlm_direct("Try hidden tool", text("opaque"), Options, error(Error)),
-          assertion(Error.kind == unavailable_tool_schema),
-          direct_tool_count(0)
+          rlm_direct("Try hidden tool", text("opaque"), Options, ok(Result)),
+          assertion(Result.value == "CALL_REJECTED"),
+          assertion(Result.turns =:= 2),
+          assertion(Result.tool_calls =:= 0),
+          direct_tool_count(0),
+          direct_request(2, SecondRequest),
+          request_tool_message(SecondRequest, "bad_1", runtime_token, Content),
+          assertion(sub_string(Content, _, _, _, "unavailable_tool_schema"))
         ),
         tool_registry_destroy(Registry)).
 
@@ -734,8 +743,13 @@ test(malformed_arguments_fail_before_registered_handler) :-
 test(unknown_native_tool_name_fails_closed) :-
     reset_direct(malicious_call("not_registered", _{})),
     direct_provider_options([], [], Options),
-    rlm_direct("Unknown tool", text("opaque"), Options, error(Error)),
-    assertion(Error.kind == unavailable_tool_schema).
+    rlm_direct("Unknown tool", text("opaque"), Options, ok(Result)),
+    assertion(Result.value == "CALL_REJECTED"),
+    assertion(Result.turns =:= 2),
+    assertion(Result.tool_calls =:= 0),
+    direct_request(2, SecondRequest),
+    request_tool_message(SecondRequest, "bad_1", not_registered, Content),
+    assertion(sub_string(Content, _, _, _, "unavailable_tool_schema")).
 
 test(text_does_not_rescue_malformed_native_calls) :-
     reset_direct(malformed_with_text),
