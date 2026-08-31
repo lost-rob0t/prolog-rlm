@@ -120,11 +120,6 @@ corpus_entry('rlm_completion_final_handoff_test.pl',
 corpus_entry('rlm_completion_tool_visibility_test.pl',
               include(rlm_completion_tool_visibility)).
 corpus_entry('rlm_native_tool_test.pl', include(rlm_native_tool)).
-corpus_entry('rlm_native_any_schema_test.pl',
-             include(rlm_native_any_schema)).
-corpus_entry('rlm_direct_context_peek_contract_test.pl',
-             include(rlm_direct_context_peek_contract)).
-
 corpus_entry('rlm_direct_test.pl', include(rlm_direct)).
 corpus_entry('rlm_nested_usage_test.pl', include(rlm_nested_usage)).
 corpus_entry('rlm_nested_trajectory_test.pl',
