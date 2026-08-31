@@ -95,14 +95,21 @@ jobs:
       - name: Run one-command REAL RLM CLI smoke
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          status=0
           swipl -q -s bin/prolog-rlm.pl -- rlm \
             "Return the token CLI_RLM_OK using the external context." \
             --context "The required token is CLI_RLM_OK." \
             --max-tokens 512 \
             --reasoning-effort minimal \
             --time-limit 60 \
-            --json > /tmp/prolog-rlm-live-cli.json
+            --json > /tmp/prolog-rlm-live-cli.json \
+            2> /tmp/prolog-rlm-live-cli.err || status=$?
+          cat /tmp/prolog-rlm-live-cli.err >&2 || true
+          if [ "$status" -ne 0 ]; then
+            cat /tmp/prolog-rlm-live-cli.json >&2 || true
+            exit "$status"
+          fi
           grep -q '"schema":"prolog-rlm.trace.v1"' /tmp/prolog-rlm-live-cli.json
           grep -q '"max_depth":1' /tmp/prolog-rlm-live-cli.json
           grep -q '"model_calls":' /tmp/prolog-rlm-live-cli.json
