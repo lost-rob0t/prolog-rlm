@@ -22,7 +22,8 @@
   already-merged #313/#316 design, so no new research claim is introduced; the
   issue, executable regression, and this RAGE record carry the defect analysis
   and bounded design.
-- Design approval :: PENDING explicit human approval.
+- Design approval :: APPROVED by the user reply =keep working= immediately
+  after the explicit design-approval request in this task.
 
 * TDD RED
 Two order-independent regressions reproduce the live failure with one valid
@@ -113,4 +114,35 @@ Acceptance criteria:
   mechanism.
 
 * Decision gate
-Implementation is blocked until the user explicitly approves the design above.
+GO. The user explicitly directed this task to keep working after the design
+approval gate was presented. Realization is limited to the design and
+acceptance criteria above.
+
+* Realize
+=rlm_native_tool= now shares one envelope parser between the strict normalizer
+and a new additive =native_tool_calls_classify/2= API. The latter retains only
+an attributable =normalize/malformed_arguments= failure as an inert ordered
+entry; strict normalization behavior and all other batch-fatal faults are
+unchanged.
+
+=rlm_direct= consumes the ordered entries for both response and assistant
+validation. A normalization-fault entry is resolved once only to retain trusted
+effect metadata, then passes through the explicit phase+kind recoverability
+policy. It has no arguments field and therefore no execution path. Existing
+classification, original-request effect isolation, budgets, cancellation,
+ordering, observation rendering, and continuation remain canonical.
+
+* Focused GREEN
+- =rlm_direct_partial_batch= :: 40/40 passed, including both raw malformed
+  orderings and both effectful isolation orderings.
+- =rlm_native_tool= :: 13/13 passed, including strict-API compatibility,
+  duplicate-ID rejection across faulted entries, payload identity, and
+  malformed-envelope rejection.
+- =rlm_direct= :: 28/28 passed, including raw malformed registered-tool repair
+  before handler execution and mismatched malformed assistant payload
+  rejection.
+- =test/check_runtime.pl= and =test/load_all.pl= :: passed.
+- =git diff --check= :: passed.
+
+The #329 singleton warnings remain visible and independently owned; this slice
+does not alter them.

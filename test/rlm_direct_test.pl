@@ -58,6 +58,12 @@ scenario_wire_response(assistant_call_mismatch, Response0, Response) :-
     native_call("different_1", "context_search", _{query:"needle"}, Other),
     put_dict(tool_calls, Response0.assistant, [Other], Assistant),
     put_dict(assistant, Response0, Assistant, Response).
+scenario_wire_response(assistant_raw_argument_mismatch, Response0, Response) :-
+    !,
+    raw_native_call("bad_1", "context_search",
+                    "{\"query\":\"third\",\"query\":\"fourth\"}", Other),
+    put_dict(tool_calls, Response0.assistant, [Other], Assistant),
+    put_dict(assistant, Response0, Assistant, Response).
 scenario_wire_response(_, Response, Response).
 
 typed_plan_model_step_plan(Plan) :-
@@ -116,6 +122,10 @@ scenario_response(malformed_with_text, 1, _, "MUST_NOT_SUCCEED",
 
 scenario_response(assistant_call_mismatch, 1, _, "", [ToolCall], "") :-
     native_call("ctx_1", "context_search", _{query:"needle"}, ToolCall).
+
+scenario_response(assistant_raw_argument_mismatch, 1, _, "", [ToolCall], "") :-
+    raw_native_call("bad_1", "context_search",
+                    "{\"query\":\"first\",\"query\":\"second\"}", ToolCall).
 
 scenario_response(duplicate_context_id, 1, _, "", [ToolCall], "") :-
     native_call("same_1", "context_search", _{query:"needle"}, ToolCall).
@@ -267,6 +277,9 @@ scenario_response(slow_tool(_), 1, _, "", [ToolCall], "") :-
 native_call(Id, Name, Args, Call) :-
     atom_json_dict(ArgumentsAtom, Args, [width(0)]),
     atom_string(ArgumentsAtom, Arguments),
+    raw_native_call(Id, Name, Arguments, Call).
+
+raw_native_call(Id, Name, Arguments, Call) :-
     Call = _{id:Id,
              type:"function",
              function:_{name:Name,arguments:Arguments}}.
@@ -727,16 +740,21 @@ test(schema_not_active_fails_before_registered_handler) :-
         ),
         tool_registry_destroy(Registry)).
 
-test(malformed_arguments_fail_before_registered_handler) :-
+test(malformed_raw_arguments_are_repairable_before_registered_handler) :-
     reset_direct(malicious_call("runtime_token", [])),
     tool_registry_create(Registry),
     setup_call_cleanup(
         register_runtime_token(Registry),
         ( direct_provider_options([tool(runtime_token)],
                                   [tool_registry(Registry)], Options),
-          rlm_direct("Use runtime_token", text("opaque"), Options, error(Error)),
-          assertion(Error.kind == malformed_arguments),
-          direct_tool_count(0)
+          rlm_direct("Use runtime_token", text("opaque"), Options, ok(Result)),
+          assertion(Result.value == "CALL_REJECTED"),
+          assertion(Result.turns =:= 2),
+          assertion(Result.tool_calls =:= 0),
+          direct_tool_count(0),
+          direct_request(2, SecondRequest),
+          request_tool_message(SecondRequest, "bad_1", runtime_token, Content),
+          assertion(sub_string(Content, _, _, _, "malformed_arguments"))
         ),
         tool_registry_destroy(Registry)).
 
@@ -764,6 +782,15 @@ test(assistant_message_must_match_normalized_call_batch) :-
                error(Error)),
     assertion(Error.kind == assistant_tool_calls_mismatch),
     assertion(Error.context_calls =:= 0).
+
+test(malformed_argument_payload_mismatch_remains_batch_fatal) :-
+    reset_direct(assistant_raw_argument_mismatch),
+    direct_provider_options([context(search)], [], Options),
+    rlm_direct("Reject mismatched malformed arguments", text("needle"),
+               Options, error(Error)),
+    assertion(Error.kind == assistant_tool_calls_mismatch),
+    assertion(Error.context_calls =:= 0),
+    assertion(Error.tool_calls =:= 0).
 
 test(duplicate_call_id_is_rejected_before_second_execution) :-
     reset_direct(duplicate_context_id),
