@@ -197,6 +197,39 @@ partial_response(effectful_plus_valid_read, 1, _, "", [Effect, Good], "") :-
                         _{query:"PARTIAL_NEEDLE"}, Good).
 partial_response(effectful_plus_valid_read, 2, _, "PARTIAL_FORBIDDEN", [], "").
 
+% An effectful call whose ARGUMENTS fail recoverable validation still
+% resolves to an effectful trusted binding: the original requested batch
+% must remain batch-fatal even though the write call itself cannot run
+% (issue #316 follow-up: recoverable != executable).
+partial_response(malformed_effectful_then_read, 1, _, "", [Effect, Good], "") :-
+    partial_native_call("eff_1", "counting_write", _{value:"seven"}, Effect),
+    partial_native_call("ctx_1", "context_search",
+                        _{query:"PARTIAL_NEEDLE"}, Good).
+partial_response(malformed_effectful_then_read, 2, _, "PARTIAL_FORBIDDEN", [], "").
+
+partial_response(read_then_malformed_effectful, 1, _, "", [Good, Effect], "") :-
+    partial_native_call("probe_1", "partial_probe", _{}, Good),
+    partial_native_call("eff_1", "counting_write", _{value:"seven"}, Effect).
+partial_response(read_then_malformed_effectful, 2, _, "PARTIAL_FORBIDDEN", [], "").
+
+partial_response(malformed_effectful_then_malformed_read, 1, _, "", [Effect, Bad], "") :-
+    partial_native_call("eff_1", "counting_write", _{value:"seven"}, Effect),
+    partial_native_call("bad_1", "context_search",
+                        _{unexpected:"field"}, Bad).
+partial_response(malformed_effectful_then_malformed_read, 2, _, "PARTIAL_FORBIDDEN", [], "").
+
+partial_response(malformed_read_then_malformed_effectful, 1, _, "", [Bad, Effect], "") :-
+    partial_native_call("bad_1", "context_search",
+                        _{unexpected:"field"}, Bad),
+    partial_native_call("eff_1", "counting_write", _{value:"seven"}, Effect).
+partial_response(malformed_read_then_malformed_effectful, 2, _, "PARTIAL_FORBIDDEN", [], "").
+
+% Singleton malformed effectful call: no multi-call effect-batch violation,
+% so its schema fault stays a bounded per-call repair observation.
+partial_response(malformed_effectful_singleton, 1, _, "", [Effect], "") :-
+    partial_native_call("eff_1", "counting_write", _{value:"seven"}, Effect).
+partial_response(malformed_effectful_singleton, 2, _, "PARTIAL_WRITE_REPAIRED", [], "").
+
 % Cancellation is never a model-repairable fault observation.
 partial_response(cancel_before_classification, 1, _, "", [Bad, Good], "") :-
     partial_native_call("bad_1", "context_search",
@@ -458,7 +491,7 @@ test(faulted_siblings_do_not_consume_batch_budget) :-
 test(effectful_call_with_malformed_sibling_is_batch_fatal) :-
     effectful_batch(effectful_plus_malformed,
                     [context(search), tool(counting_write)],
-                    Error),
+                    error(Error)),
     assertion(Error.kind == effectful_batch_unsupported),
     assertion(Error.context_calls =:= 0),
     assertion(Error.tool_calls =:= 0),
@@ -467,7 +500,7 @@ test(effectful_call_with_malformed_sibling_is_batch_fatal) :-
 test(malformed_call_with_effectful_sibling_is_batch_fatal) :-
     effectful_batch(malformed_plus_effectful,
                     [context(search), tool(counting_write)],
-                    Error),
+                    error(Error)),
     assertion(Error.kind == effectful_batch_unsupported),
     assertion(Error.context_calls =:= 0),
     assertion(Error.tool_calls =:= 0),
@@ -476,7 +509,7 @@ test(malformed_call_with_effectful_sibling_is_batch_fatal) :-
 test(effectful_call_with_unavailable_sibling_is_batch_fatal) :-
     effectful_batch(effectful_plus_unavailable,
                     [context(search), tool(counting_write)],
-                    Error),
+                    error(Error)),
     assertion(Error.kind == effectful_batch_unsupported),
     assertion(Error.context_calls =:= 0),
     assertion(Error.tool_calls =:= 0),
@@ -485,7 +518,7 @@ test(effectful_call_with_unavailable_sibling_is_batch_fatal) :-
 test(unavailable_call_with_effectful_sibling_is_batch_fatal) :-
     effectful_batch(unavailable_plus_effectful,
                     [context(search), tool(counting_write)],
-                    Error),
+                    error(Error)),
     assertion(Error.kind == effectful_batch_unsupported),
     assertion(Error.context_calls =:= 0),
     assertion(Error.tool_calls =:= 0),
@@ -494,11 +527,79 @@ test(unavailable_call_with_effectful_sibling_is_batch_fatal) :-
 test(effectful_call_with_valid_read_sibling_is_batch_fatal) :-
     effectful_batch(effectful_plus_valid_read,
                     [context(search), tool(counting_write)],
-                    Error),
+                    error(Error)),
     assertion(Error.kind == effectful_batch_unsupported),
     assertion(Error.context_calls =:= 0),
     assertion(Error.tool_calls =:= 0),
     tool_effect_test_support:tool_mutation_count(0).
+
+% The malformed effectful call never executes, and the original requested
+% batch is still fatal: resolution metadata (the effectful binding) must
+% survive recoverable argument-validation faults so effect isolation can
+% see the requested operation.
+test(malformed_effectful_call_with_valid_read_sibling_is_batch_fatal) :-
+    effectful_batch(malformed_effectful_then_read,
+                    [context(search), tool(counting_write)],
+                    error(Error)),
+    assertion(Error.kind == effectful_batch_unsupported),
+    assertion(Error.context_calls =:= 0),
+    assertion(Error.tool_calls =:= 0),
+    tool_effect_test_support:tool_mutation_count(0),
+    partial_call_count(1),
+    \+ partial_request(2, _).
+
+test(valid_read_tool_sibling_does_not_execute_for_malformed_effectful_call) :-
+    effectful_batch(read_then_malformed_effectful,
+                    [tool(partial_probe), tool(counting_write)],
+                    error(Error)),
+    assertion(Error.kind == effectful_batch_unsupported),
+    assertion(Error.context_calls =:= 0),
+    assertion(Error.tool_calls =:= 0),
+    tool_effect_test_support:tool_mutation_count(0),
+    partial_probe_count(0),
+    partial_call_count(1),
+    \+ partial_request(2, _).
+
+test(malformed_effectful_call_with_malformed_read_sibling_is_batch_fatal) :-
+    effectful_batch(malformed_effectful_then_malformed_read,
+                    [context(search), tool(counting_write)],
+                    error(Error)),
+    assertion(Error.kind == effectful_batch_unsupported),
+    assertion(Error.context_calls =:= 0),
+    assertion(Error.tool_calls =:= 0),
+    tool_effect_test_support:tool_mutation_count(0),
+    partial_call_count(1),
+    \+ partial_request(2, _).
+
+test(malformed_read_call_with_malformed_effectful_sibling_is_batch_fatal) :-
+    effectful_batch(malformed_read_then_malformed_effectful,
+                    [context(search), tool(counting_write)],
+                    error(Error)),
+    assertion(Error.kind == effectful_batch_unsupported),
+    assertion(Error.context_calls =:= 0),
+    assertion(Error.tool_calls =:= 0),
+    tool_effect_test_support:tool_mutation_count(0),
+    partial_call_count(1),
+    \+ partial_request(2, _).
+
+% Singleton malformed effectful call: no multi-call effect-batch violation,
+% so the schema fault remains a bounded per-call repair observation, the
+% write handler never runs, and no binding/handler metadata leaks into the
+% provider-visible message.
+test(malformed_effectful_singleton_stays_repairable) :-
+    effectful_batch(malformed_effectful_singleton,
+                    [tool(counting_write)],
+                    ok(Result)),
+    assertion(Result.value == "PARTIAL_WRITE_REPAIRED"),
+    assertion(Result.turns =:= 2),
+    assertion(Result.context_calls =:= 0),
+    assertion(Result.tool_calls =:= 0),
+    tool_effect_test_support:tool_mutation_count(0),
+    partial_tool_ids(2, ["eff_1"]),
+    partial_tool_content_for(2, "eff_1", FaultContent),
+    assertion(sub_string(FaultContent, _, _, _, "malformed_arguments")),
+    assertion(\+ sub_string(FaultContent, _, _, _, '"effect"')),
+    assertion(\+ sub_string(FaultContent, _, _, _, "$term")).
 
 % --- Cancellation is never a recoverable fault observation ------------------
 
@@ -587,6 +688,38 @@ test(valid_head_selector_beside_search_executes_both_in_order) :-
     partial_tool_ids(2, ["peek_1", "ctx_1"]).
 
 % --- Positive recoverability policy (centralized, fatal by default) ---------
+
+% Recoverability must be keyed by the classification phase AND the fault
+% kind: a same-kind fault emitted by an unrelated runtime phase can never
+% become model-repairable by accident, and future kinds stay fatal by
+% default.
+test(only_phase_kind_whitelisted_faults_are_recoverable) :-
+    findall(Phase-Kind, rlm_direct:recoverable_fault(Phase, Kind), Pairs),
+    sort(Pairs, Sorted),
+    assertion(Sorted == [catalog-unavailable_tool_schema,
+                         schema-malformed_arguments]),
+    forall(member(Phase-Kind,
+                  [normalize-malformed_arguments,
+                   runtime-malformed_arguments,
+                   catalog-malformed_arguments,
+                   schema-unavailable_tool_schema,
+                   schema-duplicate_call_id,
+                   provider-effectful_batch_unsupported,
+                   runtime-future_runtime_corruption,
+                   schema-future_fault_kind]),
+           \+ rlm_direct:recoverable_fault(Phase, Kind)).
+
+test(same_kind_from_unrelated_phase_escapes_classification) :-
+    Cause = direct_error{phase:normalize,
+                         kind:malformed_arguments,
+                         message:"same kind, unrelated phase"},
+    catch(rlm_direct:recoverable_fault_status(probe_call,
+                                              none,
+                                              Cause,
+                                              _Status),
+          direct_fault(Thrown),
+          Thrown == Cause),
+    assertion(Thrown == Cause).
 
 test(only_whitelisted_fault_kinds_are_recoverable) :-
     findall(Kind, rlm_direct:recoverable_fault_kind(Kind), Kinds),
@@ -706,7 +839,7 @@ register_cancel_probe(Registry) :-
                   plunit_rlm_direct_partial_batch:partial_cancel_handler,
                   ok(_)).
 
-effectful_batch(Scenario, Capabilities, Error) :-
+effectful_batch(Scenario, Capabilities, Outcome) :-
     setup_call_cleanup(
         partial_setup_effect_store(Store),
         ( partial_reset(Scenario),
@@ -714,13 +847,14 @@ effectful_batch(Scenario, Capabilities, Error) :-
           rlm_set_authority(Context, dangerous, ok(_)),
           tool_registry_create(Registry),
           setup_call_cleanup(
-              register_counting_write(Registry),
+              ( register_counting_write(Registry),
+                register_partial_probe(Registry) ),
               ( partial_provider_options(Capabilities,
                                          [tool_registry(Registry),
                                           authority_context(Context)],
                                          Options),
                 rlm_direct("Effectful batch", text("opaque"), Options,
-                           error(Error))
+                           Outcome)
               ),
               ( tool_registry_destroy(Registry),
                 rlm_authority_clear(Context) ))
