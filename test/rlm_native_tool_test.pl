@@ -104,21 +104,21 @@ test(rejects_unsupported_native_call_type) :-
     native_tool_call_normalize(Wire, error(Error)),
     assertion(Error.kind == unsupported_call_type).
 
-test(result_message_preserves_exact_call_id) :-
+test(result_message_preserves_exact_call_id_without_optional_name) :-
     Call = native_tool_call{id:"call_1",
-                            name:lookup,
+                            name:'mcp.brave.brave_web_search',
                             arguments:json{},
                             type:function},
     Result = native_tool_result{call_id:"call_1",
-                                name:lookup,
-                                operation:tool(lookup),
+                                name:'mcp.brave.brave_web_search',
+                                operation:tool('mcp.brave.brave_web_search'),
                                 value:json{answer:42},
                                 truncated:false,
                                 trace:json{status:ok}},
     native_tool_result_message(Call, Result, ok(Message)),
     assertion(Message.role == tool),
     assertion(Message.tool_call_id == "call_1"),
-    assertion(Message.name == lookup),
+    assertion(\+ get_dict(name, Message, _)),
     assertion(sub_string(Message.content, _, _, _, "\"answer\":42")).
 
 test(result_message_rejects_call_id_mismatch) :-
