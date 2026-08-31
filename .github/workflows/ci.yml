@@ -270,7 +270,7 @@ jobs:
 
           exit "$status"
 
-      - name: Run 120B compiler cache acceptance
+      - name: Run compiler cache acceptance
         shell: bash
         run: |
           set +e
@@ -281,11 +281,11 @@ jobs:
           if [ "$status" -eq 0 ]; then
             evidence="$(grep -E '^(compiler_cache_)' /tmp/openrouter-cache.log | tr '\n' ' ')"
             evidence="${evidence//'%'/'%25'}"
-            echo "::notice title=120B compiler cache evidence::${evidence}"
+            echo "::notice title=Compiler cache evidence::${evidence}"
           else
             message="$(tail -n 60 /tmp/openrouter-cache.log | tr '\n' ' ')"
             message="${message//'%'/'%25'}"
-            echo "::error title=120B compiler cache acceptance failed::${message}"
+            echo "::error title=Compiler cache acceptance failed::${message}"
           fi
 
           exit "$status"

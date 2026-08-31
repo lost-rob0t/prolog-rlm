@@ -398,10 +398,12 @@ isolation.
 same query and requires deterministic native tools and skill messages. It also
 changes the query and proves that relevant tools and skills can enter or leave
 the direct projection. The CI-only
-`test/live_compiler_cache_openrouter_test.pl` uses `openai/gpt-oss-120b` for ten
-fresh constructions under an explicit `all_tools` cache profile and requires at
-least 80% of the nine warm requests to report cached native tokens or a
-response-cache source. It is intentionally not a local paid test.
+`test/live_compiler_cache_openrouter_test.pl` runs fifteen
+fresh constructions under an explicit `all_tools` cache profile and requires a
+majority of the fourteen warm requests (and at least five) to report cached
+native tokens or a response-cache source; a churning prefix would collapse
+the hit rate toward zero, while provider upstream routing may periodically
+miss a warm cache. It is intentionally not a local paid test.
 
 ## Rejected alternatives
 

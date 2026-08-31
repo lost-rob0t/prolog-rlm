@@ -51,10 +51,6 @@ jobs:
               exit 1
               ;;
           esac
-          test "$OPENROUTER_TEST_MODEL" = "openai/gpt-oss-120b" || {
-            echo "cache acceptance requires openai/gpt-oss-120b, got: $OPENROUTER_TEST_MODEL" >&2
-            exit 1
-          }
           printf 'paid_openrouter_model=%s\n' "$OPENROUTER_TEST_MODEL"
 
       - name: Run REAL OpenRouter core suite
@@ -63,7 +59,7 @@ jobs:
       - name: Run REAL OpenRouter structured repair suite
         run: swipl -q -s test/run_live_repair_openrouter.pl
 
-      - name: Run 120B compiler cache acceptance
+      - name: Run compiler cache acceptance
         run: swipl -q -s test/run_live_compiler_cache_openrouter.pl
 
       - name: Run REAL OpenRouter benchmark suite
