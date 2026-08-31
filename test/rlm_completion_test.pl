@@ -264,6 +264,33 @@ test(typed_plan_model_step_runs_provider_native_session,
                                      sequence:_},
                      Result.transitions)).
 
+test(rlm_child_model_session_narrows_to_child_capabilities,
+     [setup(completion_test_support:reset_calls)]) :-
+    Options = [ planner_handler(completion_test_support:model_step_planner),
+                capabilities([rlm, context(slice), model(openrouter)]),
+                child_capabilities([model(openrouter)]),
+                model_handler(completion_test_support:capture_model)
+              ],
+    rlm_completion("run one native model step",
+                   text("opaque context body"),
+                   Options,
+                   Outcome),
+    expect_ok(Outcome, Result),
+    assertion(Result.usage.model_calls =:= 2),
+    % The child direct session must be narrowed to child_capabilities: the
+    % parent's context capability must not leak into the child's wire
+    % schemas or its System prompt, otherwise a child with zero context-op
+    % budget is invited to make calls that fail closed.
+    completion_test_support:last_model_request(Request),
+    Request.messages = [_, DirectSystem, _],
+    assertion(sub_string(DirectSystem.content, _, _, _,
+                         "No opaque context operations are granted")),
+    \+ (   get_dict(tools, Request.options, WireTools),
+           member(Schema, WireTools),
+           get_dict(name, Schema, WireName),
+           sub_atom(WireName, 0, _, _, 'context_')
+       ).
+
 test(default_skills_reach_one_system_message_on_unrelated_input,
      [setup(completion_test_support:reset_calls)]) :-
     base_options(completion_test_support:capture_planner, Options),
