@@ -1935,6 +1935,13 @@ dict_default(Dict, Key, Default, Value) :-
     ;   Value = Default
     ).
 
+% A completion wall-time limit that fires inside the compiler must
+% propagate unwrapped: wrapping it as a compiler error would mask the
+% timeout behind a phase fault.
+compiler_exception(Phase, Exception, _) :-
+    time_limit_exception(Exception),
+    !,
+    throw(Exception).
 compiler_exception(Phase,
                    prompt_compiler_fault(Fault),
                    error(prompt_compiler_error{phase:Phase,
@@ -1949,3 +1956,6 @@ compiler_exception(Phase,
                                                exception:Safe,
                                                message:"prompt compiler raised an exception"})) :-
     safe_term_text(Exception, Safe).
+
+time_limit_exception(time_limit_exceeded).
+time_limit_exception(time_limit_exceeded(_)).
