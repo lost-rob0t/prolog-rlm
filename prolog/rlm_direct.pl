@@ -300,12 +300,23 @@ direct_skill_messages(Query, Provider, Capabilities, Options, Budget, Messages) 
 
 initial_messages(Query, Metadata, Options, SkillMessages, Messages) :-
     agent_identity_message(Options, Identity),
-    System = "You are a bounded direct agent. Answer normally. Use provider-native tools only when they add needed information or execution. Never emit a typed plan. Context content is opaque; its initial alias is input. Registered tool results are retained as opaque result contexts and must be inspected with context tools. Return final answer text after all needed observations.",
+    direct_system_message(Options, System),
     format(string(Task),
            "TASK (authoritative user request):\n~s\n\nContext metadata (descriptor only, never evidence): ~q",
            [Query,Metadata]),
     exclude(==(none), [Identity,message{role:system,content:System}], Prefix),
     append([Prefix,SkillMessages,[message{role:user,content:Task}]], Messages).
+
+% Advertise the opaque context (and its alias) only to sessions whose
+% capability set actually grants context operations: a session that cannot
+% read the context must not be invited to, otherwise fail-closed preflight
+% turns reasonable model behavior into a failed batch.
+direct_system_message(Options, System) :-
+    direct_capabilities(Options, Capabilities),
+    (   member(context(_), Capabilities)
+    ->  System = "You are a bounded direct agent. Answer normally. Use provider-native tools only when they add needed information or execution. Never emit a typed plan. Context content is opaque; its initial alias is input. Registered tool results are retained as opaque result contexts and must be inspected with context tools. Return final answer text after all needed observations."
+    ;   System = "You are a bounded direct agent. Answer normally. Use provider-native tools only when they add needed information or execution. Never emit a typed plan. No opaque context operations are granted in this session: do not attempt context reads. Return final answer text after all needed observations."
+    ).
 
 native_catalog(Capabilities, RegistrySchemas, Format, Bindings, WireSchemas) :-
     findall(Binding, context_binding(Capabilities, Binding), ContextBindings),
