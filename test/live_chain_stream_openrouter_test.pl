@@ -15,8 +15,8 @@ test(real_openrouter_streaming_request,
     require_stream_credential,
     default_openrouter_model(RequestedModel),
     openrouter_provider(RequestedModel, Provider),
-                Request = model_request{
-                                messages:[message{
+    Request = model_request{
+                  messages:[message{
                                 role:user,
                                 content:"Reply with exactly STREAM_OK and nothing else."
                             }],

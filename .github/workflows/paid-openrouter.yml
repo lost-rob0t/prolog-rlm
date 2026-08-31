@@ -110,6 +110,7 @@ jobs:
             cat /tmp/prolog-rlm-live-cli.json >&2 || true
             exit "$status"
           fi
+          set -e
           grep -q '"schema":"prolog-rlm.trace.v1"' /tmp/prolog-rlm-live-cli.json
           grep -q '"max_depth":1' /tmp/prolog-rlm-live-cli.json
           grep -q '"model_calls":' /tmp/prolog-rlm-live-cli.json
