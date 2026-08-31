@@ -90,6 +90,13 @@ test(classified_batch_keeps_malformed_envelopes_batch_fatal) :-
     native_tool_calls_classify([Wire], error(Error)),
     assertion(Error.kind == malformed_call_id).
 
+test(classified_batch_does_not_retain_non_wire_argument_terms) :-
+    Wire = _{id:"call_1",
+             type:"function",
+             function:_{name:"lookup",arguments:call(host_predicate)}},
+    native_tool_calls_classify([Wire], error(Error)),
+    assertion(Error.kind == malformed_arguments).
+
 test(rejects_unsupported_native_call_type) :-
     Wire = _{id:"call_1",
              type:"computer",

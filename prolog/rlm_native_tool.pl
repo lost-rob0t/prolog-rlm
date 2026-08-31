@@ -36,9 +36,9 @@ native_tool_calls_normalize(Inputs, Outcome) :-
     Outcome = Result.
 
 % Normalize one provider batch while retaining attributable argument-parse
-% faults as inert ordered entries. Envelope, identity, type, name, and
-% duplicate-ID failures remain batch-fatal. The strict normalization APIs
-% above keep their existing all-or-nothing contract.
+% faults in wire text as inert ordered entries. Envelope, identity, type,
+% name, and duplicate-ID failures remain batch-fatal. The strict
+% normalization APIs above keep their existing all-or-nothing contract.
 native_tool_calls_classify(Inputs, Outcome) :-
     catch(( require_call_list(Inputs),
             maplist(classify_native_call, Inputs, Entries),
@@ -91,7 +91,8 @@ classified_native_call(Cause, Identity, Arguments0, _, Entry) :-
     nonvar(Cause),
     !,
     (   Cause.phase == normalize,
-        Cause.kind == malformed_arguments
+        Cause.kind == malformed_arguments,
+        text_value(Arguments0, _)
     ->  Entry = native_call_entry{call:Identity,
                                   status:fault(Cause),
                                   arguments:Arguments0}
