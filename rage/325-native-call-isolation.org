@@ -1,0 +1,116 @@
+* Run identity
+- Consumed issue :: #325
+- Branch :: =rage/325-native-call-isolation=
+- RAGE start commit :: =774c9cc20f01b0203d3cf122c16fc1c1f647f138=
+
+* Queue selection
+- Selected defect :: #325, raw malformed native-call arguments abort the
+  entire direct-mode batch.
+- Impact evidence :: Auto-Dig run =33433989280= reached six real OpenRouter
+  read-only calls; one duplicate-key argument string prevented all five valid
+  siblings from reaching per-call classification. This is a current execution
+  failure in the canonical native-direct path.
+- Ownership evidence :: #325 has no pull request or dedicated worktree. Issues
+  #328 and #329 already had dedicated worktrees when this run began. The old
+  #291 paid-main failure is stale: all five GitHub workflows passed on current
+  =main= at =774c9cc20f01b0203d3cf122c16fc1c1f647f138=.
+
+* Mode and approval state
+- Mode :: ADADR
+- Control plane :: =research/README.md= defines and the repository validates
+  human-gated research approval metadata. The issue is a bounded defect in the
+  already-merged #313/#316 design, so no new research claim is introduced; the
+  issue, executable regression, and this RAGE record carry the defect analysis
+  and bounded design.
+- Design approval :: PENDING explicit human approval.
+
+* TDD RED
+Two order-independent regressions reproduce the live failure with one valid
+=context_search= call and one well-formed call envelope whose raw argument JSON
+contains duplicate keys. On untouched =main=:
+
+- focused suite :: 36/38 passed, exactly 2 failed;
+- failed tests ::
+  =valid_sibling_survives_malformed_raw_argument_json= and
+  =malformed_raw_argument_json_before_valid_preserves_request_order=;
+- observed cause :: =normalize_arguments/2= emits
+  =native_tool_error{phase:normalize,kind:malformed_arguments}=, and
+  =native_tool_calls_normalize/2='s all-or-nothing =maplist/3= converts it into
+  the top-level whole-batch error before =classify_calls/4= runs.
+
+The pre-existing 36 focused tests remained green. The singleton-variable load
+warnings are the independently owned #329 defect and are not part of this
+slice.
+
+* Analyze
+The established #313/#316 invariant is already correct after native wire
+normalization: one side-effect-free classification pass retains trusted
+bindings, evaluates duplicate-ID/effect/budget invariants against the original
+request, then turns only an explicit phase+kind allowlist into per-call repair
+observations. The gap is earlier. Wire normalization currently combines two
+semantically different jobs:
+
+1. validating the batch and each call envelope/identity;
+2. parsing each call's argument object.
+
+Envelope/identity corruption is not safely attributable and must remain
+batch-fatal. An argument parse fault is attributable once the envelope, call
+ID, type, and tool name have all normalized. Discarding that identity at the
+batch =maplist/3= boundary prevents the existing trusted-binding and effect
+isolation logic from deciding safely.
+
+* Design
+Keep the existing strict =native_tool_call_normalize/2= and
+=native_tool_calls_normalize/2= public behavior. Add one additive batch
+classification API in =rlm_native_tool= that shares the canonical envelope and
+argument normalizers but returns an ordered entry per attributable call:
+
+- a normalized call when arguments parse as one ground JSON object;
+- a normalization-fault entry containing the normalized call identity, the
+  bounded =normalize/malformed_arguments= cause, and the original closed wire
+  call for exact assistant-message integrity comparison.
+
+Every other wire fault remains terminal. The new API still validates the full
+list and rejects duplicate IDs across valid and faulted entries before direct
+classification.
+
+=rlm_direct= consumes those ordered entries for both the response envelope and
+the normalized assistant message. It extracts the original requested call
+identities, resolves each malformed-argument entry once against the trusted
+bindings, retains any resolved binding for original-request effect isolation,
+and converts only =normalize/malformed_arguments= through the existing positive
+recoverability policy. Valid entries follow the unchanged schema-validation
+and execution path. Fault entries never acquire executable arguments and can
+only produce the existing bounded =native_call_rejected= observation.
+
+Acceptance criteria:
+
+- valid read-only siblings execute exactly once in either order;
+- the raw malformed call receives one ordered bounded
+  =malformed_arguments= observation and the model can finish on the next turn;
+- accounting reports one context call, zero tool calls, and two model turns;
+- malformed envelope/ID/type/name, duplicate IDs, assistant mismatch,
+  cancellation, and non-whitelisted normalization faults remain batch-fatal;
+- a malformed raw call resolving to an effectful binding beside any sibling is
+  batch-fatal before either handler executes;
+- existing strict normalization callers and results are unchanged.
+
+* Adversarial review
+- Do not catch arbitrary per-call normalization failures. Recovery is limited
+  to the exact =normalize/malformed_arguments= pair after identity validation.
+- Do not insert an empty argument object and run normal validation: a faulted
+  call has no execution path.
+- Resolve the name only to recover trusted effect metadata. Capability,
+  authority, confinement, and handler data are neither inferred from wire data
+  nor exposed in the repair observation.
+- Preserve the original wire call inside the internal classification entry so
+  a response/assistant mismatch cannot collapse merely because two different
+  malformed payloads share an ID and name.
+- Run duplicate-ID and original-request effect checks across faulted entries;
+  per-call recovery cannot shrink an unsafe batch.
+- Reuse the existing direct loop, scheduler, budgets, cancellation boundary,
+  observation renderer, and call ordering. Add no second executor or retry
+  mechanism.
+
+* Decision gate
+Implementation is blocked until the user explicitly approves the design above.

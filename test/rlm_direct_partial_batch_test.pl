@@ -80,6 +80,23 @@ partial_response(malformed_then_valid, 1, _, "", [Bad, Good], "") :-
                         _{query:"PARTIAL_NEEDLE"}, Good).
 partial_response(malformed_then_valid, 2, _, "PARTIAL_FIXED", [], "").
 
+% Issue #325: raw provider argument JSON can fail before schema preflight.
+% A well-formed call envelope with malformed arguments is still attributable
+% to one call and must not suppress valid read-only siblings.
+partial_response(valid_then_raw_malformed, 1, _, "", [Good, Bad], "") :-
+    partial_native_call("ctx_1", "context_search",
+                        _{query:"PARTIAL_NEEDLE"}, Good),
+    partial_raw_native_call("bad_1", "context_search",
+                            "{\"query\":\"first\",\"query\":\"second\"}", Bad).
+partial_response(valid_then_raw_malformed, 2, _, "PARTIAL_RAW_FIXED", [], "").
+
+partial_response(raw_malformed_then_valid, 1, _, "", [Bad, Good], "") :-
+    partial_raw_native_call("bad_1", "context_search",
+                            "{\"query\":\"first\",\"query\":\"second\"}", Bad),
+    partial_native_call("ctx_1", "context_search",
+                        _{query:"PARTIAL_NEEDLE"}, Good).
+partial_response(raw_malformed_then_valid, 2, _, "PARTIAL_RAW_FIXED", [], "").
+
 partial_response(valid_then_unavailable, 1, _, "", [Good, Bad], "") :-
     partial_native_call("ctx_1", "context_search",
                         _{query:"PARTIAL_NEEDLE"}, Good),
@@ -296,6 +313,9 @@ fake_partial_response(Call, Text, ToolCalls, Reasoning,
 partial_native_call(Id, Name, Args, Call) :-
     atom_json_dict(ArgumentsAtom, Args, [width(0)]),
     atom_string(ArgumentsAtom, Arguments),
+    partial_raw_native_call(Id, Name, Arguments, Call).
+
+partial_raw_native_call(Id, Name, Arguments, Call) :-
     Call = _{id:Id,
              type:"function",
              function:_{name:Name,arguments:Arguments}}.
@@ -344,6 +364,37 @@ test(malformed_sibling_before_valid_preserves_request_order) :-
                ok(Result)),
     assertion(Result.value == "PARTIAL_FIXED"),
     assertion(Result.context_calls =:= 1),
+    assertion(Result.turns =:= 2),
+    partial_tool_ids(2, ["bad_1", "ctx_1"]),
+    partial_tool_content_for(2, "bad_1", BadContent),
+    assertion(sub_string(BadContent, _, _, _, "malformed_arguments")),
+    partial_tool_content_for(2, "ctx_1", GoodContent),
+    assertion(sub_string(GoodContent, _, _, _, "PARTIAL_NEEDLE")).
+
+test(valid_sibling_survives_malformed_raw_argument_json) :-
+    partial_reset(valid_then_raw_malformed),
+    partial_provider_options([context(search)], [], Options),
+    rlm_direct("Raw partial batch", text("PARTIAL_NEEDLE"), Options,
+               ok(Result)),
+    assertion(Result.value == "PARTIAL_RAW_FIXED"),
+    assertion(Result.context_calls =:= 1),
+    assertion(Result.tool_calls =:= 0),
+    assertion(Result.turns =:= 2),
+    partial_tool_ids(2, ["ctx_1", "bad_1"]),
+    partial_tool_content_for(2, "ctx_1", GoodContent),
+    assertion(sub_string(GoodContent, _, _, _, "PARTIAL_NEEDLE")),
+    partial_tool_content_for(2, "bad_1", BadContent),
+    assertion(sub_string(BadContent, _, _, _, "malformed_arguments")),
+    assertion(\+ sub_string(BadContent, _, _, _, "PARTIAL_NEEDLE")).
+
+test(malformed_raw_argument_json_before_valid_preserves_request_order) :-
+    partial_reset(raw_malformed_then_valid),
+    partial_provider_options([context(search)], [], Options),
+    rlm_direct("Reversed raw fault order", text("PARTIAL_NEEDLE"), Options,
+               ok(Result)),
+    assertion(Result.value == "PARTIAL_RAW_FIXED"),
+    assertion(Result.context_calls =:= 1),
+    assertion(Result.tool_calls =:= 0),
     assertion(Result.turns =:= 2),
     partial_tool_ids(2, ["bad_1", "ctx_1"]),
     partial_tool_content_for(2, "bad_1", BadContent),
