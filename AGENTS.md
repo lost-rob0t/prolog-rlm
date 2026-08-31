@@ -31,6 +31,44 @@ Tests must exercise externally meaningful behavior, not merely internal implemen
 
 For crash/restart semantics, prefer fresh SWI-Prolog process fixtures. When a side effect is under test, use an externally observable counter/state so duplicate execution is detectable independently of the local ledger.
 
+## Git worktree workflow
+
+Any session scoped to a branch, pull request, or issue works inside a dedicated git worktree — never directly in the primary checkout at `/home/unseen/Documents/Projects/prolog-rlm`. The primary checkout stays on its default branch and is only used for worktree setup/teardown and read-only reference.
+
+Location and naming (exact):
+
+```text
+~/git/worktrees/<repo-name>-<branch-slug-or-pr-or-issue>
+```
+
+- `<repo-name>`: basename of the primary checkout (`prolog-rlm`).
+- branch slug: the branch name with `/` → `-`
+  (e.g. `feat/website-auto-deploy` → `feat-website-auto-deploy`).
+- PR work: `pr-<number>` (e.g. `prolog-rlm-pr-316`).
+- Issue work: `issue-<number>` (e.g. `prolog-rlm-issue-313`).
+- When a PR implements an issue, prefer `pr-<number>`.
+
+Creating and using:
+
+1. Reuse first: if `~/git/worktrees/<name>` already exists, verify
+   `git -C ~/git/worktrees/<name> branch --show-current` matches the target
+   branch, then fetch and fast-forward inside it instead of creating a new
+   worktree.
+2. Otherwise create it from the primary checkout:
+   - new branch: `git worktree add ~/git/worktrees/<name> -b <branch>`
+   - existing branch: `git worktree add ~/git/worktrees/<name> <branch>`
+3. `cd` into the worktree and run all builds, tests, commits, and pushes
+   there. Relative paths in project docs/config resolve inside the worktree
+   (opencode walks up from the worktree root for project config).
+4. Worktree setup/teardown commands are the only git commands that run from
+   the primary checkout.
+5. Remove a worktree only when its branch is fully merged or the user asks:
+   `git worktree remove ~/git/worktrees/<name>` — use `--force` only when
+   the user confirms there is no unmerged work inside.
+
+Exception: quick read-only questions about the current checkout state do not
+require a worktree.
+
 ## Core architectural invariants
 
 Preserve these unless the task explicitly changes them with tests and design evidence:
