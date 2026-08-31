@@ -15,13 +15,17 @@ test(real_openrouter_streaming_request,
     require_stream_credential,
     default_openrouter_model(RequestedModel),
     openrouter_provider(RequestedModel, Provider),
-    Request = model_request{
-                  messages:[message{
+                Request = model_request{
+                                messages:[message{
                                 role:user,
                                 content:"Reply with exactly STREAM_OK and nothing else."
                             }],
-                  options:_{max_tokens:256,
-                            temperature:0}
+                  % glm endpoints require reasoning; without an explicit
+                  % minimal effort the mandatory reasoning can exhaust the
+                  % completion cap and truncate before the sentinel.
+                  options:_{max_tokens:1024,
+                            temperature:0,
+                            reasoning:_{effort:"minimal"}}
               },
     chain_stream(Provider,
                  Request,
