@@ -68,8 +68,8 @@ argument normalizers but returns an ordered entry per attributable call:
 
 - a normalized call when arguments parse as one ground JSON object;
 - a normalization-fault entry containing the normalized call identity, the
-  bounded =normalize/malformed_arguments= cause, and the original closed wire
-  call for exact assistant-message integrity comparison.
+  bounded =normalize/malformed_arguments= cause, and the original raw argument
+  text for exact assistant-message integrity comparison.
 
 Every other wire fault remains terminal. The new API still validates the full
 list and rejects duplicate IDs across valid and faulted entries before direct
@@ -135,9 +135,9 @@ ordering, observation rendering, and continuation remain canonical.
 * Focused GREEN
 - =rlm_direct_partial_batch= :: 40/40 passed, including both raw malformed
   orderings and both effectful isolation orderings.
-- =rlm_native_tool= :: 13/13 passed, including strict-API compatibility,
+- =rlm_native_tool= :: 14/14 passed, including strict-API compatibility,
   duplicate-ID rejection across faulted entries, payload identity, and
-  malformed-envelope rejection.
+  malformed-envelope/non-wire-term rejection.
 - =rlm_direct= :: 28/28 passed, including raw malformed registered-tool repair
   before handler execution and mismatched malformed assistant payload
   rejection.
@@ -146,3 +146,20 @@ ordering, observation rendering, and continuation remain canonical.
 
 The #329 singleton warnings remain visible and independently owned; this slice
 does not alter them.
+
+* Pre-final local gate
+The full repository gate passed before the final evidence-record commit:
+
+- deterministic PlUnit :: 93 suites; 1137 discovered/planned/completed/passed;
+  0 failed, timeout, blocked, or fixme;
+- deterministic benchmark :: 16/16 passed;
+- deep experiment :: 15/15 passed;
+- runtime/load, research-approval validator, and SPEC/PLAN design gate :: passed;
+- live-test definitions static load and aggregate main-ownership probe :: passed;
+- runner-integrity suite :: 19/19 passed;
+- CLI demo plus graph trace-view smoke :: passed;
+- fresh-process graph and durable-artifact restart fixtures :: passed;
+- =git diff --check= :: passed.
+
+The final candidate head must repeat the exact-head gate after this record is
+committed; GitHub Actions remains canonical.
