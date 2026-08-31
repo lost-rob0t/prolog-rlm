@@ -731,7 +731,7 @@ completion_after_recursive_validation(ok(Stats),
     plan_budget(Budget, RemainingCalls, PlanBudget),
     context_runtime_options(Options, ContextOptions),
     completion_model_step_handler(ContextRef,
-                                  Capabilities,
+                                  ChildCapabilities,
                                   Options,
                                   Budget,
                                   Planner.usage,
@@ -1941,14 +1941,17 @@ plan_budget(Budget, RemainingModelCalls,
               time_limit:Budget.time_limit}) :-
     PlanDepth is Budget.max_recursion_depth+1.
 
-% The typed-plan model step runs one provider-native direct session against the
-% already-acquired root context handle. The child session receives the exact
-% root provider, capabilities, cancellation token, and the completion budget
-% with the root planner's spent usage already netted out. The plan runtime
-% reserves one step and one model call for the step and charges actual native
-% continuation counts, tool calls, context operations, and observation bytes.
+% The typed-plan model step runs one provider-native direct session against
+% the already-acquired root context handle. The child session receives the
+% exact root provider, the NARROWED child capabilities (never the parent's:
+% child capability sets only narrow, and a child whose plan budget allots
+% zero context operations must not be handed parent context schemas),
+% cancellation token, and the completion budget with the root planner's
+% spent usage already netted out. The plan runtime reserves one step and one
+% model call for the step and charges actual native continuation counts,
+% tool calls, context operations, and observation bytes.
 completion_model_step_handler(ContextRef,
-                              Capabilities,
+                              ChildCapabilities,
                               Options,
                               Budget,
                               PlannerUsage,
@@ -1956,7 +1959,7 @@ completion_model_step_handler(ContextRef,
                               Token,
                               rlm_direct:rlm_direct_model_step(
                                   ContextRef.handle,
-                                  Capabilities,
+                                  ChildCapabilities,
                                   Options,
                                   HandlerBudget,
                                   Token)) :-
