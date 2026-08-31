@@ -251,7 +251,8 @@ native_tool_schema_wire(Format, Schema, Outcome) :-
           ),
           native_tool_fault(Error),
           Result = error(Error)),
-    Outcome = Result.
+    Outcome = ResultOutcome,
+    ResultOutcome = Result.
 
 native_schema_wire(openai_compatible, Schema, Wire) :-
     require_native_schema(Schema),
@@ -309,7 +310,6 @@ result_message(Call, Result, Message) :-
     atom_string(ContentAtom, Content),
     Message = message{role:tool,
                       tool_call_id:Call.id,
-                      name:Call.name,
                       content:Content}.
 
 require_normalized_call(Call) :-
