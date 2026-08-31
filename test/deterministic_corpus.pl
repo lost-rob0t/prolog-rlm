@@ -121,6 +121,8 @@ corpus_entry('rlm_completion_tool_visibility_test.pl',
               include(rlm_completion_tool_visibility)).
 corpus_entry('rlm_native_tool_test.pl', include(rlm_native_tool)).
 corpus_entry('rlm_direct_test.pl', include(rlm_direct)).
+corpus_entry('rlm_direct_partial_batch_test.pl',
+             include(rlm_direct_partial_batch)).
 corpus_entry('rlm_nested_usage_test.pl', include(rlm_nested_usage)).
 corpus_entry('rlm_nested_trajectory_test.pl',
              include(rlm_nested_trajectory)).
