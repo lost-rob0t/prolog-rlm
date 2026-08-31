@@ -380,19 +380,12 @@ context_schema(peek,
                    parameters:json{type:"object",
                                    properties:json{
                                        context:json{type:"string"},
-                                       selector:json{
-                                           type:"object",
-                                           properties:json{
-                                               type:json{type:"string",
-                                                         enum:["metadata","head","tail","item"]},
-                                               index:json{type:"integer",minimum:0},
-                                               count:json{type:"integer",minimum:1}},
-                                           required:["type"],
-                                           additionalProperties:false}},
+                                       selector:SelectorSchema},
                                    required:["selector"],
                                    additionalProperties:false},
                    source:context,
-                   capability:context(peek),effect:read}).
+                   capability:context(peek),effect:read}) :-
+    peek_selector_schema(SelectorSchema).
 
 runtime_binding(Capabilities,
                 native_binding{name:spec_catalog,kind:spec(catalog),effect:read,
@@ -1054,58 +1047,100 @@ required_positive(Args, Key, Value) :-
     ( get_dict(Key, Args, Found), integer(Found), Found > 0 -> Value=Found
     ; argument_fault(invalid_positive_integer(Key)) ).
 
+% --- Authoritative context_peek selector contract (issue #312) -------------
+%
+% The projected tool schema (peek_selector_schema/1, projected through
+% context_schema(peek, ...) above) and native argument validation
+% (peek_selector/2) both derive from the facts in this section, so the
+% model-facing advertisement cannot drift from what native validation
+% enforces. Only `type` is required; `index` and `count` are optional
+% shared fields with the advertised minima; unknown selector fields fail
+% closed on every selector type.
+
+peek_selector_types([metadata,head,tail,item]).
+peek_selector_fields([type,index,count]).
+peek_selector_required(["type"]).
+peek_selector_minimum(index, 0).
+peek_selector_minimum(count, 1).
+peek_selector_default(index, 0).
+peek_selector_default(count, Count) :-
+    peek_default_count(Count).
+
+% Shared peek-selector count default. The projected JSON schema marks only
+% "type" as required and advertises index (minimum 0) and count (minimum 1)
+% as optional shared selector fields, so native validation supplies the
+% same defaults instead of rejecting the advertised shape (issue #312).
+peek_default_count(128).
+
+% The selector object schema projected to the model. Built from the
+% contract facts above so the advertised field set, enum, minima, and
+% required list are exactly what native validation enforces.
+peek_selector_schema(json{type:"object",
+                          properties:Properties,
+                          required:Required,
+                          additionalProperties:false}) :-
+    peek_selector_required(Required),
+    findall(Field-FieldSchema,
+            peek_selector_field_schema(Field, FieldSchema),
+            FieldPairs),
+    dict_create(Properties, json, FieldPairs).
+
+peek_selector_field_schema(type, json{type:"string", enum:EnumStrings}) :-
+    peek_selector_types(Types),
+    maplist(atom_string, Types, EnumStrings).
+peek_selector_field_schema(Field, json{type:"integer", minimum:Minimum}) :-
+    peek_selector_minimum(Field, Minimum).
+
 peek_selector(Dict, Selector) :-
-    is_dict(Dict), get_dict(type, Dict, Type0),
+    is_dict(Dict),
+    peek_selector_fields(Fields),
+    allowed_args(Dict, Fields),
+    get_dict(type, Dict, Type0),
     ( string(Type0) -> atom_string(Type, Type0) ; Type=Type0 ),
-    peek_selector_type(Type, Dict, Selector),
+    peek_selector_types(Types),
+    ( memberchk(Type, Types)
+    ->  peek_selector_type(Type, Dict, Selector)
+    ;   argument_fault(unsupported_selector)
+    ),
     !.
 peek_selector(_, _) :- argument_fault(invalid_selector).
 
 peek_selector_type(metadata, Dict, metadata) :-
-    allowed_args(Dict, [type,index,count]),
-    optional_positive(Dict, count).
-peek_selector_type(head, Dict, head(N)) :-
-    allowed_args(Dict,[type,index,count]),
-    optional_nonnegative(Dict, index),
-    positive_or_default(Dict, count, N).
-peek_selector_type(tail, Dict, tail(N)) :-
-    allowed_args(Dict,[type,index,count]),
-    optional_nonnegative(Dict, index),
-    positive_or_default(Dict, count, N).
-peek_selector_type(item, Dict, item(N)) :-
-    allowed_args(Dict,[type,index,count]),
-    optional_positive(Dict, count),
-    nonnegative_or_default(Dict, index, N).
+    peek_selector_field_valid(Dict, index),
+    peek_selector_field_valid(Dict, count).
+peek_selector_type(head, Dict, head(Count)) :-
+    peek_selector_field_valid(Dict, index),
+    peek_selector_field_value(Dict, count, Count).
+peek_selector_type(tail, Dict, tail(Count)) :-
+    peek_selector_field_valid(Dict, index),
+    peek_selector_field_value(Dict, count, Count).
+peek_selector_type(item, Dict, item(Index)) :-
+    peek_selector_field_valid(Dict, count),
+    peek_selector_field_value(Dict, index, Index).
 peek_selector_type(_, _, _) :- argument_fault(unsupported_selector).
 
-% Shared peek-selector defaults. The projected JSON schema marks only
-% "type" as required and advertises index (minimum 0) and count (minimum 1)
-% as optional shared selector fields, so native validation must supply the
-% same defaults instead of rejecting the advertised shape (issue #312).
-peek_default_count(128).
-
-optional_positive(Dict, Key) :-
-    (   get_dict(Key, Dict, _)
-    ->  required_positive(Dict, Key, _)
+% Optional selector field: when present it must be an integer satisfying
+% the advertised minimum; absence is accepted. Presence never changes
+% execution semantics beyond the documented defaults above.
+peek_selector_field_valid(Dict, Field) :-
+    (   get_dict(Field, Dict, Value)
+    ->  peek_selector_minimum(Field, Minimum),
+        (   integer(Value), Value >= Minimum
+        ->  true
+        ;   argument_fault(invalid_selector_field(Field, Minimum))
+        )
     ;   true
     ).
 
-optional_nonnegative(Dict, Key) :-
-    (   get_dict(Key, Dict, _)
-    ->  required_nonnegative(Dict, Key, _)
-    ;   true
-    ).
-
-positive_or_default(Dict, Key, Value) :-
-    (   get_dict(Key, Dict, _)
-    ->  required_positive(Dict, Key, Value)
-    ;   peek_default_count(Value)
-    ).
-
-nonnegative_or_default(Dict, Key, Value) :-
-    (   get_dict(Key, Dict, _)
-    ->  required_nonnegative(Dict, Key, Value)
-    ;   Value = 0
+% Optional selector field with its native default when omitted.
+peek_selector_field_value(Dict, Field, Value) :-
+    (   get_dict(Field, Dict, Value0)
+    ->  peek_selector_minimum(Field, Minimum),
+        (   integer(Value0), Value0 >= Minimum
+        ->  Value = Value0
+        ;   argument_fault(invalid_selector_field(Field, Minimum))
+        )
+    ;   peek_selector_default(Field, Value)
     ).
 
 argument_fault(Detail) :-
