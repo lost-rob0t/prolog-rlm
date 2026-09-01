@@ -105,6 +105,22 @@ deadline_scenario_response(substantive_long, 1, _, ok(Response)) :-
     string_codes(Text, Codes),
     fake_deadline_response(1, Text, [], "", Response).
 
+% A response-count tool cutoff bounds evidence acquisition even on fast
+% providers: after the cutoff, requests are sent without tool schemas and
+% the run closes with final text. Deterministic by construction (no wall
+% clock): the scenario dispatches on the request shape.
+deadline_scenario_response(tool_cutoff, Call, Request, ok(Response)) :-
+    request_has_tools(Request),
+    !,
+    native_deadline_call("ctx_1", "context_search", _{query:"NEEDLE"}, ToolCall),
+    fake_deadline_response(Call, "", [ToolCall], "", Response).
+deadline_scenario_response(tool_cutoff, Call, Request, ok(Response)) :-
+    \+ request_has_tools(Request),
+    !,
+    last_message_content(Request, Content),
+    assertion(sub_string(Content, _, _, _, "final synthesis")),
+    fake_deadline_response(Call, "CUTOFF_CLOSED", [], "", Response).
+
 request_has_tools(Request) :-
     get_dict(options, Request, RequestOptions),
     get_dict(tools, RequestOptions, _).
@@ -213,24 +229,14 @@ test(synthesis_transition_holds_outside_reservation_window) :-
     rlm_direct:direct_synthesis_transition(Runtime, Same),
     assertion(Same.synthesis == false).
 
-% A response-count tool cutoff bounds evidence acquisition even on fast
-% providers: after the cutoff, requests are sent without tool schemas and the
-% run closes with final text. Deterministic by construction (no wall clock).
-deadline_scenario_response(tool_cutoff, Call, Request, ok(Response)) :-
-    request_has_tools(Request),
-    !,
-    native_deadline_call("ctx_1", "context_search", _{query:"NEEDLE"}, ToolCall),
-    fake_deadline_response(Call, "", [ToolCall], "", Response).
-deadline_scenario_response(tool_cutoff, Call, Request, ok(Response)) :-
-    \+ request_has_tools(Request),
-    !,
-    last_message_content(Request, Content),
-    assertion(sub_string(Content, _, _, _, "final synthesis")),
-    fake_deadline_response(Call, "CUTOFF_CLOSED", [], "", Response).
-
 test(native_tool_cutoff_strips_tools_after_cutoff) :-
     reset_deadline(tool_cutoff),
-    deadline_provider_options([native_tool_cutoff_model_calls(1)], Options),
+    % A large alarm budget keeps the default wall-clock synthesis reservation
+    % out of the picture entirely: only the response-count cutoff can make
+    % turns tool-free, on any runner speed.
+    deadline_provider_options([native_tool_cutoff_model_calls(1),
+                               budget(_{time_limit:3600.0})],
+                              Options),
     rlm_direct("Research the needle", text("NEEDLE context"), Options,
                ok(Result)),
     assertion(Result.value == "CUTOFF_CLOSED"),
