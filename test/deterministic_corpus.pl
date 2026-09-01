@@ -119,6 +119,8 @@ corpus_entry('rlm_completion_final_handoff_test.pl',
              include(rlm_completion_final_handoff)).
 corpus_entry('rlm_completion_tool_visibility_test.pl',
               include(rlm_completion_tool_visibility)).
+corpus_entry('rlm_completion_module_boundary_test.pl',
+             include(rlm_completion_module_boundary)).
 corpus_entry('rlm_native_tool_test.pl', include(rlm_native_tool)).
 corpus_entry('rlm_direct_test.pl', include(rlm_direct)).
 corpus_entry('rlm_direct_partial_batch_test.pl',
