@@ -247,8 +247,9 @@ prepare trusted provider/context/catalog
 -> strictly normalize the complete native-call batch
 -> no calls: require nonempty final text and finish
 -> calls:
-     preflight all IDs, names, JSON argument envelopes, and batch budgets
-     append canonical assistant message
+      preflight batch cardinality, all IDs, names, JSON argument envelopes,
+      and batch budgets
+      append canonical assistant message
      execute calls in provider order
        context call -> matching capability -> existing bounded context API
        registry call -> tool_invoke_execute/6
@@ -271,12 +272,24 @@ an explicit shared-budget and partial-effect design.
 ## Budgets and cancellation
 
 Direct mode uses `completion_budget`, including `max_model_calls`,
-`max_tool_calls`, `max_context_ops`, `max_total_tokens`, `max_cost_usd`,
-`max_output_bytes`, `max_iterations`, and `time_limit`.
+`max_tool_calls`, `max_context_ops`, `max_native_calls_per_batch`,
+`max_total_tokens`, `max_cost_usd`, `max_output_bytes`, `max_iterations`, and
+`time_limit`.
 
 - Every provider turn consumes one model call and its reported tokens/cost.
 - Every provider turn and every nested typed-plan step consumes one shared
   iteration; a nested plan receives only the remaining iteration budget.
+- `max_native_calls_per_batch` (default 8, trusted runtime option) is a
+  cardinality admission limit, not an executed-operation charge. It is
+  evaluated against the ORIGINAL provider-requested batch before any per-call
+  classification, preflight, or execution work; every requested call counts,
+  including calls that will fail preflight. An oversize batch fails closed
+  with one deterministic `native_batch_too_large` fault: no valid sibling
+  executes, no malformed call is converted into a repair observation, and no
+  tool/context execution charge occurs. `max_tool_calls` and `max_context_ops`
+  continue to mean executed operations only, and accepted batches keep their
+  existing accounting. Nested typed-plan sessions inherit the same admission
+  limit and never widen it.
 - A typed-plan model step runs as one nested direct session: the plan reserves
   one step and one model call, and the runtime then charges the session's
   actual continuation iterations, model calls, tool calls, context operations,

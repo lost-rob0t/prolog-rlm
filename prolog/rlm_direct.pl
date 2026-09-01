@@ -130,6 +130,7 @@ direct_model_step_budget(Base, Native, Budget) :-
                      max_model_calls:Native.max_model_calls,
                      max_tool_calls:Native.max_tool_calls,
                      max_context_ops:Native.max_context_ops,
+                     max_native_calls_per_batch:Base.max_native_calls_per_batch,
                      max_total_tokens:Tokens,
                      max_cost_usd:Cost,
                      max_output_bytes:Output,
@@ -646,12 +647,14 @@ preflight_batch_error(State, Cause, Error) :-
 % before the batch-fatal invariants have passed.
 %
 % Batch-fatal invariants are evaluated against the ORIGINAL requested batch:
-% duplicate call IDs, unclassified per-call faults (positive recoverability
-% policy below), effectful calls inside a multi-call request, and exhausted
-% context/tool budgets. Per-call recovery must never shrink an unsafe
-% requested batch into an executable one.
+% cardinality admission (issue #323), duplicate call IDs, unclassified
+% per-call faults (positive recoverability policy below), effectful calls
+% inside a multi-call request, and exhausted context/tool budgets. Per-call
+% recovery must never shrink an unsafe requested batch into an executable
+% one.
 classify_calls(Entries, Calls, Runtime, State, Classification) :-
-    catch(( fresh_call_ids(Calls, State.seen_call_ids),
+    catch(( native_batch_cardinality(Calls, Runtime),
+            fresh_call_ids(Calls, State.seen_call_ids),
             maplist(preflight_entry_status(Runtime), Entries, Statuses),
             validate_requested_effect_batch(Calls, Statuses),
             resolved_batch_budget(Statuses, Runtime, State),
@@ -659,6 +662,26 @@ classify_calls(Entries, Calls, Runtime, State, Classification) :-
           ),
           direct_fault(Cause),
           Classification = fatal(Cause)).
+
+% Cardinality admission (issue #323) is the first batch-fatal invariant: it
+% counts the ORIGINAL provider-requested batch before any per-call
+% classification, preflight, or normalization work. Every requested call
+% counts, including calls that would fail preflight, and an oversize batch
+% fails closed with one deterministic fault: no sibling executes, no
+% malformed call is converted into a repair observation, and no
+% tool/context execution charge occurs. The admitted-batch accounting of
+% max_tool_calls / max_context_ops keeps meaning executed operations.
+native_batch_cardinality(Calls, Runtime) :-
+    length(Calls, Requested),
+    (   Requested =< Runtime.budget.max_native_calls_per_batch
+    ->  true
+    ;   throw(direct_fault(direct_error{
+                              phase:native_call,
+                              kind:native_batch_too_large,
+                              requested:Requested,
+                              limit:Runtime.budget.max_native_calls_per_batch,
+                              message:"provider native-call batch exceeds the per-batch call admission"}))
+    ).
 
 native_entries_calls(Entries, Calls) :-
     maplist(native_entry_call, Entries, Calls).
