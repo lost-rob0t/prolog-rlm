@@ -2,7 +2,8 @@
           [ rlm_direct/4,
             rlm_direct_async/4,
             rlm_direct_execute/4,
-            rlm_direct_model_step/10
+            rlm_direct_model_step/10,
+            request_deadline_provider/3
           ]).
 
 /** <module> Bounded provider-native direct agent loop */
@@ -222,6 +223,8 @@ direct_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
     initial_messages(Query, MetadataRef.metadata, Options, SkillMessages,
                      Messages),
     zero_usage(Usage),
+    direct_wall_deadline(Options, Budget, Deadline),
+    direct_synthesis_reservation(Options, Budget, Reservation),
     State = direct_state{messages:Messages,
                          contexts:[direct_context{id:"input",
                                                   handle:ContextRef.handle,
@@ -245,8 +248,84 @@ direct_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                              registry:Registry,
                              options:Options,
                              budget:Budget,
-                             token:Token},
+                             token:Token,
+                             deadline:Deadline,
+                             reservation:Reservation,
+                             synthesis:false},
     direct_loop(Runtime, State, Outcome).
+
+% The wall-clock deadline drives the soft budgeting decisions (synthesis
+% reservation and request guards). It is independent of the hard
+% `call_with_time_limit` alarm, which remains the last-resort backstop. A host
+% may pin the deadline explicitly as trusted runtime data (used by
+% deterministic tests); otherwise it is derived from the budget at loop start.
+direct_wall_deadline(Options, Budget, Deadline) :-
+    option(wall_clock_deadline, Options, none, Override),
+    (   Override == none
+    ->  get_time(Now),
+        Deadline is Now + Budget.time_limit
+    ;   number(Override),
+        Override > 0
+    ->  Deadline = Override
+    ;   throw(direct_fault(direct_error{
+                              phase:runtime,
+                              kind:invalid_wall_clock_deadline,
+                              message:"wall_clock_deadline must be a positive Unix timestamp"}))
+    ).
+
+direct_synthesis_reservation(Options, Budget, Reservation) :-
+    option(synthesis_reservation, Options, default, Requested),
+    (   Requested == default
+    ->  Raw = 45.0
+    ;   number(Requested),
+        Requested >= 0
+    ->  Raw = Requested
+    ;   throw(direct_fault(direct_error{
+                              phase:runtime,
+                              kind:invalid_synthesis_reservation,
+                              message:"synthesis_reservation must be a nonnegative number of seconds"}))
+    ),
+    (   Raw >= Budget.time_limit
+    ->  Reservation is Budget.time_limit/2
+    ;   Reservation = Raw
+    ).
+
+direct_wall_remaining(Runtime, Remaining) :-
+    get_time(Now),
+    Remaining is Runtime.deadline - Now.
+
+% Request guard: evidence turns must leave the reserved synthesis window
+% untouched; the synthesis turn itself keeps a one-second floor so its own
+% completion lands before the hard deadline alarm.
+direct_request_guard(Runtime, Remaining, Guard) :-
+    (   Runtime.synthesis == true
+    ->  Reserved = 1.0
+    ;   Reserved = Runtime.reservation
+    ),
+    Guard0 is Remaining - Reserved,
+    Guard is max(1.0, Guard0).
+
+% Cap the provider HTTP timeout at the request guard without ever loosening a
+% tighter operator-configured timeout. A capped socket timeout fails as a
+% clean Prolog exception at the transport boundary, which is typed as a
+% deadline failure instead of killing the run through the hard alarm.
+request_deadline_provider(provider(Format, Config0), Guard,
+                          provider(Format, Config)) :-
+    is_list(Config0),
+    !,
+    request_deadline_entries(Config0, Guard, Config).
+request_deadline_provider(Provider, _, Provider).
+
+request_deadline_entries([], _, []).
+request_deadline_entries([timeout(Old)|Rest], Guard, [timeout(Capped)|Rest]) :-
+    !,
+    (   number(Old),
+        Old > Guard
+    ->  Capped = Guard
+    ;   Capped = Old
+    ).
+request_deadline_entries([Entry|Rest], Guard, [Entry|Tail]) :-
+    request_deadline_entries(Rest, Guard, Tail).
 
 direct_registry(Options, Registry) :-
     option(tools, Options, [], DirectTools),
@@ -494,14 +573,41 @@ unique_binding_names(_) :-
                            kind:duplicate_native_tool_name,
                            message:"native tool names must be unique"})).
 
-direct_loop(Runtime, State0, Outcome) :-
-    check_cancelled(Runtime.token),
+direct_loop(Runtime0, State0, Outcome) :-
+    check_cancelled(Runtime0.token),
+    direct_synthesis_transition(Runtime0, Runtime),
     model_admission(Runtime, State0, Admission),
     (   Admission = error(Error)
     ->  Outcome = error(Error)
     ;   provider_turn(Runtime, State0, Outcome)
     ).
 
+% Once the remaining wall clock enters the synthesis reservation window, the
+% run stops acquiring evidence and reserves what is left for one final
+% tool-free synthesis request. The transition is one-way.
+direct_synthesis_transition(Runtime, Runtime) :-
+    Runtime.synthesis == true,
+    !.
+direct_synthesis_transition(Runtime0, Runtime) :-
+    direct_wall_remaining(Runtime0, Remaining),
+    Remaining =< Runtime0.reservation,
+    !,
+    put_dict(synthesis, Runtime0, true, Runtime).
+direct_synthesis_transition(Runtime, Runtime).
+
+model_admission(Runtime, State, error(Error)) :-
+    Runtime.synthesis == true,
+    remaining_tokens(Runtime.budget.max_total_tokens,
+                     State.usage.total_tokens,
+                     Remaining),
+    Remaining =< 0,
+    !,
+    state_error(State, deadline, synthesis_window_exhausted,
+                _{remaining_tokens:Remaining},
+                "synthesis window has no remaining token budget", Error).
+model_admission(Runtime, _, ok) :-
+    Runtime.synthesis == true,
+    !.
 model_admission(Runtime, State, error(Error)) :-
     State.model_calls >= Runtime.budget.max_model_calls,
     !,
@@ -526,6 +632,37 @@ model_admission(Runtime, State, error(Error)) :-
 model_admission(_, _, ok).
 
 provider_turn(Runtime, State0, Outcome) :-
+    direct_wall_remaining(Runtime, Remaining),
+    direct_request_guard(Runtime, Remaining, Guard),
+    request_deadline_provider(Runtime.provider, Guard, GuardedProvider),
+    direct_turn_request(Runtime, State0, Request),
+    call_model(Runtime.options, GuardedProvider, Request, ModelOutcome),
+    after_provider(ModelOutcome, Runtime, State0, Outcome).
+
+direct_turn_request(Runtime, State0, Request) :-
+    (   Runtime.synthesis == true
+    ->  remaining_tokens(Runtime.budget.max_total_tokens,
+                         State0.usage.total_tokens,
+                         Remaining),
+        planner_token_limit(Runtime.options, Requested),
+        Limit is max(1, min(Requested, Remaining)),
+        model_request_options(Runtime.options, Limit, RequestOptions),
+        synthesis_messages(State0.messages, Messages)
+    ;   Messages = State0.messages,
+        direct_evidence_request_options(Runtime, State0, RequestOptions)
+    ),
+    Request = model_request{messages:Messages, options:RequestOptions}.
+
+% The reserved synthesis turn is tool-free and carries an explicit directive
+% so the model closes with substantive final text instead of more evidence
+% requests.
+synthesis_messages(Messages0, Messages) :-
+    append(Messages0,
+           [message{role:system,
+                    content:"Wall-clock budget is nearly exhausted. Produce the final synthesis now from the evidence already gathered. Do not call any tools. Return the complete evidence-backed answer as your final synthesis text."}],
+           Messages).
+
+direct_evidence_request_options(Runtime, State0, RequestOptions) :-
     remaining_tokens(Runtime.budget.max_total_tokens,
                      State0.usage.total_tokens,
                      Remaining),
@@ -533,10 +670,7 @@ provider_turn(Runtime, State0, Outcome) :-
     Limit is max(1, min(Requested, Remaining)),
     model_request_options(Runtime.options, Limit, BaseOptions),
     native_request_options(Runtime.options, Limit, BaseOptions, StepOptions),
-    request_options(Runtime.schemas, StepOptions, RequestOptions),
-    Request = model_request{messages:State0.messages,options:RequestOptions},
-    call_model(Runtime.options, Runtime.provider, Request, ModelOutcome),
-    after_provider(ModelOutcome, Runtime, State0, Outcome).
+    request_options(Runtime.schemas, StepOptions, RequestOptions).
 
 request_options([], Options, Options) :- !.
 request_options(Schemas, Options0, Options) :-
@@ -573,8 +707,13 @@ reject_native_request_control(_).
 
 after_provider(error(Cause), _, State, error(Error)) :-
     !,
-    state_error(State, provider, provider_failed, _{cause:Cause},
-                "direct provider request failed", Error).
+    (   deadline_provider_cause(Cause)
+    ->  state_error(State, deadline, provider_deadline_exceeded,
+                    _{cause:Cause},
+                    "direct provider request exceeded its wall-clock deadline", Error)
+    ;   state_error(State, provider, provider_failed, _{cause:Cause},
+                    "direct provider request failed", Error)
+    ).
 after_provider(ok(Response), Runtime, State0, Outcome) :-
     check_cancelled(Runtime.token),
     response_usage(Response, CallUsage),
@@ -601,6 +740,14 @@ after_provider(ok(Response), Runtime, State0, Outcome) :-
                                  Outcome)
     ).
 
+% A provider request that died from a wall-clock deadline (capped socket
+% timeout, cleanly caught request alarm, or deadline-classified transport
+% exception) is a typed deadline outcome, not a generic provider failure.
+deadline_provider_cause(Cause) :-
+    is_dict(Cause),
+    get_dict(kind, Cause, Kind),
+    memberchk(Kind, [timeout, deadline_exceeded]).
+
 normalize_response_calls(Response, Outcome) :-
     (   is_dict(Response),
         get_dict(tool_calls, Response, RawCalls),
@@ -620,6 +767,21 @@ after_call_normalization(error(Cause), _, _, State, error(Error)) :-
 after_call_normalization(ok([]), Response, Runtime, State, Outcome) :-
     !,
     finish_direct(Response, Runtime, State, Outcome).
+% The reserved synthesis turn must close the run: further tool calls cannot
+% be honored inside the reserved window. Final text is accepted; anything
+% else is a typed deadline failure that preserves the collected evidence.
+after_call_normalization(ok(Entries), Response, Runtime, State, Outcome) :-
+    Runtime.synthesis == true,
+    Entries \== [],
+    !,
+    (   get_dict(text, Response, Text),
+        nonempty_text(Text)
+    ->  finish_direct(Response, Runtime, State, Outcome)
+    ;   state_error(State, deadline, synthesis_tool_call,
+                    _{},
+                    "synthesis request returned tool calls instead of final text", Error),
+        Outcome = error(Error)
+    ).
 after_call_normalization(ok(Entries), Response, Runtime, State0, Outcome) :-
     native_entries_calls(Entries, Calls),
     classify_calls(Entries, Calls, Runtime, State0, Classification),
@@ -1175,16 +1337,23 @@ finish_direct(Response, Runtime, State0, Outcome) :-
        ( Total =< Runtime.budget.max_output_bytes
        -> put_dict(output_bytes, State0, Total, State),
           reverse(State.responses, Responses),
-          Outcome = ok(direct_result{value:Text,response:Response,
-                                     responses:Responses,
-                                     usage:State.usage,
-                                     turns:State.model_calls,
-                                     iterations:State.iterations,
-                                     context_calls:State.context_calls,
-                                     tool_calls:State.tool_calls,
-                                     observation_bytes:State0.output_bytes,
-                                     output_bytes:State.output_bytes,
-                                     trajectory:State.trajectory})
+          final_output_floor(Runtime.options, Floor),
+          (   Bytes >= Floor
+          ->  Outcome = ok(direct_result{value:Text,response:Response,
+                                         responses:Responses,
+                                         usage:State.usage,
+                                         turns:State.model_calls,
+                                         iterations:State.iterations,
+                                         context_calls:State.context_calls,
+                                         tool_calls:State.tool_calls,
+                                         observation_bytes:State0.output_bytes,
+                                         output_bytes:State.output_bytes,
+                                         trajectory:State.trajectory})
+          ;  state_error(State, runtime, insufficient_final_output,
+                         _{bytes:Bytes, required:Floor},
+                         "direct final output is not substantive", Error),
+             Outcome = error(Error)
+          )
        ;  state_error(State0, budget, output_budget_exhausted,
                       _{used:Total,limit:Runtime.budget.max_output_bytes},
                       "direct final output exceeds its budget", Error),
@@ -1193,6 +1362,22 @@ finish_direct(Response, Runtime, State0, Outcome) :-
     ; state_error(State0, provider, missing_final_output, _{},
                   "direct provider returned no final text", Error),
       Outcome = error(Error)
+    ).
+
+% A host may require a minimum substantive canonical final output. The floor
+% is 0 when the host does not configure one, so the comparison and any error
+% report always carry bound values. The gate is opt-in.
+final_output_floor(Options, Floor) :-
+    option(min_final_output_bytes, Options, none, Required),
+    (   Required == none
+    ->  Floor = 0
+    ;   integer(Required),
+        Required >= 0
+    ->  Floor = Required
+    ;   throw(direct_fault(direct_error{
+                              phase:runtime,
+                              kind:invalid_min_final_output_bytes,
+                              message:"min_final_output_bytes must be a nonnegative integer"}))
     ).
 
 context_arguments(context(search), Args, Normalized) :-
@@ -1556,8 +1741,8 @@ option(Name, Options, Default, Value) :-
     -> Value=Found ; Value=Default ).
 
 direct_exception(time_limit_exceeded,
-                 error(direct_error{phase:runtime,kind:timeout,
-                                    message:"direct loop exceeded wall-time budget"})) :- !.
+                 error(direct_error{phase:deadline,kind:run_deadline_exceeded,
+                                    message:"direct run exceeded its wall-clock deadline"})) :- !.
 direct_exception(time_limit_exceeded(_), Outcome) :- !,
     direct_exception(time_limit_exceeded, Outcome).
 direct_exception(error(rlm_cancelled(Token), _),

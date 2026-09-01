@@ -1160,6 +1160,10 @@ dict_default(Key, Dict, Default, Value) :-
     ;   Value = Default
     ).
 
+% A wall-clock deadline that interrupted the request is a typed deadline
+% outcome, not a generic transport failure.
+classify_provider_exception(time_limit_exceeded, deadline_exceeded) :- !.
+classify_provider_exception(time_limit_exceeded(_), deadline_exceeded) :- !.
 classify_provider_exception(Exception, timeout) :-
     term_string(Exception, Text),
     string_lower(Text, Lower),
