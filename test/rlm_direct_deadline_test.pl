@@ -72,16 +72,23 @@ deadline_scenario_response(transport_failure, 1, _,
                                     exception:"error(syntax_error(json(unexpected_end_of_file)))",
                                     response_received:false})).
 
-deadline_scenario_response(synthesis_reserved, 1, _, ok(Response)) :-
-    sleep(2.0),
+% The reservation must stop evidence acquisition inside the reserved window.
+% The scenario dispatches on the request shape instead of the call number so
+% setup jitter can only shift where the transition lands, not whether it
+% happens: requests carrying tools model a slow evidence turn (sleep is
+% provider latency, the resource under budget), tool-free requests are the
+% synthesis turn and must carry the directive.
+deadline_scenario_response(synthesis_reserved, Call, Request, ok(Response)) :-
+    request_has_tools(Request),
+    sleep(9.0),
     native_deadline_call("ctx_1", "context_search", _{query:"NEEDLE"}, ToolCall),
-    fake_deadline_response(1, "", [ToolCall], "", Response).
+    fake_deadline_response(Call, "", [ToolCall], "", Response).
 
-deadline_scenario_response(synthesis_reserved, 2, Request, ok(Response)) :-
-    assertion(synthesis_request_has_no_tools(Request)),
+deadline_scenario_response(synthesis_reserved, Call, Request, ok(Response)) :-
+    \+ request_has_tools(Request),
     last_message_content(Request, Content),
     assertion(sub_string(Content, _, _, _, "final synthesis")),
-    fake_deadline_response(2, "RESERVED_SYNTHESIS", [], "", Response).
+    fake_deadline_response(Call, "RESERVED_SYNTHESIS", [], "", Response).
 
 deadline_scenario_response(synthesis_immediate, 1, Request, ok(Response)) :-
     assertion(synthesis_request_has_no_tools(Request)),
@@ -98,9 +105,12 @@ deadline_scenario_response(substantive_long, 1, _, ok(Response)) :-
     string_codes(Text, Codes),
     fake_deadline_response(1, Text, [], "", Response).
 
-synthesis_request_has_no_tools(Request) :-
+request_has_tools(Request) :-
     get_dict(options, Request, RequestOptions),
-    \+ get_dict(tools, RequestOptions, _).
+    get_dict(tools, RequestOptions, _).
+
+synthesis_request_has_no_tools(Request) :-
+    \+ request_has_tools(Request).
 
 last_message_content(Request, Content) :-
     get_dict(messages, Request, Messages),
@@ -184,20 +194,30 @@ test(transport_failure_keeps_provider_failed_shape) :-
     assertion(Error.kind == provider_failed).
 
 % The reservation must stop evidence acquisition inside the reserved window:
-% a two-second simulated provider latency crosses the reservation threshold,
-% so the second provider request is the tool-free synthesis turn. The sleep
-% models provider latency, which is the resource under budget; it is not used
-% as a synchronization primitive.
+% evidence turns consume the pre-reservation budget (a nine-second simulated
+% provider latency crosses the six-second evidence window), so the run must
+% close with a tool-free synthesis turn. The first request must be an
+% evidence request and the final one the synthesis request. The budget's
+% alarm window (120s) outlives the injected wall-clock deadline (60s), so
+% the soft deadline is what stops the run.
 test(synthesis_reservation_forces_tool_free_final_turn) :-
     reset_deadline(synthesis_reserved),
     get_time(Now),
-    Deadline is Now + 30.0,
+    Deadline is Now + 60.0,
     deadline_provider_options([wall_clock_deadline(Deadline),
-                               synthesis_reservation(28.5)],
+                               synthesis_reservation(54.0),
+                               budget(_{time_limit:120.0})],
                               Options),
     rlm_direct("Research the needle", text("NEEDLE context"), Options,
                ok(Result)),
     assertion(Result.value == "RESERVED_SYNTHESIS"),
+    findall(Request, deadline_request(_, Request), Requests),
+    Requests = [First|_],
+    assertion(request_has_tools(First)),
+    last(Requests, LastRequest),
+    assertion(\+ request_has_tools(LastRequest)),
+    length(Requests, RequestCount),
+    assertion(RequestCount >= 2),
     once((member(Event, Result.trajectory), Event.type == model)).
 
 test(expired_wall_clock_deadline_goes_straight_to_synthesis) :-
