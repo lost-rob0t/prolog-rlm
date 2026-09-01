@@ -246,6 +246,7 @@ int release_node_blob(atom_t atom)
         rlm_ts_node_resource *resource = *(rlm_ts_node_resource **)data;
         if (resource) {
             tree_release_node(resource->tree);
+            free(resource->named_fields);
             free(resource);
         }
     }

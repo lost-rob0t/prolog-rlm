@@ -66,6 +66,10 @@ install_t install(void)
                                   (pl_function_t)pl_ts_node_named, 0);
     PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_has_error", 1,
                                   (pl_function_t)pl_ts_node_has_error, 0);
+    PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_is_error", 1,
+                                  (pl_function_t)pl_ts_node_is_error, 0);
+    PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_is_missing", 1,
+                                  (pl_function_t)pl_ts_node_is_missing, 0);
     PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_start_byte", 2,
                                   (pl_function_t)pl_ts_node_start_byte, 0);
     PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_end_byte", 2,
@@ -76,10 +80,16 @@ install_t install(void)
                                   (pl_function_t)pl_ts_node_end_point, 0);
     PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_child_count", 2,
                                   (pl_function_t)pl_ts_node_child_count, 0);
+    PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_named_child_count", 2,
+                                  (pl_function_t)pl_ts_node_named_child_count, 0);
     PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_child", 3,
                                   (pl_function_t)pl_ts_node_child, 0);
+    PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_child_field_name", 3,
+                                  (pl_function_t)pl_ts_node_child_field_name, 0);
     PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_named_child", 3,
                                   (pl_function_t)pl_ts_node_named_child, 0);
+    PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_named_child_field_name", 3,
+                                  (pl_function_t)pl_ts_node_named_child_field_name, 0);
     PL_register_foreign_in_module("rlm_tree_sitter", "$ts_node_field", 3,
                                   (pl_function_t)pl_ts_node_field, 0);
 }

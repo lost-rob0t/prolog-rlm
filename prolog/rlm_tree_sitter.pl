@@ -12,15 +12,20 @@
             ts_tree_root/2,
             ts_tree_close/2,
             ts_node_type/2,
-            ts_node_named/1,
-            ts_node_has_error/1,
+             ts_node_named/1,
+             ts_node_has_error/1,
+             ts_node_is_error/1,
+             ts_node_is_missing/1,
             ts_node_start_byte/2,
             ts_node_end_byte/2,
             ts_node_start_point/2,
-            ts_node_end_point/2,
-            ts_node_child_count/2,
-            ts_node_child/3,
-            ts_node_named_child/3,
+             ts_node_end_point/2,
+             ts_node_child_count/2,
+             ts_node_named_child_count/2,
+             ts_node_child/3,
+             ts_node_child_field_name/3,
+             ts_node_named_child/3,
+             ts_node_named_child_field_name/3,
             ts_node_field/3
           ]).
 
@@ -113,6 +118,12 @@ ts_node_named(Node) :-
 ts_node_has_error(Node) :-
     '$ts_node_has_error'(Node).
 
+ts_node_is_error(Node) :-
+    '$ts_node_is_error'(Node).
+
+ts_node_is_missing(Node) :-
+    '$ts_node_is_missing'(Node).
+
 ts_node_start_byte(Node, Byte) :-
     '$ts_node_start_byte'(Node, Byte).
 
@@ -128,11 +139,20 @@ ts_node_end_point(Node, Point) :-
 ts_node_child_count(Node, Count) :-
     '$ts_node_child_count'(Node, Count).
 
+ts_node_named_child_count(Node, Count) :-
+    '$ts_node_named_child_count'(Node, Count).
+
 ts_node_child(Node, Index, Child) :-
     '$ts_node_child'(Node, Index, Child).
 
+ts_node_child_field_name(Node, Index, FieldName) :-
+    '$ts_node_child_field_name'(Node, Index, FieldName).
+
 ts_node_named_child(Node, Index, Child) :-
     '$ts_node_named_child'(Node, Index, Child).
+
+ts_node_named_child_field_name(Node, Index, FieldName) :-
+    '$ts_node_named_child_field_name'(Node, Index, FieldName).
 
 ts_node_field(Node, FieldName, Child) :-
     '$ts_node_field'(Node, FieldName, Child).

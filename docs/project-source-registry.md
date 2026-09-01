@@ -21,7 +21,7 @@ parser backend + grammar registry
              rlm_tree_sitter (#94)
 ```
 
-This module does not traverse syntax trees, run Tree-sitter queries, normalize symbols, or decide source freshness. Those belong to #96-#99.
+This module does not traverse syntax trees, run Tree-sitter queries, normalize symbols, or decide source freshness. `rlm_project_syntax` owns the #96 materialized CST layer; #97-#99 own structural queries, semantic normalization, and incremental freshness.
 
 ## Identity boundary
 
@@ -89,6 +89,7 @@ project_source_file_register(
 The first detector surface is deliberately small and inspectable:
 
 - extension evidence;
+- trusted language-registry extension evidence;
 - shebang evidence;
 - explicit trusted-host override.
 
@@ -109,6 +110,11 @@ For example:
 ```prolog
 extension_language('.py', python).
 ```
+
+Trusted hosts can add another language without changing this module by
+registering a `tree_sitter` backend with `extensions` metadata. The resulting
+evidence is reported as `registered_extension(Extension)` rather than
+masquerading as a built-in detector fact.
 
 Language resolution returns structured states rather than hiding an imperative guess:
 
@@ -132,6 +138,7 @@ javascript   -> tree_sitter
 typescript   -> tree_sitter
 nim          -> tree_sitter
 common_lisp  -> tree_sitter
+markdown/json/org -> tree_sitter
 c/cpp/lua    -> tree_sitter
 shell        -> tree_sitter
 prolog       -> swi_native
@@ -175,6 +182,12 @@ _{ identity:package(tree_sitter_python, "0.23.6"),
 `identity` is optional. If omitted, the registry derives a content identity. Either way the durable `grammar_ref(Language, Hash)` includes language, identity, library, symbol, declared ABI, version, and provenance. A raw library path is never the sole durable grammar identity.
 
 Adding another compatible grammar requires data, not a C edit.
+
+`rlm_project_grammar_pack` provides inert standard-pack metadata for C, Lua,
+Tree-sitter query, Python, JavaScript, Markdown, JSON, Org, Common Lisp, and
+Nim. `project_grammar_pack_register/4` accepts additional host-provided pack
+entries through the same boundary. The Nix flake installs the standard set as
+`.#tree-sitter-grammars`; see [project-syntax.md](project-syntax.md).
 
 ## Registration is not activation
 
@@ -248,10 +261,10 @@ A model-facing workflow may inspect sanitized registry data, but native grammar 
 ```text
 #94 direct native FFI              complete substrate
 #95 Project/File/Language registry this module
-#96 CST -> versioned syntax facts  next
+#96 CST -> versioned syntax facts  rlm_project_syntax
 #97 structural query/capture API
 #98 semantic symbols/relations
 #99 incremental freshness
 ```
 
-#96 should consume file identity, hash/generation, parser selection, grammar reference and active grammar provenance from this module. It should not invent another Project/File registry.
+`rlm_project_syntax` consumes file identity, hash/generation, parser selection, grammar reference and active grammar provenance from this module. It does not invent another Project/File registry, and registry destruction clears its materialized observations.

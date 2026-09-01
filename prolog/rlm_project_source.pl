@@ -1,7 +1,8 @@
 :- module(rlm_project_source,
           [ rlm_project_source_ready/0,
-            project_source_registry_create/1,
-            project_source_registry_destroy/1,
+             project_source_registry_create/1,
+             project_source_registry_destroy/1,
+             project_source_registry_valid/1,
             project_source_project_register/4,
             project_source_project/3,
             project_source_file_register/4,
@@ -18,9 +19,10 @@
             ts_grammar/3,
             ts_grammars/2,
             ts_grammar_activate/3,
-            ts_grammar_deactivate/3,
-            parser_for_file/3,
-            grammar_for_file/3
+             ts_grammar_deactivate/3,
+             parser_for_file/3,
+             grammar_for_file/3,
+             project_source_tree_parse/5
           ]).
 
 /** <module> Declarative Project/source and Tree-sitter grammar registry
@@ -75,8 +77,12 @@ project_source_registry_destroy(project_source_registry(Id)) :-
                  retractall(project_source_file_record(Id, _, _, _)),
                  retractall(project_source_project_record(Id, _, _)),
                  retractall(project_source_registry_alive(Id))
-               )),
+                )),
+    clear_project_syntax_safely(project_source_registry(Id)),
     maplist(close_language_handle_safely, Handles).
+
+project_source_registry_valid(Registry) :-
+    registry_id(Registry, _).
 
 registry_id(project_source_registry(Id), Id) :-
     project_source_registry_alive(Id),
@@ -212,7 +218,7 @@ project_source_language_register_(Registry, Language0, Backend0, Meta0, Outcome)
     registry_id(Registry, Id),
     normalize_language(Language0, Language),
     normalize_backend(Backend0, Backend),
-    normalize_meta(language, Meta0, Meta),
+    normalize_language_meta(Meta0, Meta),
     with_mutex(rlm_project_source_registry,
                register_language(Id, Language, Backend, Meta, Outcome)).
 
@@ -244,6 +250,9 @@ builtin_language_parser(javascript, tree_sitter).
 builtin_language_parser(typescript, tree_sitter).
 builtin_language_parser(nim, tree_sitter).
 builtin_language_parser(common_lisp, tree_sitter).
+builtin_language_parser(markdown, tree_sitter).
+builtin_language_parser(json, tree_sitter).
+builtin_language_parser(org, tree_sitter).
 builtin_language_parser(c, tree_sitter).
 builtin_language_parser(cpp, tree_sitter).
 builtin_language_parser(lua, tree_sitter).
@@ -266,6 +275,15 @@ extension_language('.lisp', common_lisp).
 extension_language('.lsp', common_lisp).
 extension_language('.cl', common_lisp).
 extension_language('.asd', common_lisp).
+extension_language('.md', markdown).
+extension_language('.markdown', markdown).
+extension_language('.mdown', markdown).
+extension_language('.mkd', markdown).
+extension_language('.json', json).
+extension_language('.jsonc', json).
+extension_language('.jsonl', json).
+extension_language('.ndjson', json).
+extension_language('.org', org).
 extension_language('.pl', prolog).
 extension_language('.prolog', prolog).
 extension_language('.c', c).
@@ -281,12 +299,21 @@ extension_language('.bash', shell).
 project_source_language_evidence(Registry, File, Language, Source, Confidence) :-
     registry_id(Registry, Id),
     file_record(Id, File, Record),
-    file_language_evidence(Record, Language, Source, Confidence).
+    file_language_evidence(Id, Record, Language, Source, Confidence).
 
-file_language_evidence(Record, Language, extension(Extension), 0.75) :-
+file_language_evidence(_, Record, Language, extension(Extension), 0.75) :-
     path_extension(Record.path, Extension),
     extension_language(Extension, Language).
-file_language_evidence(Record, Language, shebang(Shebang), 0.95) :-
+file_language_evidence(Id,
+                       Record,
+                       Language,
+                       registered_extension(Extension),
+                       0.9) :-
+    path_extension(Record.path, Extension),
+    project_source_language_record(Id, Language, _, Meta),
+    get_dict(extensions, Meta, Extensions),
+    memberchk(Extension, Extensions).
+file_language_evidence(_, Record, Language, shebang(Shebang), 0.95) :-
     Record.shebang \== none,
     Shebang = Record.shebang,
     shebang_language(Shebang, Language).
@@ -333,9 +360,13 @@ project_source_file_language_(Registry, File, Outcome) :-
     registry_id(Registry, Id),
     file_record(Id, File, Record),
     findall(language_evidence{language:Language,
-                              source:Source,
-                              confidence:Confidence},
-            file_language_evidence(Record, Language, Source, Confidence),
+                               source:Source,
+                               confidence:Confidence},
+            file_language_evidence(Id,
+                                   Record,
+                                   Language,
+                                   Source,
+                                   Confidence),
             Evidence),
     (   project_source_language_override(Id, File, Override, Provenance)
     ->  override_resolution(Id,
@@ -870,6 +901,61 @@ grammar_for_file_(Registry, File, Outcome) :-
     grammar_selection(Id, ParserSelection, Selection),
     Outcome = ok(Selection).
 
+/* Trusted native parse operation ------------------------------------- */
+
+project_source_tree_parse(Registry, File, Source0, Tree, Outcome) :-
+    catch(project_source_tree_parse_(Registry, File, Source0, Tree, Outcome),
+          Exception,
+          project_source_exception(tree_parse, Exception, Outcome)).
+
+project_source_tree_parse_(Registry, File, Source0, Tree, Outcome) :-
+    registry_id(Registry, Id),
+    normalize_source_text(Source0, Source),
+    file_record(Id, File, FileRecord),
+    parser_for_file_(Registry, File, ok(Selection)),
+    require_active_tree_sitter_parser(Id, Selection, LanguageHandle),
+    require_tree_sitter_loaded,
+    setup_call_cleanup(
+        rlm_tree_sitter:ts_parser_create(Parser),
+        ( rlm_tree_sitter:ts_parser_set_language(Parser,
+                                                 LanguageHandle,
+                                                 ok(configured)),
+          rlm_tree_sitter:ts_parse_string(Parser, Source, Tree)
+        ),
+        rlm_tree_sitter:ts_parser_close(Parser, _)
+    ),
+    Outcome = ok(project_source_parse{
+                     project:FileRecord.project,
+                     file:File,
+                     file_hash:FileRecord.hash,
+                     file_generation:FileRecord.generation,
+                     language:Selection.language,
+                     backend:tree_sitter,
+                     grammar_ref:Selection.grammar_ref,
+                     grammar_state:Selection.grammar_state,
+                     activation:Selection.activation,
+                     selection_provenance:Selection.provenance
+                 }).
+
+require_active_tree_sitter_parser(Id, Selection, LanguageHandle) :-
+    Selection.status == ready,
+    Selection.backend == tree_sitter,
+    project_source_grammar_active(Id,
+                                  Selection.language,
+                                  LanguageHandle,
+                                  Activation),
+    Activation.grammar_ref == Selection.grammar_ref,
+    !.
+require_active_tree_sitter_parser(_, Selection, _) :-
+    throw(project_source_fault(parser_not_ready(Selection.status,
+                                                 Selection.backend))).
+
+require_tree_sitter_loaded :-
+    current_predicate(rlm_tree_sitter:ts_parser_create/1),
+    !.
+require_tree_sitter_loaded :-
+    throw(project_source_fault(tree_sitter_not_loaded)).
+
 grammar_selection(Id, Parser, Selection) :-
     Parser.backend == tree_sitter,
     memberchk(Parser.status, [configured, ready]),
@@ -1009,6 +1095,31 @@ normalize_meta(Name, Meta0, Meta) :-
     require_dict(Name, Meta0),
     canonical_data(Meta0, Meta).
 
+normalize_language_meta(Meta0, Meta) :-
+    normalize_meta(language, Meta0, Meta1),
+    (   get_dict(extensions, Meta1, Extensions0)
+    ->  (   is_list(Extensions0)
+        ->  maplist(normalize_language_extension,
+                    Extensions0,
+                    Extensions1),
+            sort(Extensions1, Extensions),
+            Meta = Meta1.put(extensions, Extensions)
+        ;   throw(project_source_fault(invalid_language_extensions(Extensions0)))
+        )
+    ;   Meta = Meta1
+    ).
+
+normalize_language_extension(Value0, Extension) :-
+    normalize_atom(language_extension, Value0, Extension0),
+    downcase_atom(Extension0, Extension),
+    atom_concat('.', Suffix, Extension),
+    Suffix \== '',
+    \+ sub_atom(Suffix, _, _, _, '/'),
+    \+ sub_atom(Suffix, _, _, _, '\\'),
+    !.
+normalize_language_extension(Value, _) :-
+    throw(project_source_fault(invalid_language_extension(Value))).
+
 normalize_hash(unknown, unknown) :- !.
 normalize_hash(Value0, Value) :- normalize_text(hash, Value0, Value).
 
@@ -1026,6 +1137,14 @@ normalize_text(Name, Value, Text) :-
     !.
 normalize_text(Name, Value, _) :-
     throw(project_source_fault(invalid_text(Name, Value))).
+
+normalize_source_text(Value, Text) :-
+    (   string(Value)
+    ->  Text = Value
+    ;   atom(Value)
+    ->  atom_string(Value, Text)
+    ;   throw(project_source_fault(invalid_text(source, Value)))
+    ).
 
 normalize_atom(_, Value, Value) :- atom(Value), !.
 normalize_atom(_, Value, Atom) :- string(Value), !, atom_string(Atom, Value).
@@ -1077,6 +1196,12 @@ close_optional_handle(Handle) :- close_language_handle_safely(Handle).
 close_language_handle_safely(Handle) :-
     (   current_predicate(rlm_tree_sitter:ts_language_close/2)
     ->  catch(rlm_tree_sitter:ts_language_close(Handle, _), _, true)
+    ;   true
+    ).
+
+clear_project_syntax_safely(Registry) :-
+    (   current_predicate(rlm_project_syntax:project_syntax_registry_clear/1)
+    ->  catch(rlm_project_syntax:project_syntax_registry_clear(Registry), _, true)
     ;   true
     ).
 

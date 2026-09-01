@@ -53,6 +53,8 @@ typedef struct rlm_ts_tree_resource {
 typedef struct rlm_ts_node_resource {
     TSNode node;
     rlm_ts_tree_resource *tree;
+    const char **named_fields;
+    uint32_t named_field_count;
 } rlm_ts_node_resource;
 
 extern PL_blob_t language_blob;
@@ -112,15 +114,24 @@ foreign_t pl_ts_tree_close(term_t tree_term, term_t status_term);
 foreign_t pl_ts_node_type(term_t node_term, term_t type_term);
 foreign_t pl_ts_node_named(term_t node_term);
 foreign_t pl_ts_node_has_error(term_t node_term);
+foreign_t pl_ts_node_is_error(term_t node_term);
+foreign_t pl_ts_node_is_missing(term_t node_term);
 foreign_t pl_ts_node_start_byte(term_t node_term, term_t byte_term);
 foreign_t pl_ts_node_end_byte(term_t node_term, term_t byte_term);
 foreign_t pl_ts_node_start_point(term_t node_term, term_t point_term);
 foreign_t pl_ts_node_end_point(term_t node_term, term_t point_term);
 foreign_t pl_ts_node_child_count(term_t node_term, term_t count_term);
+foreign_t pl_ts_node_named_child_count(term_t node_term, term_t count_term);
 foreign_t pl_ts_node_child(term_t node_term, term_t index_term, term_t child_term);
+foreign_t pl_ts_node_child_field_name(term_t node_term,
+                                          term_t index_term,
+                                          term_t field_term);
 foreign_t pl_ts_node_named_child(term_t node_term,
-                                 term_t index_term,
-                                 term_t child_term);
+                                     term_t index_term,
+                                     term_t child_term);
+foreign_t pl_ts_node_named_child_field_name(term_t node_term,
+                                                term_t index_term,
+                                                term_t field_term);
 foreign_t pl_ts_node_field(term_t node_term, term_t field_term, term_t child_term);
 
 #endif
