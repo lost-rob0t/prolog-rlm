@@ -135,6 +135,20 @@ test(result_message_rejects_call_id_mismatch) :-
     native_tool_result_message(Call, Result, error(Error)),
     assertion(Error.kind == tool_result_id_mismatch).
 
+test(result_message_rejects_name_mismatch) :-
+    Call = native_tool_call{id:"call_1",
+                            name:lookup,
+                            arguments:json{},
+                            type:function},
+    Result = native_tool_result{call_id:"call_1",
+                                name:other_lookup,
+                                operation:tool(lookup),
+                                value:json{},
+                                truncated:false,
+                                trace:json{}},
+    native_tool_result_message(Call, Result, error(Error)),
+    assertion(Error.kind == tool_result_name_mismatch).
+
 test(registry_schema_renders_without_runtime_capability_or_effect_fields) :-
     Runtime = tool_schema{
                   name:weather_lookup,

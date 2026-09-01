@@ -312,12 +312,17 @@ fake_direct_response(Call, Text, ToolCalls, Reasoning,
     format(string(ResponseId), "response_~d", [Call]),
     (ToolCalls == [] -> FinishReason = stop ; FinishReason = tool_calls).
 
+% Issue #326: provider tool-result messages correlate by tool_call_id and do
+% not carry the optional name field; the tool identity remains embedded in the
+% JSON observation payload.
 request_tool_message(Request, Id, Name, Content) :-
     member(Message, Request.messages),
     Message.role == tool,
     Message.tool_call_id == Id,
-    Message.name == Name,
     Content = Message.content,
+    atom_string(Name, NameString),
+    format(string(ExpectedName), "\"name\":\"~s\"", [NameString]),
+    sub_string(Content, _, _, _, ExpectedName),
     !.
 
 runtime_token_schema(
@@ -552,7 +557,7 @@ test(typed_plan_model_step_runs_native_session_with_compiler_selected_schemas) :
           assertion(AssistantCall.id == "child_tool_1"),
           assertion(ChildTool.role == tool),
           assertion(ChildTool.tool_call_id == "child_tool_1"),
-          assertion(ChildTool.name == runtime_token),
+          assertion(\+ get_dict(name, ChildTool, _)),
           direct_request(4, ChildReq3),
           assertion(ChildReq3.options.tools == ChildReq1.options.tools)
         ),
