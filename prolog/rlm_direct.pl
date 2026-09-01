@@ -942,6 +942,37 @@ preflight_fault_trace(Call, Cause,
                                       kind:Cause.kind,
                                       tool:Call.name}).
 
+% Invoke-phase registered-tool failure observation (see after_tool/6).
+invoke_fault_observation(ToolResult, Resolved, Cause,
+                         direct_event{type:native_tool,
+                                      call_id:Resolved.call.id,
+                                      name:Resolved.call.name,
+                                      status:error,
+                                      kind:Kind,
+                                      trace:ToolResult.trace},
+                         native_tool_result{call_id:Resolved.call.id,
+                                            name:Resolved.call.name,
+                                            operation:Resolved.binding.kind,
+                                            value:Value,
+                                            truncated:false,
+                                            trace:ToolResult.trace}) :-
+    error_kind(Cause, tool_execution_failed, Kind),
+    dict_default(message, Cause, "tool invocation failed", Message),
+    invoke_fault_value(Cause, Kind, Message, Value).
+
+invoke_fault_value(Cause, Kind, Message, Value) :-
+    Base0 = _{error:Kind, message:Message},
+    (   get_dict(phase, Cause, Phase)
+    ->  put_dict(phase, Base0, Phase, Base1)
+    ;   Base1 = Base0
+    ),
+    (   get_dict(detail, Cause, Detail)
+    ->  put_dict(detail, Base1, Detail, Value)
+    ;   get_dict(exception, Cause, Exception)
+    ->  put_dict(exception, Base1, Exception, Value)
+    ;   Value = Base1
+    ).
+
 execute_calls([], Runtime, State, Outcome) :-
     !,
     direct_loop(Runtime, State, Outcome).
@@ -1021,13 +1052,22 @@ after_execution(runtime(ok(Execution)), Resolved, Calls, Runtime, State0,
                         Runtime,
                         Outcome).
 
-after_tool(ToolResult, Resolved, _, _, State, error(Error)) :-
+% A registered tool that fails during invoke is per-call tool data, not a
+% runtime abort: the failure is observed as a structured error message for
+% exactly that call so the provider can repair the request, valid siblings
+% still execute, and the loop stays bounded by the batch budgets. The
+% observation carries the stable error kind, the execution phase, the
+% canonical tool name, the provider call id, and the bounded typed cause.
+% Internal exception structures never reach the model message unquoted.
+% Authority invariants (approval_required, replayed effects) remain fatal
+% in the branches below.
+after_tool(ToolResult, Resolved, Calls, Runtime, State0, Outcome) :-
     ToolResult.outcome = error(Cause),
     !,
-    tool_failure_state(ToolResult, Resolved, error, State, State1),
-    error_kind(Cause, tool_execution_failed, Kind),
-    state_error(State1, tool, Kind, _{cause:Cause},
-                "native registered-tool execution failed", Error).
+    invoke_fault_observation(ToolResult, Resolved, Cause, Event, Result),
+    append_observation(Resolved.call, Result, Event, Runtime, State0,
+                       StateOutcome),
+    continue_observation(StateOutcome, Calls, Runtime, Outcome).
 after_tool(ToolResult, Resolved, _, _, State, error(Error)) :-
     ToolResult.outcome = approval_required(Pending),
     !,
