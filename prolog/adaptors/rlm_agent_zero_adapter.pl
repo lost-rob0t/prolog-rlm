@@ -13,6 +13,14 @@ compiler units, derives activation evidence, applies permanent visibility,
 packs the context and returns the provider projection.  Python does not select
 units or reproduce compiler policy.
 
+Resolved Agent Zero skill packages enter through a separate trusted host
+projection in the context request.  Agent Zero owns profile/project visibility
+and precedence and therefore supplies the exact admitted package directories;
+`rlm_skill` remains the only SKILL.md parser/normalizer and `rlm_skill_graph`
+remains the only relationship graph validator.  The adapter can merge those
+packages with the pinned Prolog-RLM core skill catalog without scanning ambient
+filesystem roots or reimplementing skill metadata in Python.
+
 Executable Agent Zero tool bindings enter only through the separate trusted
 `agent_zero_tool_registry_import/4` host API.  Model data can name a registered
 tool but can never supply the host handler closure, grant its capability or
@@ -21,13 +29,20 @@ change authority.
 
 :- use_module(library(lists)).
 :- use_module('../rlm_prompt_compiler', []).
+:- use_module('../rlm_skill', []).
+:- use_module('../rlm_skill_graph', []).
 :- use_module('../rlm_tool', []).
 :- use_module('../rlm_authority', []).
 
 :- meta_predicate agent_zero_tool_registry_import(+, +, 3, -).
 
+agent_zero_skill_package_limit(256).
+agent_zero_selected_skill_limit(64).
+
 rlm_agent_zero_adapter_ready :-
-    rlm_prompt_compiler:rlm_prompt_compiler_ready.
+    rlm_prompt_compiler:rlm_prompt_compiler_ready,
+    rlm_skill:rlm_skill_ready,
+    rlm_skill_graph:rlm_skill_graph_ready.
 
 agent_zero_context_compile(Request, Outcome) :-
     catch(( require_context_request(Request),
@@ -41,13 +56,15 @@ context_compile(Request, Result) :-
     request_message(Request, Message),
     get_dict(units, Request, Units0),
     must_be(list, Units0),
-    maplist(agent_zero_unit_spec, Units0, Specs),
+    maplist(agent_zero_unit_spec, Units0, BaseSpecs),
+    request_skill_specs(Request, SkillSpecs, SkillGraph),
+    append(BaseSpecs, SkillSpecs, Specs),
     setup_call_cleanup(
         rlm_prompt_compiler:prompt_catalog_create(Catalog),
-        compile_catalog(Catalog, Request, Message, Specs, Result),
+        compile_catalog(Catalog, Request, Message, Specs, SkillGraph, Result),
         rlm_prompt_compiler:prompt_catalog_destroy(Catalog)).
 
-compile_catalog(Catalog, Request, Message, Specs, Result) :-
+compile_catalog(Catalog, Request, Message, Specs, SkillGraph, Result) :-
     maplist(register_spec(Catalog), Specs),
     permanent_units(Specs, Selected),
     tool_capabilities(Specs, Capabilities),
@@ -62,15 +79,22 @@ compile_catalog(Catalog, Request, Message, Specs, Result) :-
             ( member(Unit, Rendered.active_units), active_tool_name(Unit, Name) ),
             ActiveTools0),
     sort(ActiveTools0, ActiveTools),
+    findall(Name,
+            ( member(Unit, Rendered.active_units), active_skill_name(Unit, Name) ),
+            ActiveSkills0),
+    sort(ActiveSkills0, ActiveSkills),
     Result = agent_zero_context{
                  text:Rendered.text,
                  active_units:Rendered.active_units,
                  active_tools:ActiveTools,
+                 active_skills:ActiveSkills,
                  tool_schemas:Rendered.tool_schemas,
                  fingerprint:Rendered.fingerprint,
                  token_ledger:Compiled.token_ledger,
                  rejected:Compiled.rejected,
-                 warnings:[]
+                 skill_graph:SkillGraph,
+                 skill_graph_fingerprint:SkillGraph.fingerprint,
+                 warnings:SkillGraph.diagnostics
              }.
 
 register_spec(Catalog, Spec) :-
@@ -91,6 +115,145 @@ request_policy(Request,
     ( get_dict(max_context_tokens, Request, Max0) -> Max = Max0 ; Max = 16384 ),
     must_be(integer, Max),
     ( Max > 0 -> true ; throw(agent_zero_fault(invalid_context_limit(Max))) ).
+
+/* Canonical Agent Zero -> rlm_skill / rlm_skill_graph projection ------- */
+
+request_skill_specs(Request, Specs, Graph) :-
+    request_skill_packages(Request, Packages),
+    request_selected_skills(Request, SelectedNames),
+    request_include_core_skills(Request, IncludeCore),
+    load_agent_zero_skill_catalog(Packages, IncludeCore, Catalog),
+    validate_selected_skills(Catalog, SelectedNames),
+    rlm_skill_graph:skill_catalog_graph(Catalog, GraphOutcome),
+    require_ok(GraphOutcome, Graph),
+    rlm_skill:skill_catalog_skills(Catalog, Skills),
+    maplist(skill_prompt_spec(SelectedNames), Skills, Specs).
+
+request_skill_packages(Request, Packages) :-
+    ( get_dict(skill_packages, Request, Packages0) -> must_be(list, Packages0)
+    ; Packages0 = []
+    ),
+    length(Packages0, Count),
+    agent_zero_skill_package_limit(Max),
+    ( Count =< Max -> true
+    ; throw(agent_zero_fault(too_many_skill_packages(Count, Max)))
+    ),
+    maplist(normalize_skill_package, Packages0, Packages),
+    unique_skill_package_names(Packages).
+
+normalize_skill_package(Package0, skill_package{name:Name,path:Path}) :-
+    is_dict(Package0),
+    get_dict(name, Package0, Name0),
+    require_name(Name0, skill_name, Name),
+    get_dict(path, Package0, Path0),
+    require_text(Path0, skill_path, Path),
+    Path \== "",
+    !.
+normalize_skill_package(Package, _) :-
+    throw(agent_zero_fault(invalid_skill_package(Package))).
+
+unique_skill_package_names(Packages) :-
+    findall(Name, (member(Package, Packages), Name=Package.name), Names),
+    sort(Names, Unique),
+    length(Names, Count),
+    length(Unique, Count),
+    !.
+unique_skill_package_names(_) :-
+    throw(agent_zero_fault(duplicate_skill_package_name)).
+
+request_selected_skills(Request, Selected) :-
+    ( get_dict(selected_skills, Request, Selected0) -> must_be(list, Selected0)
+    ; Selected0 = []
+    ),
+    length(Selected0, Count),
+    agent_zero_selected_skill_limit(Max),
+    ( Count =< Max -> true
+    ; throw(agent_zero_fault(too_many_selected_skills(Count, Max)))
+    ),
+    maplist(require_selected_skill_name, Selected0, Names0),
+    sort(Names0, Selected).
+
+require_selected_skill_name(Value, Name) :-
+    require_name(Value, selected_skill, Name).
+
+request_include_core_skills(Request, Include) :-
+    ( get_dict(include_core_skills, Request, Include0) -> Include=Include0
+    ; Include=false
+    ),
+    ( memberchk(Include, [true,false]) -> true
+    ; throw(agent_zero_fault(invalid_include_core_skills(Include)))
+    ).
+
+load_agent_zero_skill_catalog(Packages, IncludeCore, Catalog) :-
+    rlm_skill:skill_catalog_empty(Empty),
+    foldl(load_agent_zero_skill_package, Packages, Empty, External),
+    core_skill_catalog(IncludeCore, Core),
+    rlm_skill:skill_catalog_merge(Core, External, MergeOutcome),
+    require_ok(MergeOutcome, Catalog).
+
+core_skill_catalog(false, Catalog) :-
+    !,
+    rlm_skill:skill_catalog_empty(Catalog).
+core_skill_catalog(true, Catalog) :-
+    rlm_skill:skill_default_catalog(Outcome),
+    require_ok(Outcome, Catalog).
+
+load_agent_zero_skill_package(Package, Catalog0, Catalog) :-
+    Root = skill_root(agent_zero, Package.path),
+    rlm_skill:skill_catalog_load([Root], [], LoadOutcome),
+    require_ok(LoadOutcome, PackageCatalog),
+    rlm_skill:skill_catalog_skills(PackageCatalog, PackageSkills),
+    require_single_skill_package(Package, PackageSkills),
+    rlm_skill:skill_catalog_merge(Catalog0, PackageCatalog, MergeOutcome),
+    require_ok(MergeOutcome, Catalog).
+
+require_single_skill_package(Package, [Skill]) :-
+    Skill.name == Package.name,
+    !.
+require_single_skill_package(Package, Skills) :-
+    findall(Name, (member(Skill, Skills), Name=Skill.name), Names),
+    throw(agent_zero_fault(skill_package_identity_mismatch(
+                               Package.name,
+                               Package.path,
+                               Names))).
+
+validate_selected_skills(Catalog, Selected) :-
+    rlm_skill:skill_catalog_skills(Catalog, Skills),
+    findall(Name, (member(Skill, Skills), Name=Skill.name), Names),
+    validate_selected_skill_names(Selected, Names).
+
+validate_selected_skill_names([], _).
+validate_selected_skill_names([Name|Selected], Names) :-
+    ( memberchk(Name, Names) -> true
+    ; throw(agent_zero_fault(unknown_selected_skill(Name)))
+    ),
+    validate_selected_skill_names(Selected, Names).
+
+skill_prompt_spec(Selected, Skill, Spec) :-
+    skill_prompt_options(Selected, Skill, Options),
+    rlm_skill:skill_prompt_unit(Skill, Options, Outcome),
+    require_ok(Outcome, Spec).
+
+skill_prompt_options(_, Skill,
+                     [ available(true),
+                       activation(always),
+                       mandatory_context(true),
+                       provider_visible(true)
+                     ]) :-
+    Skill.source == prolog_rlm_core,
+    !.
+skill_prompt_options(Selected, Skill,
+                     [ available(true),
+                       activation(always),
+                       mandatory_context(true),
+                       provider_visible(true)
+                     ]) :-
+    memberchk(Skill.name, Selected),
+    !.
+skill_prompt_options(_, _,
+                     [ provider_visible(true),
+                       mandatory_context(false)
+                     ]).
 
 agent_zero_unit_spec(Unit0, Spec) :-
     require_unit_dict(Unit0),
@@ -263,6 +426,7 @@ tool_capabilities(Specs, Capabilities) :-
 
 active_tool_name(tool(Name), Name).
 active_tool_name(mcp_tool(_, Name), Name).
+active_skill_name(skill(Name), Name).
 
 dict_text(Dict, Key, Default, Text) :-
     ( get_dict(Key, Dict, Value) -> require_text(Value, Key, Text)
