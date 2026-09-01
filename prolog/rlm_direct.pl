@@ -10,10 +10,10 @@
 :- use_module(library(lists)).
 :- use_module(rlm_async).
 :- use_module(rlm_chain).
+:- use_module(rlm_text, [text_string/2]).
 :- use_module(rlm_completion,
               [ completion_task_metadata/3,
                 require_options/1,
-                text_string/2,
                 completion_runtime_budget/2,
                 cancellation_option/3,
                 register_current_thread/1,

@@ -58,16 +58,20 @@ predicates directly and never re-enter a synchronous public facade.
 :- use_module(rlm_async).
 :- use_module(rlm_chain).
 :- use_module(rlm_context).
-% Canonical cycle: rlm_direct imports its shared runtime vocabulary from this
-% module, while typed-plan model steps delegated by root completion re-enter
-% the provider-native direct session through rlm_direct_model_step/10. SWI
-% module imports resolve at call time, so either load order works and no
-% duplicate native loop exists.
-:- use_module(rlm_direct, [rlm_direct_model_step/10]).
+:- use_module(rlm_text, [text_string/2]).
 :- use_module(rlm_plan).
 :- use_module(rlm_prompt_compiler, []).
 :- use_module(rlm_skill, []).
 :- use_module(rlm_tool).
+% Cycle boundary (issue #328): rlm_direct imports its shared runtime
+% vocabulary from this module, while typed-plan model steps delegated by
+% root completion re-enter the provider-native direct session through
+% rlm_direct_model_step/10. This import is intentionally placed at the end
+% of the file: rlm_direct's own `use_module(rlm_completion, ...)` must never
+% observe a mid-load rlm_completion. While this module is still loading, an
+% import of a not-yet-defined helper resolves against the host `user` module
+% and is then registered as an import of rlm_completion itself, which rejects
+% the local definition and silently drops structured fault semantics.
 
 :- dynamic cancellation_state/2.
 :- dynamic cancellation_thread/2.
@@ -2631,11 +2635,6 @@ require_nonnegative_number(Value, _) :- number(Value), Value >= 0, !.
 require_nonnegative_number(Value, Field) :-
     throw(completion_fault(invalid_nonnegative_number(Field, Value))).
 
-text_string(Value, String) :- string(Value), !, String = Value.
-text_string(Value, String) :- atom(Value), !, atom_string(Value, String).
-text_string(Value, _) :-
-    throw(completion_fault(expected_text(Value))).
-
 nonempty_text(Value) :- string(Value), Value \== "", !.
 nonempty_text(Value) :- atom(Value), Value \== ''.
 
@@ -2721,3 +2720,9 @@ completion_exception(Exception,
                                             exception:Safe,
                                             message:"completion runtime raised an exception"})) :-
     safe_exception(Exception, Safe).
+
+% Cycle boundary (issue #328): load rlm_direct only after every definition
+% above is in place. rlm_direct imports completion helpers during its own
+% load; resolving them here, against a fully defined rlm_completion, keeps
+% SWI's import machinery off the host `user` fallback path.
+:- use_module(rlm_direct, [rlm_direct_model_step/10]).
