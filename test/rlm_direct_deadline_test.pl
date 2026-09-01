@@ -13,6 +13,7 @@
 %      an operator-configured shorter timeout.
 %   5. A host-required minimum substantive final output is enforced.
 
+:- use_module(library(http/json)).
 :- use_module(library(lists)).
 :- use_module('../prolog/rlm_async').
 :- use_module('../prolog/rlm_completion').
