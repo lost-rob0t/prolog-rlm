@@ -193,31 +193,59 @@ test(transport_failure_keeps_provider_failed_shape) :-
     assertion(Error.phase == provider),
     assertion(Error.kind == provider_failed).
 
-% The reservation must stop evidence acquisition inside the reserved window:
-% evidence turns consume the pre-reservation budget (a nine-second simulated
-% provider latency crosses the six-second evidence window), so the run must
-% close with a tool-free synthesis turn. Setup jitter may only shift where
-% the transition lands (an immediate synthesis turn is equally valid), so the
-% assertions cover the invariant — the run closes with the tool-free
-% synthesis request carrying the directive — and self-report any unexpected
-% outcome.
-test(synthesis_reservation_forces_tool_free_final_turn) :-
-    reset_deadline(synthesis_reserved),
+% The transition itself is a pure wall-clock decision over the injected
+% deadline: deterministic margins (seconds versus milliseconds) cover both
+% directions without racing the async scheduler. The end-to-end closing
+% behavior is covered by the immediate-synthesis and tool-cutoff tests.
+test(synthesis_transition_engages_inside_reservation_window) :-
     get_time(Now),
-    Deadline is Now + 60.0,
-    deadline_provider_options([wall_clock_deadline(Deadline),
-                               synthesis_reservation(54.0),
-                               budget(_{time_limit:120.0})],
-                              Options),
+    Runtime = direct_runtime{synthesis:false,
+                             deadline:Now + 10.0,
+                             reservation:20.0},
+    rlm_direct:direct_synthesis_transition(Runtime, Engaged),
+    assertion(Engaged.synthesis == true).
+
+test(synthesis_transition_holds_outside_reservation_window) :-
+    get_time(Now),
+    Runtime = direct_runtime{synthesis:false,
+                             deadline:Now + 100.0,
+                             reservation:1.0},
+    rlm_direct:direct_synthesis_transition(Runtime, Same),
+    assertion(Same.synthesis == false).
+
+% A response-count tool cutoff bounds evidence acquisition even on fast
+% providers: after the cutoff, requests are sent without tool schemas and the
+% run closes with final text. Deterministic by construction (no wall clock).
+deadline_scenario_response(tool_cutoff, Call, Request, ok(Response)) :-
+    request_has_tools(Request),
+    !,
+    native_deadline_call("ctx_1", "context_search", _{query:"NEEDLE"}, ToolCall),
+    fake_deadline_response(Call, "", [ToolCall], "", Response).
+deadline_scenario_response(tool_cutoff, Call, Request, ok(Response)) :-
+    \+ request_has_tools(Request),
+    !,
+    last_message_content(Request, Content),
+    assertion(sub_string(Content, _, _, _, "final synthesis")),
+    fake_deadline_response(Call, "CUTOFF_CLOSED", [], "", Response).
+
+test(native_tool_cutoff_strips_tools_after_cutoff) :-
+    reset_deadline(tool_cutoff),
+    deadline_provider_options([native_tool_cutoff_model_calls(1)], Options),
     rlm_direct("Research the needle", text("NEEDLE context"), Options,
-               Outcome),
-    assertion(Outcome = ok(Result)),
-    assertion(Result.value == "RESERVED_SYNTHESIS"),
+               ok(Result)),
+    assertion(Result.value == "CUTOFF_CLOSED"),
     findall(Request, deadline_request(_, Request), Requests),
-    Requests \== [],
+    Requests = [First|_],
+    assertion(request_has_tools(First)),
     last(Requests, LastRequest),
-    assertion(\+ request_has_tools(LastRequest)),
-    once((member(Event, Result.trajectory), Event.type == model)).
+    assertion(\+ request_has_tools(LastRequest)).
+
+test(native_tool_cutoff_rejects_invalid_option) :-
+    reset_deadline(tool_cutoff),
+    deadline_provider_options([native_tool_cutoff_model_calls(-1)], Options),
+    rlm_direct("Research the needle", text("NEEDLE context"), Options,
+               error(Error)),
+    assertion(Error.kind == invalid_native_tool_cutoff).
 
 test(expired_wall_clock_deadline_goes_straight_to_synthesis) :-
     reset_deadline(synthesis_immediate),

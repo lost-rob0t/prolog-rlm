@@ -635,23 +635,32 @@ provider_turn(Runtime, State0, Outcome) :-
     direct_wall_remaining(Runtime, Remaining),
     direct_request_guard(Runtime, Remaining, Guard),
     request_deadline_provider(Runtime.provider, Guard, GuardedProvider),
-    direct_turn_request(Runtime, State0, Request),
+    direct_turn_request(Runtime, State0, ToolFree, Request),
+    put_dict(_{tool_free:ToolFree}, Runtime, TurnRuntime),
     call_model(Runtime.options, GuardedProvider, Request, ModelOutcome),
-    after_provider(ModelOutcome, Runtime, State0, Outcome).
+    after_provider(ModelOutcome, TurnRuntime, State0, Outcome).
 
-direct_turn_request(Runtime, State0, Request) :-
-    (   Runtime.synthesis == true
-    ->  remaining_tokens(Runtime.budget.max_total_tokens,
-                         State0.usage.total_tokens,
-                         Remaining),
-        planner_token_limit(Runtime.options, Requested),
-        Limit is max(1, min(Requested, Remaining)),
-        model_request_options(Runtime.options, Limit, RequestOptions),
-        synthesis_messages(State0.messages, Messages)
-    ;   Messages = State0.messages,
-        direct_evidence_request_options(Runtime, State0, RequestOptions)
-    ),
+direct_turn_request(Runtime, State0, ToolFree, Request) :-
+    direct_turn_messages(Runtime, State0, ToolFree, Messages),
+    direct_turn_options(Runtime, State0, RequestOptions),
     Request = model_request{messages:Messages, options:RequestOptions}.
+
+% Tool-free closing turns: the wall-clock synthesis window and the response
+% count cutoff both remove every tool schema and append the closing
+% directive.
+direct_turns_tool_free(Runtime, _) :-
+    Runtime.synthesis == true,
+    !.
+direct_turns_tool_free(Runtime, State) :-
+    native_tool_cutoff_active(Runtime, State).
+
+direct_turn_messages(Runtime, State0, ToolFree, Messages) :-
+    (   direct_turns_tool_free(Runtime, State0)
+    ->  ToolFree = true,
+        synthesis_messages(State0.messages, Messages)
+    ;   ToolFree = false,
+        Messages = State0.messages
+    ).
 
 % The reserved synthesis turn is tool-free and carries an explicit directive
 % so the model closes with substantive final text instead of more evidence
@@ -662,15 +671,40 @@ synthesis_messages(Messages0, Messages) :-
                     content:"Wall-clock budget is nearly exhausted. Produce the final synthesis now from the evidence already gathered. Do not call any tools. Return the complete evidence-backed answer as your final synthesis text."}],
            Messages).
 
-direct_evidence_request_options(Runtime, State0, RequestOptions) :-
+direct_turn_options(Runtime, State0, RequestOptions) :-
     remaining_tokens(Runtime.budget.max_total_tokens,
                      State0.usage.total_tokens,
                      Remaining),
     planner_token_limit(Runtime.options, Requested),
     Limit is max(1, min(Requested, Remaining)),
     model_request_options(Runtime.options, Limit, BaseOptions),
-    native_request_options(Runtime.options, Limit, BaseOptions, StepOptions),
-    request_options(Runtime.schemas, StepOptions, RequestOptions).
+    (   Runtime.synthesis == true
+    ->  RequestOptions = BaseOptions
+    ;   native_request_options(Runtime.options, Limit, BaseOptions, StepOptions),
+        (   native_tool_cutoff_active(Runtime, State0)
+        ->  RequestOptions = StepOptions
+        ;   request_options(Runtime.schemas, StepOptions, RequestOptions)
+        )
+    ).
+
+% A host may bound evidence acquisition by response count: once the cutoff is
+% reached, further turns are sent without tool schemas so the model closes
+% with final text. The wall-clock synthesis reservation remains the primary
+% boundary; the cutoff bounds fast providers that never reach the clock.
+native_tool_cutoff_active(Runtime, State) :-
+    option(native_tool_cutoff_model_calls, Runtime.options, none, Requested),
+    (   Requested == none
+    ->  fail
+    ;   integer(Requested),
+        Requested >= 0
+    ->  State.model_calls >= Requested
+    ;   throw(direct_fault(direct_error{
+                              phase:provider,
+                              kind:invalid_native_tool_cutoff,
+                              option:native_tool_cutoff_model_calls,
+                              value:Requested,
+                              message:"native tool cutoff must be a nonnegative integer"}))
+    ).
 
 request_options([], Options, Options) :- !.
 request_options(Schemas, Options0, Options) :-
@@ -767,11 +801,14 @@ after_call_normalization(error(Cause), _, _, State, error(Error)) :-
 after_call_normalization(ok([]), Response, Runtime, State, Outcome) :-
     !,
     finish_direct(Response, Runtime, State, Outcome).
-% The reserved synthesis turn must close the run: further tool calls cannot
-% be honored inside the reserved window. Final text is accepted; anything
-% else is a typed deadline failure that preserves the collected evidence.
+% Tool-free closing turns must close the run: further tool calls cannot be
+% honored once the synthesis window or the response-count cutoff has removed
+% the tool schemas. Final text is accepted; anything else is a typed failure
+% that preserves the collected evidence. The tool_free flag is set per turn
+% at request construction, so a closing turn is identified by what was
+% actually offered, not by the post-turn state.
 after_call_normalization(ok(Entries), Response, Runtime, State, Outcome) :-
-    Runtime.synthesis == true,
+    Runtime.tool_free == true,
     Entries \== [],
     !,
     (   get_dict(text, Response, Text),
@@ -779,7 +816,7 @@ after_call_normalization(ok(Entries), Response, Runtime, State, Outcome) :-
     ->  finish_direct(Response, Runtime, State, Outcome)
     ;   state_error(State, deadline, synthesis_tool_call,
                     _{},
-                    "synthesis request returned tool calls instead of final text", Error),
+                    "closing turn returned tool calls instead of final text", Error),
         Outcome = error(Error)
     ).
 after_call_normalization(ok(Entries), Response, Runtime, State0, Outcome) :-
