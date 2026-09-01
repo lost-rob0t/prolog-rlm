@@ -58,6 +58,11 @@ scenario_wire_response(assistant_call_mismatch, Response0, Response) :-
     native_call("different_1", "context_search", _{query:"needle"}, Other),
     put_dict(tool_calls, Response0.assistant, [Other], Assistant),
     put_dict(assistant, Response0, Assistant, Response).
+scenario_wire_response(non_list_batch_envelope, Response0, Response) :-
+    !,
+    put_dict(tool_calls, Response0.assistant, not_a_list, Assistant),
+    put_dict(assistant, Response0, Assistant, Response1),
+    put_dict(tool_calls, Response1, not_a_list, Response).
 scenario_wire_response(assistant_raw_argument_mismatch, Response0, Response) :-
     !,
     raw_native_call("bad_1", "context_search",
@@ -843,6 +848,203 @@ test(tool_call_budget_exhaustion_precedes_second_handler_call) :-
           direct_tool_count(1)
         ),
         tool_registry_destroy(Registry)).
+
+test(model_call_budget_exhaustion_precedes_continuation_request) :-
+    reset_direct(two_context_calls),
+    direct_provider_options([context(search)],
+                            [budget(_{max_model_calls:1})], Options),
+    rlm_direct("Budget model", text("needle"), Options, error(Error)),
+    assertion(Error.kind == model_call_budget_exhausted),
+    direct_call_count(1).
+
+% Issue #323: native-call batch cardinality admission counts the ORIGINAL
+% provider-requested batch before any per-call normalization, classification,
+% preflight, or execution work. Every requested call counts, including calls
+% that would fail preflight, and accepted batches keep the executed-operation
+% accounting of max_tool_calls / max_context_ops unchanged.
+scenario_response(batch_pair_at_limit, 1, _, "", [ToolCall1, ToolCall2], "") :-
+    native_call("ctx_1", "context_search", _{query:"DIRECT_NEEDLE"}, ToolCall1),
+    native_call("ctx_2", "context_search", _{query:"DIRECT_NEEDLE"}, ToolCall2).
+scenario_response(batch_pair_at_limit, 2, Request, "PAIR_DONE", [], "") :-
+    request_tool_message(Request, "ctx_1", context_search, Content1),
+    request_tool_message(Request, "ctx_2", context_search, Content2),
+    assertion(sub_string(Content1, _, _, _, "DIRECT_NEEDLE")),
+    assertion(sub_string(Content2, _, _, _, "DIRECT_NEEDLE")).
+
+scenario_response(batch_fault_pair, 1, _, "", [Bad1, Bad2], "") :-
+    raw_native_call("bad_1", "context_search",
+                    "{\"query\":\"first\",\"query\":\"second\"}", Bad1),
+    raw_native_call("bad_2", "context_search",
+                    "{\"query\":\"first\",\"query\":\"second\"}", Bad2).
+scenario_response(batch_fault_pair, 2, Request, "RECOVERED", [], "") :-
+    request_tool_message(Request, "bad_1", context_search, Content1),
+    request_tool_message(Request, "bad_2", context_search, Content2),
+    assertion(sub_string(Content1, _, _, _, "malformed_arguments")),
+    assertion(sub_string(Content2, _, _, _, "malformed_arguments")).
+
+scenario_response(non_list_batch_envelope, 1, _, "ENVELOPE", [], "").
+
+scenario_response(batch_duplicate_pair, 1, _, "", [ToolCall1, ToolCall2], "") :-
+    native_call("same_1", "context_search", _{query:"needle"}, ToolCall1),
+    native_call("same_1", "context_search", _{query:"needle"}, ToolCall2).
+
+scenario_response(batch_effectful_pair, 1, _, "", [Write1, Write2], "") :-
+    native_call("write_1", "counting_write", _{path:"oversize"}, Write1),
+    native_call("write_2", "counting_write", _{path:"oversize"}, Write2).
+
+scenario_response(batch_mixed_over_limit, 1, _, "", [ToolCall, BadCall], "") :-
+    native_call("ctx_1", "context_search", _{query:"DIRECT_NEEDLE"}, ToolCall),
+    raw_native_call("bad_1", "context_search",
+                    "{\"query\":\"first\",\"query\":\"second\"}", BadCall).
+
+scenario_response(batch_mixed_over_limit_reversed, 1, _, "", [BadCall, ToolCall], "") :-
+    raw_native_call("bad_1", "context_search",
+                    "{\"query\":\"first\",\"query\":\"second\"}", BadCall),
+    native_call("ctx_1", "context_search", _{query:"DIRECT_NEEDLE"}, ToolCall).
+
+test(exactly_at_limit_valid_batch_is_admitted_and_executed) :-
+    reset_direct(batch_pair_at_limit),
+    direct_provider_options([context(search)],
+                            [budget(_{max_native_calls_per_batch:2})], Options),
+    rlm_direct("Batch at limit", text("DIRECT_NEEDLE payload"), Options,
+               ok(Result)),
+    assertion(Result.value == "PAIR_DONE"),
+    assertion(Result.turns =:= 2),
+    assertion(Result.context_calls =:= 2),
+    assertion(Result.tool_calls =:= 0).
+
+test(one_over_limit_valid_batch_fails_before_execution) :-
+    reset_direct(batch_pair_at_limit),
+    direct_provider_options([context(search)],
+                            [budget(_{max_native_calls_per_batch:1})], Options),
+    rlm_direct("Batch over limit", text("DIRECT_NEEDLE"), Options,
+               error(Error)),
+    assertion(Error.kind == native_batch_too_large),
+    assertion(Error.phase == native_call),
+    assertion(Error.context_calls =:= 0),
+    assertion(Error.tool_calls =:= 0),
+    direct_call_count(1).
+
+test(exactly_at_limit_all_fault_batch_keeps_recoverable_observations) :-
+    reset_direct(batch_fault_pair),
+    direct_provider_options([context(search)],
+                            [budget(_{max_native_calls_per_batch:2})], Options),
+    rlm_direct("Fault batch at limit", text("opaque"), Options, ok(Result)),
+    assertion(Result.value == "RECOVERED"),
+    assertion(Result.context_calls =:= 0),
+    assertion(Result.tool_calls =:= 0),
+    direct_call_count(2).
+
+test(one_over_limit_all_fault_batch_fails_immediately) :-
+    reset_direct(batch_fault_pair),
+    direct_provider_options([context(search)],
+                            [budget(_{max_native_calls_per_batch:1})], Options),
+    rlm_direct("Fault batch over limit", text("opaque"), Options,
+               error(Error)),
+    assertion(Error.kind == native_batch_too_large),
+    assertion(Error.phase == native_call),
+    direct_call_count(1),
+    direct_request(1, OnlyRequest),
+    forall(member(Message, OnlyRequest.messages), Message.role \== tool).
+
+test(oversize_mixed_batch_fails_before_classification) :-
+    reset_direct(batch_mixed_over_limit),
+    direct_provider_options([context(search)],
+                            [budget(_{max_native_calls_per_batch:1})], Options),
+    rlm_direct("Mixed batch over limit", text("DIRECT_NEEDLE"), Options,
+               error(Error)),
+    assertion(Error.kind == native_batch_too_large),
+    assertion(Error.phase == native_call),
+    assertion(Error.context_calls =:= 0),
+    direct_call_count(1).
+
+test(oversize_mixed_batch_fails_before_classification_reversed_order) :-
+    reset_direct(batch_mixed_over_limit_reversed),
+    direct_provider_options([context(search)],
+                            [budget(_{max_native_calls_per_batch:1})], Options),
+    rlm_direct("Mixed batch over limit reversed", text("DIRECT_NEEDLE"),
+               Options, error(Error)),
+    assertion(Error.kind == native_batch_too_large),
+    assertion(Error.phase == native_call),
+    assertion(Error.context_calls =:= 0),
+    direct_call_count(1).
+
+% Duplicate call IDs remain a normalize-level fatal envelope invariant that
+% precedes classification-level cardinality admission; both are pre-execution
+% fail-closed outcomes and neither executes a call.
+test(duplicate_ids_in_oversize_batch_still_fail_closed_before_execution) :-
+    reset_direct(batch_duplicate_pair),
+    direct_provider_options([context(search)],
+                            [budget(_{max_native_calls_per_batch:1})], Options),
+    rlm_direct("Duplicate pair over limit", text("needle"), Options,
+               error(Error)),
+    assertion(Error.kind == duplicate_call_id),
+    assertion(Error.phase == native_call),
+    assertion(Error.context_calls =:= 0),
+    assertion(Error.tool_calls =:= 0),
+    direct_call_count(1).
+
+test(oversize_effectful_batch_produces_no_effects) :-
+    setup_call_cleanup(
+        setup_direct_effect_store(Store),
+        ( reset_direct(batch_effectful_pair),
+          Context = session(direct_effect_oversize),
+          rlm_set_authority(Context, dangerous, ok(_)),
+          tool_registry_create(Registry),
+          setup_call_cleanup(
+              register_counting_write(Registry),
+              ( direct_provider_options([tool(counting_write)],
+                                        [ tool_registry(Registry),
+                                          authority_context(Context),
+                                          budget(_{max_native_calls_per_batch:1})
+                                        ], Options),
+                rlm_direct("Effectful oversize", text("opaque"), Options,
+                           error(Error)),
+                assertion(Error.kind == native_batch_too_large),
+                tool_effect_test_support:tool_mutation_count(0)
+              ),
+              ( tool_registry_destroy(Registry),
+                rlm_authority_clear(Context)
+              ))
+        ),
+        cleanup_direct_effect_store(Store)).
+
+test(configured_low_limit_allows_smaller_accepted_batch_accounting) :-
+    reset_direct(registered_tool("runtime-generated-tool-token")),
+    tool_registry_create(Registry),
+    setup_call_cleanup(
+        register_runtime_token(Registry),
+        ( direct_provider_options([tool(runtime_token), context(peek)],
+                                  [ tool_registry(Registry),
+                                    budget(_{max_native_calls_per_batch:1})
+                                  ], Options),
+          rlm_direct("Low batch limit", text("opaque"), Options, ok(Result)),
+          assertion(Result.value == "runtime-generated-tool-token"),
+          assertion(Result.turns =:= 3),
+          assertion(Result.tool_calls =:= 1),
+          assertion(Result.context_calls =:= 1)
+        ),
+        tool_registry_destroy(Registry)).
+
+test(default_native_batch_limit_is_bounded_and_positive_integers_only) :-
+    rlm_completion:default_completion_budget(Default),
+    assertion(Default.max_native_calls_per_batch == 8),
+    direct_provider_options([], [budget(_{max_native_calls_per_batch:0})],
+                            Options),
+    rlm_direct("Invalid batch limit", text("opaque"), Options,
+               error(Error)),
+    assertion(Error.kind == completion_fault),
+    assertion(Error.detail == invalid_positive_integer(
+                                 max_native_calls_per_batch,
+                                 0)).
+
+test(non_list_tool_calls_envelope_retains_fail_closed_semantics) :-
+    reset_direct(non_list_batch_envelope),
+    direct_provider_options([context(search)],
+                            [budget(_{max_native_calls_per_batch:8})], Options),
+    rlm_direct("Non-list batch", text("needle"), Options, error(Error)),
+    assertion(Error.kind == unsupported_tool_call_format),
+    direct_call_count(1).
 
 test(model_call_budget_exhaustion_precedes_continuation_request) :-
     reset_direct(two_context_calls),
