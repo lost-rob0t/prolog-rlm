@@ -1,5 +1,38 @@
 #include "rlm_tree_sitter_internal.h"
 
+#define RLM_TS_INPUT_CHUNK_BYTES 4096
+
+typedef struct rlm_ts_string_input {
+    const char *source;
+    uint32_t length;
+    bool interrupted;
+} rlm_ts_string_input;
+
+static const char *read_string_input(void *payload,
+                                     uint32_t byte_index,
+                                     TSPoint position,
+                                     uint32_t *bytes_read)
+{
+    rlm_ts_string_input *input = payload;
+    uint32_t remaining;
+
+    (void)position;
+    if (PL_handle_signals() < 0) {
+        input->interrupted = true;
+        *bytes_read = 0;
+        return NULL;
+    }
+    if (byte_index >= input->length) {
+        *bytes_read = 0;
+        return NULL;
+    }
+    remaining = input->length - byte_index;
+    *bytes_read = remaining < RLM_TS_INPUT_CHUNK_BYTES
+                    ? remaining
+                    : RLM_TS_INPUT_CHUNK_BYTES;
+    return input->source + byte_index;
+}
+
 foreign_t pl_ts_parser_create(term_t parser_term)
 {
     rlm_ts_parser_resource *resource = calloc(1, sizeof(*resource));
@@ -76,6 +109,8 @@ foreign_t pl_ts_parse_string(term_t parser_term, term_t source_term, term_t tree
     rlm_ts_tree_resource *resource;
     char *source = NULL;
     size_t source_length = 0;
+    rlm_ts_string_input string_input;
+    TSInput input;
     TSTree *tree;
 
     if (!get_parser(parser_term, &parser) || !require_open_parser(parser)) {
@@ -93,11 +128,20 @@ foreign_t pl_ts_parse_string(term_t parser_term, term_t source_term, term_t tree
         return PL_representation_error("tree_sitter_source_length");
     }
 
-    tree = ts_parser_parse_string(parser->parser,
-                                  NULL,
-                                  source,
-                                  (uint32_t)source_length);
+    string_input.source = source;
+    string_input.length = (uint32_t)source_length;
+    string_input.interrupted = false;
+    input.payload = &string_input;
+    input.read = read_string_input;
+    input.encoding = TSInputEncodingUTF8;
+    tree = ts_parser_parse(parser->parser, NULL, input);
     PL_free(source);
+    if (string_input.interrupted) {
+        if (tree) {
+            ts_tree_delete(tree);
+        }
+        return FALSE;
+    }
     if (!tree) {
         return raise_tree_sitter_error("parse_failed",
                                        "Tree-sitter returned NULL while parsing source");
