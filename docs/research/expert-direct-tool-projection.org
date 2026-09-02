@@ -5,7 +5,7 @@
 #+approval_actor: NONE
 #+approval_evidence: NONE
 #+approval_base_commit: 39b278589dae8518e583778cd6671a6cb1e026c7
-#+approval_base_blob: e1f80b32f6bee69cff8cdf237f10d2b60f83f6de
+#+approval_base_blob: 15c78f946f46cd331bc24922826d49e5c2c61db4
 
 * Research Question
 
@@ -278,9 +278,19 @@ invariant.
    invariants — per-call durable dispatch intents with a resume-from-partial
    story, deterministic ordering, and a defined retry boundary for the
    un-executed suffix — rather than quietly allowing multi-effect batches
-   under today's abort-on-failure semantics. This question stays open for
-   the design gate, steered by the operator's preference against the
-   current restriction.
+   under today's abort-on-failure semantics.
+
+   *RESOLVED by operator decision (2026-09-02).* After reviewing the
+   relaxation implications (authority preflight phase, partial-commit
+   reconciliation, intent-suffix resume machinery, intent-aware
+   cancellation, multiplied reconciliation surface — for a round-trip
+   reduction that still buys no atomicity), the operator rejected
+   relaxation: "Yeah sound bad lets not do that." The single-effectual-call
+   rule stands as a design constraint: effectful expert tools must be
+   requested as the sole call in a model turn, and the design record must
+   not propose batched effects. This closes the open question.
+
+   
    
 6. Whether expert availability should be recorded in the trace/event stream
    as a first-class projection event (observability parity with tool
