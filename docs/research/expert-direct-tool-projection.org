@@ -5,7 +5,7 @@
 #+approval_actor: NONE
 #+approval_evidence: NONE
 #+approval_base_commit: 39b278589dae8518e583778cd6671a6cb1e026c7
-#+approval_base_blob: d5dd303c01e1968c76d763e77fc3fd21aac6f082
+#+approval_base_blob: 58329e072edad70dc07b173671cea28c0a40b5de
 
 * Research Question
 
@@ -238,6 +238,51 @@ invariant.
 2. Should an expert tool's nested session participate in the parent's
    wall-clock deadline and synthesis reservation? A long expert run could
    starve the synthesis window; deadline propagation needs an explicit rule.
+
+   *Operator steering (2026-09-02):* the 45s reservation is far too short —
+   reasoning-class models (e.g. GLM) are observed to spend 5+ minutes on a
+   /single/ provider turn. This is not a tuning problem; it is the
+   fundamental problem: the direct loop budgets time with constants that are
+   independent of the model's actual per-turn cost.
+
+   *Analysis.* =direct_synthesis_reservation/3= (=rlm_direct.pl:276-291=)
+   fixes the reservation at 45.0s (default) or a host override, capped at
+   half the time budget; =direct_synthesis_transition/2= forces the
+   tool-free closing turn once =remaining =< reservation=. Per-turn cost
+   spans orders of magnitude across models, so any fixed reservation either
+   starves evidence gathering (reservation too large) or guarantees the
+   closing turn dies under a capped socket timeout or the hard alarm
+   (reservation too small — the GLM case). Two compounding factors:
+
+   - The closing synthesis turn is itself a provider turn and inherits the
+     same per-turn latency; a reservation below one observed turn duration
+     makes the closing turn uncompletable by construction.
+   - Expert tools nest /entire bounded sessions/ inside one tool call, so
+     the parent's reservation math cannot see nested session latency at
+     all; a tool-call time limit cannot express it either.
+
+   *Direction for the design phase (not yet a decision): replace
+   constant-based time budgeting with turn-cost-aware admission.*
+
+   - Maintain trusted, runtime-observed per-turn latency per provider+model
+     within the run (max and EWMA over completed turns).
+   - Enter synthesis when =remaining < est_turn_cost + synthesis_reserve=,
+     where =est_turn_cost= is the observed maximum turn duration and
+     =synthesis_reserve= is derived from observed turn cost (e.g. 1-2x),
+     bounded by the remaining time budget — never a bare constant.
+   - Bootstrap from trusted host hints (an =expected_turn_latency= option
+     and/or a latency field in the #296 =model_limits{}= contract), refined
+     by observation; the first turn of a run falls back to the hint.
+   - Expert boundary generalizes the same admission: an expert contract
+     declares an expected session cost (time and iterations); the tool call
+     is admitted only if remaining covers =est_expert_cost +
+     synthesis_reserve=; the nested deadline is
+     =min(contract limit, remaining - reserve)=. This subsumes the earlier
+     OQ2-A propagation rule with model-aware estimates instead of
+     constants.
+   - All estimates are trusted runtime data, never model-supplied: a model
+     cannot inflate its own reservation. =native_tool_cutoff_model_calls=
+     stays as the secondary count-based bound.
 3. Do expert tools require =model(_)= in =inner_capabilities= only, or may
    pure-deterministic experts omit it (and how does the projection advertise
    the difference)?
@@ -321,6 +366,11 @@ Operator note: yes i think so.
   proves the nested session cannot invoke a tool the parent could not.
 - Effectful expert tools respect the durable effect boundary; replay after
   transport failure remains conservative/indeterminate.
+- Turn-cost-aware admission: a deterministic fixture with a hinted
+  slow-model latency profile (per-turn cost far above the legacy 45s
+  default) proves the closing synthesis turn completes and no evidence
+  turn is admitted that would starve it; expert-tool admission honors the
+  declared expected session cost.
 - No new scheduler, no new authority tier, no =call/1= for model output;
   deterministic gates green; docs state the availability-vs-authority
   boundary.
