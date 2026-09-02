@@ -265,6 +265,15 @@ UTF-8 checked text reads remain inspectable without retaining native trees.
 See [the source registry](docs/project-source-registry.md) and
 [project syntax observations](docs/project-syntax.md).
 
+### `rlm_project_query`
+
+Bounded Tree-sitter query packs and grouped capture observations below the
+semantic project-KB boundary. Query source remains data, captures use closed
+syntax-node identities with grammar/pack/parse provenance, and extraction
+observations can persist under the trusted project-local `.kb` tree. This layer
+does not select expert tools or alter direct/symbolic execution. See
+[project query observations](docs/project-query.md).
+
 ### `rlm_agent`
 
 Logical agents using SWI engines/state machines, bounded workers, typed mailboxes, supervision, cancellation, capability inheritance, recursive subagents, structured outcomes, and durable artifact access.

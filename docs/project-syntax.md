@@ -137,3 +137,6 @@ model/source data.
 This is the generic CST layer from #96. It does not implement Tree-sitter query
 packs (#97), normalize symbols or references (#98), incrementally reparse or
 invalidate semantic facts (#99), or grant filesystem/tool/execution authority.
+The #97 query layer is a sibling observation provider below the canonical
+project-KB boundary; it does not implement direct-mode expert tools or symbolic
+planner behavior.

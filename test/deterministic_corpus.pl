@@ -175,7 +175,13 @@ corpus_entry('rlm_tree_sitter_test.pl',
 corpus_entry('rlm_project_source_native_test.pl',
               exclude(native_ffi, 'runs through the native source gate')).
 corpus_entry('rlm_project_syntax_test.pl',
-              exclude(native_ffi, 'runs through the native source gate')).
+               exclude(native_ffi, 'runs through the native source gate')).
+corpus_entry('rlm_tree_sitter_query_test.pl',
+             exclude(native_ffi, 'runs through the Tree-sitter gate')).
+corpus_entry('rlm_project_query_test.pl',
+             exclude(native_ffi, 'runs through the Tree-sitter gate')).
+corpus_entry('rlm_project_query_restart_test.pl',
+             exclude(native_ffi, 'runs through the Tree-sitter gate')).
 corpus_entry('rlm_tree_sitter_cancellation_test.pl',
               exclude(native_ffi, 'runs through the Tree-sitter gate')).
 corpus_entry('live_chain_stream_openrouter_test.pl',

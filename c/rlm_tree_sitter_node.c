@@ -276,3 +276,41 @@ foreign_t pl_ts_node_field(term_t node_term, term_t field_term, term_t child_ter
     }
     return unify_node(child_term, node->tree, child);
 }
+
+foreign_t pl_ts_node_parent(term_t node_term, term_t parent_term)
+{
+    rlm_ts_node_resource *node;
+    TSNode parent;
+
+    if (!get_node(node_term, &node) || !require_open_node(node)) {
+        return FALSE;
+    }
+    parent = ts_node_parent(node->node);
+    return unify_node(parent_term, node->tree, parent);
+}
+
+foreign_t pl_ts_node_child_index(term_t node_term, term_t index_term)
+{
+    rlm_ts_node_resource *node;
+    TSNode parent;
+    uint32_t count;
+    uint32_t index;
+
+    if (!get_node(node_term, &node) || !require_open_node(node)) {
+        return FALSE;
+    }
+    parent = ts_node_parent(node->node);
+    if (ts_node_is_null(parent)) {
+        return FALSE;
+    }
+    count = ts_node_child_count(parent);
+    for (index = 0; index < count; index++) {
+        if (ts_node_eq(ts_node_child(parent, index), node->node)) {
+            return PL_unify_integer(index_term, index);
+        }
+        if (index % 4096 == 0 && PL_handle_signals() < 0) {
+            return FALSE;
+        }
+    }
+    return FALSE;
+}

@@ -331,5 +331,98 @@ base commit =156bfe9b2caffa1b967e77bee51263ee9e85fb50= and matching
 =approval_base_blob= via =git rev-parse --verify
 BASE_COMMIT:research/tree-sitter-query-capture.org=, and an RFC 3339
 timestamp in =#+approval_decided_at=.
+* Realize scope confirmation
 
+- The #97 layer remains below the runtime modes. Direct mode keeps its normal
+  agentic context/compiler/tool loop; symbolic mode keeps the typed-plan loop
+  where the model contributes bounded reasoning/generation and trusted runtime
+  code owns expert/tool calls. No direct, prompt-compiler, expert-tool, SPEC,
+  VERIFY, or planner integration was added here.
+- Query captures are generic project observations for the later #98/#99 and
+  canonical project-KB/provider layers. They are not a semantic ontology and do
+  not grant model or host authority.
 
+* TDD realization evidence
+
+- RED :: the new native query suite initially failed because the approved
+  =ts_query_*=/=ts_query_cursor_*= surface did not exist. The first project
+  extraction attempt also exposed that the current SWI persistency library does
+  not accept the design's =sync(always)= option.
+- GREEN :: native query compile/metadata/cursor tests pass; project query tests
+  cover grouped captures, provenance, Python/JavaScript/C generic operation,
+  pack replacement, wrong grammar, callable rejection, bounded subtree/range,
+  zero/multiple matches, predicates, malformed queries, Unicode points,
+  read-only roots, and deadline failure. The fresh-process fixture performs a
+  real =SIGKILL= after publication, reloads the journal, and proves the next
+  extraction generation is 2.
+
+* Realize implementation
+
+- The combined foreign object now owns immutable grammar-retaining query blobs
+  and thread-affine cursor blobs. Cursors retain query/tree resources, explicit
+  close is idempotent, and cursor iteration calls =PL_handle_signals()= between
+  native steps. The C surface uses only the v0.20-compatible Tree-sitter query
+  API intersection; no newer timeout/options functions or language-specific C
+  visitors were added.
+- The Prolog FFI wrapper rejects non-text query source, derives UTF-8 byte-based
+  compile points, and projects native match arrays without flattening or
+  deduplicating captures. The project sibling maps captures to closed
+  =syntax_node(Parse, Path)= identities and publishes only ground provenance
+  records.
+- Query packs remain inert until explicit activation. The per-registry compiled
+  query cache is keyed by language, grammar reference, and source SHA-256 and
+  is bounded to 32 process-local FIFO entries. Native pointers are never
+  persisted.
+- Query observations use the separate project-query persistency adapter under
+  =<project-root>/.kb/project-query/= and reload on current-extraction lookup.
+  SWI-Prolog 10.0.2 supports =sync(close|flush|none)=, not =sync(always)=;
+  =sync(close)= is used as the strongest supported process-crash boundary and
+  is covered by the kill/restart fixture. This is an implementation
+  compatibility refinement preserving the approved durability intent.
+
+* Adversarial review results
+
+- Resource lifetime: query objects retain their language; cursors retain query
+  and tree resources; registry destruction clears query caches/persistence
+  before closing grammar handles.
+- Publication/currentness: parse and extraction admissions are fenced under
+  source-registry then query locks. A stale parse/pack or registry destruction
+  cannot republish as current; failed admissions leave no current extraction.
+- Safety/provenance: query text has one native data sink (=ts_query_new=),
+  predicate-bearing packs are rejected before execution, callables are type
+  errors, and published records contain no native blobs. Grammar/pack/source
+  identity, generation, range, and capture spans remain inspectable.
+- Bounds/failure: source, match, capture, range, subtree, deadline, and native
+  match-limit paths are structured. Unicode points use Tree-sitter byte
+  columns. Persistence root failures do not silently fall back to memory.
+
+** Realization follow-up: publication currentness fencing
+
+- Gap :: after a successful new parse/extraction publication, prior records
+  for the file could remain =indeterminate(pending(...))= instead of the
+  explicit terminal =stale= currentness required by the approved fencing
+  invariant. The rejection path already fenced its own pending records;
+  the success path did not.
+- RED :: two deterministic tests added to =test/rlm_project_query_test.pl=
+  (=new_parse_publication_fences_prior_records_stale=,
+  =reused_parse_publication_fences_prior_extraction_stale=). Both initially
+  failed exactly on the fencing assertions: the prior parse/extraction rows
+  stayed =indeterminate(pending(...))= and the journal kept the superseded
+  extraction =current=.
+- GREEN :: successful fresh parse publication
+  (=publish_query_parse_locked(..., fresh)=) and extraction publication
+  (=publish_extraction/7=) now fence every prior =indeterminate(pending(...))=
+  record for the file to =stale= under the existing source-registry ->
+  project-query lock order. Extraction fencing is also persisted through the
+  existing =persist_stale_extraction= path so a restart cannot resurrect a
+  superseded observation as current. Parse records are process-local (never
+  persisted), so their fencing is memory-only, matching the adapter contract.
+- Docs :: =docs/project-query.md= states the publication fencing contract.
+
+* Final verification
+
+- Candidate exact-head evidence remains pending until the final run below is
+  recorded after all implementation and documentation changes:
+  =make research-approval=, baseline runtime/load/deterministic/benchmark/CLI
+  checks, focused native query checks, =nix flake check=, deep experiment, and
+  =git diff --check=.

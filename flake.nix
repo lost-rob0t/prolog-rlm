@@ -81,7 +81,7 @@
               ln -s "${grammarBundle}/$language" \
                 "test/fixtures/tree-sitter/$language.$(swipl -q -g 'current_prolog_flag(shared_object_extension,E),write(E),halt.')"
             done
-            swipl -q -g "use_module(prolog/rlm_tree_sitter),consult(test/rlm_project_syntax_test),consult(test/rlm_tree_sitter_cancellation_test),run_tests([rlm_project_syntax,rlm_tree_sitter_cancellation]),halt"
+             swipl -q -g "use_module(prolog/rlm_tree_sitter),consult(test/rlm_project_syntax_test),consult(test/rlm_tree_sitter_query_test),consult(test/rlm_project_query_test),consult(test/rlm_project_query_restart_test),consult(test/rlm_tree_sitter_cancellation_test),run_tests([rlm_project_syntax,rlm_tree_sitter_query,rlm_project_query,rlm_project_query_restart,rlm_tree_sitter_cancellation]),halt"
             runHook postBuild
           '';
 
