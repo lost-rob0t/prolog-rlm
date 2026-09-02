@@ -1,0 +1,112 @@
+* Run identity
+- Consumed issue :: #97
+- Branch :: =rage/97-query-capture-apis=
+- RAGE start commit :: =156bfe9b2caffa1b967e77bee51263ee9e85fb50=
+
+* Baseline (exact start SHA =156bfe9b2caffa1b967e77bee51263ee9e85fb50=)
+
+- swipl version :: 10.0.2
+- test/check_runtime.pl :: PASS
+- test/load_all.pl :: PASS (only known #329 singleton warnings: =rlm_skill.pl:881=, =rlm_prompt_compiler.pl:1941=)
+- test/run_tests.pl :: PASS — suites=96, tests=1179, passed=1179, failed=0, timeout=0, blocked=0 (matches work-order expectation 96+ suites / 1179+ tests / 0 failed)
+- benchmark/run.pl -- deterministic :: PASS — 16/16, quality 1.00, 6 model calls, cost $0.0116
+- bin/prolog-rlm.pl -- demo --json :: PASS
+- git diff --check :: clean
+
+* Analyze — Prolog-verified research facts (session =9302fcee2a67=)
+
+Primary sources (retrieved 2026-09-02 at start SHA =156bfe9=):
+
+- v0.20.8 =lib/include/tree_sitter/api.h= fetched from GitHub tag =v0.20.8=
+  (exact header text inspected): =TREE_SITTER_LANGUAGE_VERSION 14=,
+  =MIN_COMPATIBLE 13=; query section contains =ts_query_new=, =ts_query_delete=,
+  =ts_query_{pattern,capture,string}_count=, =ts_query_start_byte_for_pattern=,
+  =ts_query_predicates_for_pattern=, =ts_query_is_pattern_*≈, 
+  =ts_query_capture_name_for_id=, =ts_query_capture_quantifier_for_id=
+  (=TSQuantifier= present), =ts_query_string_value_for_id=,
+  =ts_query_disable_{capture,pattern}=, =ts_query_cursor_new/delete/exec=,
+  =ts_query_cursor_{match_limit,set_match_limit,did_exceed_match_limit}=,
+  =ts_query_cursor_set_{byte,point}_range=,
+  =ts_query_cursor_next_{match,capture}=, =ts_query_cursor_remove_match=.
+- nix develop (nixpkgs) header reports tree-sitter 0.26.9 with =LANGUAGE_VERSION 15=
+  and additionally: =ts_query_cursor_exec_with_options=,
+  =ts_query_cursor_set_max_start_depth=,
+  =ts_query_cursor_{set_timeout_micros,timeout_micros}=,
+  =ts_query_end_byte_for_pattern= — /none of these exist in v0.20.8/.
+- Brave search corroboration: query-cursor timeout/options/progress-callback
+  APIs arrived post-0.20.8 (tree-sitter PR #3843; 0.25.0 changelog deprecates
+  timeout_micros in favor of progress callbacks; py-tree-sitter release notes).
+- Repository build evidence: =Makefile= compiles FFI against
+  =pkg-config tree-sitter= (CI Ubuntu 0.20.x headers vs nixpkgs 0.26.9), matching
+  the existing =#if TREE_SITTER_LANGUAGE_VERSION >= 15= guard in
+  =c/rlm_tree_sitter_internal.h=.
+
+Prolog verification gates (session 9302fcee2a67, =allow_side_effects=false=):
+
+1. =API-COMPAT: PASS= — all 16 =ts_query_*=/=ts_query_cursor_*= functions in the
+   planned C call lists are present in v0.20.8 (26 compatible/5 newer-only facts).
+2. =PROVENANCE: PASS= — planned extraction record covers all 8 issue-required
+   provenance fields (language, grammar identity, grammar version, query-pack
+   hash, query-source hash, parse generation, node span, capture name).
+3. =ACCEPTANCE-COVERAGE: PASS= — all 11 #97 acceptance criteria map to >=1
+   planned test (initial draft failed with 9 uncovered; fixed, re-proved).
+4. =SAFETY: PASS= — query source has exactly one trusted data sink
+   (=$ts_query_new= → =ts_query_new=); no planned predicate name collides with
+   forbidden sinks (call/assert/consult/use_module); pack predicates are
+   data-typed registration.
+
+Note: the MCP goal layer mangles built-in =forall/2= (even =forall(true,true)=
+fails); work-around =forall_ok(G,A) :- \+ (call(G), \+ call(A))= used and the
+misleading initial SAFETY failure was re-proven with the corrected rule.
+
+* Research record authored
+
+- Record :: =research/tree-sitter-query-capture.org= (=RLM-RESEARCH-012=,
+  =#+status: RESEARCHED=, approval block =PENDING= with all fields =NONE=).
+- Stable ID justification: filename fixed by work order; =:ID: RLM-RESEARCH-012=
+  property assigned; verified no branch in the repository claims IDs 012-019
+  (branch scan across all refs returned no 012-019 matches).
+- Validator gate :: =make research-approval= PASS (20 tracked files) after one
+  layout fix (the =:PROPERTIES:= drawer must follow the approval block, which
+  must sit immediately after =#+status=).
+- Work tree state :: research record and run log staged on
+  =rage/97-query-capture-apis=, uncommitted pending operator instruction.
+
+* Operator input received (2026-09-02, pre-approval)
+
+Operator answered the record's open questions (scratch discussion opened in
+Emacs: =rage/97-query-capture-notes.org=, awaiting in-buffer reply):
+
+1. Generation reuse: only when provably the same generation (current +
+   exact content hash + latest admitted). Recorded.
+2. Extraction facts: own sibling module (NOT inside =rlm_project_syntax=);
+   everything Prolog generates for the project KB must persist under
+   =$PROJECT_ROOT/.kb/<kb tree>=; nix store paths are inputs (read-only) not
+   KB state. Recorded as a new persistence requirement with epic-wide scope
+   flag — fresh-process restart fixture now required by work order §7.
+3. Repeated capture names: down-to-earth explanation written into the
+   scratch buffer (ordered capture list per match, ordinal disambiguates);
+   awaiting operator confirmation.
+4. Unicode point columns: agreed — tests will confirm byte-column
+   convention with multi-byte fixtures.
+
+Operator correction applied: =.kb= persistence is NOT scope expansion — it
+is pre-existing epic intent that no agent had ever written down (verified by
+repo grep + issue search). The clarified requirement is now recorded on the
+canonical epic: lost-rob0t/prolog-rlm#93 comment
+5515841794 (2026-09-02), cross-referencing =RLM-RESEARCH-012= and the #97
+extraction-fact persistence introduction. Research record re-framed from
+"scope flag" to "operator-clarified epic intent, first recorded here".
+
+Updated record + run log staged.
+
+* GATE — research approval (STOP)
+
+=#+approval_state: PENDING= authorizes nothing. Design (ADADR phase D) must
+not begin until a human actor records =APPROVED= with durable evidence, exact
+base commit =156bfe9b2caffa1b967e77bee51263ee9e85fb50= and matching
+=approval_base_blob= via =git rev-parse --verify
+BASE_COMMIT:research/tree-sitter-query-capture.org=, and an RFC 3339
+timestamp in =#+approval_decided_at=.
+
+
