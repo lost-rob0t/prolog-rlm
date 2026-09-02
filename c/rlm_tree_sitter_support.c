@@ -121,6 +121,46 @@ int get_node(term_t term, rlm_ts_node_resource **resource)
     return TRUE;
 }
 
+int get_query(term_t term, rlm_ts_query_resource **resource)
+{
+    void *data = NULL;
+    size_t length = 0;
+    PL_blob_t *type = NULL;
+
+    if (!PL_get_blob(term, &data, &length, &type) ||
+        type != &query_blob ||
+        length != sizeof(rlm_ts_query_resource *) ||
+        !data) {
+        return PL_type_error("tree_sitter_query", term);
+    }
+    *resource = *(rlm_ts_query_resource **)data;
+    if (!*resource) {
+        return raise_tree_sitter_error("stale_handle", "query handle has no resource");
+    }
+    return TRUE;
+}
+
+int get_query_cursor(term_t term,
+                     rlm_ts_query_cursor_resource **resource)
+{
+    void *data = NULL;
+    size_t length = 0;
+    PL_blob_t *type = NULL;
+
+    if (!PL_get_blob(term, &data, &length, &type) ||
+        type != &query_cursor_blob ||
+        length != sizeof(rlm_ts_query_cursor_resource *) ||
+        !data) {
+        return PL_type_error("tree_sitter_query_cursor", term);
+    }
+    *resource = *(rlm_ts_query_cursor_resource **)data;
+    if (!*resource) {
+        return raise_tree_sitter_error("stale_handle",
+                                       "query cursor handle has no resource");
+    }
+    return TRUE;
+}
+
 int require_open_parser(rlm_ts_parser_resource *resource)
 {
     if (!resource->open || !resource->parser) {
@@ -153,6 +193,31 @@ int require_open_tree(rlm_ts_tree_resource *resource)
 int require_open_node(rlm_ts_node_resource *resource)
 {
     return require_open_tree(resource->tree);
+}
+
+int require_open_query(rlm_ts_query_resource *resource)
+{
+    bool open;
+
+    pthread_mutex_lock(&resource->lock);
+    open = resource->open && resource->query != NULL;
+    pthread_mutex_unlock(&resource->lock);
+    if (!open) {
+        return raise_tree_sitter_error("closed_query", "query handle is closed");
+    }
+    return TRUE;
+}
+
+int require_open_query_cursor(rlm_ts_query_cursor_resource *resource)
+{
+    if (!resource->open || !resource->cursor) {
+        return raise_tree_sitter_error("closed_query_cursor",
+                                       "query cursor handle is closed");
+    }
+    if (PL_thread_self() != resource->owner_thread) {
+        return raise_wrong_thread("query cursor", resource->owner_thread);
+    }
+    return TRUE;
 }
 
 int unify_language(term_t term, rlm_ts_language_resource *resource)

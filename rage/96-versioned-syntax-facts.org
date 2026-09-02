@@ -1,0 +1,108 @@
+* Run identity
+- Consumed issue :: #96
+- Branch :: =rage/96-versioned-syntax-facts=
+- RAGE start commit :: =39b278589dae8518e583778cd6671a6cb1e026c7=
+
+* Queue selection
+- Selected issue :: #96, the first unblocked Project/source-knowledge slice
+  after the merged #94 FFI and #95 source registry.
+- Scope :: Versioned generic CST observations for code and structured non-code
+  files.  #97 query packs, #98 semantic normalization, and #99 incremental
+  reparsing remain separate.
+
+* Mode and approval state
+- Mode :: ADADR
+- Control plane :: =research/README.md= defines human-gated research approval.
+  This realization uses the owner-authored #93/#96 contracts and the merged
+  =docs/project-source-registry.md= boundary rather than introducing a new
+  research claim.
+- Implementation direction :: The user explicitly requested implementation and
+  clarified that Project KB input includes Markdown, JSON, Org, Common Lisp,
+  Nim, and other host-registered languages.
+
+* Analyze
+- The #94 FFI already parses and traverses arbitrary Tree-sitter grammars, but
+  exposes only native, thread-affine handles.
+- The #95 registry owns Project/File/Language identity and active grammar
+  provenance, but intentionally has no persistent syntax observations.
+- Native grammar handles must remain private to #95.  Materialized facts must
+  survive native tree closure and must not expose pointer identity.
+- Tree-sitter is suitable for structured text as well as programming languages;
+  parser availability remains explicit trusted host configuration.
+
+* Design
+- Add =rlm_project_syntax= as a distinct epistemic observation store keyed by
+  the existing source registry, File identity, and monotonically increasing
+  parse generation.
+- Add one trusted #95 parse operation that uses the active grammar internally
+  and returns a temporary native tree plus closed parser provenance.  The syntax
+  layer always closes the tree after projection.
+- Identify parses and nodes with closed Prolog terms.  Node ordinals are stable
+  only inside one parse generation; no cross-generation identity is promised.
+- Materialize named-only or all-node projections with explicit source-byte,
+  node-count, and depth limits.  Exhaustion publishes an explicit partial
+  generation, never a complete claim.
+- Retain source text once per parse generation.  Node text reads slice by UTF-8
+  byte range, enforce caller byte limits, and reject stale generations unless
+  historical access is explicit.
+- Keep language/grammar installation data-driven.  Built-in extension evidence
+  covers the requested common document/code formats; any host-registered
+  Tree-sitter grammar continues through the same generic API.
+
+* Adversarial review
+- Closing a native tree must not invalidate materialized observations.
+- Two files and two generations must not collide even when syntax is identical.
+- Named-only projection must not allocate identities for punctuation tokens.
+- A changed source digest must make the old generation stale before the new one
+  is published current.
+- Limits, excluded/generated/vendor policy, unavailable grammars, malformed
+  source, Unicode byte offsets, and registry destruction need structured states
+  and deterministic tests.
+- Grammar registration remains inert data; no source, grammar, or project file
+  is auto-loaded, consulted, downloaded, or granted authority by this slice.
+
+* Decision
+- GO :: Realize the bounded #96 design above.  Do not absorb semantic query,
+  symbol-resolution, incremental-reparse, filesystem-watcher, or coding-agent
+  product behavior.
+
+* TDD evidence
+- RED :: The untouched source-registry suite failed the new Markdown, JSON,
+  Org, Common Lisp, and Nim language-evidence tests.  Loading the new native
+  suite failed because =rlm_project_syntax= did not exist.
+- GREEN :: The final native Nix check passes 21/21 cases.  It materializes C,
+  Python, JavaScript, Markdown, JSON, Org, Common Lisp, and Nim through one
+  generic projection and covers stale/partial generations, fields, ranges,
+  UTF-8 text, malformed source, limits, async parity, cancellation, deadlines,
+  known-hash validation, and generation publication order.
+
+* Adversarial review results
+- Initial independent review found Ubuntu Tree-sitter 0.20 API incompatibility,
+  post-limit traversal, publication/destroy races, false currentness after a
+  blocked refresh, unbound file-hash provenance, missing async scheduling,
+  partial grammar-pack mutation, invalid extension metadata, and Darwin-only
+  check assumptions.
+- Fixes retain compatibility with Tree-sitter 0.20 APIs, make native input and
+  field scans signal-aware, use async execute -> Future -> sync await, admit
+  generations before native work, preserve pending/rejected/blocked states,
+  protect publication and destruction under one lock order, validate known
+  source hashes, and transact a fully prevalidated grammar pack under the
+  source-registry mutex.
+- Final independent review :: no high-severity release-blocking findings.
+
+* Final verification
+- Candidate base :: =39b278589dae8518e583778cd6671a6cb1e026c7=
+- Deterministic PlUnit :: 96 suites, 1179/1179 passed, 0 failed, 0 timeout,
+  0 blocked, 0 fixme.
+- Native/Nix project syntax :: 21/21 passed; all ten standard grammar
+  derivations built.
+- Tree-sitter 0.20.8 compatibility :: changed node/parser/lifetime C sources
+  pass =cc -fsyntax-only= against the v0.20.8 public headers.
+- Runtime/load :: =test/check_runtime.pl= and =test/load_all.pl= passed.
+- Benchmarks :: deterministic 16/16 and deep experiment 15/15 passed.
+- CLI :: credential-free JSON demo passed.
+- Nix :: =nix flake check path:. --no-update-lock-file= passed all Linux checks.
+- Research approval validator :: 19 tracked records passed.
+- Whitespace :: =git diff --check= passed.
+- Existing singleton warnings in =rlm_skill.pl= and =rlm_prompt_compiler.pl=
+  remain the independently owned #329 defect; this slice does not modify them.

@@ -30,7 +30,9 @@ jobs:
             libtree-sitter-dev \
             tree-sitter-c-src \
             tree-sitter-lua-src \
-            tree-sitter-query-src
+            tree-sitter-query-src \
+            tree-sitter-python-src \
+            tree-sitter-javascript-src
 
       - name: Build direct foreign library
         run: make tree-sitter-ffi
