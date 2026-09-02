@@ -5,7 +5,7 @@
 #+approval_actor: NONE
 #+approval_evidence: NONE
 #+approval_base_commit: 39b278589dae8518e583778cd6671a6cb1e026c7
-#+approval_base_blob: d390b1d7be778c1abce5cec99bb619a6c1a8b508
+#+approval_base_blob: 62fed681961a67cf81b4513385474b8a1ebc2201
 
 * Research Question
 
@@ -330,6 +330,13 @@ invariant.
    =model_policy != none= (preflight check); deterministic experts receive
    no =model(_)= grant and their nested sessions fail closed on any model
    operation attempt; OQ6 projection events carry the expert kind.
+
+   *RESOLVED by operator decision (2026-09-02).* The operator approved the
+   rule: model-using experts receive the =model(_)= grant (required iff the
+   contract declares a model policy); deterministic experts receive no
+   model grant and fail closed on model attempts; all experts present
+   identical tool schemas to the calling model; expert kind is visible
+   only in operator-facing trace/projection events.
 4. Interaction with #335: =/auto= selection and expert availability must not
    become an authorization decision; expert tools must narrow, never widen,
    when the mode contract lands.
