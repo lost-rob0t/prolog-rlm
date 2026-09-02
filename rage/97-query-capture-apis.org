@@ -309,10 +309,20 @@ implementation remains blocked until the design-approval gate.
   roadmap/issue reconciliation in the same PR.
 
 #+design_approval_schema: prolog-rlm.design-approval.v1
-#+design_approval_state: PENDING
-#+design_approval_actor: NONE
-#+design_approval_evidence: NONE
-#+design_approval_decided_at: NONE
+#+design_approval_state: APPROVED
+#+design_approval_actor: human operator
+#+design_approval_evidence: operator chat approval 2026-09-02, verbatim "Approved but make next prompt slice instead of you working on it" (bound here in the committed run log)
+#+design_approval_decided_at: 2026-09-02T20:35:55Z
+
+* Decision gate outcome (2026-09-02T20:35:55Z)
+
+- Design APPROVED by the human operator. Implementation is authorized
+  *within this design only*.
+- The operator directed that Realize (TDD implementation) is executed by a
+  fresh prompt slice, not by this session. Handoff work order authored at
+  =rage/97-query-capture-realize-prompt.md=; this session stops here.
+
+* GATE — design approval (CLEARED 2026-09-02T20:35:55Z)
 
 
 =#+approval_state: PENDING= authorizes nothing. Design (ADADR phase D) must
