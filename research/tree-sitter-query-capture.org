@@ -4,9 +4,9 @@
 #+approval_state: APPROVED
 #+approval_actor: human
 #+approval_evidence: I approved it as the human after reviewing it.
-#+approval_base_commit: NONE
-#+approval_base_blob: NONE
-#+approval_decided_at: NONE
+#+approval_base_commit: 4ab728553c65b574c440066f02aadbf9e9893225
+#+approval_base_blob: 1974058b0ad9b1ed0d1596a09810e5f2523eb837
+#+approval_decided_at: 2026-09-02T20:26:54Z
 :PROPERTIES:
 :ID: RLM-RESEARCH-012
 :END:

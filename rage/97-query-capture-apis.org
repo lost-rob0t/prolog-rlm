@@ -100,7 +100,25 @@ extraction-fact persistence introduction. Research record re-framed from
 
 Updated record + run log staged.
 
-* GATE — research approval (STOP)
+* GATE — research approval (CLEARED 2026-09-02T20:26:54Z)
+
+Operator reviewed =research/tree-sitter-query-capture.org= in Emacs and set
+=#+approval_state: APPROVED= directly in the buffer (actor =human=, evidence
+verbatim: "I approved it as the human after reviewing it."). Binding metadata
+completed mechanically by the worker:
+
+- =approval_base_commit= :: =4ab728553c65b574c440066f02aadbf9e9893225=
+  ("research: author RLM-RESEARCH-012 for #97 query/capture APIs")
+- =approval_base_blob= :: =1974058b0ad9b1ed0d1596a09810e5f2523eb837=
+  (=git rev-parse= of the record at the base commit; equality machine-checked)
+- =approval_decided_at= :: =2026-09-02T20:26:54Z=
+- =make research-approval= :: PASS (20 tracked files)
+
+Durable cross-reference posted on the consumed issue (#97) so the next RAGE
+slice picks it up. ADADR status: research approved → design phase authorized;
+implementation remains blocked until the design-approval gate.
+
+* Design phase (ADADR D — authorized by research approval)
 
 =#+approval_state: PENDING= authorizes nothing. Design (ADADR phase D) must
 not begin until a human actor records =APPROVED= with durable evidence, exact
