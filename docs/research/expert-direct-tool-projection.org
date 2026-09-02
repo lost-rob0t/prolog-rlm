@@ -5,7 +5,7 @@
 #+approval_actor: NONE
 #+approval_evidence: NONE
 #+approval_base_commit: 39b278589dae8518e583778cd6671a6cb1e026c7
-#+approval_base_blob: 58329e072edad70dc07b173671cea28c0a40b5de
+#+approval_base_blob: 92d974320e9bc3888f0f06f218cb2e5e1de7ee68
 
 * Research Question
 
@@ -283,6 +283,13 @@ invariant.
    - All estimates are trusted runtime data, never model-supplied: a model
      cannot inflate its own reservation. =native_tool_cutoff_model_calls=
      stays as the secondary count-based bound.
+
+   *RESOLVED by operator decision (2026-09-02).* The operator approved this
+   direction ("That sounds good!"): the design record must replace
+   constant-based time budgeting with turn-cost-aware admission as
+   specified above, for both evidence/synthesis admission and the expert
+   tool boundary. The legacy fixed reservation survives only as a
+   backwards-compatible default when no observations or hints exist yet.
 3. Do expert tools require =model(_)= in =inner_capabilities= only, or may
    pure-deterministic experts omit it (and how does the projection advertise
    the difference)?
