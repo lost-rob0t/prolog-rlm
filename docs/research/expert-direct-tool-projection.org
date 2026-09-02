@@ -5,7 +5,7 @@
 #+approval_actor: NONE
 #+approval_evidence: NONE
 #+approval_base_commit: 39b278589dae8518e583778cd6671a6cb1e026c7
-#+approval_base_blob: 92d974320e9bc3888f0f06f218cb2e5e1de7ee68
+#+approval_base_blob: d390b1d7be778c1abce5cec99bb619a6c1a8b508
 
 * Research Question
 
@@ -293,6 +293,43 @@ invariant.
 3. Do expert tools require =model(_)= in =inner_capabilities= only, or may
    pure-deterministic experts omit it (and how does the projection advertise
    the difference)?
+
+   *Research (2026-09-02).*
+
+   *Runtime evidence.* Model execution is already capability-gated at
+   operation validation: =validate_operation_capability/2= requires
+   =model(Provider)= in the capability set for every =model/4= plan
+   operation, exactly like =tool(Name)= and context actions
+   (=rlm_completion.pl:1835-1837=). A nested session whose capability set
+   lacks =model(_)= therefore cannot validate or execute model operations at
+   all — omitting the grant is a structural impossibility, not a
+   convention. Child capability narrowing is enforced the same way for
+   subagents (=rlm_subagent.pl:80-104=, children own effective completion
+   capabilities after spawn).
+
+   *Design evidence.* The expert taxonomy already implies deterministic
+   experts: =spec-plan-authority.md= §7.3 assigns model-free retrieval to
+   "host retrieval experts" (=locate/search/read=) in typed-plan mode. The
+   question is therefore only about validation/advertisement mechanics,
+   not about whether model-free experts exist.
+
+   *Prior art.* MCP sampling (SEP-1577, 2026-07-28 spec) decouples tool
+   advertisement from internal model use entirely: a server tool that
+   samples carries no marker in its tool schema — sampling is a client
+   capability, orthogonal to tool advertisement. Practitioner guidance
+   (Speakeasy MCP core concepts) treats determinism as an advertised
+   behavior property ("same inputs, same outputs unless side effects are
+   explicit"), not an implementation disclosure.
+
+   *Implication for the design record.* The second half of the question
+   ("how does the projection advertise the difference") dissolves: the
+   model-visible tool schema should NOT distinguish model-backed from
+   deterministic experts — the distinction is a runtime grant and an
+   operator-facing observability fact (OQ6 events), never advertisement
+   surface. Concretely: =model(_)= optional; required iff
+   =model_policy != none= (preflight check); deterministic experts receive
+   no =model(_)= grant and their nested sessions fail closed on any model
+   operation attempt; OQ6 projection events carry the expert kind.
 4. Interaction with #335: =/auto= selection and expert availability must not
    become an authorization decision; expert tools must narrow, never widen,
    when the mode contract lands.
@@ -371,6 +408,10 @@ Operator note: yes i think so.
   call id; trajectory/usage aggregation is externally observable.
 - Capability narrowing: nested capabilities are a subset of parent; a test
   proves the nested session cannot invoke a tool the parent could not.
+- Deterministic expert fail-closed: a contract with =model_policy=none= and
+  no =model(_)= inner capability has its nested session reject a model
+  operation attempt as a typed capability fault; the same contract without
+  a model policy but claiming =model(_)= fails preflight.
 - Effectful expert tools respect the durable effect boundary; replay after
   transport failure remains conservative/indeterminate.
 - Turn-cost-aware admission: a deterministic fixture with a hinted
