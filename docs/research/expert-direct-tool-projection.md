@@ -1,0 +1,299 @@
+# Research: Experts as native direct-mode tools (outside plan mode)
+
+Status: RESEARCH — awaiting explicit research approval. This record authorizes
+design work only, not implementation.
+
+## Worker
+
+`prolog-rlm-rage-hardening` (research slice), ADADR human-gated mode.
+
+## Problem statement
+
+`docs/research/spec-plan-authority.md` Section 8 defines experts as host
+closures registered against a tool name, but every expert invocation path it
+describes is plan-internal: the plan-graph executor maps plan ops to experts
+mechanically, and the model never sees an expert directly. In **direct mode**
+(`rlm_direct`), no expert surface exists at all. A downstream host that wants
+"expert capabilities" available to a direct session — as model-invocable
+native tool calls that the model *may* choose to invoke but is never obliged
+to — has no supported path today.
+
+The question this record answers: **can expert capabilities be projected into
+direct mode's native tool catalog without creating a second authority path,
+a second scheduler, or widening the model's power?** The model might not
+invoke them; availability is an offer, not an authorization or an obligation.
+
+## Scope boundary
+
+- Expert *semantics and contracts* remain owned by `spec-plan-authority.md`
+  (S5 expert contracts, S10 strategy adoption). This record owns only the
+  direct-mode projection question.
+- Mode *selection* (`/direct`, `/symbolic`, `/auto`) is owned by issue #335.
+  This slice must not become a backdoor routing mechanism between modes.
+- The reverse direction — symbolic invoking direct — already exists:
+  `typed_plan_execute` is a native runtime tool and the plan runtime uses
+  `rlm_direct_model_step/10` as its model session provider.
+
+## Verified facts (current `main`, commit 39b2785)
+
+### Direct-mode native catalog is three closed binding families
+
+`prolog/rlm_direct.pl:401-556` (`native_catalog/5`):
+
+1. **Context bindings** — `context_search` / `context_slice` / `context_peek`,
+   each advertised only when the matching `context(_)` capability is granted.
+2. **Runtime bindings** — `spec_*` ops and **`typed_plan_execute`**
+   (`plan(execute)` capability), executed by trusted runtime code
+   (`runtime_operation/4`, `rlm_direct.pl:1600-1639`).
+3. **Registry bindings** — schemas projected by
+   `rlm_completion:provider_tool_projection/6` through the prompt compiler
+   (`rlm_completion.pl:2335-2388`), executed via
+   `tool_invoke_execute/6` (`rlm_direct.pl:1173-1181`).
+
+An expert projected into direct mode must land in family 3 (registry) or
+family 2 (runtime). There is no fourth family, and adding one would fork the
+authority path.
+
+### Registry tool contract is already expert-shaped
+
+`prolog/rlm_tool.pl:1768-1799` (`normalize_tool_schema/2`) — verified live:
+
+- `capability` is REQUIRED and must be exactly `tool(Name)` matching the
+  tool name (`require_matching_tool_capability/2`); a live registration with
+  mismatched capability fails.
+- `effect` must be in the closed set `read | write | process | network_write`
+  (`rlm_authority.pl:169-172`); a live registration with
+  `external_effect` is rejected — the design doc's `external_effect` expert
+  classification maps onto registry `write`/`process`/`network_write`.
+- `arguments` and `result` use the closed host schema vocabulary
+  (any/string/integer/number/boolean/list/array/object), not raw JSON Schema.
+- `limits` bound each tool call: `time_limit` (default 1.0s) and
+  `max_output_bytes` (default 4096) (`rlm_tool.pl:1821-1831`).
+
+Enforcement has two independent points:
+
+- **Advertisement**: `tool_registry_runtime_tools/3`
+  (`rlm_tool.pl:1584`) filters projected schemas by granted capabilities —
+  verified live: empty capability set projects zero tools.
+- **Invocation**: `authorize_tool/3` re-checks `Schema.capability` against
+  the granted set at every call (`rlm_tool.pl:519,534-543`), independently
+  of what was advertised. This is the runtime fix for the #191 class of bug
+  (model saw schemas for capability-denied tools).
+
+### Effect isolation and budget admission in the direct loop
+
+- Effectful (non-`read`) calls in a multi-call batch fail the whole batch
+  (`effectful_batch_unsupported`, `rlm_direct.pl:975-985`). An effectful
+  expert tool is automatically single-call.
+- Batch cardinality admission counts the ORIGINAL requested batch
+  (`native_batch_cardinality`, `rlm_direct.pl:873-883`).
+- Registry-tool results are retained as opaque contexts
+  (`retain_result/2`, `rlm_direct.pl:1261-1271`) and the model must inspect
+  them with context tools — the same result-context discipline an expert
+  output would need.
+
+### Nested-execution charge-back precedent exists on main
+
+Three independent charge-back mechanisms, all on main:
+
+- `charge_runtime_usage/4` — a native runtime op (e.g. `typed_plan_execute`)
+  charges nested iterations/model/tool/context calls into the parent direct
+  budget and fails with `nested_runtime_budget_exhausted`
+  (`rlm_direct.pl:1288-1309`).
+- `charge_native_model_execution/3` — the plan runtime charges a native
+  model session's extra steps/model calls/tool/context/output bytes against
+  the shared step budget (`rlm_plan.pl:1191-1212`).
+- `direct_model_step_budget/3` — the native model step nets the outer
+  session's spent usage out of the child budget (`rlm_direct.pl:121-146`).
+
+### What does NOT exist on main (verified)
+
+- No `expert_contract`, no `expert_registry` anywhere in `prolog/`
+  (grep: zero hits). Experts are design-only (`spec-plan-authority.md` §8.1).
+- No `plan_capability_required/2` — the mechanical op→expert mapping is
+  unmerged design (S5/S10 surface).
+- No `reasoning_mode_*` predicates anywhere — #335 is unimplemented.
+- Doc drift: `spec-plan-authority.md` §2.2/§110 cites
+  `charge_native_model_execution/2`; main defines it with arity **3**
+  (`rlm_plan.pl:1191`). The substrate landed with an evolved signature;
+  the record should be reconciled by the owning slice.
+
+### Prolog MCP sandbox note
+
+The generic Prolog MCP session available to workers runs in a sandbox
+without filesystem access to project sources (`use_module` of project files
+is rejected; `consult` sees a different working directory). Project-runtime
+verification therefore used the canonical `swipl` gates
+(`test/check_runtime.pl` passes, SWI 10.0.2). Downstream consumers wanting
+Prolog-MCP-based verification of this runtime must expose project modules to
+the MCP server explicitly; that is an integration question, not a runtime
+invariant.
+
+## Prior art (web-verified)
+
+### OpenAI Agents SDK — `Agent.as_tool()` (manager pattern)
+
+- Agents exposed as tools is a first-class, named pattern ("manager: agents
+  as tools" vs "handoffs"), with per-nested-run `max_turns`, structured
+  input schemas, `custom_output_extractor`, `is_enabled` (disabled tools are
+  hidden from the LLM — availability ≠ visibility ≠ authority), and
+  `needs_approval` gating on the nested run itself.
+- Usage is aggregated across nested agent-as-tool runs through a shared
+  context wrapper; nested results expose `agent_tool_invocation` metadata
+  (outer tool name, call ID, raw arguments) for provenance.
+- Relevance: direct precedent for per-tool nested-run turn bounds, approval
+  gating on the nested execution, and lineage metadata threaded through the
+  tool result.
+
+### MCP sampling — nested model calls under a host chokepoint
+
+- MCP explicitly supports "LLM calls to occur nested inside other MCP server
+  features" via `sampling/createMessage`, with the host retaining model
+  selection, budget, rate limiting, and human-in-the-loop approval. The
+  server never holds model credentials.
+- Documented failure modes map one-to-one onto this slice's risks:
+  - **injection via callback** — untrusted tool input folded into the nested
+    prompt;
+  - **runaway recursion** — a sampled completion triggers another tool call
+    that samples again, unbounded spend;
+  - **attribution loss** — nested spend surfaces on the host without
+    provenance;
+  - **capability-absent dead-end** — server assumes sampling the host never
+    advertised.
+- Relevance: an expert tool handler that needs model work must request it
+  through the trusted model boundary (host-held provider, budgeted), never
+  carry provider access of its own. This repo already vendors the MCP
+  2025-11-25 / 2026-07-28 protocol versions, so the sampling boundary model
+  is native vocabulary here.
+
+### Claude Code — bounded nesting and budget enforcement
+
+- Nested subagent spawns went banned → bounded (default depth 3) in
+  production; nested activity is surfaced keyed by the spawning agent's
+  tool_use id (lineage).
+- A budget cap that only blocked *new* spawns was a fixed bug: enforcement
+  must reach into already-running nested work, halting it at the cap.
+- Relevance: (a) bounded depth/expert-run budgets need to be defaults, not
+  opt-ins; (b) the charge-back test must cover an expert tool whose inner
+  session is *already running* when the parent budget exhausts; (c) lineage
+  must key nested work to the outer tool call ID.
+
+### LangChain deepagents #1698 — limit non-propagation counterexample
+
+- Parent `recursion_limit` was silently not propagated to subagents; they ran
+  with the default 25 and crashed mid-run, propagating cancellation upwards.
+  The fix direction: propagate the parent's limit as the default, allow
+  explicit per-subagent narrowing, never silent defaults.
+- Relevance: a negative counterexample proving that nested-budget
+  propagation must be explicit and tested — "parent budget exists" is not
+  enough; the expert boundary must demonstrably charge the parent.
+
+## Gap analysis — what is missing for expert-as-direct-tool
+
+- **G1 — expert→tool registration adapter.** No mechanical mapping from an
+  expert contract (op, capabilities, inner_capabilities, input/output
+  schemas, effects, authority tier, model policy) to a registered
+  `tool_schema{}` + handler. A host could hand-write one today, but nothing
+  enforces the contract invariants (e.g. `inner_capabilities ⊆ environment
+  grants`) on the tool path.
+- **G2 — nested model sessions inside a tool handler are unbudgeted.**
+  Registry-tool limits are only `time_limit` + `max_output_bytes`
+  (`rlm_tool.pl:1821-1831`). A handler invoking `rlm_direct/4` receives a
+  fresh budget from options and its usage is invisible to the parent loop —
+  the exact runaway-recursion and attribution-loss failure modes MCP
+  sampling names. The `charge_runtime_usage` pattern exists but is wired
+  only for native *runtime* ops, not registry *tool* handlers.
+- **G3 — model-boundary rule for expert inner loops.** Nothing today
+  prevents (or documents) an expert handler constructing its own provider
+  access. The MCP-sampling analogue must be normative: expert inner model
+  work goes through the trusted session handler / model capability, with
+  host-held credentials.
+- **G4 — lineage.** Nested expert execution must be attributable to the
+  outer tool call: the `tool_trace{}` + result-context registration already
+  exist; a nested session must append its lineage (outer call id, expert
+  identity, iteration count) rather than emit an unlinked trajectory.
+- **G5 — capability narrowing at preflight.** `expert_contract
+  .inner_capabilities` must be checked ⊆ environment grants *before* the
+  expert executes, and the nested session must receive narrowed (never
+  widened) capabilities — `capabilities_narrow/3` semantics already in
+  `rlm_tool.pl:86-111`.
+
+## Options considered
+
+### Option A — expert registry adapter over the existing tool registry
+
+A trusted host-side adapter maps expert contracts to `tool_register/4`
+entries; projection, capability enforcement, effect isolation, result
+retention, and authority all come free from the existing paths. Nested
+session charge-back is added as a budget handle threaded through
+`tool_invocation_options` (trusted runtime data), charged like
+`charge_runtime_usage`.
+
+- Pros: zero new authority surfaces; one scheduler unchanged; prompt-compiler
+  selection applies (query-relevant or `mode(all_tools)`); smallest delta.
+- Cons: contract invariants (model_policy, completion/failure conditions)
+  live in the adapter, so validation must be explicit or they are inert.
+
+### Option B — new native runtime binding `expert_execute` (family 2)
+
+Add `expert_execute` beside `typed_plan_execute` with a trusted expert
+registry option, mirroring the runtime-op charge-back wiring.
+
+- Pros: charge-back wiring is already the runtime-op pattern.
+- Cons: duplicates family 3 for no authority gain; hardwires expert
+  execution into `rlm_direct`; every new expert needs runtime-code changes;
+  grows the closed runtime catalog indefinitely.
+
+### Option C — status quo (experts stay plan-internal)
+
+- Rejected by the requester: downstream direct-mode consumers need bounded
+  expert capabilities without adopting the plan runtime.
+
+**Direction implied by the evidence (not yet a design decision): Option A's
+shape — the registry tool path already implements every authority property
+the design doc requires of experts; the missing pieces are G1-G5, and each
+has an existing in-repo precedent to reuse rather than a new subsystem.**
+
+## Contradictions and unknowns (to resolve at design)
+
+1. Doc drift: `charge_native_model_execution/2` (design doc) vs `/3` (main).
+2. Should an expert tool's nested session participate in the parent's
+   wall-clock deadline and synthesis reservation? A long expert run could
+   starve the synthesis window; deadline propagation needs an explicit rule.
+3. Do expert tools require `model(_)` in `inner_capabilities` only, or may
+   pure-deterministic experts omit it (and how does the projection advertise
+   the difference)?
+4. Interaction with #335: `/auto` selection and expert availability must not
+   become an authorization decision; expert tools must narrow, never widen,
+   when the mode contract lands.
+5. Effectful experts via the tool path get `effectful_batch_unsupported`
+   single-call semantics; whether *all* expert tools should be forced
+   single-call regardless of effect class is open.
+6. Whether expert availability should be recorded in the trace/event stream
+   as a first-class projection event (observability parity with tool
+   projection observability tracked by #176/#183).
+
+## Acceptance criteria for the design phase (proposed)
+
+- One expert contract→tool adapter with validated contract invariants;
+  invalid contracts fail closed at registration.
+- Nested expert sessions charge their actual usage into the parent budget;
+  a live counterexample test proves exhaustion halts an in-flight nested
+  session (Claude Code lesson), not merely new spawns.
+- Provenance: every nested expert session is traceable to its outer tool
+  call id; trajectory/usage aggregation is externally observable.
+- Capability narrowing: nested capabilities ⊆ parent; a test proves the
+  nested session cannot invoke a tool the parent could not.
+- Effectful expert tools respect the durable effect boundary; replay after
+  transport failure remains conservative/indeterminate.
+- No new scheduler, no new authority tier, no `call/1` for model output;
+  deterministic gates green; docs state the availability ≠ authority
+  boundary.
+
+## Non-goals
+
+- Implementing the plan-side expert registry (S5/S10 ownership).
+- Mode selection or `/auto` policy (#335).
+- Any new provider/transport, MCP sampling transport, or effect class.
+- Making experts invocable in symbolic mode through a second path — symbolic
+  experts remain plan-mapped.
