@@ -28,19 +28,19 @@ base_complete :-
 all_required_gates_observed :-
     repo_state(Head, Digest),
     forall(member(Cmd,
-                  [[swipl, -q, -s, 'test/check_runtime.pl'],
-                   [swipl, -q, -s, 'test/load_all.pl'],
-                   [swipl, -q, -s, 'test/run_tests.pl'],
-                   [swipl, -q, -s, 'benchmark/run.pl', --, deterministic],
-                   [swipl, -q, -s, 'scripts/design_gate.pl'],
-                   [swipl, -q, -s, 'scripts/plan_graph_contract_check.pl'],
-                   [swipl, -q, -s, 'bin/prolog-rlm.pl', --, demo, --json],
-                   [git, diff, --check],
-                   [make, research-approval],
-                   [swipl, -q, -s, 'test/rlm_plan_graph_test.pl', -g, run_tests],
-                   [swipl, -q, -s, 'test/rlm_plan_native_ops_test.pl', -g, run_tests],
-                   [swipl, -q, -s, 'test/rlm_effect_restart_test.pl']]),
-           observation(_, Cmd, exit(0), _, Head, Digest)).
+                  [[swipl, '-q', '-s', 'test/check_runtime.pl'],
+                   [swipl, '-q', '-s', 'test/load_all.pl'],
+                   [swipl, '-q', '-s', 'test/run_tests.pl'],
+                   [swipl, '-q', '-s', 'benchmark/run.pl', '--', deterministic],
+                   [swipl, '-q', '-s', 'scripts/design_gate.pl'],
+                   [swipl, '-q', '-s', 'scripts/plan_graph_contract_check.pl'],
+                   [swipl, '-q', '-s', 'bin/prolog-rlm.pl', '--', demo, '--json'],
+                   [git, diff, '--check'],
+                   [make, 'research-approval'],
+                   [swipl, '-q', '-s', 'test/rlm_plan_graph_test.pl', '-g', run_tests],
+                   [swipl, '-q', '-s', 'test/rlm_plan_native_ops_test.pl', '-g', run_tests],
+                   [swipl, '-q', '-s', 'test/rlm_effect_restart_test.pl']]),
+           observation(_, command(Cmd), exit(0), _, Head, Digest)).
 
 % D6-11 shape: the merged executor exports the closed plan-native set and
 % the design gate pins it against the closed vocabulary. Checked by loading
