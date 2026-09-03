@@ -390,8 +390,8 @@ invariant.
    requested as the sole call in a model turn, and the design record must
    not propose batched effects. This closes the open question.
 
-   
-   
+
+
 6. Whether expert availability should be recorded in the trace/event stream
    as a first-class projection event (observability parity with tool
    projection observability tracked by #176/#183).

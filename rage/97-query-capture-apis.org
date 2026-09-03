@@ -21,7 +21,7 @@ Primary sources (retrieved 2026-09-02 at start SHA =156bfe9=):
   (exact header text inspected): =TREE_SITTER_LANGUAGE_VERSION 14=,
   =MIN_COMPATIBLE 13=; query section contains =ts_query_new=, =ts_query_delete=,
   =ts_query_{pattern,capture,string}_count=, =ts_query_start_byte_for_pattern=,
-  =ts_query_predicates_for_pattern=, =ts_query_is_pattern_*≈, 
+  =ts_query_predicates_for_pattern=, =ts_query_is_pattern_*≈,
   =ts_query_capture_name_for_id=, =ts_query_capture_quantifier_for_id=
   (=TSQuantifier= present), =ts_query_string_value_for_id=,
   =ts_query_disable_{capture,pattern}=, =ts_query_cursor_new/delete/exec=,
