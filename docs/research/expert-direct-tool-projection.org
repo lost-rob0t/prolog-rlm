@@ -29,6 +29,10 @@ authorization and not an obligation.
 - The reverse direction — symbolic invoking direct — already exists:
   =typed_plan_execute= is a native runtime tool and the plan runtime uses
   =rlm_direct_model_step/10= as its model session provider.
+- D6-11 (=docs/research/spec-plan-authority.md= §6.3): the plan-native
+  deterministic set =sync_remote/1=, =run/1=, =index/1=, =delete/1= is never
+  projected as a direct-mode expert tool; direct mode reaches these ops only
+  through =typed_plan_execute=.
 
 ** Verified facts (main @ =39b278589dae=, live =swipl= probes, 2026-09-02)
 

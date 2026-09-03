@@ -350,12 +350,15 @@ that revision.
 ### 6.2 BASE grammar (from `rage/288-spec-plan-graph-executor`, ADOPTED)
 
 BASE = branch `rage/288-spec-plan-graph-executor` @ pinned commit
-`71a10ae238dd0fa288005bf10892dc8d865ef2f3`. The gate resolves the BASE
+`71a10ae238dd0fa288005bf10892dc8d865ef2f3`, now ADOPTED: the BASE module
+`prolog/rlm_plan_graph.pl` lives in main and every BASE check validates the
+merged module from the checkout. The pre-adoption gate resolved the BASE
 through an explicit candidate list (pinned object id, `refs/heads/<branch>`,
-`refs/remotes/origin/<branch>`, `refs/remotes/github/<branch>`) — a bare
-branch ref does not resolve in canonical CI clones — and asserts the resolved
-object equals the pinned id (`base_ref_resolvable` check). CI fetches the
-branch non-fatally; the pinned id remains the authority.
+`refs/remotes/origin/<branch>`, `refs/remotes/github/<branch>`) and asserted
+the resolved object equalled the pinned id (`base_ref_resolvable`); that
+extraction flow is RETIRED with adoption. The merged module is now the
+authority (`plan_graph_merged_module_loaded` checks it is loaded from this
+checkout), and the pinned id above remains as adoption provenance.
 
 ```prolog
 plan_graph(steps([step(Id, Op, Args, Bind), ...]),
@@ -396,7 +399,11 @@ Two Section 5 features are DELTAS rather than BASE features, and the doc does
 not claim them as BASE: `revision/1` diff sides (D6-9 — BASE `side_valid/1`
 admits `path|ref|span` only) and the closed 13-atom `symbol_kind` set
 (D6-10 — BASE symbol-ref decoding admits any non-empty atom kind). Both are
-enforced at the D6 layer and owned by the reconciliation slices.
+enforced at the D6 layer and owned by the reconciliation slices. One
+execution-layer decision is likewise recorded as a delta: the deterministic
+state-mutating closed set `sync_remote/1`, `run/1`, `index/1`, `delete/1`
+executes at the plan layer, not through experts (D6-11), while
+`edit/2`/`create/2` remain write-expert-owned per §8.3.
 
 ### 6.3 D6 DELTAS (each owned by the reconciliation slice)
 
@@ -438,7 +445,9 @@ enforced at the D6 layer and owned by the reconciliation slices.
   inner loops (Section 8.2). A plan-visible generate op would split budget
   authority between two schedulers.
 - **D6-8 expert contracts + inner capabilities.** Every op maps mechanically
-  to an expert (`plan_capability_required/2` from BASE). The expert registry
+  to an expert (`plan_capability_required/2` from BASE) — except the
+  plan-native deterministic set recorded by D6-11, which is excluded from
+  this mapping and from the expert registry. The expert registry
   supplies `expert_contract{}` records (Section 8.1) whose
   `inner_capabilities` (e.g. `model(P)` for write experts) must be a subset
   of environment-granted capabilities and are validated at preflight.
@@ -453,6 +462,14 @@ enforced at the D6 layer and owned by the reconciliation slices.
   closed 13-atom `symbol_kind` set (Section 5) at graph validation
   (`symbol_kind_closed`), and S1's normalized reference layer carries the
   closed set forward.
+- **D6-11 plan-native deterministic mutations.** The closed set
+  `sync_remote/1`, `run/1`, `index/1`, `delete/1` executes at the plan
+  layer through the canonical boundary (schema → capability → authority →
+  durable effect admission → dispatch → observe), exactly like a
+  `tool/3` step — never ambient shell/git access in plan code. They are
+  excluded from expert mapping and from the future expert registry.
+  Model-payload mutations (`edit/2`, `create/2`) remain write-expert-owned
+  per §8.3.
 
 ### 6.4 Diff endpoint decision
 
@@ -526,6 +543,8 @@ is trusted host data:
 
 ```prolog
 expert_contract{op:Op/Arity,                       % mechanical mapping from plan_capability_required/2
+                                                    % (D6-11 exclusion: sync_remote/1, run/1, index/1,
+                                                    % delete/1 are plan-native and never registered here)
                 capabilities:[capability],          % REQUIRED, must ⊆ environment grants
                 inner_capabilities:[capability],    % REQUIRED, expert inner-loop grants
                                                     % (e.g. model(P)); distinct from the
@@ -997,12 +1016,13 @@ edit; S10 — native session budget charge-back under the step budget.
 
 `scripts/design_gate.pl` (deterministic; no model/API/network calls) replaces
 the presence-only #288 contract script. It validates the normative design
-through real implementations and currently runs 59 checks in 13 groups:
+through real implementations and currently runs 63 checks in 14 groups:
 
-- **base_adoption_checks (1)** — the BASE is resolved through an explicit
-  candidate list anchored at a pinned object id (§6.2) and the resolved
-  commit must equal the pin (`base_ref_resolvable`); canonical CI clones
-  fetch the BASE branch non-fatally before this gate runs.
+- **base_adoption_checks (1)** — the ADOPTED BASE module
+  `prolog/rlm_plan_graph.pl` is loaded from this checkout
+  (`plan_graph_merged_module_loaded`); the pre-adoption
+  `base_ref_resolvable` pin-resolution check was retired with adoption
+  (§6.2) and the pinned object id remains as adoption provenance.
 - **spec_grammar_checks (10)** — the normative SPEC examples (dataset,
   language+symbol+build+test domain, TDD, HTTP endpoint) compile through the
   real `spec_source_compile/4` with a gate host registry implementing the
@@ -1010,10 +1030,20 @@ through real implementations and currently runs 59 checks in 13 groups:
   PR #290 design (`spec/2` root, unknown form, wrong form arity, duplicate
   ids, executable-shaped data, unknown assertion kind) are rejected by the
   real merged parser.
-- **plan_base_checks (7)** — BASE plan graphs parse and validate through the
-  ADOPTED `rlm_plan_graph` module; unknown op, delete-with-four-args,
+- **plan_base_checks (7)** — plan graphs parse and validate through the
+  merged `rlm_plan_graph` module; unknown op, delete-with-four-args,
   malformed symbol ref, capability denial, delegate widening, and JSON
   unknown-capability counterexamples are rejected by its real validator.
+- **plan_native_checks (4)** — D6-11: the closed plan-native set (the
+  module's own `plan_native_op/1`) stays inside the closed project-op
+  vocabulary and never covers `edit/2`/`create/2`
+  (`plan_native_set_closed_in_merged_vocabulary`); an ungranted capability
+  fails closed for every native op before any dispatch
+  (`plan_native_capability_denied_fail_closed`); the exact per-op
+  capability is `tool(Op)`
+  (`plan_native_capability_exact_admission`); and every native op desugars
+  mechanically to `plan([tool(Op, literal(Args), Bind), final(var(Bind))])`
+  (`plan_native_desugar_is_canonical_tool_step`).
 - **d6_delta_checks (7)** — the D6 grammar (expr leaves, read selector, edit
   content, obligations) validates through the gate checker; dangling input,
   non-grammar expr (`expr(call(...))`), shell-string command, and ghost

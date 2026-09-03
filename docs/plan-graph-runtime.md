@@ -204,6 +204,18 @@ expert-registry entry for a plan-native op faults `expert_mapping_excluded`.
 Model-payload mutations (`edit/2`, `create/2`) remain write-expert-owned
 per the design record §8.3 and are never members of the native set.
 
+The canonical boundary above is main's `rlm_tool` registry + durable effect
+substrate (#57/#53): a trusted host handler routes through `tool_invoke/6`,
+which owns schema validation, capability re-check, authority, durable
+effect admission, dispatch, and observation. The executor stays a pure
+scheduler with no effect path of its own; `test/rlm_plan_native_ops_test.pl`
+drives both the plan layer and the executor's `native_handlers` path
+through that registry and proves an admitted effect produces exactly one
+durable observed attempt carrying the content-derived normalized
+fingerprint, an identical re-execution replays without a second external
+dispatch or durable attempt, an ungranted capability fails closed before
+any dispatch, and the observation op never enters the durable effect store.
+
 A `validate/1` expert is a host verifier closure (receiving
 `validate(spec(fingerprint(Fp)))`); the closure resolves the fingerprint
 against host-supplied frozen Specs and calls the direct execute ABI

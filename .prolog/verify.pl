@@ -1,4 +1,8 @@
 % Task-specific verification for the current worktree.
+% Task: #293 S0 — adopt the closed project-op plan vocabulary and the plan
+% dependency-graph executor (rage/288-spec-plan-graph-executor @ 71a10ae +
+% D6-11 plan-native dispatch from rage/355-d6-11-plan-native-dispatch) into
+% main, with the design gate repointed at the merged module.
 :- set_prolog_flag(unknown, error).
 :- use_module(library(plunit)).
 :- use_module(library(time)).
@@ -20,70 +24,77 @@ base_complete :-
     current_successful_observation,
     current_research_evidence.
 
-current_successful_command(Argv) :-
+% Every required deterministic gate ran green at the current HEAD/worktree.
+all_required_gates_observed :-
     repo_state(Head, Digest),
-    observation(_, command(Argv), exit(0), _, Head, Digest).
+    forall(member(Cmd,
+                  [[swipl, -q, -s, 'test/check_runtime.pl'],
+                   [swipl, -q, -s, 'test/load_all.pl'],
+                   [swipl, -q, -s, 'test/run_tests.pl'],
+                   [swipl, -q, -s, 'benchmark/run.pl', --, deterministic],
+                   [swipl, -q, -s, 'scripts/design_gate.pl'],
+                   [swipl, -q, -s, 'scripts/plan_graph_contract_check.pl'],
+                   [swipl, -q, -s, 'bin/prolog-rlm.pl', --, demo, --json],
+                   [git, diff, --check],
+                   [make, research-approval],
+                   [swipl, -q, -s, 'test/rlm_plan_graph_test.pl', -g, run_tests],
+                   [swipl, -q, -s, 'test/rlm_plan_native_ops_test.pl', -g, run_tests],
+                   [swipl, -q, -s, 'test/rlm_effect_restart_test.pl']]),
+           observation(_, Cmd, exit(0), _, Head, Digest)).
 
-requirement_command(research_gate, Argv) :-
-    Argv = [make, 'research-approval'].
-requirement_command(static_load, Argv) :-
-    Argv = [swipl, '-q', '-s', 'test/load_all.pl'].
-requirement_command(deterministic_suite, Argv) :-
-    Argv = [swipl, '-q', '-s', 'test/run_tests.pl'].
-requirement_command(native_build, Argv) :-
-    Argv = [nix, develop, '--command', make, 'tree-sitter-ffi'].
-requirement_command(native_query_suite, Argv) :-
-    argv_mentions(Argv, 'run_tests'),
-    argv_mentions(Argv, 'rlm_tree_sitter_query_test'),
-    argv_mentions(Argv, 'rlm_project_query_test').
-requirement_command(restart_fixture, Argv) :-
-    argv_mentions(Argv, 'rlm_project_query_restart_test').
-requirement_command(flake_checks, Argv) :-
-    Argv = [nix, flake, check|_].
-requirement_command(whitespace, Argv) :-
-    Argv = [git, diff, '--check'].
+% D6-11 shape: the merged executor exports the closed plan-native set and
+% the design gate pins it against the closed vocabulary. Checked by loading
+% the real merged modules, not by self-attestation.
+:- use_module('../prolog/rlm_plan_graph', []).
+:- use_module('../prolog/rlm_tool', []).
 
-% Focused-suite invocations pass the test file names inside the -g goal
-% string rather than as standalone argv elements; both spellings count.
-% Argv is always ground here (bound from a recorded observation).
-argv_mentions(Argv, Name) :-
-    is_list(Argv),
-    member(Element, Argv),
-    (   Element == Name
-    ;   atom(Element),
-        sub_atom(Element, _, _, _, Name)
-    ).
+d6_11_closed_set_exported :-
+    rlm_plan_graph:plan_native_op(sync_remote/1),
+    rlm_plan_graph:plan_native_op(run/1),
+    rlm_plan_graph:plan_native_op(index/1),
+    rlm_plan_graph:plan_native_op(delete/1),
+    \+ rlm_plan_graph:plan_native_op(edit/2),
+    \+ rlm_plan_graph:plan_native_op(create/2).
 
-requirement_satisfied(Requirement) :-
-    requirement(Requirement, _),
-    current_successful_command(Argv),
-    requirement_command(Requirement, Argv).
+d6_11_set_inside_closed_vocabulary :-
+    forall(rlm_plan_graph:plan_native_op(Op),
+           rlm_plan_graph:plan_graph_op(Op)).
 
-% These invariants are intentionally descriptive obligations; the observed
-% native/query commands are the executable evidence that discharges them.
-invariant(query_source_is_data, native_query_suite).
-invariant(captures_are_closed_data, native_query_suite).
-invariant(mode_runtimes_are_unchanged, deterministic_suite).
-invariant(publication_fences_prior_records_stale, native_query_suite).
-invariant(stale_fencing_survives_restart, restart_fixture).
+% Only one scheduler: the executor goes through rlm_async and there is no
+% second plan interpreter (rlm_plan executes the desugared tool/3 steps).
+no_second_scheduler :-
+    current_predicate(rlm_async:rlm_async_submit/2),
+    current_predicate(rlm_async:rlm_async_submit/3),
+    \+ current_predicate(rlm_plan_graph:rlm_async_submit/2),
+    \+ current_predicate(rlm_plan_graph:schedule_step/1),
+    \+ current_predicate(rlm_plan_graph:plan_graph_eval/1).
+
+% The D6-11 exclusion is enforced fail-closed at preflight, not ignored.
+expert_mapping_exclusion_enforced :-
+    \+ catch(rlm_plan_graph:valid_expert_registry(
+                 [expert(sync_remote, true)]), _, fail).
+
+% No new external-effect path: the executor module performs no effect
+% submission itself; durable effects belong to the rlm_effect boundary.
+executor_has_no_effect_path :-
+    current_predicate(rlm_effect:rlm_effect_store_open/1),
+    \+ current_predicate(rlm_plan_graph:effect_submit/2),
+    \+ current_predicate(rlm_plan_graph:rlm_effect_attempt/2),
+    \+ current_predicate(rlm_plan_graph:effect_dispatch/2).
 
 complete :-
     base_complete,
-    forall(requirement(Requirement, _),
-           requirement_satisfied(Requirement)),
-    forall(invariant(_, Requirement),
-           requirement_satisfied(Requirement)).
+    all_required_gates_observed,
+    d6_11_closed_set_exported,
+    d6_11_set_inside_closed_vocabulary,
+    no_second_scheduler,
+    expert_mapping_exclusion_enforced,
+    executor_has_no_effect_path.
 
 :- begin_tests(workspace_verification).
 
 test(complete) :-
     complete.
-
-test(task_requirements_have_command_evidence) :-
-    forall(requirement(Requirement, _),
-           requirement_satisfied(Requirement)),
-    forall(invariant(_, Requirement),
-           requirement_satisfied(Requirement)).
 
 :- end_tests(workspace_verification).
 

@@ -18,16 +18,23 @@
  * Layers, explicitly labeled:
  *   - IMPLEMENTED: merged-main modules (rlm_spec_lang, rlm_spec,
  *     rlm_assertion, rlm_evidence, rlm_verify, rlm_plan, rlm_tool,
- *     rlm_graph_persist) are loaded FROM THIS CHECKOUT; every SPEC grammar,
- *     expression-grammar, desugared-plan, evidence and persistency check
- *     runs through their real code. This checkout also carries branch-only
- *     features (e.g. rlm_plan's model_step_handler hook,
- *     rlm_tool's capability_shape(spec/1|plan/1)); those are validated as
- *     UNMERGED-adoption surface (design record §2.2), NOT as merged main.
- *   - UNMERGED BASE: prolog/rlm_plan_graph.pl is extracted from the
- *     rage/288-spec-plan-graph-executor git object and loaded; BASE plan
- *     graphs validate through its real code. If the branch is missing the
- *     gate fails loudly: the BASE is a required adoption input, not a copy.
+ *     rlm_graph_persist, rlm_plan_graph) are loaded FROM THIS CHECKOUT;
+ *     every SPEC grammar, expression-grammar, desugared-plan, evidence and
+ *     persistency check runs through their real code. This checkout also
+ *     carries branch-only features (e.g. rlm_plan's model_step_handler
+ *     hook, rlm_tool's capability_shape(spec/1|plan/1)); those are
+ *     validated as UNMERGED-adoption surface (design record §2.2), NOT as
+ *     merged main.
+ *   - ADOPTED BASE: prolog/rlm_plan_graph.pl is the closed project-op
+ *     vocabulary and plan dependency-graph executor adopted into main from
+ *     rage/288-spec-plan-graph-executor @ 71a10ae238dd0fa288005bf10892dc8d
+ *     865ef2f3 with the D6-11 plan-native dispatch reconciliation. The
+ *     module is loaded from this checkout like every other merged module;
+ *     the pinned id above is ADOPTION PROVENANCE (historical record), not
+ *     a live gate assertion. Before adoption the gate extracted the module
+ *     from that git object (base_ref_resolvable); that extraction flow is
+ *     retired — the merged module is now the authority, and a missing
+ *     module still fails the gate loudly.
  *   - NEW DESIGN TARGETS: the D6 delta grammar, plan-vs-spec compatibility,
  *     the TDD evaluator, HTTP contract schemas, edit_action / expert
  *     contracts, the snapshot schema, KB discipline and the implementation
@@ -40,7 +47,6 @@
  */
 
 :- use_module(library(lists)).
-:- use_module(library(process)).
 
 :- dynamic(gate_root/1).
 :- dynamic(check_failure/2).
@@ -66,95 +72,20 @@ load_merged_modules :-
     atomic_list_concat([Root, '/prolog/rlm_plan.pl'], Plan),
     atomic_list_concat([Root, '/prolog/rlm_tool.pl'], Tool),
     atomic_list_concat([Root, '/prolog/rlm_graph_persist.pl'], Persist),
+    atomic_list_concat([Root, '/prolog/rlm_plan_graph.pl'], PlanGraph),
     forall(member(File, [SpecLang, Spec, Assertion, Evidence, Verify,
-                         Plan, Tool, Persist]),
+                         Plan, Tool, Persist, PlanGraph]),
            (   exists_file(File)
            ->  use_module(File)
            ;   throw(gate_fault(missing_merged_module(File)))
            )).
 
-/* BASE adoption input: the BASE object id is PINNED. Ref names are only
- * hints for locating that object in whatever clone the gate runs in:
- * canonical CI clones carry only refs/remotes/REMOTE/BRANCH entries for
- * branches that exist on the CI remote, so a bare local branch name
- * (git DWIM) does not resolve there. The pinned id remains the authority
- * even if a ref moves; the gate fails loudly when no candidate locates it.
- */
-base_branch('rage/288-spec-plan-graph-executor').
+/* ADOPTED BASE provenance. prolog/rlm_plan_graph.pl was adopted into main
+ * from rage/288-spec-plan-graph-executor @ this pinned object id, with the
+ * D6-11 plan-native dispatch reconciliation folded in (issue #293). The
+ * gate loads the merged module from the checkout; this fact is a record,
+ * not a resolvability assertion. */
 base_pinned_commit('71a10ae238dd0fa288005bf10892dc8d865ef2f3').
-
-base_ref_candidates([Pinned, Heads, Origin, Github]) :-
-    base_branch(Branch),
-    base_pinned_commit(Pinned),
-    atomic_list_concat(['refs/heads/', Branch], Heads),
-    atomic_list_concat(['refs/remotes/origin/', Branch], Origin),
-    atomic_list_concat(['refs/remotes/github/', Branch], Github).
-
-% First candidate (in declared order) that names a commit object present in
-% this clone. Fails when no candidate resolves; callers report the list.
-first_resolvable_candidate(Candidates, Candidate) :-
-    member(Candidate, Candidates),
-    base_candidate_commit(Candidate, _),
-    !.
-
-% git rev-parse --verify CANDIDATE^{commit} resolves the candidate to a
-% commit AND looks the object up in this clone: a bare full object id is
-% echoed by rev-parse even when absent, but the ^{commit} peel forces the
-% object lookup (nonzero exit, empty stdout when missing). library(process)
-% raises process_error/2 when the reaped child exits nonzero, so an
-% unresolvable candidate is a clean failure, never an escape.
-base_candidate_commit(Candidate, ObjectId) :-
-    gate_root(Root),
-    atomic_list_concat([Candidate, '^', '{commit}'], CommitSpec),
-    catch(base_candidate_commit_(Root, CommitSpec, ObjectId), _, fail).
-
-base_candidate_commit_(Root, CommitSpec, ObjectId) :-
-    setup_call_cleanup(
-        process_create(path(git),
-                       ['rev-parse', '--verify', CommitSpec],
-                       [stdout(pipe(Out)), stderr(null), cwd(Root)]),
-        (   read_line_to_string(Out, Line),
-            Line \== end_of_file,
-            split_string(Line, " ", "", [First|_]),
-            atom_string(ObjectId, First)
-        ),
-        close(Out)).
-
-extract_unmerged_base(Path) :-
-    gate_root(Root),
-    atomic_list_concat([Root, '/prolog'], PrologDir),
-    current_prolog_flag(pid, Pid),
-    atomic_list_concat([PrologDir, '/design_gate_tmp_', Pid, '.pl'], Path),
-    base_ref_candidates(Candidates),
-    first_resolvable_candidate(Candidates, Candidate),
-    atomic_list_concat([Candidate, ':prolog/rlm_plan_graph.pl'], ObjectSpec),
-    catch((setup_call_cleanup(
-               process_create(path(git),
-                              ['cat-file', 'blob', ObjectSpec],
-                              [stdout(pipe(Out)), stderr(null), cwd(Root)]),
-               setup_call_cleanup(open(Path, write, Sink),
-                                  copy_stream_data(Out, Sink),
-                                  close(Sink)),
-               close(Out)),
-           size_file(Path, Size),
-           Size > 10000),
-          _, fail).
-
-load_unmerged_base :-
-    (   extract_unmerged_base(Path)
-    ->  % The extracted module uses source-relative use_module/1
-        % (rlm_async, rlm_plan, rlm_tool); place it inside prolog/ so those
-        % resolve, load (importing its public surface), then remove the
-        % transient copy.
-        setup_call_cleanup(true,
-                           use_module(Path),
-                           catch(delete_file(Path), _, true))
-    ;   base_ref_candidates(Candidates),
-        format(user_error,
-               "design-gate: rage/288 BASE module unavailable; adoption input missing~ndesign-gate: BASE candidates tried (pinned id is the authority): ~q~n",
-               [Candidates]),
-        halt(1)
-    ).
 
 /* ------------------------------------------------------------------ */
 /* Gate harness                                                        */
@@ -210,8 +141,6 @@ main :-
     format("design-gate: loading merged modules (IMPLEMENTED layer)~n"),
     load_merged_modules,
 
-    format("design-gate: extracting + loading rage/288 BASE module (UNMERGED layer)~n"),
-    load_unmerged_base,
     format("design-gate: running checks~n"),
 
     run_all_checks,
@@ -287,6 +216,7 @@ run_all_checks :-
 design_gate_group(base_adoption_checks).
 design_gate_group(spec_grammar_checks).
 design_gate_group(plan_base_checks).
+design_gate_group(plan_native_checks).
 design_gate_group(d6_delta_checks).
 design_gate_group(dataflow_checks).
 design_gate_group(capability_safety_checks).
@@ -407,18 +337,25 @@ requirement_establishment(tdd_evidence, plan_established).
 requirement_establishment(_, none).
 
 /* ------------------------------------------------------------------ */
-/* BASE adoption: pinned ref resolution (canonical CI resolvability)    */
+/* BASE adoption: merged-module authority                               */
 /* ------------------------------------------------------------------ */
 
 base_adoption_checks :-
-    check(base_ref_resolvable, base_ref_resolves_to_pinned_id).
+    check(plan_graph_merged_module_loaded,
+          plan_graph_loaded_from_checkout).
 
-base_ref_resolves_to_pinned_id :-
-    base_pinned_commit(Pinned),
-    base_ref_candidates(Candidates),
-    first_resolvable_candidate(Candidates, Candidate),
-    base_candidate_commit(Candidate, ObjectId),
-    ObjectId == Pinned.
+% Honest repointing of the retired base_ref_resolvable pin: the adoption
+% input is the merged prolog/rlm_plan_graph.pl in THIS checkout (pinned
+% adoption provenance above). The gate fails loudly when the module is
+% absent — a missing merged module is the same failure the old
+% base_ref_resolvable check guarded against.
+plan_graph_loaded_from_checkout :-
+    current_module(rlm_plan_graph),
+    gate_root(Root),
+    atomic_list_concat([Root, '/prolog/rlm_plan_graph.pl'], ModuleFile),
+    exists_file(ModuleFile),
+    source_file(rlm_plan_graph:plan_graph_op(_), DefiningFile),
+    absolute_file_name(DefiningFile, ModuleFile).
 
 /* ------------------------------------------------------------------ */
 /* SPEC grammar checks (through merged rlm_spec_lang/rlm_spec)         */
@@ -587,7 +524,7 @@ http_path_endpoint_args_ok(_{service:user_api,
                              ]}).
 
 /* ------------------------------------------------------------------ */
-/* PLAN BASE checks (through the adopted rage/288 module)              */
+/* PLAN checks (through the merged rlm_plan_graph module)              */
 /* ------------------------------------------------------------------ */
 
 base_all_caps([tool(index), tool(locate), tool(read), tool(search),
@@ -656,6 +593,83 @@ base_graph_plan_graph(plan_graph(
            step(s3, read, read(path('src/foo.py')), body)]),
     depends_on([depends_on(s2, [s1]),
                 depends_on(s3, [s2])]))).
+
+/* ------------------------------------------------------------------ */
+/* D6-11 plan-native deterministic mutations                            */
+/*                                                                      */
+/* D6-11: the closed set sync_remote/1, run/1, index/1, delete/1        */
+/* executes at the plan layer through the canonical boundary (schema -> */
+/* capability -> authority -> durable effect admission -> dispatch ->   */
+/* observe), exactly like a tool/3 step; excluded from expert mapping   */
+/* and from the future expert registry; edit/2 and create/2 remain      */
+/* write-expert-owned per §8.3.                                         */
+/* ------------------------------------------------------------------ */
+
+% The D6-11 closed set is the merged module's own exported
+% plan_native_op/1 (rlm_plan_graph) — the gate does not keep a parallel
+% table. Membership is pinned against plan_graph_op/1 so the native set
+% can never escape the closed project-op vocabulary.
+%
+% Accepted arg shapes for the single-step rejection/admission checks
+% (BASE shapes). The D6 desugar checker requires the D6-4 argv shape for
+% run/1, so the desugar check uses its own D6-shaped table.
+plan_native_args(sync_remote, sync_remote(op(push))).
+plan_native_args(run, run(command(sync))).
+plan_native_args(index, index(scope(all))).
+plan_native_args(delete, delete(path('a.py'))).
+
+plan_native_d6_args(sync_remote, sync_remote(op(push))).
+plan_native_d6_args(run, run(command(argv([sync])))).
+plan_native_d6_args(index, index(scope(all))).
+plan_native_d6_args(delete, delete(path('a.py'))).
+
+plan_native_single_step_graph(Op, Args, plan_graph(
+    steps([step(native_step, Op, Args, native_bind)]),
+    depends_on([]))).
+
+plan_native_checks :-
+    % D6-11 closed set: inside the merged vocabulary, never covering the
+    % write-expert-owned model-payload mutations (§8.3).
+    check(plan_native_set_closed_in_merged_vocabulary,
+          (   forall(plan_native_op(NativeOp), plan_graph_op(NativeOp)),
+              \+ plan_native_op(edit/2),
+              \+ plan_native_op(create/2),
+              plan_graph_op(edit/2),
+              plan_graph_op(create/2)
+          )),
+
+    % Ungranted capability fails closed at the plan layer for every
+    % plan-native op: validation error before any dispatch.
+    check(plan_native_capability_denied_fail_closed,
+          forall(plan_native_op(Op/_),
+                 (   plan_native_args(Op, Args),
+                     plan_native_single_step_graph(Op, Args, Source),
+                     plan_graph_rejects(Source, [tool(other)])
+                 ))),
+
+    % The exact per-op capability admits the native step: the required
+    % capability term is exactly tool(Op) — the canonical plan-layer
+    % capability, not an expert-contract capability.
+    check(plan_native_capability_exact_admission,
+          forall(plan_native_op(Op/_),
+                 (   plan_native_args(Op, Args),
+                     plan_native_single_step_graph(Op, Args, Source),
+                     plan_graph_accepts(Source, [tool(Op)])
+                 ))),
+
+    % Each native op desugars mechanically to the canonical tool/3 step
+    % plan([tool(Op, literal(Args), Bind), final(var(Bind))]) — the
+    % desugared form the plan layer executes (D6-11 "exactly like a
+    % tool/3 step").
+    check(plan_native_desugar_is_canonical_tool_step,
+          forall(plan_native_op(Op/_),
+                 (   plan_native_d6_args(Op, Args),
+                     plan_native_single_step_graph(Op, Args, Source),
+                     d6_accepts(Source, Graph),
+                     d6_desugar(native_step, Op, Graph, _{}, Plan),
+                     Plan == plan([tool(Op, literal(Args), native_bind),
+                                   final(var(native_bind))])
+                 ))).
 
 /* ------------------------------------------------------------------ */
 /* D6 delta checks (gate-local normative checkers; S5 implements them) */
@@ -1718,12 +1732,8 @@ evidence_ref_resolves(EvidenceRef, _) :-
     source_ref_resolves(SourceRef).
 
 % source:<path> | source:<path>:<symbol> name checkout files (and a
-% defined predicate inside them); source:rage288:<path> names the pinned
-% BASE object, which is loaded as the rlm_plan_graph module.
-source_ref_resolves(SourceRef) :-
-    atom_concat('rage288:', _, SourceRef),
-    !,
-    current_module(rlm_plan_graph).
+% defined predicate inside them); the adopted plan-graph module resolves
+% through the plain checkout path prolog/rlm_plan_graph.pl.
 source_ref_resolves(SourceRef) :-
     (   atomic_list_concat([FilePart, Symbol], ':', SourceRef)
     ->  true

@@ -5,6 +5,30 @@ plan vocabulary and the plan dependency-graph executor. Research basis:
 `research/RLM-RESEARCH-027-spec-plan-graph-executor.org` (revised Inference),
 adversarial review `rage/288-review-research-report.md`, issue #288.
 
+> **Adoption reconciliation (merged main).** This record was authored against
+> the pre-adoption BASE where every non-native op resolved through an expert.
+> Two deviations are authoritative in the merged module, per D6-11
+> (`docs/research/spec-plan-authority.md` §6.3):
+>
+> 1. The deterministic closed set `sync_remote/1`, `run/1`, `index/1`,
+>    `delete/1` executes at the plan layer through the canonical boundary
+>    (schema → capability → authority → durable effect admission → dispatch
+>    → observe) via the separate trusted `native_handlers([...])` option; it
+>    is excluded from the expert registry (`expert_mapping_excluded`). Where
+>    this record and the op tables below say "expert" for these ops, read
+>    "plan-native host adapter".
+> 2. Expert/native handlers are host-supplied trusted closures whose
+>    obligation is the canonical boundary above; the executor performs no
+>    effects itself and gains no ambient shell/git authority. The
+>    behavioral evidence is `test/rlm_plan_native_ops_test.pl`, which
+>    drives the executor's `native_handlers` path through the canonical
+>    `rlm_tool` registry (durable observed attempt with content-derived
+>    fingerprint, replay without a second dispatch, capability fail-closed,
+>    observation ops never durable).
+>
+> `edit/2`/`create/2` remain write-expert-owned (§8.3). All other executor
+> semantics below match the merged code.
+
 ## 1. Scope and non-goals
 
 **Scope.** One new sibling module `prolog/rlm_plan_graph.pl` (sibling like
