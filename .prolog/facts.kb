@@ -1,6 +1,6 @@
 % Ground facts and machine observations for this worktree.
 task('d6-11-plan-native-mutations').
-repo_state('3aa16838f58915a3ec392d4832571828604c7c76', 'bab5e1e8ca02b0d2413f2dc140fdbddf9222dc5f457cc4b8b53767870578aeca').
+repo_state('c9cf699c04ed13fd4e78084ab2f8c2cc03cda185', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
 research_required(false).
 
 requirement(research_gate, 'research approval validation stays green after the RLM-RESEARCH-353 scope-boundary edit').
@@ -21,3 +21,12 @@ observation('fcd23301fb731fb3', command(['swipl', '-q', '-s', 'benchmark/run.pl'
 observation('b4821f0c979c29dc', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '5615590b99eb4fe25f3ffee9e5111613054d2ada8f93b41f181707b2d76f4408', '3aa16838f58915a3ec392d4832571828604c7c76', 'bab5e1e8ca02b0d2413f2dc140fdbddf9222dc5f457cc4b8b53767870578aeca').
 observation('c8e6504c5552cf00', command(['swipl', '-q', '-s', 'bin/prolog-rlm.pl', '--', 'demo', '--json']), exit(0), 'aedd1a602b1d80ce285896e684a4cd9d1af92f9cf61b5602aaf5e14680665011', '3aa16838f58915a3ec392d4832571828604c7c76', 'bab5e1e8ca02b0d2413f2dc140fdbddf9222dc5f457cc4b8b53767870578aeca').
 observation('65a39ff5d877437d', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '3aa16838f58915a3ec392d4832571828604c7c76', 'bab5e1e8ca02b0d2413f2dc140fdbddf9222dc5f457cc4b8b53767870578aeca').
+observation('879be5b957c85644', command(['make', 'research-approval']), exit(0), '05f88b45e11e31504c9886fff68d3be9d0492d0c04a7f7f15bcc7008c525159f', 'c9cf699c04ed13fd4e78084ab2f8c2cc03cda185', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('81a1f7295c5c71b2', command(['swipl', '-q', '-s', 'scripts/design_gate.pl']), exit(0), 'b23a3771af9316b55b595ff939a922a644f9584a8f217e8c09528cc8615ff2e9', 'c9cf699c04ed13fd4e78084ab2f8c2cc03cda185', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('f4b99b5c2a41bb46', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', 'c9cf699c04ed13fd4e78084ab2f8c2cc03cda185', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('029cf9c0049ef65f', command(['swipl', '-q', '-s', 'test/load_all.pl']), exit(0), '28129e96dc522a7539f53b479a7562a0fc43e3671def0fc98cc729b3b7a8607d', 'c9cf699c04ed13fd4e78084ab2f8c2cc03cda185', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('73f258b2119eeaba', command(['swipl', '-q', '-g', 'consult(test/rlm_plan_native_ops_test), run_tests(rlm_plan_native_ops), halt']), exit(0), 'ddfe0afdf860847e7ae22c8cf181e4caecec1e1b232cdbc53a0960ba51e8b84e', 'c9cf699c04ed13fd4e78084ab2f8c2cc03cda185', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('10d65eb49a3e5f8c', command(['swipl', '-q', '-s', 'benchmark/run.pl', '--', 'deterministic']), exit(0), 'cbd21f50201762b42bac7eca935270fb47af6d878c62f9e8731c67585338d6a3', 'c9cf699c04ed13fd4e78084ab2f8c2cc03cda185', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('b7cf6093c6675379', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '1417648ff213139b9f84234fa3e737efbf2190b2ded865f8489bd7ccb48fa764', 'c9cf699c04ed13fd4e78084ab2f8c2cc03cda185', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('543fcd2a1a1819ab', command(['swipl', '-q', '-s', 'bin/prolog-rlm.pl', '--', 'demo', '--json']), exit(0), '886ffc91a4946b250ab487de5128db242ba4f53ef174ef00ca7a1520778c7541', 'c9cf699c04ed13fd4e78084ab2f8c2cc03cda185', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('7c1557dfb4f51308', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'c9cf699c04ed13fd4e78084ab2f8c2cc03cda185', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
