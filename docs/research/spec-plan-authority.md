@@ -396,7 +396,11 @@ Two Section 5 features are DELTAS rather than BASE features, and the doc does
 not claim them as BASE: `revision/1` diff sides (D6-9 — BASE `side_valid/1`
 admits `path|ref|span` only) and the closed 13-atom `symbol_kind` set
 (D6-10 — BASE symbol-ref decoding admits any non-empty atom kind). Both are
-enforced at the D6 layer and owned by the reconciliation slices.
+enforced at the D6 layer and owned by the reconciliation slices. One
+execution-layer decision is likewise recorded as a delta: the deterministic
+state-mutating closed set `sync_remote/1`, `run/1`, `index/1`, `delete/1`
+executes at the plan layer, not through experts (D6-11), while
+`edit/2`/`create/2` remain write-expert-owned per §8.3.
 
 ### 6.3 D6 DELTAS (each owned by the reconciliation slice)
 
@@ -438,7 +442,9 @@ enforced at the D6 layer and owned by the reconciliation slices.
   inner loops (Section 8.2). A plan-visible generate op would split budget
   authority between two schedulers.
 - **D6-8 expert contracts + inner capabilities.** Every op maps mechanically
-  to an expert (`plan_capability_required/2` from BASE). The expert registry
+  to an expert (`plan_capability_required/2` from BASE) — except the
+  plan-native deterministic set recorded by D6-11, which is excluded from
+  this mapping and from the expert registry. The expert registry
   supplies `expert_contract{}` records (Section 8.1) whose
   `inner_capabilities` (e.g. `model(P)` for write experts) must be a subset
   of environment-granted capabilities and are validated at preflight.
@@ -453,6 +459,14 @@ enforced at the D6 layer and owned by the reconciliation slices.
   closed 13-atom `symbol_kind` set (Section 5) at graph validation
   (`symbol_kind_closed`), and S1's normalized reference layer carries the
   closed set forward.
+- **D6-11 plan-native deterministic mutations.** The closed set
+  `sync_remote/1`, `run/1`, `index/1`, `delete/1` executes at the plan
+  layer through the canonical boundary (schema → capability → authority →
+  durable effect admission → dispatch → observe), exactly like a
+  `tool/3` step — never ambient shell/git access in plan code. They are
+  excluded from expert mapping and from the future expert registry.
+  Model-payload mutations (`edit/2`, `create/2`) remain write-expert-owned
+  per §8.3.
 
 ### 6.4 Diff endpoint decision
 
@@ -526,6 +540,8 @@ is trusted host data:
 
 ```prolog
 expert_contract{op:Op/Arity,                       % mechanical mapping from plan_capability_required/2
+                                                    % (D6-11 exclusion: sync_remote/1, run/1, index/1,
+                                                    % delete/1 are plan-native and never registered here)
                 capabilities:[capability],          % REQUIRED, must ⊆ environment grants
                 inner_capabilities:[capability],    % REQUIRED, expert inner-loop grants
                                                     % (e.g. model(P)); distinct from the

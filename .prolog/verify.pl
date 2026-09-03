@@ -26,20 +26,20 @@ current_successful_command(Argv) :-
 
 requirement_command(research_gate, Argv) :-
     Argv = [make, 'research-approval'].
+requirement_command(design_gate, Argv) :-
+    Argv = [swipl, '-q', '-s', 'scripts/design_gate.pl'].
 requirement_command(static_load, Argv) :-
     Argv = [swipl, '-q', '-s', 'test/load_all.pl'].
+requirement_command(runtime_check, Argv) :-
+    Argv = [swipl, '-q', '-s', 'test/check_runtime.pl'].
 requirement_command(deterministic_suite, Argv) :-
     Argv = [swipl, '-q', '-s', 'test/run_tests.pl'].
-requirement_command(native_build, Argv) :-
-    Argv = [nix, develop, '--command', make, 'tree-sitter-ffi'].
-requirement_command(native_query_suite, Argv) :-
-    argv_mentions(Argv, 'run_tests'),
-    argv_mentions(Argv, 'rlm_tree_sitter_query_test'),
-    argv_mentions(Argv, 'rlm_project_query_test').
-requirement_command(restart_fixture, Argv) :-
-    argv_mentions(Argv, 'rlm_project_query_restart_test').
-requirement_command(flake_checks, Argv) :-
-    Argv = [nix, flake, check|_].
+requirement_command(focused_native_ops, Argv) :-
+    argv_mentions(Argv, 'rlm_plan_native_ops_test').
+requirement_command(benchmark_deterministic, Argv) :-
+    Argv = [swipl, '-q', '-s', 'benchmark/run.pl', '--', 'deterministic'].
+requirement_command(cli_demo, Argv) :-
+    Argv = [swipl, '-q', '-s', 'bin/prolog-rlm.pl', '--', 'demo', '--json'].
 requirement_command(whitespace, Argv) :-
     Argv = [git, diff, '--check'].
 
@@ -60,12 +60,16 @@ requirement_satisfied(Requirement) :-
     requirement_command(Requirement, Argv).
 
 % These invariants are intentionally descriptive obligations; the observed
-% native/query commands are the executable evidence that discharges them.
-invariant(query_source_is_data, native_query_suite).
-invariant(captures_are_closed_data, native_query_suite).
-invariant(mode_runtimes_are_unchanged, deterministic_suite).
-invariant(publication_fences_prior_records_stale, native_query_suite).
-invariant(stale_fencing_survives_restart, restart_fixture).
+% design-gate and focused-suite commands are the executable evidence that
+% discharges them.
+invariant(d6_11_recorded_verbatim, design_gate).
+invariant(d6_8_references_d6_11_exclusion, design_gate).
+invariant(plan_native_set_closed_in_base_vocabulary, design_gate).
+invariant(plan_native_desugar_is_canonical_tool_step, design_gate).
+invariant(ungranted_capability_fails_closed, focused_native_ops).
+invariant(admitted_effect_normalized_fingerprint, focused_native_ops).
+invariant(observation_op_never_admitted_durably, focused_native_ops).
+invariant(edit_create_remain_expert_owned, design_gate).
 
 complete :-
     base_complete,
