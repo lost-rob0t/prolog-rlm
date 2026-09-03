@@ -5,6 +5,9 @@
             index_handler/2,
             read_handler/2,
             search_handler/2,
+            sync_remote_handler/2,
+            run_handler/2,
+            delete_handler/2,
             fail_handler/2,
             cancel_handler/2,
             verifier_handler/2,
@@ -34,6 +37,18 @@ read_handler(_Args, ok(read)) :-
 
 search_handler(_Args, ok(searched)) :-
     record_call(search, called).
+
+%% D6-11 plan-native deterministic adapter closures. The handlers are
+%% ordinary host closures; the D6-11 distinction is the table they are
+%% registered in (native_handlers), never the expert registry.
+sync_remote_handler(_Args, ok(synced)) :-
+    record_call(sync_remote, called).
+
+run_handler(_Args, ok(ran)) :-
+    record_call(run, called).
+
+delete_handler(_Args, ok(deleted)) :-
+    record_call(delete, called).
 
 %% failing read expert -> tool error -> step failed
 fail_handler(_Args, _Result) :-

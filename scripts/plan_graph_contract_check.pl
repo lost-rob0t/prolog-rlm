@@ -102,6 +102,8 @@ plan_graph_source_mentions(Needle) :-
 
 contract(module_export_parse,
          exported(plan_graph_parse/2)).
+contract(module_export_native_op_set,
+         exported(plan_native_op/1)).
 contract(module_export_normalize,
          exported(plan_graph_normalize/2)).
 contract(module_export_validate,
