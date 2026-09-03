@@ -11,13 +11,19 @@ all_caps([tool(index), tool(locate), tool(read), tool(search), tool(diff),
           tool(edit), tool(create), tool(delete), tool(run),
           tool(sync_remote), tool(validate), tool(spawn_agent)]).
 
-simple_experts([expert(index, plan_graph_test_tools:index_handler),
-                expert(read, plan_graph_test_tools:read_handler),
-                expert(search, plan_graph_test_tools:search_handler)]).
+run_options([experts([expert(read, plan_graph_test_tools:read_handler),
+                      expert(search, plan_graph_test_tools:search_handler)]),
+             native_handlers([native_handler(index,
+                                             plan_graph_test_tools:index_handler)])]).
 
-run_options([experts([expert(index, plan_graph_test_tools:index_handler),
-                      expert(read, plan_graph_test_tools:read_handler),
-                      expert(search, plan_graph_test_tools:search_handler)])]).
+%% Full D6-11 plan-native adapter table: the closed set sync_remote/1,
+%% run/1, index/1, delete/1 dispatches through native_handlers, never
+%% through the expert registry.
+native_all([native_handler(sync_remote,
+                           plan_graph_test_tools:sync_remote_handler),
+            native_handler(run, plan_graph_test_tools:run_handler),
+            native_handler(index, plan_graph_test_tools:index_handler),
+            native_handler(delete, plan_graph_test_tools:delete_handler)]).
 
 fixture_index(symbol_index{kinds:[function],
                            definitions:[symbol_definition(symbol_ref{name:foo,
@@ -187,9 +193,10 @@ test(blocks_dependents_on_failure) :-
     Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"read\",\"args\":{\"source\":{\"path\":\"x\"}},\"bind\":\"a\"},{\"id\":\"s2\",\"op\":\"index\",\"args\":{\"scope\":\"all\"},\"bind\":\"b\"},{\"id\":\"s3\",\"op\":\"search\",\"args\":{\"pattern\":\"p\",\"scope\":\"all\"},\"bind\":\"c\"}],\"depends_on\":[{\"step\":\"s2\",\"requires\":[\"s1\"]},{\"step\":\"s3\",\"requires\":[\"s2\"]}]}",
     all_caps(Caps),
     Experts = [expert(read, plan_graph_test_tools:fail_handler),
-               expert(index, plan_graph_test_tools:index_handler),
                expert(search, plan_graph_test_tools:search_handler)],
-    plan_graph_run(Json, Caps, [experts(Experts)], inputs{}, RunOutcome),
+    Natives = [native_handler(index, plan_graph_test_tools:index_handler)],
+    plan_graph_run(Json, Caps, [experts(Experts), native_handlers(Natives)],
+                   inputs{}, RunOutcome),
     RunOutcome = ok(Result),
     BlockState = Result.state,
     assertion(Result.status == failed),
@@ -209,10 +216,11 @@ test(cancellation_aborts_graph_and_rethrows_token) :-
     plan_graph_test_tools:reset_calls,
     Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"sync_remote\",\"args\":{\"op\":\"fetch\"},\"bind\":\"a\"},{\"id\":\"s2\",\"op\":\"read\",\"args\":{\"source\":{\"path\":\"x\"}},\"bind\":\"b\"}]}",
     all_caps(Caps),
-    Experts = [expert(sync_remote, plan_graph_test_tools:cancel_handler),
-               expert(index, plan_graph_test_tools:index_handler),
-               expert(read, plan_graph_test_tools:read_handler)],
-    catch(plan_graph_run(Json, Caps, [experts(Experts)], inputs{}, _Outcome),
+    Experts = [expert(read, plan_graph_test_tools:read_handler)],
+    Natives = [native_handler(sync_remote, plan_graph_test_tools:cancel_handler)],
+    catch(plan_graph_run(Json, Caps, [experts(Experts),
+                                      native_handlers(Natives)],
+                         inputs{}, _Outcome),
           error(rlm_cancelled(Token), _Context),
           true),
     (   var(Token)
@@ -243,11 +251,74 @@ test(aggregate_budget_enforced_across_steps) :-
 /* Expert registry ------------------------------------------------------- */
 
 test(unknown_expert_fails_preflight) :-
-    Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"index\",\"args\":{\"scope\":\"all\"},\"bind\":\"a\"}]}",
+    Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"read\",\"args\":{\"source\":{\"path\":\"x\"}},\"bind\":\"a\"}]}",
     all_caps(Caps),
     plan_graph_run(Json, Caps, [experts([])], inputs{}, error(Error)),
     assertion(Error.phase == preflight),
     assertion(Error.kind == unknown_expert).
+
+/* D6-11 plan-native deterministic mutations ------------------------------ */
+
+test(plan_native_op_runs_without_expert_registry) :-
+    plan_graph_test_tools:reset_calls,
+    Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"sync_remote\",\"args\":{\"op\":\"push\"},\"bind\":\"a\"}]}",
+    all_caps(Caps),
+    Natives = [native_handler(sync_remote,
+                              plan_graph_test_tools:sync_remote_handler)],
+    plan_graph_run(Json, Caps, [native_handlers(Natives)], inputs{},
+                   RunOutcome),
+    RunOutcome = ok(Result),
+    assertion(Result.status == completed),
+    plan_graph_test_tools:expert_call(sync_remote, called).
+
+test(plan_native_full_set_dispatches_plan_natively) :-
+    plan_graph_test_tools:reset_calls,
+    Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"sync_remote\",\"args\":{\"op\":\"push\"},\"bind\":\"a\"},{\"id\":\"s2\",\"op\":\"run\",\"args\":{\"command\":\"build\"},\"bind\":\"b\"},{\"id\":\"s3\",\"op\":\"index\",\"args\":{\"scope\":\"all\"},\"bind\":\"c\"},{\"id\":\"s4\",\"op\":\"delete\",\"args\":{\"path\":\"a.py\"},\"bind\":\"d\"}]}",
+    all_caps(Caps),
+    native_all(Natives),
+    plan_graph_run(Json, Caps, [native_handlers(Natives)], inputs{},
+                   RunOutcome),
+    RunOutcome = ok(Result),
+    assertion(Result.status == completed),
+    findall(Name, plan_graph_test_tools:expert_call(Name, _), Calls),
+    assertion(Calls == [sync_remote, run, index, delete]).
+
+test(plan_native_missing_handler_fails_preflight) :-
+    Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"delete\",\"args\":{\"path\":\"a.py\"},\"bind\":\"a\"}]}",
+    all_caps(Caps),
+    plan_graph_run(Json, Caps, [], inputs{}, error(Error)),
+    assertion(Error.phase == preflight),
+    assertion(Error.kind == unknown_native_handler).
+
+test(plan_native_expert_mapping_is_excluded) :-
+    Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"run\",\"args\":{\"command\":\"build\"},\"bind\":\"a\"}]}",
+    all_caps(Caps),
+    Experts = [expert(run, plan_graph_test_tools:run_handler)],
+    plan_graph_run(Json, Caps, [experts(Experts)], inputs{}, error(Error)),
+    assertion(Error.phase == preflight),
+    assertion(Error.kind == expert_mapping_excluded).
+
+test(plan_native_table_rejects_non_native_op) :-
+    Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"read\",\"args\":{\"source\":{\"path\":\"x\"}},\"bind\":\"a\"}]}",
+    all_caps(Caps),
+    Experts = [expert(read, plan_graph_test_tools:read_handler)],
+    Natives = [native_handler(read, plan_graph_test_tools:read_handler)],
+    plan_graph_run(Json, Caps, [experts(Experts),
+                                native_handlers(Natives)],
+                   inputs{}, error(Error)),
+    assertion(Error.phase == preflight),
+    assertion(Error.kind == not_plan_native).
+
+test(plan_native_capability_denial_still_fails_closed) :-
+    Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"sync_remote\",\"args\":{\"op\":\"push\"},\"bind\":\"a\"}]}",
+    Caps = [tool(index)],
+    Natives = [native_handler(sync_remote,
+                              plan_graph_test_tools:sync_remote_handler)],
+    plan_graph_run(Json, Caps, [native_handlers(Natives)], inputs{},
+                   RunOutcome),
+    RunOutcome = error(Error),
+    assertion(Error.phase == capability),
+    assertion(Error.kind == capability_denied).
 
 /* validate step ---------------------------------------------------------- */
 
@@ -255,8 +326,7 @@ test(validate_step_uses_host_verifier) :-
     plan_graph_test_tools:reset_calls,
     Json = "{\"steps\":[{\"id\":\"s1\",\"op\":\"validate\",\"args\":{\"spec\":{\"fingerprint\":\"fp001\"}},\"bind\":\"v\"}]}",
     all_caps(Caps),
-    Experts = [expert(validate, plan_graph_test_tools:verifier_handler),
-               expert(index, plan_graph_test_tools:index_handler)],
+    Experts = [expert(validate, plan_graph_test_tools:verifier_handler)],
     plan_graph_run(Json, Caps, [experts(Experts)], inputs{}, RunOutcome),
     RunOutcome = ok(Result),
     assertion(Result.status == completed),

@@ -69,3 +69,29 @@ session, TDD) -> final adversarial review (fresh opencode subprocess) -> gates.
 - Final suite: 1021/1021 (86 suites) incl. 26 plan-graph tests; contract
   gate ALL DEFINED; check_runtime/load_all/benchmark/demo/diff-check/
   research-approval all green.
+* D6-11 amendment (post-review operator decision, issue #355)
+
+- Operator decision (Forgejo #293 comment 3762): deterministic
+  state-mutating plan ops execute at the plan layer, not through a
+  "project plan expert"; expert routing adds contract overhead,
+  inner-capability checks, and model-grant surface to an operation that
+  needs none. Recorded verbatim as D6-11 in
+  =docs/research/spec-plan-authority.md= (main; PR #356 amends D6-8).
+- Implementation (branch =rage/355-d6-11-plan-native-dispatch= on top of
+  this BASE): =plan_native_op/1= closed set =sync_remote/1=, =run/1=,
+  =index/1=, =delete/1=; host deterministic adapter closures supplied via
+  the separate =native_handlers= option; preflight requires a native
+  handler for every native step (=unknown_native_handler=), rejects
+  native entries for non-native ops (=not_plan_native=), and rejects
+  expert-registry entries for plan-native ops
+  (=expert_mapping_excluded=). The desugared form is unchanged:
+  =plan([tool(Op, literal(Args), Bind), final(var(Bind))])= executed
+  through the =rlm_plan= validate/execute ABIs. The executor performs no
+  effects of its own and gains no ambient shell/git authority.
+- Environment fix required by this amendment's gate: =decode_args/4=
+  re-tagged unknown-op JSON args through =dict_pairs(Args, _, Pairs)=
+  (SWI 10.0.2 decodes JSON objects with a tag that does not unify with
+  =plan_graph_args=, so the invalid_args sentinel path silently failed
+  instead of feeding the vocabulary rejection). Restores the two
+  vocabulary-rejection tests on this SWI without changing the fault
+  contract.

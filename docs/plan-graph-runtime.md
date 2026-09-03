@@ -17,7 +17,8 @@ plan_graph_validate (closed vocabulary, structure, capabilities, budget)
       |
 ready_step scheduling (Prolog decides what is executable)
       |
-expert KB (host registry decides who executes)
+expert KB (host registry decides who executes; the D6-11 plan-native
+deterministic set executes at the plan layer instead)
       |
 capability system (decides whether they are allowed)
       |
@@ -77,11 +78,13 @@ closed set.
 | `validate/1` | `validate(spec(fingerprint(Atom)))` | `tool(validate)` | orchestration |
 | `delegate/2` | `delegate(task(Atom), caps([CapTerm]))` | `tool(spawn_agent)` | orchestration |
 
-\* Externally effectful in real use. Real expert packs for `sync_remote`,
-`edit`, `create`, `delete`, and `run` must admit/dispatch/observe through the
-durable effect boundary (`rlm_effect`) with trusted adapter identity, attempt
-lineage, and expert closure identity. This layer adds no external-effect
-path: shipped expert handlers are pure host-supplied closures.
+\* Externally effectful in real use. The D6-11 plan-native set (`sync_remote`,
+`run`, `index`, `delete`) dispatches at the plan layer through deterministic
+host adapter closures and must admit/dispatch/observe through the durable
+effect boundary (`rlm_effect`) with trusted adapter identity and attempt
+lineage. Remaining real expert packs (`edit`, `create`) carry the same
+obligation. This layer adds no external-effect path: shipped handlers are
+pure host-supplied closures.
 
 `delegate/2` child capabilities are validated as a narrowing subset of the
 graph capabilities (narrowing by default). Execution desugars to a plain
@@ -177,7 +180,7 @@ aborts the graph: remaining steps are `abandoned` and the outcome is
 `status:aborted` with reason `budget` or `time`. Never silent success, and
 never a fresh budget for the next step.
 
-## Expert registry and validate steps
+## Expert registry, plan-native dispatch, and validate steps
 
 The host supplies `experts([expert(Op, Handler)])`; the registry is
 preflighted fail-closed before the first step (`unknown_expert` otherwise).
@@ -186,6 +189,20 @@ Each ready step is desugared mechanically into
 `rlm_plan` validate/execute ABIs. Handlers are invoked
 `call(Handler, Args, ToolResult)` with model data as the argument, never as
 a goal.
+
+**D6-11 plan-native deterministic mutations.** The closed set
+`sync_remote/1`, `run/1`, `index/1`, `delete/1` executes at the plan layer
+through the canonical boundary (schema → capability → authority → durable
+effect admission → dispatch → observe), exactly like a `tool/3` step —
+never ambient shell/git access in plan code. They are excluded from expert
+mapping and from the expert registry: the host supplies their deterministic
+adapter closures through the separate `native_handlers([native_handler(Op,
+Handler)])` option (only plan-native op names are admitted; an entry for
+any other name faults `not_plan_native`), preflight requires a native
+handler for every native step (`unknown_native_handler` otherwise), and an
+expert-registry entry for a plan-native op faults `expert_mapping_excluded`.
+Model-payload mutations (`edit/2`, `create/2`) remain write-expert-owned
+per the design record §8.3 and are never members of the native set.
 
 A `validate/1` expert is a host verifier closure (receiving
 `validate(spec(fingerprint(Fp)))`); the closure resolves the fingerprint
