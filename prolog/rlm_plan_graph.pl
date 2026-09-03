@@ -9,6 +9,7 @@
             plan_graph_cancel/1,
             plan_graph_cancellation_token/1,
             plan_graph_op/1,
+            plan_native_op/1,
             default_plan_graph_budget/1,
             plan_graph_resolve_symbol/3,
             plan_graph_symbol_ref_valid/1,
@@ -72,6 +73,28 @@ plan_graph_op(delete/1).
 plan_graph_op(run/1).
 plan_graph_op(validate/1).
 plan_graph_op(delegate/2).
+
+%% plan_native_op(+Op) is semidet.
+%
+% D6-11 plan-native deterministic mutations (operator decision, Forgejo
+% #293 comment 3762, recorded in spec-plan-authority.md §6.3): the closed
+% set sync_remote/1, run/1, index/1, delete/1 executes at the plan layer
+% through the canonical boundary (schema -> capability -> authority ->
+% durable effect admission -> dispatch -> observe), exactly like a
+% tool/3 step. These ops are excluded from expert mapping and from the
+% expert registry: the host supplies deterministic adapter closures
+% through the separate native_handlers option, and the executor adds no
+% ambient shell/git authority of its own. Model-payload mutations
+% (edit/2, create/2) remain write-expert-owned (§8.3) and are not
+% members of this set.
+plan_native_op(sync_remote/1).
+plan_native_op(run/1).
+plan_native_op(index/1).
+plan_native_op(delete/1).
+
+native_op_tool(Name) :-
+    plan_native_op(Op/Arity),
+    plan_capability_required(Op/Arity, tool(Name)).
 
 %% plan_capability_required(+Op, -Capability) is det.
 %
@@ -194,6 +217,10 @@ fault_kind(capability_denied(_, _), capability_denied).
 fault_kind(capability_error(_), capability_denied).
 fault_kind(unknown_expert(_), unknown_expert).
 fault_kind(invalid_expert_registry(_), invalid_expert_registry).
+fault_kind(unknown_native_handler(_), unknown_native_handler).
+fault_kind(expert_mapping_excluded(_), expert_mapping_excluded).
+fault_kind(not_plan_native(_), not_plan_native).
+fault_kind(invalid_native_registry(_), invalid_native_registry).
 fault_kind(invalid_budget(_), invalid_budget).
 fault_kind(no_json_object, no_json_object).
 fault_kind(invalid_json(_), invalid_json).
@@ -343,7 +370,11 @@ decode_args(Op, ArgsDict, Args, Arity) :-
 decode_args(_, ArgsDict, Args, Arity) :-
     is_dict(ArgsDict),
     !,
-    dict_pairs(ArgsDict, plan_graph_args, Pairs),
+    % Accept the decoder's incoming dict tag (it is host-environment
+    % specific) and re-tag into the closed plan-graph args shape; the
+    % key count is the arity the vocabulary check rejects unknown ops
+    % with (invalid_args sentinel below).
+    dict_pairs(ArgsDict, _, Pairs),
     dict_create(Args, plan_graph_args, Pairs),
     length(Pairs, Arity).
 decode_args(_, ArgsTerm, ArgsTerm, unknown_arity).
@@ -870,6 +901,8 @@ plan_graph_execute_(GraphInput, Caps, Options, Inputs, Outcome) :-
     is_dict(Inputs),
     graph_option(experts, Options, [], Experts),
     validate_expert_registry(Experts),
+    graph_option(native_handlers, Options, [], Natives),
+    validate_native_registry(Natives),
     graph_option(budget, Options, default, BudgetArg),
     plan_graph_parse(GraphInput, NormOutcome),
     require_graph_outcome(NormOutcome, Graph),
@@ -877,7 +910,7 @@ plan_graph_execute_(GraphInput, Caps, Options, Inputs, Outcome) :-
     require_graph_outcome(ValidOutcome, Validated),
     get_dict(graph, Validated, ValidGraph),
     get_dict(budget, Validated, Budget),
-    preflight_experts(ValidGraph, Experts),
+    preflight_experts(ValidGraph, Experts, Natives),
     graph_option(cancellation_token, Options, none, Token),
     setup_call_cleanup(
         register_worker(Token),
@@ -886,7 +919,7 @@ plan_graph_execute_(GraphInput, Caps, Options, Inputs, Outcome) :-
             aggregate_from_budget(Budget, Agg0),
             get_time(Started),
             Deadline is Started + Budget.time_limit,
-            run_loop(ValidGraph, Experts, Inputs, Token, Deadline,
+            run_loop(ValidGraph, Experts, Natives, Inputs, Token, Deadline,
                      DefaultPlanBudget, State0, Agg0, State, Agg,
                      Status, Reason),
             Outcome = ok(graph_result{status:Status,
@@ -906,18 +939,52 @@ valid_expert_registry([]).
 valid_expert_registry([expert(Name, Handler)|Rest]) :-
     atom(Name),
     callable(Handler),
-    valid_expert_registry(Rest).
+    !,
+    (   native_op_tool(Name)
+    ->  % D6-11: plan-native deterministic ops are excluded from expert
+        % mapping and from the expert registry entirely.
+        graph_fault(preflight, expert_mapping_excluded(Name))
+    ;   valid_expert_registry(Rest)
+    ).
+valid_expert_registry([Invalid|_]) :-
+    graph_fault(preflight, invalid_expert_registry(Invalid)).
 
-%% Fail-closed preflight: every validated op must resolve to a
-%% host-supplied expert closure BEFORE the first step executes.
-preflight_experts(Graph, Experts) :-
+validate_native_registry(Registry) :-
+    valid_native_registry(Registry),
+    !.
+validate_native_registry(Other) :-
+    graph_fault(preflight, invalid_native_registry(Other)).
+
+valid_native_registry([]).
+valid_native_registry([native_handler(Name, Handler)|Rest]) :-
+    atom(Name),
+    callable(Handler),
+    !,
+    (   native_op_tool(Name)
+    ->  valid_native_registry(Rest)
+    ;   graph_fault(preflight, not_plan_native(Name))
+    ).
+valid_native_registry([Invalid|_]) :-
+    graph_fault(preflight, invalid_native_registry(Invalid)).
+
+%% Fail-closed preflight: every validated op must resolve to a trusted
+%% host closure BEFORE the first step executes. D6-11 plan-native ops
+%% resolve through the deterministic native adapter table; every other
+%% op resolves through the host expert registry.
+preflight_experts(Graph, Experts, Natives) :-
     get_dict(steps, Graph, Steps),
     forall(member(Step, Steps),
            (   get_dict(op, Step, Op),
                plan_capability_required(Op, tool(ToolName)),
-               (   memberchk(expert(ToolName, _), Experts)
-               ->  true
-               ;   graph_fault(preflight, unknown_expert(ToolName))
+               (   plan_native_op(Op)
+               ->  (   memberchk(native_handler(ToolName, _), Natives)
+                   ->  true
+                   ;   graph_fault(preflight, unknown_native_handler(ToolName))
+                   )
+               ;   (   memberchk(expert(ToolName, _), Experts)
+                   ->  true
+                   ;   graph_fault(preflight, unknown_expert(ToolName))
+                   )
                )
            )).
 
@@ -949,15 +1016,15 @@ step_budget(Default, Agg, Deadline,
     RemainingTime is max(0.5, Deadline - Now),
     TimeLimit is min(Default.time_limit, RemainingTime).
 
-run_loop(Graph, Experts, Inputs, Token, Deadline, DefaultPlanBudget,
+run_loop(Graph, Experts, Natives, Inputs, Token, Deadline, DefaultPlanBudget,
          State0, Agg0, State, Agg, Status, Reason) :-
     (   token_cancelled(Token)
     ->  abort_graph(Graph, State0, _),
         throw(error(rlm_cancelled(Token),
                     context(plan_graph_cancelled)))
     ;   first_ready(Graph, State0, StepId)
-    ->  admit_step(Graph, StepId, Experts, Inputs, Token, Deadline,
-                   DefaultPlanBudget, State0, Agg0, State, Agg,
+    ->  admit_step(Graph, StepId, Experts, Natives, Inputs, Token,
+                   Deadline, DefaultPlanBudget, State0, Agg0, State, Agg,
                    Status, Reason)
     ;   finish_graph(Graph, State0, State),
         graph_overall_status(State, Status),
@@ -979,7 +1046,7 @@ fundable(Agg) :-
     get_dict(output_bytes, Agg, OutputBytes),
     OutputBytes >= 1.
 
-admit_step(Graph, StepId, Experts, Inputs, Token, Deadline,
+admit_step(Graph, StepId, Experts, Natives, Inputs, Token, Deadline,
            DefaultPlanBudget, State0, Agg0, State, Agg, Status, Reason) :-
     (   \+ fundable(Agg0)
     ->  abort_graph(Graph, State0, Aborted),
@@ -998,7 +1065,7 @@ admit_step(Graph, StepId, Experts, Inputs, Token, Deadline,
         member(Step, Steps),
         get_dict(id, Step, StepId),
         !,
-        execute_one(Graph, Step, Experts, Inputs, Deadline,
+        execute_one(Graph, Step, Experts, Natives, Inputs, Deadline,
                     DefaultPlanBudget, State0, Agg0, Kind, State1, Agg1),
         (   Kind == aborted_budget
         ->  abort_graph(Graph, State1, Aborted),
@@ -1006,14 +1073,14 @@ admit_step(Graph, StepId, Experts, Inputs, Token, Deadline,
             Agg = Agg1,
             Status = aborted,
             Reason = budget
-        ;   run_loop(Graph, Experts, Inputs, Token, Deadline,
+        ;   run_loop(Graph, Experts, Natives, Inputs, Token, Deadline,
                      DefaultPlanBudget, State1, Agg1, State, Agg,
                      Status, Reason)
         )
     ).
 
-execute_one(Graph, Step, Experts, Inputs, Deadline, DefaultPlanBudget,
-            State0, Agg0, Kind, State, Agg) :-
+execute_one(Graph, Step, Experts, Natives, Inputs, Deadline,
+            DefaultPlanBudget, State0, Agg0, Kind, State, Agg) :-
     get_dict(id, Step, StepId),
     get_dict(op, Step, Op),
     get_dict(args, Step, Args),
@@ -1023,7 +1090,7 @@ execute_one(Graph, Step, Experts, Inputs, Deadline, DefaultPlanBudget,
     step_budget(DefaultPlanBudget, Agg0, Deadline, StepBudget),
     Desugared = plan([tool(ToolName, literal(Args), Bind),
                       final(var(Bind))]),
-    (   catch(step_execute(Desugared, ToolName, Experts, Inputs,
+    (   catch(step_execute(Desugared, ToolName, Experts, Natives, Inputs,
                            StepBudget, StepOutcome),
               Throw,
               (                     (   step_throw(Throw, exception(Cancellation))
@@ -1038,12 +1105,20 @@ execute_one(Graph, Step, Experts, Inputs, Deadline, DefaultPlanBudget,
     ;   throw(graph_fault(internal, step_dispatch_failed))
     ).
 
-step_execute(Desugared, ToolName, Experts, Inputs, StepBudget,
+step_execute(Desugared, ToolName, Experts, Natives, Inputs, StepBudget,
              StepOutcome) :-
     plan_validate(Desugared, [tool(ToolName)], StepBudget,
                   ValidateOutcome),
     (   ValidateOutcome = ok(ValidatedPlan)
-    ->  (   memberchk(expert(ToolName, Handler), Experts)
+    ->  (   native_op_tool(ToolName)
+        ->  (   memberchk(native_handler(ToolName, Handler), Natives)
+            ->  plan_native_dispatch(ValidatedPlan, ToolName, Handler,
+                                     Inputs, StepOutcome)
+            ;   StepOutcome = error(plan_error{phase:preflight,
+                                               kind:unknown_native_handler,
+                                               detail:tool(ToolName)})
+            )
+        ;   memberchk(expert(ToolName, Handler), Experts)
         ->  (   plan_execute(ValidatedPlan,
                              [tools([tool(ToolName, Handler)])],
                              Inputs,
@@ -1059,6 +1134,24 @@ step_execute(Desugared, ToolName, Experts, Inputs, StepBudget,
         )
     ;   ValidateOutcome = error(Error)
     ->  StepOutcome = error(Error)
+    ).
+
+%% D6-11 plan-native dispatch: the plan layer invokes the canonical
+%% tool/3 path with the deterministic host adapter closure. The closure
+%% is host-supplied trusted code routed through the canonical boundary
+%% (schema -> capability -> authority -> durable effect admission ->
+%% dispatch -> observe); the executor itself performs no effects and
+%% gains no ambient shell/git authority.
+plan_native_dispatch(ValidatedPlan, ToolName, Handler, Inputs,
+                     StepOutcome) :-
+    (   plan_execute(ValidatedPlan,
+                     [tools([tool(ToolName, Handler)])],
+                     Inputs,
+                     StepOutcome)
+    ->  true
+    ;   StepOutcome = error(plan_error{phase:execute,
+                                       kind:plan_failed,
+                                       detail:tool(ToolName)})
     ).
 
 %% Cancellation is never an ordinary step failure: abort and rethrow the
