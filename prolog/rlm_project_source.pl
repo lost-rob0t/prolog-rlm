@@ -77,8 +77,9 @@ project_source_registry_destroy(project_source_registry(Id)) :-
                  retractall(project_source_file_record(Id, _, _, _)),
                  retractall(project_source_project_record(Id, _, _)),
                  retractall(project_source_registry_alive(Id))
-                )),
+                 )),
     clear_project_syntax_safely(project_source_registry(Id)),
+    clear_project_query_safely(project_source_registry(Id)),
     maplist(close_language_handle_safely, Handles).
 
 project_source_registry_valid(Registry) :-
@@ -901,6 +902,22 @@ grammar_for_file_(Registry, File, Outcome) :-
     grammar_selection(Id, ParserSelection, Selection),
     Outcome = ok(Selection).
 
+% Trusted internal handoff for query compilation.  The native language blob
+% remains owned by the source registry; callers only receive the existing
+% handle while the registry is alive and the grammar is active.
+project_source_tree_sitter_language(Registry,
+                                    Language,
+                                    GrammarRef,
+                                    Handle) :-
+    registry_id(Registry, Id),
+    with_mutex(rlm_project_source_registry,
+               ( project_source_grammar_active(Id,
+                                               Language,
+                                               Handle,
+                                               Activation),
+                 GrammarRef = Activation.grammar_ref
+               )).
+
 /* Trusted native parse operation ------------------------------------- */
 
 project_source_tree_parse(Registry, File, Source0, Tree, Outcome) :-
@@ -1202,6 +1219,12 @@ close_language_handle_safely(Handle) :-
 clear_project_syntax_safely(Registry) :-
     (   current_predicate(rlm_project_syntax:project_syntax_registry_clear/1)
     ->  catch(rlm_project_syntax:project_syntax_registry_clear(Registry), _, true)
+    ;   true
+    ).
+
+clear_project_query_safely(Registry) :-
+    (   current_predicate(rlm_project_query:project_query_registry_clear/1)
+    ->  catch(rlm_project_query:project_query_registry_clear(Registry), _, true)
     ;   true
     ).
 

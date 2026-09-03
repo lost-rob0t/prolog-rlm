@@ -1,0 +1,155 @@
+#+title: #97 research notes — answers and explanations (reply in this buffer)
+#+start_sha: 156bfe9b2caffa1b967e77bee51263ee9e85fb50
+
+This is a scratch discussion file (now tracked as part of the #97 slice
+record). Reply under "Your reply" sections and ping me; I will read it and
+fold resolutions into =research/tree-sitter-query-capture.org=.
+
+* Q1 — parse-generation reuse: RESOLVED
+
+Your answer: *only reuse the current parse generation when it is provably
+the same generation.* Recorded as: a query run reuses generation G only when
+the parse record is =current=, its content hash matches the supplied source
+exactly, and G is the latest admitted generation for that file. Anything
+else (=stale=, =indeterminate(pending)=, hash mismatch, no parse) forces a
+fresh bounded parse and a new generation. No heuristic reuse.
+
+* Q2 — where extracted facts live + disk persistence: EXPLANATION NEEDED (read below)
+
+Your answer: query-extracted facts live in *their own module*, not inside
+the #96 CST module, and everything Prolog generates should persist to disk
+under =$PROJECT_ROOT/.kb/<kb tree>=.
+
+** What "#96 facts" are today
+
+=rlm_project_syntax= (merged in #96) is the *CST projection* module. When
+you parse =foo.py= it stores, in memory only:
+
+- =syntax_parse(foo.py, Gen7)= — "I parsed file foo.py, this is generation 7"
+- =syntax_node(syntax_parse(foo.py,7), [0,2,1])= — one fact per tree node,
+  with type, byte span, points, parent/child links.
+
+All of that lives in Prolog =dynamic= predicates. Restart the process and
+it is gone. Nothing in the merged code touches disk today.
+
+** What #97 adds
+
+#97 runs Tree-sitter *queries* and extracts things like "a Python function
+definition spans bytes 100-180, capture =@definition=". These are new
+observations with their own provenance (language, grammar ref, query-pack
+content hash, parse generation, span). Per your answer they go in a new
+sibling module (working name =rlm_project_query=), so #96 stays a pure CST
+layer and #97 owns its own registry state, mutex, currentness, and — now —
+its own persistence.
+
+** The =$PROJECT_ROOT/.kb/= persistence requirement
+
+You asked for everything Prolog generates to persist under
+=$PROJECT_ROOT/.kb/<kb tree>=. That is a real scope addition: the merged
+runtime currently has *no* project-KB-on-disk layer. What it means
+concretely:
+
+- The KB tree lives under the *project being observed* (writable workspace),
+  e.g. =.kb/project-query/<registry>/<language>/<pack-hash>/…=. Not under
+  /nix/store.
+- Nix immutability: nix store paths (grammar bundle =RLM_TREE_SITTER_GRAMMAR_DIR=,
+  the FFI library) are read-only — that is fine, they are *inputs*. The KB
+  is *generated state* and must go to the writable project root. If a
+  project root is itself read-only (e.g. someone points the runtime at a
+  store-built tree), KB writes must fail with a structured error — never
+  silently degrade to memory-only.
+- Mechanics: append-journal + atomic snapshot per registry, fsync on
+  publication, reload on registry open, replay must be deterministic. This
+  is exactly the kind of crash/restart semantics AGENTS.md requires a
+  *fresh-process fixture* for — so the design phase now needs a
+  kill -9 / restart test for the .kb tree, not just in-memory suites.
+- Semantic class discipline: on-disk project KB facts are project epistemic
+  state — a distinct class from durable artifacts, graph checkpoints, MCP
+  config, and effect journals. Same disk, different semantics; no shared
+  generic fact bucket.
+
+** Scope flag (I will not silently absorb this)
+
+"Everything Prolog generates persists to =.kb=" is an epic-wide (#93)
+direction. For the #97 slice the minimum honest reading is: #97's own
+extraction facts persist through the new .kb layer, and the design defines
+the layout + restart semantics other modules will reuse. Whether the full
+"everything" policy (CST nodes too? artifacts?) lands in #97 or a sibling
+project-KB slice is a decision I am flagging for you, not deciding alone.
+
+* Q3 — repeated capture names: DOWN-TO-EARTH EXPLANATION (reply below)
+
+** The situation
+
+A query pattern may use the same =@name= more than once, e.g.:
+
+#+begin_src scheme
+;; two different nodes captured under the SAME name in ONE match:
+((function_definition name: (identifier) @name)
+ parameters: (parameters (identifier) @name))
+#+end_src
+
+One match here = one function definition plus its parameter list, and =@name=
+appears twice with *two different nodes* (the function's name node and a
+parameter node). Tree-sitter also allows the mirror case: the *same node*
+under two different capture names.
+
+** What Tree-sitter actually hands back
+
+For each match the C API gives one =TSQueryMatch= record:
+
+#+begin_example
+TSQueryMatch = {
+  id,             <- which match
+  pattern_index,  <- which pattern in the query
+  capture_count,
+  captures[]      <- an ARRAY of TSQueryCapture { index, node }
+}
+#+end_example
+
+Each element = one capture: =index= points into the query's capture-name
+table (that's how you get the string "name"), =node= is the actual tree
+node. Multiplicity is already in the data: the array simply contains two
+entries whose =index= maps to the same name "name" with different nodes.
+Nothing is deduplicated, nothing is lost — *unless we choose a bad
+representation downstream.*
+
+** Bad vs good Prolog representation
+
+Bad (loses multiplicity) — a dict keyed by capture name:
+
+#+begin_example
+_{'name': nodeB}        <- nodeA silently overwritten, last-wins
+#+end_example
+
+Bad (loses grouping) — a flat stream:
+
+#+begin_example
+capture(name, nodeA). capture(name, nodeB).   <- which match did these belong to?
+#+end_example
+
+Good — one record per match, captures as an ordered list:
+
+#+begin_example
+query_match(Query, PatternIndex, MatchId,
+            [ capture('name', 0, NodeA),   % ordinal 0
+              capture('name', 1, NodeB) ]) % ordinal 1, same name, different node
+#+end_example
+
+The list preserves order and repeats; the ordinal (=i= in the C array)
+distinguishes same-name entries. From there each captured node still
+projects to its #96 closed identity =syntax_node(Parse, Path)= with span +
+provenance — repeated names just produce multiple such facts, one per
+entry. That is the representation I propose; nothing needs to change in
+Tree-sitter, it is purely how we project the match array.
+
+* Q5 — Unicode byte/point ranges: AGREED
+
+Before finalizing tests: confirm the bundled grammars treat point columns
+as UTF-8 *byte* offsets within the line (Tree-sitter's convention), with
+tests that include multi-byte text where byte offset and codepoint position
+diverge.
+
+* Your reply
+
+(Q2 scope, Q3 representation, anything else — write here)

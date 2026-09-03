@@ -287,6 +287,7 @@ run_all_checks :-
 design_gate_group(base_adoption_checks).
 design_gate_group(spec_grammar_checks).
 design_gate_group(plan_base_checks).
+design_gate_group(plan_native_checks).
 design_gate_group(d6_delta_checks).
 design_gate_group(dataflow_checks).
 design_gate_group(capability_safety_checks).
@@ -656,6 +657,85 @@ base_graph_plan_graph(plan_graph(
            step(s3, read, read(path('src/foo.py')), body)]),
     depends_on([depends_on(s2, [s1]),
                 depends_on(s3, [s2])]))).
+
+/* ------------------------------------------------------------------ */
+/* D6-11 plan-native deterministic mutations                            */
+/*                                                                      */
+/* D6-11: the closed set sync_remote/1, run/1, index/1, delete/1        */
+/* executes at the plan layer through the canonical boundary (schema -> */
+/* capability -> authority -> durable effect admission -> dispatch ->   */
+/* observe), exactly like a tool/3 step; excluded from expert mapping   */
+/* and from the future expert registry; edit/2 and create/2 remain      */
+/* write-expert-owned per §8.3.                                         */
+/* ------------------------------------------------------------------ */
+
+% Gate-local trusted record of the D6-11 closed set. Membership is pinned
+% against plan_graph_op/1 from the loaded BASE module, so the native set
+% can never escape the closed project-op vocabulary.
+plan_native_op(sync_remote/1).
+plan_native_op(run/1).
+plan_native_op(index/1).
+plan_native_op(delete/1).
+
+% BASE-accepted arg shapes (BASE arg_valid/2; D6-4 argv is a delta).
+plan_native_base_args(sync_remote, sync_remote(op(push))).
+plan_native_base_args(run, run(command(sync))).
+plan_native_base_args(index, index(scope(all))).
+plan_native_base_args(delete, delete(path('a.py'))).
+
+% D6-4-shaped args for the gate-local D6 desugar checker.
+plan_native_d6_args(sync_remote, sync_remote(op(push))).
+plan_native_d6_args(run, run(command(argv([sync])))).
+plan_native_d6_args(index, index(scope(all))).
+plan_native_d6_args(delete, delete(path('a.py'))).
+
+plan_native_single_step_graph(Op, Args, plan_graph(
+    steps([step(native_step, Op, Args, native_bind)]),
+    depends_on([]))).
+
+plan_native_checks :-
+    % D6-11 closed set: inside the BASE vocabulary, never covering the
+    % write-expert-owned model-payload mutations (§8.3).
+    check(plan_native_set_closed_in_base_vocabulary,
+          (   forall(plan_native_op(NativeOp), plan_graph_op(NativeOp)),
+              \+ plan_native_op(edit/2),
+              \+ plan_native_op(create/2),
+              plan_graph_op(edit/2),
+              plan_graph_op(create/2)
+          )),
+
+    % Ungranted capability fails closed at the plan layer for every
+    % plan-native op: validation error before any dispatch.
+    check(plan_native_capability_denied_fail_closed,
+          forall(plan_native_op(Op/_),
+                 (   plan_native_base_args(Op, Args),
+                     plan_native_single_step_graph(Op, Args, Source),
+                     plan_graph_rejects(Source, [tool(other)])
+                 ))),
+
+    % The exact per-op capability admits the native step: the required
+    % capability term is exactly tool(Op) — the canonical plan-layer
+    % capability, not an expert-contract capability.
+    check(plan_native_capability_exact_admission,
+          forall(plan_native_op(Op/_),
+                 (   plan_native_base_args(Op, Args),
+                     plan_native_single_step_graph(Op, Args, Source),
+                     plan_graph_accepts(Source, [tool(Op)])
+                 ))),
+
+    % Each native op desugars mechanically to the canonical tool/3 step
+    % plan([tool(Op, literal(Args), Bind), final(var(Bind))]) — the
+    % desugared form the plan layer executes (D6-11 "exactly like a
+    % tool/3 step").
+    check(plan_native_desugar_is_canonical_tool_step,
+          forall(plan_native_op(Op/_),
+                 (   plan_native_d6_args(Op, Args),
+                     plan_native_single_step_graph(Op, Args, Source),
+                     d6_accepts(Source, Graph),
+                     d6_desugar(native_step, Op, Graph, _{}, Plan),
+                     Plan == plan([tool(Op, literal(Args), native_bind),
+                                   final(var(native_bind))])
+                 ))).
 
 /* ------------------------------------------------------------------ */
 /* D6 delta checks (gate-local normative checkers; S5 implements them) */

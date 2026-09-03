@@ -15,7 +15,8 @@ TREE_SITTER_SOURCES := \
 	c/rlm_tree_sitter_lifetime.c \
 	c/rlm_tree_sitter_language.c \
 	c/rlm_tree_sitter_parser.c \
-	c/rlm_tree_sitter_node.c
+	c/rlm_tree_sitter_node.c \
+	c/rlm_tree_sitter_query.c
 
 .PHONY: all install research-approval tree-sitter-ffi tree-sitter-test-grammars tree-sitter-test clean
 

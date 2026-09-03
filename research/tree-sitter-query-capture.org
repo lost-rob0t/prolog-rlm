@@ -1,0 +1,297 @@
+#+title: RLM-RESEARCH-012 Tree-sitter query/capture APIs through the #94 FFI
+#+status: RESEARCHED
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: APPROVED
+#+approval_actor: human
+#+approval_evidence: I approved it as the human after reviewing it.
+#+approval_base_commit: 4ab728553c65b574c440066f02aadbf9e9893225
+#+approval_base_blob: 1974058b0ad9b1ed0d1596a09810e5f2523eb837
+#+approval_decided_at: 2026-09-02T20:26:54Z
+:PROPERTIES:
+:ID: RLM-RESEARCH-012
+:END:
+
+Consumed by issue lost-rob0t/prolog-rlm#97 (epic #93). Slice branch
+=rage/97-query-capture-apis=, RAGE start commit
+=156bfe9b2caffa1b967e77bee51263ee9e85fb50=. Run log: =rage/97-query-capture-apis.org=.
+
+* Research Question
+
+How can Tree-sitter's structural query engine (=ts_query_*=,
+=ts_query_cursor_*=) be exposed to Prolog through the existing #94 SWI FFI
+while preserving the #96 closed node-identity model, parser/tree/lifetime
+rules, and bounded execution — so language adapters become declarative query
+packs plus Prolog normalization instead of C tree walkers?
+
+Scope boundaries: this record covers the query/capture mechanical layer and
+its provenance. Semantic normalization is #98, incremental reparsing is #99.
+
+* Sources (retrieved 2026-09-02, at start SHA =156bfe9=)
+
+- Primary: v0.20.8 =lib/include/tree_sitter/api.h= fetched from GitHub tag
+  =v0.20.8= (exact header text inspected; complete query-section function
+  list extracted).
+- Primary: local nixpkgs tree-sitter 0.26.9 =api.h= inside =nix develop=
+  (=pkg-config --modversion tree-sitter= → =0.26.9=; query-section function
+  list extracted and diffed against 0.20.8).
+- Corroboration: Brave web search — tree-sitter PR #3843 (query execution
+  options/progress callback), v0.25.0 changelog, py-tree-sitter release notes
+  (all confirm cursor timeout/options APIs postdate 0.20.8).
+- Repository evidence at =156bfe9=: =prolog/rlm_tree_sitter.pl=,
+  =c/rlm_tree_sitter{,_internal,_lifetime,_language,_parser,_node}.c=,
+  =prolog/rlm_project_syntax.pl=, =prolog/rlm_project_source.pl=,
+  =prolog/rlm_project_grammar_pack.pl=, =Makefile=, =flake.nix=,
+  =docs/project-syntax.md=, =docs/project-source-registry.md=,
+  =scripts/validate_research_approval.pl=.
+- Issues #93/#94/#95/#96/#97 bodies and the #96→#97 handoff comment.
+- Prolog verification session (prolog MCP, SWI 10.0.2, =allow_side_effects=false=):
+  four gates proved — API-0.20.8-compat, provenance completeness,
+  acceptance-criterion coverage, query-source safety (run log §Analyze).
+
+* Findings
+
+** Verified: the v0.20.8 query API surface (compatibility baseline)
+
+=Makefile= compiles the FFI against whatever =pkg-config tree-sitter=
+provides. CI (Ubuntu) provides 0.20.x headers (compile-checked at 0.20.8 in
+#96); =nix develop= currently provides 0.26.9. The C layer therefore must
+compile against the *intersection*; the existing
+=#if TREE_SITTER_LANGUAGE_VERSION >= 15= guard shows the established pattern.
+
+Present in v0.20.8 (=TREE_SITTER_LANGUAGE_VERSION 14=, =MIN_COMPATIBLE 13=):
+
+- =ts_query_new(language, source, source_len, *error_offset, *error_type)=
+  returning =NULL= plus byte offset and =TSQueryError= kind on failure.
+- =TSQueryError= kinds exactly: =None=, =Syntax=, =NodeType=, =Field=,
+  =Capture=, =Structure=, =Language=.
+- =ts_query_delete=; =ts_query_pattern_count=, =ts_query_capture_count=,
+  =ts_query_string_count=; =ts_query_start_byte_for_pattern=;
+  =ts_query_predicates_for_pattern=; =ts_query_is_pattern_rooted=,
+  =_non_local=, =_guaranteed_at_step=.
+- =ts_query_capture_name_for_id(query, id, *length)= and
+  =ts_query_capture_quantifier_for_id(query, pattern_id, capture_id)=
+  (=TSQuantifier= enum exists in 0.20.8); =ts_query_string_value_for_id=;
+  =ts_query_disable_capture=, =ts_query_disable_pattern=.
+- =ts_query_cursor_new/delete/exec(cursor, query, node)=;
+  =ts_query_cursor_set_byte_range(cursor, start, end)= and
+  =ts_query_cursor_set_point_range(cursor, TSPoint, TSPoint)=;
+  =ts_query_cursor_{match_limit,set_match_limit,did_exceed_match_limit}=;
+  =ts_query_cursor_next_match(cursor, TSQueryMatch*)= and
+  =ts_query_cursor_next_capture(cursor, TSQueryMatch*, uint32_t*)=;
+  =ts_query_cursor_remove_match=.
+- =TSQueryMatch {id, pattern_index, capture_count, captures[]}= with
+  =TSQueryCapture {index, node}= — native match grouping is exposed and must
+  be preserved end-to-end.
+
+Present ONLY in newer headers (0.21+/0.25 line), verified absent from
+v0.20.8: =ts_query_cursor_exec_with_options=,
+=ts_query_cursor_set_max_start_depth=,
+=ts_query_cursor_set_timeout_micros= / =ts_query_cursor_timeout_micros=,
+=ts_query_end_byte_for_pattern=. Using any of these unguarded would break the
+CI header baseline.
+
+** Verified: no native mid-scan query timeout exists in 0.20.8
+
+Because =ts_query_cursor_set_timeout_micros= is post-0.20.8, native deadline
+cancellation of a running query scan is unavailable at the CI baseline.
+The 0.20-compatible bounded-execution toolkit is:
+(1) =ts_query_cursor_set_match_limit= + =did_exceed_match_limit= for
+in-progress-match bounds;
+(2) Prolog-driven deadline checks *between* =next_match= /
+=next_capture= steps (mirroring the #96 =call_with_time_limit= wrap and the
+existing =PL_handle_signals()= chunked-read pattern in
+=c/rlm_tree_sitter_parser.c=);
+(3) explicit max-matches/max-captures outcome bounds in Prolog.
+A single cursor step is not individually interruptible; boundedness is
+therefore enforced by step-granularity checks plus match limit, and this
+guarantee boundary must be documented rather than overstated.
+
+** Verified: Tree-sitter does not evaluate query predicates
+
+=ts_query_predicates_for_pattern= only *reports* predicate steps; the host
+evaluates =#eq?=, =#match?=, =#any-of?= etc. (this is unchanged through the
+0.2x line; the 0.25 notes still describe predicates as host-evaluated). There
+is no native predicate evaluator to call. So a query pack containing
+predicates either gets a Prolog-side evaluator over projected capture data or
+must be rejected. Evaluating in C would move language semantics into the FFI
+and is out of contract.
+
+** Verified: the #94/#95/#96 contracts this layer must reuse
+
+- Resource model (#94): SWI blob types with mutex-guarded refcounts,
+  thread-affine owner threads, structured =tree_sitter_error(Kind, Detail)= /
+  =wrong_thread= errors, idempotent explicit close plus GC-safe release, and
+  language retention for every dependent object (=parser->language=,
+  =tree->language=). Query and cursor resources must follow the same shape:
+  a query blob retains its =TSLanguage= resource; a cursor blob is
+  thread-affine like parser/tree.
+- Parse path: =project_source_tree_parse/5= (in =rlm_project_source.pl=)
+  selects the active grammar for a File, creates a parser under
+  =setup_call_cleanup/3=, parses UTF-8 bytes, and returns
+  =project_source_parse{...}= provenance (project, file hash/generation,
+  language, backend, =grammar_ref=, grammar state, activation, selection
+  provenance). Query execution can reuse this exact trusted entry point.
+- Identity model (#96): =syntax_parse(File, Generation)= and
+  =syntax_node(Parse, Path)= with =Path= the bounded child-index path; node
+  facts carry type/named/parent/child_index/field/span/points/errors; parse
+  records carry full provenance including =content_hash=, =grammar_ref=,
+  =currentness= (=current= / =stale= / =indeterminate(pending(G))=); admission
+  is transactional under =rlm_project_syntax= mutex; publication can never
+  resurrect an older generation over a newer one; source text is stored once
+  per parse and sliced by byte range for reads.
+- Grammar packs (#95): inert registration of closed declarative metadata plus
+  explicit trusted activation; durable identity =grammar_ref(Language, Hash)=
+  never a raw path; activation failure leaves the declarative state inactive.
+
+** Inference (implementation implications, not yet code-verified)
+
+1. Standalone bounded query execution should parse natively via
+   =project_source_tree_parse=, run the cursor against the root, and project
+   captured nodes into the #96 identity space by walking =ts_node_parent=
+   from each captured node to the root to derive the child-index =Path=, then
+   publish =syntax_node(syntax_parse(File, Gen), Path)= facts (captured nodes
+   only, with span/provenance) without materializing the full CST. This
+   satisfies "captures project through the #96 closed node identity model"
+   and "do not force a full materialized CST merely to run a query". Whether
+   the query run reuses the current parse generation (when content hash
+   matches and currentness is =current=) or opens a new generation is a
+   design-phase decision; both keep identity closed.
+2. Structured compile errors: =ts_query_new= gives byte offset + =TSQueryError=
+   kind natively; the point (row/column) is not native and must be derived in
+   Prolog from the query source text by byte→UTF-8 line/column counting.
+3. Provenance: an extraction record should bind language, =grammar_ref=
+   (identity + version), query-pack identity, pack source SHA-256 (and the
+   individual query source hash), parse generation, and captured node spans.
+   Pack re-registration with a changed content hash must start a new
+   extraction generation and mark prior extraction facts stale, mirroring the
+   #96 admission/currentness machinery rather than inventing a parallel one.
+   Per operator input (2026-09-02) these extraction facts live in their own
+   sibling module and persist to disk under =$PROJECT_ROOT/.kb/<kb tree>=
+   (see Operator research input for the persistence requirements).
+4. Predicate policy: the smallest safe slice rejects packs whose patterns
+   carry predicates with a structured =unsupported_predicate= compile-stage
+   error (detectable from =ts_query_predicates_for_pattern=). A Prolog-side
+   evaluator for standard predicates is a follow-up, not part of #97.
+5. Blobs: =TSQuery= blob (retains language resource; compile-time
+   thread-affinity unnecessary since =TSQuery= is immutable after creation,
+   but deletion must respect the language refcount) and =TSQueryCursor= blob
+   (thread-affine, like parser/tree). Both follow the existing
+   =release_*_blob= refcount idiom.
+6. Bounded execution options mirror #96 style: =max_matches=,
+   =max_captures=, =timeout_seconds= (Prolog-side between-step deadline),
+   =byte_range=, =point_range=, =subtree= (run against a non-root captured
+   or projected node — native exec accepts any =TSNode=).
+
+* Rejected / Avoided Alternatives
+
+- *Converting query source into Prolog callables or directives* — violates
+  the safety invariant; the issue explicitly forbids it; Prolog verification
+  gate SAFETY enforces a single trusted data sink (=$ts_query_new=).
+- *Language-specific C visitors or per-language C predicates* — #93/#94 keep
+  C stupid; issue non-goal; grammars are data, adapters are Prolog.
+- *Full #96 CST materialization before every query* — wastes the bounded
+  node budget and defeats the "native tree available" fast path; issue says
+  avoid.
+- *Raw native pointers as capture identity* — contradicts #96 closed
+  identities; captures must be closed Prolog data.
+- *Calling =ts_query_cursor_set_timeout_micros= under a version guard* —
+  would fork behavior between CI (0.20.8) and nix (0.26.9) and put
+  cancellation semantics behind #ifdef; Prolog-side step deadlines give one
+  deterministic semantic on both.
+- *C-side predicate evaluation* — moves language semantics into the FFI and
+  is host-evaluated by design; rejected (see Inference 4).
+- *Durable persistence of compiled queries across restarts* — =TSQuery= is a
+  pure function of (language, source); recompiling after restart is
+  deterministic and cheap; persisting native pointers across process
+  boundaries is impossible anyway. The compiled-query cache stays
+  process-lifetime. (Extraction *facts* are a different matter: per operator
+  input they persist under =$PROJECT_ROOT/.kb/…= and do require a
+  fresh-process restart fixture.)
+- *Flattened capture stream as the primary API* — loses match grouping the
+  issue requires; the match-grouped projection is primary and a capture
+  stream may be offered as a secondary view.
+
+* Open Questions
+
+Status after operator review (2026-09-02): see the *Operator research input*
+section below — Q1 and Q2 resolved (provably-same-generation reuse only;
+sibling module), the =.kb= persistence layer confirmed as pre-existing epic
+intent now first recorded, Q3 explanation delivered (pending confirmation),
+Q5 agreed. Remaining genuinely open:
+
+1. *Designated open research question for this slice's design phase (per
+   operator, 2026-09-02 — research approval does not close it).* What is
+   the exact shape of the extraction-generation record and the =.kb= tree —
+   path scheme, journal vs snapshot cadence, and the backend-neutral
+   facade API? The #97 design must either answer this from existing
+   evidence (the =persist(File)= artifact/conversation precedents) or
+   explicitly spawn the bounded research needed to answer it before the
+   design is recorded. A verified answer is a design acceptance criterion:
+   the kill -9 restart fixture only passes if the layout actually survives
+   it.
+2. Should =ts_query_cursor_remove_match= be exposed for caller-driven
+   filtering, or omitted from the minimum surface? (Omit unless a test needs
+   it.)
+
+* Operator research input (2026-09-02, pre-approval)
+
+Recorded from the operator (host review of the open questions; discussion
+scratch =rage/97-query-capture-notes.org=):
+
+1. *Generation reuse — resolved.* A query run may reuse the current parse
+   generation only when it is provably the same generation: the parse record
+   is =current=, its content hash equals the supplied source, and it is the
+   latest admitted generation for the file. All other cases open a fresh
+   bounded parse and a new generation. No heuristic reuse.
+2. *Fact ownership — resolved.* Query-extracted observations live in their
+   own module (sibling of =rlm_project_syntax=; working name
+   =rlm_project_query=), not inside the #96 CST layer. #96 stays a pure CST
+   projection.
+3. *Persistence — operator-clarified epic intent, first recorded here.*
+   Project KB state that Prolog generates persists to disk under
+   =$PROJECT_ROOT/.kb/<kb tree>=. This was always the intended shape of the
+   #93 "project knowledge base" but no issue, doc, or research record had
+   ever written it down — verified 2026-09-02 (grep across TODO.md/docs;
+   issue search). Not scope expansion: a missing piece of the epic design
+   that this record now captures for the first time. Mechanics follow the
+   repository's established persistence precedent (backend-neutral
+   persistence interface, =library(persistency)= as the initial/local
+   adapter only, per TODO.md and =docs/artifact-runtime.md=): the =.kb=
+   tree is project-local (writable workspace, never the read-only nix
+   store; read-only project roots fail with a structured error), reloads
+   on registry open, and requires a fresh-process restart fixture per work
+   order §7. On-disk project KB facts are project epistemic state — a
+   distinct semantic class from durable artifacts, graph checkpoints, MCP
+   config, and effect journals. #219 (source-aware KB/retrieval) is a
+   later consumer of this layer, not part of this slice.
+4. *Repeated capture names — explanation delivered* (ordered capture list
+   per match, ordinal distinguishes same-name entries; multiplicity from the
+   native =TSQueryMatch.captures= array). Pending operator confirmation of
+   the proposed representation.
+5. *Unicode point columns — agreed.* Tests must confirm the bundled
+   grammars' point columns are UTF-8 byte offsets within the line, using
+   multi-byte fixtures where byte offset and codepoint position diverge.
+
+* Acceptance Experiments (mapped to issue #97 checklist)
+
+- Compile OK + structured compile error with byte offset, derived point, and
+  =TSQueryError= kind; wrong-grammar query yields a structured failure, not a
+  crash; malformed/adversarial query text yields a structured error and
+  executes no Prolog; passing a Prolog callable as query source is rejected
+  as a data-type error.
+- Zero matches; multiple matches; nested captures; repeated capture names
+  (same name twice in one match preserved as two ordered entries); match
+  grouping preserved (not a flattened stream); captures project to #96 node
+  identities with span + generation provenance.
+- Subtree-bounded and byte/point-range-bounded execution, including Unicode
+  text where byte offsets and points diverge.
+- Query-pack registration/activation mirrors the #95 grammar-pack pattern;
+  replacing a pack yields a new extraction generation with full provenance
+  and stale prior facts.
+- Extraction facts persist under =$PROJECT_ROOT/.kb/…=: kill -9 + fresh
+  process reloads provenance-complete facts deterministically; read-only
+  project root fails with a structured persistence error.
+- Three grammars through one generic API: Python definitions pack;
+  JavaScript definitions/calls pack; no language-specific C code.
+- Prolog-verified gates (run log): API-0.20.8-compat PASS,
+  provenance-completeness PASS, acceptance-coverage PASS, safety PASS.

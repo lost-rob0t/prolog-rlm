@@ -129,7 +129,7 @@ void tree_retain_node(rlm_ts_tree_resource *resource)
     pthread_mutex_unlock(&resource->lock);
 }
 
-static void tree_release_node(rlm_ts_tree_resource *resource)
+void tree_release_node(rlm_ts_tree_resource *resource)
 {
     bool free_now = false;
     TSTree *tree = NULL;
@@ -247,6 +247,127 @@ int release_node_blob(atom_t atom)
         if (resource) {
             tree_release_node(resource->tree);
             free(resource->named_fields);
+            free(resource);
+        }
+    }
+    return TRUE;
+}
+
+static bool query_retire_locked(rlm_ts_query_resource *resource,
+                                TSQuery **query,
+                                rlm_ts_language_resource **language)
+{
+    if (!resource->open && resource->dependents == 0 && resource->query) {
+        *query = resource->query;
+        *language = resource->language;
+        resource->query = NULL;
+        resource->language = NULL;
+    }
+    return !resource->blob_alive && resource->dependents == 0;
+}
+
+static void query_delete_native(TSQuery *query,
+                                rlm_ts_language_resource *language)
+{
+    if (query) {
+        ts_query_delete(query);
+    }
+    if (language) {
+        language_release(language);
+    }
+}
+
+static void query_finish_free(rlm_ts_query_resource *resource)
+{
+    pthread_mutex_destroy(&resource->lock);
+    free(resource);
+}
+
+bool query_retain(rlm_ts_query_resource *resource,
+                  const TSQuery **query)
+{
+    bool retained = false;
+
+    if (!resource) {
+        return false;
+    }
+    pthread_mutex_lock(&resource->lock);
+    if (resource->open && resource->query && resource->dependents < UINT_MAX) {
+        resource->dependents++;
+        if (query) {
+            *query = resource->query;
+        }
+        retained = true;
+    }
+    pthread_mutex_unlock(&resource->lock);
+    return retained;
+}
+
+void query_release(rlm_ts_query_resource *resource)
+{
+    TSQuery *query = NULL;
+    rlm_ts_language_resource *language = NULL;
+    bool free_now;
+
+    if (!resource) {
+        return;
+    }
+    pthread_mutex_lock(&resource->lock);
+    if (resource->dependents > 0) {
+        resource->dependents--;
+    }
+    free_now = query_retire_locked(resource, &query, &language);
+    pthread_mutex_unlock(&resource->lock);
+    query_delete_native(query, language);
+    if (free_now) {
+        query_finish_free(resource);
+    }
+}
+
+int release_query_blob(atom_t atom)
+{
+    size_t length = 0;
+    PL_blob_t *type = NULL;
+    void *data = PL_blob_data(atom, &length, &type);
+
+    if (data && type == &query_blob && length == sizeof(rlm_ts_query_resource *)) {
+        rlm_ts_query_resource *resource = *(rlm_ts_query_resource **)data;
+        if (resource) {
+            TSQuery *query = NULL;
+            rlm_ts_language_resource *language = NULL;
+            bool free_now;
+            pthread_mutex_lock(&resource->lock);
+            resource->blob_alive = false;
+            resource->open = false;
+            free_now = query_retire_locked(resource, &query, &language);
+            pthread_mutex_unlock(&resource->lock);
+            query_delete_native(query, language);
+            if (free_now) {
+                query_finish_free(resource);
+            }
+        }
+    }
+    return TRUE;
+}
+
+int release_query_cursor_blob(atom_t atom)
+{
+    size_t length = 0;
+    PL_blob_t *type = NULL;
+    void *data = PL_blob_data(atom, &length, &type);
+
+    if (data && type == &query_cursor_blob &&
+        length == sizeof(rlm_ts_query_cursor_resource *)) {
+        rlm_ts_query_cursor_resource *resource =
+            *(rlm_ts_query_cursor_resource **)data;
+        if (resource) {
+            if (resource->open && resource->cursor) {
+                ts_query_cursor_delete(resource->cursor);
+                resource->cursor = NULL;
+                resource->open = false;
+            }
+            query_release(resource->query);
+            tree_release_node(resource->tree);
             free(resource);
         }
     }

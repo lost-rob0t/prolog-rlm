@@ -80,6 +80,7 @@ corpus_entry('rlm_conversation_cold_test.pl',
 corpus_entry('rlm_conversation_scale_test.pl',
              include(rlm_conversation_scale)).
 corpus_entry('rlm_plan_test.pl', include(rlm_plan)).
+corpus_entry('rlm_plan_native_ops_test.pl', include(rlm_plan_native_ops)).
 corpus_entry('rlm_tool_test.pl', include(rlm_tool)).
 corpus_entry('rlm_tool_effect_test.pl', include(rlm_tool_effect)).
 corpus_entry('rlm_tool_loader_test.pl', include(rlm_tool_loader)).
@@ -175,7 +176,13 @@ corpus_entry('rlm_tree_sitter_test.pl',
 corpus_entry('rlm_project_source_native_test.pl',
               exclude(native_ffi, 'runs through the native source gate')).
 corpus_entry('rlm_project_syntax_test.pl',
-              exclude(native_ffi, 'runs through the native source gate')).
+               exclude(native_ffi, 'runs through the native source gate')).
+corpus_entry('rlm_tree_sitter_query_test.pl',
+             exclude(native_ffi, 'runs through the Tree-sitter gate')).
+corpus_entry('rlm_project_query_test.pl',
+             exclude(native_ffi, 'runs through the Tree-sitter gate')).
+corpus_entry('rlm_project_query_restart_test.pl',
+             exclude(native_ffi, 'runs through the Tree-sitter gate')).
 corpus_entry('rlm_tree_sitter_cancellation_test.pl',
               exclude(native_ffi, 'runs through the Tree-sitter gate')).
 corpus_entry('live_chain_stream_openrouter_test.pl',

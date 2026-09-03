@@ -1,0 +1,428 @@
+* Run identity
+- Consumed issue :: #97
+- Branch :: =rage/97-query-capture-apis=
+- RAGE start commit :: =156bfe9b2caffa1b967e77bee51263ee9e85fb50=
+
+* Baseline (exact start SHA =156bfe9b2caffa1b967e77bee51263ee9e85fb50=)
+
+- swipl version :: 10.0.2
+- test/check_runtime.pl :: PASS
+- test/load_all.pl :: PASS (only known #329 singleton warnings: =rlm_skill.pl:881=, =rlm_prompt_compiler.pl:1941=)
+- test/run_tests.pl :: PASS — suites=96, tests=1179, passed=1179, failed=0, timeout=0, blocked=0 (matches work-order expectation 96+ suites / 1179+ tests / 0 failed)
+- benchmark/run.pl -- deterministic :: PASS — 16/16, quality 1.00, 6 model calls, cost $0.0116
+- bin/prolog-rlm.pl -- demo --json :: PASS
+- git diff --check :: clean
+
+* Analyze — Prolog-verified research facts (session =9302fcee2a67=)
+
+Primary sources (retrieved 2026-09-02 at start SHA =156bfe9=):
+
+- v0.20.8 =lib/include/tree_sitter/api.h= fetched from GitHub tag =v0.20.8=
+  (exact header text inspected): =TREE_SITTER_LANGUAGE_VERSION 14=,
+  =MIN_COMPATIBLE 13=; query section contains =ts_query_new=, =ts_query_delete=,
+  =ts_query_{pattern,capture,string}_count=, =ts_query_start_byte_for_pattern=,
+  =ts_query_predicates_for_pattern=, =ts_query_is_pattern_*≈,
+  =ts_query_capture_name_for_id=, =ts_query_capture_quantifier_for_id=
+  (=TSQuantifier= present), =ts_query_string_value_for_id=,
+  =ts_query_disable_{capture,pattern}=, =ts_query_cursor_new/delete/exec=,
+  =ts_query_cursor_{match_limit,set_match_limit,did_exceed_match_limit}=,
+  =ts_query_cursor_set_{byte,point}_range=,
+  =ts_query_cursor_next_{match,capture}=, =ts_query_cursor_remove_match=.
+- nix develop (nixpkgs) header reports tree-sitter 0.26.9 with =LANGUAGE_VERSION 15=
+  and additionally: =ts_query_cursor_exec_with_options=,
+  =ts_query_cursor_set_max_start_depth=,
+  =ts_query_cursor_{set_timeout_micros,timeout_micros}=,
+  =ts_query_end_byte_for_pattern= — /none of these exist in v0.20.8/.
+- Brave search corroboration: query-cursor timeout/options/progress-callback
+  APIs arrived post-0.20.8 (tree-sitter PR #3843; 0.25.0 changelog deprecates
+  timeout_micros in favor of progress callbacks; py-tree-sitter release notes).
+- Repository build evidence: =Makefile= compiles FFI against
+  =pkg-config tree-sitter= (CI Ubuntu 0.20.x headers vs nixpkgs 0.26.9), matching
+  the existing =#if TREE_SITTER_LANGUAGE_VERSION >= 15= guard in
+  =c/rlm_tree_sitter_internal.h=.
+
+Prolog verification gates (session 9302fcee2a67, =allow_side_effects=false=):
+
+1. =API-COMPAT: PASS= — all 16 =ts_query_*=/=ts_query_cursor_*= functions in the
+   planned C call lists are present in v0.20.8 (26 compatible/5 newer-only facts).
+2. =PROVENANCE: PASS= — planned extraction record covers all 8 issue-required
+   provenance fields (language, grammar identity, grammar version, query-pack
+   hash, query-source hash, parse generation, node span, capture name).
+3. =ACCEPTANCE-COVERAGE: PASS= — all 11 #97 acceptance criteria map to >=1
+   planned test (initial draft failed with 9 uncovered; fixed, re-proved).
+4. =SAFETY: PASS= — query source has exactly one trusted data sink
+   (=$ts_query_new= → =ts_query_new=); no planned predicate name collides with
+   forbidden sinks (call/assert/consult/use_module); pack predicates are
+   data-typed registration.
+
+Note: the MCP goal layer mangles built-in =forall/2= (even =forall(true,true)=
+fails); work-around =forall_ok(G,A) :- \+ (call(G), \+ call(A))= used and the
+misleading initial SAFETY failure was re-proven with the corrected rule.
+
+* Research record authored
+
+- Record :: =research/tree-sitter-query-capture.org= (=RLM-RESEARCH-012=,
+  =#+status: RESEARCHED=, approval block =PENDING= with all fields =NONE=).
+- Stable ID justification: filename fixed by work order; =:ID: RLM-RESEARCH-012=
+  property assigned; verified no branch in the repository claims IDs 012-019
+  (branch scan across all refs returned no 012-019 matches).
+- Validator gate :: =make research-approval= PASS (20 tracked files) after one
+  layout fix (the =:PROPERTIES:= drawer must follow the approval block, which
+  must sit immediately after =#+status=).
+- Work tree state :: research record and run log staged on
+  =rage/97-query-capture-apis=, uncommitted pending operator instruction.
+
+* Operator input received (2026-09-02, pre-approval)
+
+Operator answered the record's open questions (scratch discussion opened in
+Emacs: =rage/97-query-capture-notes.org=, awaiting in-buffer reply):
+
+1. Generation reuse: only when provably the same generation (current +
+   exact content hash + latest admitted). Recorded.
+2. Extraction facts: own sibling module (NOT inside =rlm_project_syntax=);
+   everything Prolog generates for the project KB must persist under
+   =$PROJECT_ROOT/.kb/<kb tree>=; nix store paths are inputs (read-only) not
+   KB state. Recorded as a new persistence requirement with epic-wide scope
+   flag — fresh-process restart fixture now required by work order §7.
+3. Repeated capture names: down-to-earth explanation written into the
+   scratch buffer (ordered capture list per match, ordinal disambiguates);
+   awaiting operator confirmation.
+4. Unicode point columns: agreed — tests will confirm byte-column
+   convention with multi-byte fixtures.
+
+Operator correction applied: =.kb= persistence is NOT scope expansion — it
+is pre-existing epic intent that no agent had ever written down (verified by
+repo grep + issue search). The clarified requirement is now recorded on the
+canonical epic: lost-rob0t/prolog-rlm#93 comment
+5515841794 (2026-09-02), cross-referencing =RLM-RESEARCH-012= and the #97
+extraction-fact persistence introduction. Research record re-framed from
+"scope flag" to "operator-clarified epic intent, first recorded here".
+
+Updated record + run log staged.
+
+* GATE — research approval (CLEARED 2026-09-02T20:26:54Z)
+
+Operator reviewed =research/tree-sitter-query-capture.org= in Emacs and set
+=#+approval_state: APPROVED= directly in the buffer (actor =human=, evidence
+verbatim: "I approved it as the human after reviewing it."). Binding metadata
+completed mechanically by the worker:
+
+- =approval_base_commit= :: =4ab728553c65b574c440066f02aadbf9e9893225=
+  ("research: author RLM-RESEARCH-012 for #97 query/capture APIs")
+- =approval_base_blob= :: =1974058b0ad9b1ed0d1596a09810e5f2523eb837=
+  (=git rev-parse= of the record at the base commit; equality machine-checked)
+- =approval_decided_at= :: =2026-09-02T20:26:54Z=
+- =make research-approval= :: PASS (20 tracked files)
+
+Durable cross-reference posted on the consumed issue (#97) so the next RAGE
+slice picks it up. ADADR status: research approved → design phase authorized;
+implementation remains blocked until the design-approval gate.
+
+* Design phase (ADADR D — authorized by research approval)
+
+** Design analysis input
+
+- Designated open research question answered from existing precedent
+  (no new research needed): the =persist(File)= backends
+  (=rlm_artifact_persist.pl=, =rlm_conversation_persist.pl=,
+  =rlm_effect_persist.pl=) establish the repository's durable-store shape:
+  =library(persistency)= typed =persistent/1= records, =db_attach(File,
+  [sync(...)])=, single-writer mutex, =require_attached= structured errors,
+  backend-neutral facade so storage can be replaced without changing
+  callers. The =.kb= tree follows exactly this shape.
+- Tree-sitter 0.20.8 verified surface constrains the C design (see Analyze).
+- #96 admission/currentness/publication machinery is reused verbatim where
+  possible rather than reinvented.
+
+** Design
+
+*Ownership and state boundaries*
+
+- New C file =c/rlm_tree_sitter_query.c= (+ =internal.h= additions,
+  registration in =rlm_tree_sitter.c=) owning two new blob types following
+  the #94 idiom:
+  - =rlm_ts_query_resource { TSQuery *query; rlm_ts_language_resource
+    *language; bool open; }= — retains the language resource for the query
+    lifetime; immutable after compile, so usable from any thread; explicit
+    close is idempotent; blob release drops the language ref.
+  - =rlm_ts_query_cursor_resource { TSQueryCursor *cursor; int
+    owner_thread; bool open; }= — thread-affine like parser/tree (cursors
+    are mutable).
+- New Prolog module =prolog/rlm_project_query.pl= — sibling of
+  =rlm_project_syntax=, owning pack registry, compile cache, extraction
+  generations, publication, currentness. Uses its own
+  =rlm_project_query= mutex under the established lock order
+  (source-registry mutex → project-query mutex), reusing
+  =project_source_registry_valid=.
+- New Prolog module =prolog/rlm_project_query_persist.pl= — persistency
+  backend mirroring =rlm_artifact_persist.pl=: =persistent
+  extraction_record(project, extraction, record)= and =persistent
+  match_record(project, extraction, sequence, match)=;
+  =db_attach(File, [sync(always)])= — =sync(always)= instead of the
+  artifact backend's =sync(close)= because published extractions must
+  survive =kill -9= (acceptance fixture), and extraction volume is
+  bounded; single-writer mutex; =require_attached= structured errors.
+
+*.kb tree layout (designated research question — answered)*
+
+- Root: =<$PROJECT_ROOT>/.kb/project-query/<ProjectId>.pl= — one journal per
+  project. =$PROJECT_ROOT= is trusted host configuration (registry project
+  meta or explicit option); the runtime never guesses a filesystem root.
+- Unresolvable root or read-only target ⇒ structured
+  =project_query_error{kind:kb_unwritable}= — never silent memory-only
+  degradation. Reload = =db_attach= replay on open (deterministic journal
+  semantics from library(persistency)).
+- The layout is backend-neutral: callers see the =rlm_project_query=
+  facade; a future store implementation replaces the persist module only.
+
+*FFI surface (rlm_tree_sitter.pl additions, all $-prefixed C internals)*
+
+- =ts_query_compile(+Language, +Source, -Query)= — Source strictly
+  atom/string; a callable raises a data-type error (acceptance criterion).
+  On =ts_query_new=NULL: =tree_sitter_error(query_compile(Kind, ByteOffset),
+  _)= with Kind ∈ =syntax=, =node_type=, =field=, =capture=, =structure=,
+  =language= mapped from =TSQueryError=. Point (row/column) is derived in
+  Prolog from the query source text (byte offset → UTF-8 line/column).
+- Metadata: =ts_query_pattern_count/2=, =ts_query_capture_count/2=,
+  =ts_query_capture_name/3=, =ts_query_capture_quantifier/4=,
+  =ts_query_string_value/3=, =ts_query_predicates/3= (0.20.8-verified
+  functions only).
+- Execution: =ts_query_cursor_create/1=, =ts_query_cursor_exec/3=,
+  =ts_query_cursor_set_byte_range/3=, =ts_query_cursor_set_point_range/3=,
+  =ts_query_cursor_set_match_limit/2=,
+  =ts_query_did_exceed_match_limit/1=, =ts_query_next_match/2=,
+  =ts_query_next_capture/3=, =ts_query_cursor_close/2=.
+- Matches project as =ts_match(Id, PatternIndex, [ts_capture(CaptureId,
+  Node), ...])= — the native =TSQueryMatch.captures= array order and
+  multiplicity preserved; repeated capture names stay distinct ordered
+  entries.
+- C =next_match=/=next_capture= loops call =PL_handle_signals()= between
+  steps (chunked-input pattern from =rlm_tree_sitter_parser.c=) so
+  cancellation interrupts cleanly; per-step granularity is the documented
+  guarantee boundary (no native 0.20.8 query timeout).
+- Compile cache: per-registry, keyed =(Language, GrammarRef,
+  QuerySourceSHA256)=, max 32 entries FIFO eviction, process-lifetime only
+  (recompilation after restart is deterministic; nothing native persists).
+
+*Project layer API (rlm_project_query.pl)*
+
+- Inert registration: =project_query_pack_register(+Registry, +Language,
+  +Purpose, +QuerySource, +Meta, -Outcome)= — strict entry validation and
+  structured faults mirroring =rlm_project_grammar_pack=; stores closed
+  data =query_pack{identity, language, purpose, source, sha256,
+  version, provenance}=.
+- Trusted activation: =project_query_pack_activate(+Registry, +Language,
+  +Purpose, -Outcome)= / =_deactivate= — mirrors =ts_grammar_activate=;
+  registration never grants execution of anything.
+- Extraction (canonical async direction, per #96):
+  =project_query_extract_async(+Registry, +File, +Source, +Purposes,
+  +Options, -Future)=, =_execute=, and synchronous =_await= facade. The
+  execute path:
+  1. reserve extraction generation (admission under mutex, pending state),
+  2. validate source hash; *generation reuse only when provably the same
+     generation* — the latest admitted parse for File is =current=, its
+     content hash equals the supplied source, and it is the latest
+     generation; otherwise run a fresh bounded =project_source_tree_parse=
+     opening a new parse generation,
+  3. reject predicate-bearing packs structurally
+     (=unsupported_predicate=) via =ts_query_predicates=,
+  4. compile (cache hit or =ts_query_compile=), compile-language vs
+     tree-language mismatch = query_language_mismatch structured failure,
+  5. cursor exec on root (or bounded: =byte_range=, =point_range=, or
+     =subtree(Node)= where Node belongs to the same parse generation and
+     maps to its native node via child-index path),
+  6. iterate =ts_query_next_match= with between-step deadline checks
+     (=timeout_seconds=, default 30.0) and =max_matches=/=max_captures=
+     bounds (defaults 10000/50000),
+  7. project captured nodes to closed =syntax_node(Parse, Path)=
+     identities by parent-walk child-index paths (no full CST
+     materialization), publishing captured-node facts with spans,
+  8. publish match records + extraction record atomically under the
+     lock order; close tree in =setup_call_cleanup/3=; persist journal
+     append (=sync(always)=) before the =ok= ack.
+- Extraction record (provenance, all 8 required fields):
+  =project_query_extraction{extraction: query_extraction(File, Generation),
+  parse, project, file, language, backend, grammar_ref (identity +
+  version), pack_identity, pack_sha256, query_source_sha256, purposes,
+  parse_generation, status: complete|partial, reason, currentness,
+  provenance}= — pack re-registration with changed content hash yields a
+  *new extraction generation*; prior facts go =stale=, never silently
+  current (same admission/currentness machinery shape as #96).
+- Queries: =project_query_current_extraction/3=,
+  =project_query_matches/3=, =project_query_captures/3= (match-grouped
+  primary view; capture stream secondary), =project_query_node_provenance/3=
+  (joins capture → #96 node provenance + extraction provenance),
+  =project_query_registry_clear/1=.
+
+*Invariants (unchanged from research, restated as test obligations)*
+
+- Query source is data with exactly one trusted sink
+  (=$ts_query_compile= → =ts_query_new=); never callables/directives.
+- Captures project through #96 closed identities; no pointer in any
+  published fact.
+- Packs: inert registration, explicit trusted activation, no authority or
+  capability widening; no pack loads, downloads, or consults anything.
+- Provenance completeness is re-proven by the Prolog verification gates at
+  realization.
+
+* Adversarial review (pre-realization pass on this design)
+
+- Publication/destruction races: registry destroy during in-flight
+  extraction must not republish orphans — #96 lock order reused;
+  persistency appends only for valid registries. Kill order in
+  =setup_call_cleanup= closes tree before journal ack on failure paths.
+- Stale pack provenance after reload: pack identity is content hash, not
+  path; activation records provenance; replacement forces new extraction
+  generation. Risk accepted: old *compiled cache* entries keyed by old
+  hash become unreachable (FIFO eviction bounds them).
+- Wrong-grammar application: query-language vs tree-language resource
+  mismatch rejected before exec (structured, not crash).
+- Malformed/adversarial query text: =ts_query_new=NULL → structured
+  compile error with byte+derived point+kind; fuzz-style fixtures
+  (random bytes, truncated S-expressions, huge captures) must not crash
+  and must not evaluate Prolog.
+- Repeated capture names: ordered-list match representation; test with
+  two same-name captures in one match asserts both entries survive.
+- Zero/nested/multi-capture matches: match grouping preserved natively;
+  nested captures assert parent/child spans.
+- Unicode: byte ranges authoritative; point columns verified as UTF-8
+  byte offsets via multi-byte fixtures (operator-agreed).
+- Partial generation + limits: exhaustion ⇒ =partial(Summary)= + explicit
+  =reason=, facts remain queryable but never claim complete.
+- Restart/process-boundary: =sync(always)= journal; kill -9 fixture;
+  compiled queries are NOT persisted (deterministic recompile) — no
+  fresh-process native-pointer semantics exist.
+- Cancellation mid-scan: deadline checks between steps + C-level
+  =PL_handle_signals=; documented per-step granularity boundary; outcome
+  =error(timeout)= like #96, admission left in pending→rejected state so
+  no stale resurrection.
+- Predicate-bearing packs: rejected structurally; Prolog-side evaluator is
+  an explicit follow-up (research Inference 4).
+- =ts_query_cursor_remove_match=: omitted from minimum surface unless a
+  test requires it (research open question 2 default).
+
+* Decision
+
+- Design GO pending operator approval. On design approval: TDD
+  realization in work-order §5 order (RED tests first per surface), docs
+  =docs/project-query.md= new + =docs/project-syntax.md= scope note,
+  roadmap/issue reconciliation in the same PR.
+
+#+design_approval_schema: prolog-rlm.design-approval.v1
+#+design_approval_state: APPROVED
+#+design_approval_actor: human operator
+#+design_approval_evidence: operator chat approval 2026-09-02, verbatim "Approved but make next prompt slice instead of you working on it" (bound here in the committed run log)
+#+design_approval_decided_at: 2026-09-02T20:35:55Z
+
+* Decision gate outcome (2026-09-02T20:35:55Z)
+
+- Design APPROVED by the human operator. Implementation is authorized
+  *within this design only*.
+- The operator directed that Realize (TDD implementation) is executed by a
+  fresh prompt slice, not by this session. Handoff work order authored at
+  =rage/97-query-capture-realize-prompt.md=; this session stops here.
+
+* GATE — design approval (CLEARED 2026-09-02T20:35:55Z)
+
+
+=#+approval_state: PENDING= authorizes nothing. Design (ADADR phase D) must
+not begin until a human actor records =APPROVED= with durable evidence, exact
+base commit =156bfe9b2caffa1b967e77bee51263ee9e85fb50= and matching
+=approval_base_blob= via =git rev-parse --verify
+BASE_COMMIT:research/tree-sitter-query-capture.org=, and an RFC 3339
+timestamp in =#+approval_decided_at=.
+* Realize scope confirmation
+
+- The #97 layer remains below the runtime modes. Direct mode keeps its normal
+  agentic context/compiler/tool loop; symbolic mode keeps the typed-plan loop
+  where the model contributes bounded reasoning/generation and trusted runtime
+  code owns expert/tool calls. No direct, prompt-compiler, expert-tool, SPEC,
+  VERIFY, or planner integration was added here.
+- Query captures are generic project observations for the later #98/#99 and
+  canonical project-KB/provider layers. They are not a semantic ontology and do
+  not grant model or host authority.
+
+* TDD realization evidence
+
+- RED :: the new native query suite initially failed because the approved
+  =ts_query_*=/=ts_query_cursor_*= surface did not exist. The first project
+  extraction attempt also exposed that the current SWI persistency library does
+  not accept the design's =sync(always)= option.
+- GREEN :: native query compile/metadata/cursor tests pass; project query tests
+  cover grouped captures, provenance, Python/JavaScript/C generic operation,
+  pack replacement, wrong grammar, callable rejection, bounded subtree/range,
+  zero/multiple matches, predicates, malformed queries, Unicode points,
+  read-only roots, and deadline failure. The fresh-process fixture performs a
+  real =SIGKILL= after publication, reloads the journal, and proves the next
+  extraction generation is 2.
+
+* Realize implementation
+
+- The combined foreign object now owns immutable grammar-retaining query blobs
+  and thread-affine cursor blobs. Cursors retain query/tree resources, explicit
+  close is idempotent, and cursor iteration calls =PL_handle_signals()= between
+  native steps. The C surface uses only the v0.20-compatible Tree-sitter query
+  API intersection; no newer timeout/options functions or language-specific C
+  visitors were added.
+- The Prolog FFI wrapper rejects non-text query source, derives UTF-8 byte-based
+  compile points, and projects native match arrays without flattening or
+  deduplicating captures. The project sibling maps captures to closed
+  =syntax_node(Parse, Path)= identities and publishes only ground provenance
+  records.
+- Query packs remain inert until explicit activation. The per-registry compiled
+  query cache is keyed by language, grammar reference, and source SHA-256 and
+  is bounded to 32 process-local FIFO entries. Native pointers are never
+  persisted.
+- Query observations use the separate project-query persistency adapter under
+  =<project-root>/.kb/project-query/= and reload on current-extraction lookup.
+  SWI-Prolog 10.0.2 supports =sync(close|flush|none)=, not =sync(always)=;
+  =sync(close)= is used as the strongest supported process-crash boundary and
+  is covered by the kill/restart fixture. This is an implementation
+  compatibility refinement preserving the approved durability intent.
+
+* Adversarial review results
+
+- Resource lifetime: query objects retain their language; cursors retain query
+  and tree resources; registry destruction clears query caches/persistence
+  before closing grammar handles.
+- Publication/currentness: parse and extraction admissions are fenced under
+  source-registry then query locks. A stale parse/pack or registry destruction
+  cannot republish as current; failed admissions leave no current extraction.
+- Safety/provenance: query text has one native data sink (=ts_query_new=),
+  predicate-bearing packs are rejected before execution, callables are type
+  errors, and published records contain no native blobs. Grammar/pack/source
+  identity, generation, range, and capture spans remain inspectable.
+- Bounds/failure: source, match, capture, range, subtree, deadline, and native
+  match-limit paths are structured. Unicode points use Tree-sitter byte
+  columns. Persistence root failures do not silently fall back to memory.
+
+** Realization follow-up: publication currentness fencing
+
+- Gap :: after a successful new parse/extraction publication, prior records
+  for the file could remain =indeterminate(pending(...))= instead of the
+  explicit terminal =stale= currentness required by the approved fencing
+  invariant. The rejection path already fenced its own pending records;
+  the success path did not.
+- RED :: two deterministic tests added to =test/rlm_project_query_test.pl=
+  (=new_parse_publication_fences_prior_records_stale=,
+  =reused_parse_publication_fences_prior_extraction_stale=). Both initially
+  failed exactly on the fencing assertions: the prior parse/extraction rows
+  stayed =indeterminate(pending(...))= and the journal kept the superseded
+  extraction =current=.
+- GREEN :: successful fresh parse publication
+  (=publish_query_parse_locked(..., fresh)=) and extraction publication
+  (=publish_extraction/7=) now fence every prior =indeterminate(pending(...))=
+  record for the file to =stale= under the existing source-registry ->
+  project-query lock order. Extraction fencing is also persisted through the
+  existing =persist_stale_extraction= path so a restart cannot resurrect a
+  superseded observation as current. Parse records are process-local (never
+  persisted), so their fencing is memory-only, matching the adapter contract.
+- Docs :: =docs/project-query.md= states the publication fencing contract.
+
+* Final verification
+
+- Candidate exact-head evidence remains pending until the final run below is
+  recorded after all implementation and documentation changes:
+  =make research-approval=, baseline runtime/load/deterministic/benchmark/CLI
+  checks, focused native query checks, =nix flake check=, deep experiment, and
+  =git diff --check=.
