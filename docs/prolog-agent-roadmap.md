@@ -71,6 +71,17 @@ standalone AgentProlog / DSH plugin / JS / CL / Nim / Emacs / Lem
   Spec + Verify + plan + graph + authority + async + effects + MCP
 ```
 
+Long-horizon execution substrate: `rlm_plan_graph` (#288, adopted into main
+with the D6-11 amendment) adds a closed project-op plan vocabulary with a
+`ready_step` dependency-graph executor, an aggregate budget,
+cancellation-as-token-rethrow, and a `symbol_ref`/`source_span` contract
+consumed by host experts. The D6-11 plan-native deterministic set
+(`sync_remote`/`run`/`index`/`delete`) dispatches at the plan layer through
+the canonical boundary and is excluded from expert mapping; `edit`/`create`
+remain write-expert-owned. `rlm_plan`
+remains the only step executor; AgentProlog planners can author graphs as
+inert data without gaining execution authority.
+
 Core must not gain ambient repository write access just because `PrologAgent` needs it. Coding tools remain separately loadable and capability-gated. A frontend never becomes a second execution engine. The project parser/indexer also remains a semantic observation producer, not a hidden executor.
 
 ## Phase 0: finish the write-safety substrate
@@ -191,7 +202,7 @@ operator requirements
 
 Reuse `rlm_spec`, `rlm_verify`, `rlm_spec_workflow`, `rlm_agent`, `rlm_graph`, `rlm_async`, `rlm_authority`, traces, effects, artifacts, and the shared prompt-compiler inputs. Do not create a special coding-agent scheduler, a second acceptance language, or a frontend-owned prompt router.
 
-TaskIR work from #69 should carry/reference the exact Frozen Spec rather than becoming a second canonical owner of acceptance criteria. The INTENT -> SPEC -> VALIDATE (hard gate) -> PLAN -> plan-KB -> expert-loop flow, including the closed project-op plan vocabulary (rage/288 BASE + D6 deltas), typed expert dataflow, plan-vs-spec validation via `plan_validate_against_spec/4`, project retrieval/write/validation over the normalized reference grammar, and direct/symbolic/recursive strategy selection, is designed in `docs/research/spec-plan-authority.md` (rewrite of the PR #290 design; the merged `rlm_spec_lang` grammar is canonical and unchanged). Its implementation slices S0-S11 are the dependency graph for the remaining Phase 2/3 substrate, and `scripts/design_gate.pl` is the executable design gate for the record. Result acceptance work from #56 should share the same evidence/verifier substrate instead of growing an incompatible verifier stack. Resume/restart work from #71 must remain bound to the original Spec identity.
+TaskIR work from #69 should carry/reference the exact Frozen Spec rather than becoming a second canonical owner of acceptance criteria. The INTENT -> SPEC -> VALIDATE (hard gate) -> PLAN -> plan-KB -> expert-loop flow, including the closed project-op plan vocabulary (rage/288 BASE + D6 deltas, with D6-11 making `sync_remote`/`run`/`index`/`delete` plan-native deterministic mutations excluded from expert mapping), typed expert dataflow, plan-vs-spec validation via `plan_validate_against_spec/4`, project retrieval/write/validation over the normalized reference grammar, and direct/symbolic/recursive strategy selection, is designed in `docs/research/spec-plan-authority.md` (rewrite of the PR #290 design; the merged `rlm_spec_lang` grammar is canonical and unchanged). Its implementation slices S0-S11 are the dependency graph for the remaining Phase 2/3 substrate, and `scripts/design_gate.pl` is the executable design gate for the record. Result acceptance work from #56 should share the same evidence/verifier substrate instead of growing an incompatible verifier stack. Resume/restart work from #71 must remain bound to the original Spec identity.
 
 ### Frontend protocol foundation
 
