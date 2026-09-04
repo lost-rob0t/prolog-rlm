@@ -20,70 +20,43 @@ base_complete :-
     current_successful_observation,
     current_research_evidence.
 
-current_successful_command(Argv) :-
+% Task-specific requirements and invariants.
+%
+% research_approval / record_present / slice_scope are requirements for the
+% research slice: the gate derives them from machine-recorded observations,
+% never from prose or self-asserted success facts.
+required_observation(make_research_approval,
+                     ['make', 'research-approval']).
+required_observation(record_present,
+                     ['bash', '-c', 'test -f research/RLM-RESEARCH-336-text-streaming.org']).
+required_observation(slice_scope,
+                     ['bash', '-c',
+                      'git diff --name-only origin/main -- . \':!research\' \':!.prolog\' | grep . ; test $? -eq 1']).
+required_observation(static_load,
+                     ['swipl', '-q', '-s', 'test/check_runtime.pl']).
+required_observation(deterministic_suite,
+                     ['swipl', '-q', '-s', 'test/run_tests.pl']).
+required_observation(whitespace,
+                     ['git', 'diff', '--check']).
+
+requirement_observed(Requirement) :-
+    required_observation(Requirement, Command),
     repo_state(Head, Digest),
-    observation(_, command(Argv), exit(0), _, Head, Digest).
+    observation(_, command(Command), exit(0), _, Head, Digest).
 
-requirement_command(research_gate, Argv) :-
-    Argv = [make, 'research-approval'].
-requirement_command(static_load, Argv) :-
-    Argv = [swipl, '-q', '-s', 'test/load_all.pl'].
-requirement_command(deterministic_suite, Argv) :-
-    Argv = [swipl, '-q', '-s', 'test/run_tests.pl'].
-requirement_command(native_build, Argv) :-
-    Argv = [nix, develop, '--command', make, 'tree-sitter-ffi'].
-requirement_command(native_query_suite, Argv) :-
-    argv_mentions(Argv, 'run_tests'),
-    argv_mentions(Argv, 'rlm_tree_sitter_query_test'),
-    argv_mentions(Argv, 'rlm_project_query_test').
-requirement_command(restart_fixture, Argv) :-
-    argv_mentions(Argv, 'rlm_project_query_restart_test').
-requirement_command(flake_checks, Argv) :-
-    Argv = [nix, flake, check|_].
-requirement_command(whitespace, Argv) :-
-    Argv = [git, diff, '--check'].
+all_requirements_observed :-
+    forall(required_observation(Requirement, _),
+           requirement_observed(Requirement)).
 
-% Focused-suite invocations pass the test file names inside the -g goal
-% string rather than as standalone argv elements; both spellings count.
-% Argv is always ground here (bound from a recorded observation).
-argv_mentions(Argv, Name) :-
-    is_list(Argv),
-    member(Element, Argv),
-    (   Element == Name
-    ;   atom(Element),
-        sub_atom(Element, _, _, _, Name)
-    ).
-
-requirement_satisfied(Requirement) :-
-    requirement(Requirement, _),
-    current_successful_command(Argv),
-    requirement_command(Requirement, Argv).
-
-% These invariants are intentionally descriptive obligations; the observed
-% native/query commands are the executable evidence that discharges them.
-invariant(query_source_is_data, native_query_suite).
-invariant(captures_are_closed_data, native_query_suite).
-invariant(mode_runtimes_are_unchanged, deterministic_suite).
-invariant(publication_fences_prior_records_stale, native_query_suite).
-invariant(stale_fencing_survives_restart, restart_fixture).
-
+% Extend this predicate with task-specific requirements and invariants.
 complete :-
     base_complete,
-    forall(requirement(Requirement, _),
-           requirement_satisfied(Requirement)),
-    forall(invariant(_, Requirement),
-           requirement_satisfied(Requirement)).
+    all_requirements_observed.
 
 :- begin_tests(workspace_verification).
 
 test(complete) :-
     complete.
-
-test(task_requirements_have_command_evidence) :-
-    forall(requirement(Requirement, _),
-           requirement_satisfied(Requirement)),
-    forall(invariant(_, Requirement),
-           requirement_satisfied(Requirement)).
 
 :- end_tests(workspace_verification).
 
