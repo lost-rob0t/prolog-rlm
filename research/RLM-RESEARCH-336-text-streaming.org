@@ -1,8 +1,8 @@
 #+title: RLM-RESEARCH-336 Text streaming through the completion boundary
 #+status: RESEARCHING
 #+approval_schema: prolog-rlm.research-approval.v1
-#+approval_state: PENDING
-#+approval_actor: NONE
+#+approval_state: APPROVED
+#+approval_actor: human
 #+approval_evidence: NONE
 #+approval_base_commit: NONE
 #+approval_base_blob: NONE
