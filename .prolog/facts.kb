@@ -1,9 +1,13 @@
 % Ground facts and machine observations for this worktree.
 task('293-ci-whitespace').
-repo_state('56901058ec3034c231dbb2462a715420787605bf', '89961504279941602a2fa353f9507ad6fd7f5f6c05afdb9ca2382e2186770fc7').
+repo_state('43405ed73d66da49564eb3ac255f0efaaf3d31a7', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
 research_required(false).
 
 requirement(ci_range_whitespace, 'the PR base-to-head diff has no whitespace errors').
 requirement(worktree_whitespace, 'the worktree diff has no whitespace errors').
 requirement(plan_graph_suite, 'the focused plan-graph suite passes').
 requirement(deterministic_suite, 'the complete deterministic suite passes').
+observation('d39f761d152fc037', command(['git', 'diff', '--check', 'origin/main...HEAD']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '43405ed73d66da49564eb3ac255f0efaaf3d31a7', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('fef83433ef48989e', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '43405ed73d66da49564eb3ac255f0efaaf3d31a7', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('6b634a8ee84f5ccf', command(['swipl', '-q', '-s', 'test/rlm_plan_graph_test.pl', '-g', 'run_tests']), exit(0), 'ce83cbd17dc30e6fb5a6fadc1e73c8645cea5867b66d8078a0f1d384adf71774', '43405ed73d66da49564eb3ac255f0efaaf3d31a7', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('b8ce00e0c5634d95', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '134d56cde595991fa875aaf079837ab2a6ef5d64dbb55087cc44b5da326071b7', '43405ed73d66da49564eb3ac255f0efaaf3d31a7', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
