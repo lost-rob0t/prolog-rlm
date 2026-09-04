@@ -1,29 +1,26 @@
 % Ground facts and machine observations for this worktree.
-task('issue-336-text-streaming').
-repo_state('17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-research_required(false).
+:- discontiguous(brave_search/5).
+:- discontiguous(observation/6).
+task('ci-tree-sitter-runner').
+repo_state('466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '6189cbbcf017f085ee9322ee033c1de996110107f277fe3f3122b159bbb958c6').
+research_required(true).
 
-% Slice scope: research-only slice for issue #336 (record + README index +
-% verification workspace). No source/implementation changes before operator
-% approval.
-requirement(research_approval, 'make research-approval passes with RLM-RESEARCH-336 present').
-requirement(record_present, 'research/RLM-RESEARCH-336-text-streaming.org exists in the worktree').
-requirement(slice_scope, 'no files outside research/ and .prolog/ changed in this slice').
-requirement(static_load, 'static runtime check passes').
-requirement(deterministic_suite, 'complete deterministic suite passes').
-requirement(whitespace, 'git diff --check reports no whitespace errors').
-observation('ed7c1928f6765f18', command(['make', 'research-approval']), exit(0), '29567e2882d92d39e31b7c724c7b5303db3a73cab814525f15f7f5a1dbb7486b', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '63fb9dec8d8604a886bc95c24ecfd1155a913b8cf2aaaeaf07daac1f8f8b74f9').
-observation('fda943fbb1d6270b', command(['bash', '-c', 'test -f research/RLM-RESEARCH-336-text-streaming.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '63fb9dec8d8604a886bc95c24ecfd1155a913b8cf2aaaeaf07daac1f8f8b74f9').
-observation('d795ef2d953f7c18', command(['bash', '-c', 'git diff --name-only origin/main -- . \':!research\' \':!.prolog\' | grep . ; test $? -eq 1']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '63fb9dec8d8604a886bc95c24ecfd1155a913b8cf2aaaeaf07daac1f8f8b74f9').
-observation('3e00f0c3d530ad2c', command(['make', 'research-approval']), exit(0), '29567e2882d92d39e31b7c724c7b5303db3a73cab814525f15f7f5a1dbb7486b', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('d16a8cdecc87d69c', command(['bash', '-c', 'test -f research/RLM-RESEARCH-336-text-streaming.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('d0ee4a6104a1a663', command(['bash', '-c', 'git diff --name-only origin/main -- . \':!research\' \':!.prolog\' | grep . ; test $? -eq 1']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('b9c6306a35369566', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('8117971e74090f44', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('cfef74da0550b65e', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '2587c4863b556cf4109fb868fb9b18508a10007207017b853180a503f7835b14', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('052871420b95e086', command(['make', 'research-approval']), exit(0), '29567e2882d92d39e31b7c724c7b5303db3a73cab814525f15f7f5a1dbb7486b', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('e6df0a4e010878e5', command(['bash', '-c', 'test -f research/RLM-RESEARCH-336-text-streaming.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('05fea2a15eafac04', command(['bash', '-c', 'git diff --name-only origin/main -- . \':!research\' \':!.prolog\' | grep . ; test $? -eq 1']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('88569e63b71fbc03', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('763e0acf25e3a622', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('ff100ec05b696ca7', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '008a2979160d3669385c2f77e138d5db5942d7f40d6fea00e972bce4def6e76a', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+requirement(diagnosis, 'PR-run tree-sitter failures were job code (apt packages absent from ubuntu-24.04), not runner infrastructure').
+requirement(nix_lane, 'tree-sitter CI job builds the FFI and runs the full suite through the hermetic nix develop environment on ubuntu-latest').
+requirement(container_fidelity, 'the exact job steps pass in a systemd-less ubuntu:24.04 container with a fresh nix install').
+requirement(devshell_toolchain, 'nix devShell provides pkg-config so the FFI links libtree-sitter without undefined symbols').
+requirement(grammar_fixtures, 'nix lane links all packaged grammars plus the incompatible-ABI fixture').
+requirement(utf8_locale, 'devShell pins LANG/LC_ALL=C.UTF-8 so test sources are read as UTF-8').
+requirement(readonly_test, 'read_only_project_root test registers the c grammar and blocks the KB root deterministically as a regular file').
+requirement(baseline_suite, 'deterministic baseline checks pass').
+requirement(workflow_lane, 'workflow uses the nix lane with container-safe daemon startup and no apt packages').
+brave_search('b2796c472ebcaa5e1f303e1ab30bbfcc8aec14e90f465e49efa74299f025f8cf', 'd3cf02cb67e7979027f20e867c6597806bf249e819ba5c71118bb9769ccfed37', '2026-09-04T15:29:44Z', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('555e1fde719cd933', command(['docker', 'run', '--rm', '-v', '/home/unseen/git/worktrees/prolog-rlm-ci-tree-sitter-runner:/src:ro', 'ubuntu:24.04', 'bash', '-c', 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null 2>&1; apt-get install --yes swi-prolog-nox build-essential pkg-config libtree-sitter-dev tree-sitter-c-src tree-sitter-lua-src tree-sitter-query-src tree-sitter-python-src tree-sitter-javascript-src >/tmp/apt.log 2>&1; echo "apt exit: $?"; grep -E "^E:" /tmp/apt.log']), exit(0), '7dc98547787e473d35e2e5febdb4a7e3e76455d4839fa8297ffdabd0230379e4', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('22a7e2cbe6899bdf', command(['docker', 'run', '--rm', '-v', '/tmp/opencode/lane-clone:/src:rw', '-v', '/tmp/opencode/run-tree-sitter-lane.sh:/lane.sh:ro', '-v', 'prolog-nix-cache:/nix', 'ubuntu:24.04', 'bash', '/lane.sh']), exit(0), '1963b89a0750f7c0f53e11c4f88f64346e92945e201e22eb2d203eaa1bb95709', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '6189cbbcf017f085ee9322ee033c1de996110107f277fe3f3122b159bbb958c6').
+observation('3e3c056d3a5d2477', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), 'eaa4f1fe0808fb53597f03fc264d6042140620380ec35b70183217b9f31ae724', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '6189cbbcf017f085ee9322ee033c1de996110107f277fe3f3122b159bbb958c6').
+observation('92d29cd2565ab249', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '238b86f6c066b778f77fd72f69a4d05eefe6f73f66f1db52c2827dcf1018cfae', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '6189cbbcf017f085ee9322ee033c1de996110107f277fe3f3122b159bbb958c6').
+observation('a0974b286b4f6297', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '6189cbbcf017f085ee9322ee033c1de996110107f277fe3f3122b159bbb958c6').
+observation('55ea6ae4473a70c5', command(['swipl', '-q', '-s', 'test/load_all.pl']), exit(0), '6855a3a34c8dff470692dddd3fc6fdc5511ed594390f466d783e02c2924d289e', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '6189cbbcf017f085ee9322ee033c1de996110107f277fe3f3122b159bbb958c6').
+observation('e5d3ff7b259d77e9', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '6189cbbcf017f085ee9322ee033c1de996110107f277fe3f3122b159bbb958c6').
+brave_search('b2796c472ebcaa5e1f303e1ab30bbfcc8aec14e90f465e49efa74299f025f8cf', 'd3cf02cb67e7979027f20e867c6597806bf249e819ba5c71118bb9769ccfed37', '2026-09-04T16:29:03Z', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '6189cbbcf017f085ee9322ee033c1de996110107f277fe3f3122b159bbb958c6').
+observation('0e0e7ebdb9afa214', command(['bash', '-c', 'grep -q "runs-on: ubuntu-latest" .github/workflows/tree-sitter.yml && grep -q -- "--init none" .github/workflows/tree-sitter.yml && grep -q "nix develop" .github/workflows/tree-sitter.yml && ! grep -q "apt-get" .github/workflows/tree-sitter.yml && echo no-apt-get']), exit(0), '0f14e9d73475b2491261f92bd320a4cb663dcef648cb64b018d88a3eb5b318da', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '6189cbbcf017f085ee9322ee033c1de996110107f277fe3f3122b159bbb958c6').

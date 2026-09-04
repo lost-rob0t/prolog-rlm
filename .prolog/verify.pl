@@ -20,38 +20,37 @@ base_complete :-
     current_successful_observation,
     current_research_evidence.
 
-% Task-specific requirements and invariants.
-%
-% research_approval / record_present / slice_scope are requirements for the
-% research slice: the gate derives them from machine-recorded observations,
-% never from prose or self-asserted success facts.
-required_observation(make_research_approval,
-                     ['make', 'research-approval']).
-required_observation(record_present,
-                     ['bash', '-c', 'test -f research/RLM-RESEARCH-336-text-streaming.org']).
-required_observation(slice_scope,
-                     ['bash', '-c',
-                      'git diff --name-only origin/main -- . \':!research\' \':!.prolog\' | grep . ; test $? -eq 1']).
-required_observation(static_load,
-                     ['swipl', '-q', '-s', 'test/check_runtime.pl']).
-required_observation(deterministic_suite,
-                     ['swipl', '-q', '-s', 'test/run_tests.pl']).
-required_observation(whitespace,
-                     ['git', 'diff', '--check']).
-
-requirement_observed(Requirement) :-
-    required_observation(Requirement, Command),
-    repo_state(Head, Digest),
-    observation(_, command(Command), exit(0), _, Head, Digest).
-
-all_requirements_observed :-
-    forall(required_observation(Requirement, _),
-           requirement_observed(Requirement)).
-
 % Extend this predicate with task-specific requirements and invariants.
+current_observation(Stamp, Argv) :-
+    repo_state(Head, Digest),
+    observation(Stamp, command(Argv), exit(0), _, Head, Digest).
+
+argv_text(Argv, Text) :-
+    atomic_list_concat(Argv, ' ', Text).
+
+container_lane_evidence(Stamp) :-
+    current_observation(Stamp, Argv),
+    argv_text(Argv, Text),
+    sub_atom(Text, _, _, _, 'run-tree-sitter-lane.sh').
+
+swipl_suite_evidence(Stamp, File) :-
+    current_observation(Stamp, ['swipl', '-q', '-s', File]).
+
+workflow_lane_evidence(Stamp) :-
+    current_observation(Stamp, Argv),
+    argv_text(Argv, Text),
+    sub_atom(Text, _, _, _, '.github/workflows/tree-sitter.yml'),
+    sub_atom(Text, _, _, _, 'no-apt-get').
+
 complete :-
     base_complete,
-    all_requirements_observed.
+    requirement(nix_lane, _),
+    requirement(container_fidelity, _),
+    container_lane_evidence(_),
+    swipl_suite_evidence(_, 'test/run_tests.pl'),
+    swipl_suite_evidence(_, 'test/check_runtime.pl'),
+    swipl_suite_evidence(_, 'test/load_all.pl'),
+    workflow_lane_evidence(_).
 
 :- begin_tests(workspace_verification).
 
