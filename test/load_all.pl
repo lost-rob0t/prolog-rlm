@@ -31,6 +31,7 @@
 :- use_module('../prolog/rlm_result_accept', []).
 :- use_module('../prolog/rlm_spec_workflow', []).
 :- use_module('../prolog/rlm_spec_strategy', []).
+:- use_module('../prolog/rlm_plan_graph', []).
 :- use_module('../prolog/rlm_project_source', []).
 :- use_module('../prolog/rlm_project_grammar_pack', []).
 :- use_module('../prolog/rlm_project_syntax', []).
