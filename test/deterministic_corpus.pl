@@ -54,6 +54,7 @@ corpus_entry('rlm_chain_test.pl', include(rlm_chain)).
 corpus_entry('rlm_chain_app_attribution_test.pl',
              include(rlm_chain_app_attribution)).
 corpus_entry('rlm_chain_runtime_test.pl', include(rlm_chain_runtime)).
+corpus_entry('rlm_completion_stream_test.pl', include(rlm_completion_stream)).
 corpus_entry('rlm_chain_message_metadata_test.pl',
              include(rlm_chain_message_metadata)).
 corpus_entry('rlm_chain_control_test.pl', include(rlm_chain_control)).
@@ -185,6 +186,8 @@ corpus_entry('rlm_project_query_restart_test.pl',
 corpus_entry('rlm_tree_sitter_cancellation_test.pl',
               exclude(native_ffi, 'runs through the Tree-sitter gate')).
 corpus_entry('live_chain_stream_openrouter_test.pl',
+             exclude(live_provider, 'requires the credentialed live gate')).
+corpus_entry('live_completion_stream_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).
 corpus_entry('live_plan_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).

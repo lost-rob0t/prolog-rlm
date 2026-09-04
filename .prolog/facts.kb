@@ -1,33 +1,21 @@
 % Ground facts and machine observations for this worktree.
-task('issue-336-design').
-repo_state('b34f3d9f64d888631c6456a5035fd6b8a8f64272', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+task('issue-336-realize').
+repo_state('15261a3e5a76654a13281eed0200fd4548368bf8', '39094ec900228510d79da01ed3fc7adf7800e58fec0596e731df0b7d2c494062').
 research_required(false).
 
-% Slice scope: ADADR design slice for issue #336 (design record resolving
-% OQ1-OQ6 of the approved RLM-RESEARCH-336). No runtime/implementation
-% changes before operator design approval on PR #350.
-requirement(research_approval, 'make research-approval passes with the approved RLM-RESEARCH-336 record present').
-requirement(design_record_present, 'rage/336-text-streaming-design.org exists in the worktree').
-requirement(oq_resolved, 'design record contains explicit resolutions for OQ1 through OQ6').
-requirement(decision_gate_approved, 'design record records a GO decision gate with operator approval evidence, not worker self-approval').
-requirement(slice_scope, 'no files outside rage/, research/ and .prolog/ changed in this slice').
+% Slice scope: ADADR realization for issue #336 per the approved design record
+% rage/336-text-streaming-design.org (design approval on PR #350). No behavior
+% outside the recorded design scope.
+requirement(design_approved, 'design record records a GO decision gate with operator approval evidence').
+requirement(text_delta_handler_option, 'trusted text_delta_handler completion option selects streaming dispatch with conflict rule').
+requirement(streaming_lifecycle, 'exactly-once started/completed per CallRef with no completion on error paths').
+requirement(consistency_gate, 'delta-aggregate vs final-response divergence is a hard error with preserved usage').
+requirement(stream_usage_on_error, 'transport-dict stream errors carry observed stream_usage').
+requirement(deterministic_stream_suite, 'focused completion streaming fixture suite passes').
+requirement(deterministic_suite, 'complete deterministic suite passes including the new suite').
+requirement(live_gate_router_safe, 'live completion streaming gate loads without credentials').
+requirement(live_gate_real, 'live completion streaming gate passes with real OpenRouter credentials').
+requirement(docs_updated, 'completion runtime docs document the streaming contract').
+requirement(research_approval, 'make research-approval passes').
 requirement(static_load, 'static runtime check passes').
-requirement(deterministic_suite, 'complete deterministic suite passes').
 requirement(whitespace, 'git diff --check reports no whitespace errors').
-observation('5b09f2b2e6373675', command(['make', 'research-approval']), exit(0), '29567e2882d92d39e31b7c724c7b5303db3a73cab814525f15f7f5a1dbb7486b', '4531b1e6dab45772450cff11455539842d9bf9ad', 'b3397131a1ba68a51a17c8fd470ddb47f43bc602ad9b1170a80cc5edbe90499c').
-observation('ed1711b124b1d1d9', command(['bash', '-c', 'test -f rage/336-text-streaming-design.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '4531b1e6dab45772450cff11455539842d9bf9ad', 'b3397131a1ba68a51a17c8fd470ddb47f43bc602ad9b1170a80cc5edbe90499c').
-observation('3c44d020457439e5', command(['bash', '-c', 'test $(grep -c "OQ[1-6] ::" rage/336-text-streaming-design.org) -ge 6']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '4531b1e6dab45772450cff11455539842d9bf9ad', 'b3397131a1ba68a51a17c8fd470ddb47f43bc602ad9b1170a80cc5edbe90499c').
-observation('19d1466617448a13', command(['bash', '-c', 'grep -q "PENDING. Operator design approval on PR #350" rage/336-text-streaming-design.org && ! grep -qE "^GO\\." rage/336-text-streaming-design.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '4531b1e6dab45772450cff11455539842d9bf9ad', 'b3397131a1ba68a51a17c8fd470ddb47f43bc602ad9b1170a80cc5edbe90499c').
-observation('19d01a2c498354c4', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', '4531b1e6dab45772450cff11455539842d9bf9ad', 'b3397131a1ba68a51a17c8fd470ddb47f43bc602ad9b1170a80cc5edbe90499c').
-observation('6f00c1dd83df5d66', command(['swipl', '-q', '-s', 'test/load_all.pl']), exit(0), '933499dfde5711a6b080f7e610564b9935d573ac4816a8391bb15be488eb6d2d', '4531b1e6dab45772450cff11455539842d9bf9ad', 'b3397131a1ba68a51a17c8fd470ddb47f43bc602ad9b1170a80cc5edbe90499c').
-observation('e65fcd79e03f7e2e', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), 'bf0e4884dd19fced97a07f400c91529682a6b6778096f0b4cb916f15081bad53', '4531b1e6dab45772450cff11455539842d9bf9ad', 'b3397131a1ba68a51a17c8fd470ddb47f43bc602ad9b1170a80cc5edbe90499c').
-observation('f5a718df0ea55dce', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '4531b1e6dab45772450cff11455539842d9bf9ad', 'b3397131a1ba68a51a17c8fd470ddb47f43bc602ad9b1170a80cc5edbe90499c').
-observation('3c76b62a1673fb05', command(['make', 'research-approval']), exit(0), '29567e2882d92d39e31b7c724c7b5303db3a73cab814525f15f7f5a1dbb7486b', 'b34f3d9f64d888631c6456a5035fd6b8a8f64272', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('98a65d79392c9150', command(['bash', '-c', 'test -f rage/336-text-streaming-design.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'b34f3d9f64d888631c6456a5035fd6b8a8f64272', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('d863536d8d99775d', command(['bash', '-c', 'test $(grep -c "OQ[1-6] ::" rage/336-text-streaming-design.org) -ge 6']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'b34f3d9f64d888631c6456a5035fd6b8a8f64272', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('8e2d4fb6c740e702', command(['bash', '-c', 'grep -q "PENDING. Operator design approval on PR #350" rage/336-text-streaming-design.org && ! grep -qE "^GO\\." rage/336-text-streaming-design.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'b34f3d9f64d888631c6456a5035fd6b8a8f64272', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('c4665b65e720fc31', command(['bash', '-c', 'git diff --name-only origin/main -- . :!rage :!research :!.prolog | grep . ; test $? -eq 1']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'b34f3d9f64d888631c6456a5035fd6b8a8f64272', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('f24c15b09293f08a', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'b34f3d9f64d888631c6456a5035fd6b8a8f64272', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('02cf16fd15cba8a9', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', 'b34f3d9f64d888631c6456a5035fd6b8a8f64272', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('7392eb7525535abd', command(['swipl', '-q', '-s', 'test/load_all.pl']), exit(0), '933499dfde5711a6b080f7e610564b9935d573ac4816a8391bb15be488eb6d2d', 'b34f3d9f64d888631c6456a5035fd6b8a8f64272', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('992ee3a6dfa9c0b2', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '40fcc800d560aea212115ad8630136312a8f58025d429ff6972c5dd1c40f1da7', 'b34f3d9f64d888631c6456a5035fd6b8a8f64272', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
