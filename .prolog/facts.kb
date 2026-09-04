@@ -1,15 +1,9 @@
 % Ground facts and machine observations for this worktree.
-task('pr335-merge-reconcile').
-repo_state('a0272a39972d4fdbd33c8396e85914b6a983e49f', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+task('pr359-merge-reconcile').
+repo_state('23b9aff8e19c9d17f711110d45a926a84006e956', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
 research_required(false).
-requirement(env_present, 'the worktree has a local .env copied from the primary checkout for tests').
-requirement(runtime_check, 'swipl test/check_runtime.pl exits 0 at current HEAD').
-requirement(load_all, 'swipl test/load_all.pl exits 0 at current HEAD').
+observation('b80ec11f01de4483', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', '23b9aff8e19c9d17f711110d45a926a84006e956', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('21a4d130423f0763', command(['swipl', '-q', '-s', 'test/load_all.pl']), exit(0), '6855a3a34c8dff470692dddd3fc6fdc5511ed594390f466d783e02c2924d289e', '23b9aff8e19c9d17f711110d45a926a84006e956', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('d7f2e6b95b37f24d', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '131319fc792443284f25b93f1b311bc7248000ad75e83a63ba30cbba2b6d4bd4', '23b9aff8e19c9d17f711110d45a926a84006e956', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('fe6f991c37ccf8a8', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '23b9aff8e19c9d17f711110d45a926a84006e956', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
 requirement(deterministic_suite, 'the complete deterministic suite test/run_tests.pl exits 0 at current HEAD').
-observation('958f24f5522e0568', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', 'd2cc7a99879b845260bdbb8f82cb2925625cab70', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('e4527955787d65e7', command(['swipl', '-q', '-s', 'test/load_all.pl']), exit(0), 'beffcf94c6a9f2fd663cf4b8535174d3c07b791345180d3c1c5b82643506f6a0', 'd2cc7a99879b845260bdbb8f82cb2925625cab70', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('fe0abf38fc9e3b3f', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '7bc7aef13cf80227ca852cb2fcb9c4b8996b67ed1b054a033208a8051ca84339', 'd2cc7a99879b845260bdbb8f82cb2925625cab70', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('e0d6674c181e245b', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', 'a0272a39972d4fdbd33c8396e85914b6a983e49f', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('dc6ad76808c43f91', command(['swipl', '-q', '-s', 'test/load_all.pl']), exit(0), 'beffcf94c6a9f2fd663cf4b8535174d3c07b791345180d3c1c5b82643506f6a0', 'a0272a39972d4fdbd33c8396e85914b6a983e49f', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('a8d305ca4e628361', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '1feb1eb5fc61b2d90c285df9c567683fa95eb3f66d6fc2cc1034e8a98a93e9e8', 'a0272a39972d4fdbd33c8396e85914b6a983e49f', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('179e88757823b4b9', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'a0272a39972d4fdbd33c8396e85914b6a983e49f', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').

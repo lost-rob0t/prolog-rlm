@@ -21,23 +21,8 @@ base_complete :-
     current_research_evidence.
 
 % Extend this predicate with task-specific requirements and invariants.
-:- prolog_load_context(directory, VerifyDir), asserta(verify_dir(VerifyDir)).
-
-env_present :-
-    verify_dir(VerifyDir),
-    atom_concat(VerifyDir, '/../.env', EnvPath),
-    exists_file(EnvPath).
-
-required_observation(check_runtime) :- observation(_, command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), _, _, _).
-required_observation(load_all) :- observation(_, command(['swipl', '-q', '-s', 'test/load_all.pl']), exit(0), _, _, _).
-required_observation(deterministic_suite) :- observation(_, command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), _, _, _).
-
 complete :-
-    base_complete,
-    env_present,
-    required_observation(check_runtime),
-    required_observation(load_all),
-    required_observation(deterministic_suite).
+    base_complete.
 
 :- begin_tests(workspace_verification).
 

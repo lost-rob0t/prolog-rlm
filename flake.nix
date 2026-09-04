@@ -40,6 +40,25 @@
             (name: grammar: ''ln -s "${grammar}/parser" "$out/${name}"'')
             grammarPackages)}
         '';
+        incompatibleAbiFixture = pkgs.stdenv.mkDerivation {
+          pname = "prolog-rlm-incompatible-abi-grammar-fixture";
+          version = "0.1.0";
+          src = pkgs.tree-sitter-grammars.tree-sitter-c.src;
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.tree-sitter ];
+          buildPhase = ''
+            runHook preBuild
+            sed -E 's/^#define LANGUAGE_VERSION[[:space:]]+[0-9]+/#define LANGUAGE_VERSION 999/' src/parser.c > src/parser-incompatible-abi.c
+            cc -shared -fPIC -O2 $(pkg-config --cflags tree-sitter) -o rlm-incompatible-abi.so src/parser-incompatible-abi.c
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp rlm-incompatible-abi.so "$out/"
+            runHook postInstall
+          '';
+        };
         prologRlm = pkgs.stdenvNoCC.mkDerivation {
           pname = "prolog-rlm";
           version = "0.1.0";
@@ -101,8 +120,11 @@
         apps.default = self.apps.${system}.swipl;
 
         devShells.default = pkgs.mkShell {
-          packages = [ swiProlog prologRlm pkgs.tree-sitter grammarBundle ];
+          packages = [ swiProlog prologRlm pkgs.tree-sitter pkgs.pkg-config grammarBundle ];
           RLM_TREE_SITTER_GRAMMAR_DIR = "${grammarBundle}";
+          RLM_TREE_SITTER_INCOMPATIBLE_ABI_FIXTURE = "${incompatibleAbiFixture}";
+          LANG = "C.UTF-8";
+          LC_ALL = "C.UTF-8";
         };
 
         checks = {
