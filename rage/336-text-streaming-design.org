@@ -1,0 +1,424 @@
+#+title: RLM-336 Text streaming through the completion boundary — design record
+#+status: DESIGNING
+
+* Run identity
+
+- Consumed issue :: #336
+- Research record :: =research/RLM-RESEARCH-336-text-streaming.org=
+  (approved for realization, PR #349, approval commit =4531b1e=)
+- Design PR :: #350 on branch =research/text-streaming=
+- Base commit :: =4531b1e6dab45772450cff11455539842d9bf9ad=
+- Verification task :: =issue-336-design= (tracked =.prolog= ledger)
+
+* Mode and approval state
+
+- Mode :: ADADR (human-gated).
+- Control plane :: =research/README.md= defines and
+  =scripts/validate_research_approval.pl= validates the research approval
+  schema. RLM-RESEARCH-336 is =#+approval_state: APPROVED= (operator, 2026-09-04,
+  PR #349), which authorizes this design slice only.
+- Design approval :: PENDING. This record is the design-approval artifact for
+  PR #350. Operator design approval authorizes implementation within the scope
+  recorded here; nothing below authorizes implementation by itself.
+
+* Analyze
+
+Verified against main at =4531b1e= (research PR #349 changed only
+=research/= and =.prolog/=, so the research record's evidence at =466bde0=
+remains current for all runtime code):
+
+- =prolog/rlm_chain.pl:285= =model_stream_execute/4= is the trusted streaming
+  execute ABI: =model_stream_execute(provider(Name, Config), Request,
+  EventHandler, Outcome)=. It returns =ok(stream_result{response:ModelResponse,
+  events:Events})= where =ModelResponse= is the fully validated final
+  =model_response{}= built from the transport's accumulated state, and
+  =Events= is the ordered =stream_event{}= list. Transport guarantees:
+  incremental handler delivery, =include_usage:true= always requested, strict
+  =[DONE]= sentinel, =rlm_cancelled= re-thrown unchanged, handler failure
+  aborts with =openai_stream_fault(event_handler_failed(Event))=.
+- Transport event vocabulary (private to the chain boundary):
+  =stream_event{type:text, choice_index, delta}= (nonempty deltas only),
+  =type:reasoning= (same shape), =type:tool_call=, =type:finish=,
+  =type:usage{usage}=, =type:done=. The transport builds =State.text= and
+  =State.reasoning= from exactly the deltas it emits, so response text equals
+  the text-delta aggregate by construction.
+- =prolog/rlm_completion.pl:1558-1578=: =call_planner/4= and =call_model/4=
+  are the only model dispatch points of the completion runtime. With no
+  injected handler they call =rlm_chain:model_complete_execute/3=; with a
+  trusted injected handler (=planner_handler= / =model_handler= options) they
+  call the handler. =require_callable/2= is the existing trust gate.
+- Model call sites inside one completion execution: the root decision call
+  (=call_planner=, line 1107), the direct model primitive (=call_model=, line
+  908, also used by =llm_query=), and recursive subqueries
+  (=rlm_query_with_context= → =llm_query_execute= → =call_model=, line 955,
+  with =depth= in Options). All run sequentially inside one bounded async
+  worker; recursive calls are properly nested and never concurrent with the
+  parent's dispatch.
+- =prolog/rlm_conversation.pl:721= invokes
+  =rlm_completion:rlm_completion(Query, ColdRef, CompletionOptions, ...)=
+  with =completion_options(CompletionOptions)= taken verbatim from
+  conversation turn options: options thread through the conversation boundary
+  unchanged.
+- =prolog/prolog_agent_ui_facade.pl:37-43= already maps canonical
+  =agent_event(message_started, MessageId, Role)=,
+  =agent_event(model_delta, MessageId, Text)=, and
+  =agent_event(message_completed, MessageId)= to UI v1 frames; the UI v1
+  reducers (lines 445-465) create a =status:"streaming"= message on
+  =message_started=, append =text_delta= payloads, and finalize
+  =status:"complete"=. There is no failed-message event type in UI v1.
+- =prolog/rlm_agent.pl= trace vocabulary never carries text deltas; agent
+  trace events are =agent_event{sequence, type}= dicts with no payload.
+- Cancellation state (=cancellation_state/2=, =rlm_completion_cancel= mutex,
+  =cleanup_cancellation/2=) and #44 error-path usage recovery
+  (=execution_error_usage/2=, =execution_error_with_accounting/4=) are the
+  existing per-execution accounting machinery.
+- The completion budget wraps the whole guarded execution in
+  =call_with_time_limit/2=; =check_cancelled/1= runs at boundaries.
+
+The gap is exactly the completion boundary: no completion option selects a
+streaming transport, no completion-level event leaves the runtime, and no
+canonical =agent_event(model_delta, ...)= producer exists.
+
+* Design
+
+Method A from the research record, resolved to exact contracts.
+
+** Option surface
+
+One new trusted completion option, =text_delta_handler(Handler)=:
+
+- Consumed at both dispatch points (=call_planner/4= and =call_model/4=) via
+  the existing =option_value/4= reader.
+- Trust model identical to =planner_handler= / =model_handler=: a
+  host-registered callable, validated with =require_callable(Handler,
+  text_delta_handler)= at dispatch; never model-supplied, never a tool, never
+  a request option. Direct mode's reserved =stream= native session control is
+  untouched.
+- Absent (default =none=) ⇒ the dispatch is exactly today's
+  =model_complete_execute= path. Compatibility by construction.
+- Explicit conflict rule: =text_delta_handler= combined with
+  =planner_handler= or =model_handler= is an immediate
+  =completion_error{phase:options, kind:conflicting_stream_option}= envelope.
+  Two handlers claiming one model call is ambiguous authority; fail fast, no
+  silent precedence. Injected complete-only handlers cannot deliver
+  increments (that would be Method B replay, rejected in research).
+
+** Streaming dispatch
+
+When =text_delta_handler= is present, the streaming call executes
+=rlm_chain:model_stream_execute(Provider, Request, Pump, Outcome)= directly
+inside the already-running bounded async worker (the trusted execute ABI; no
+nested Future wait, canonical =*_execute → Future → sync facade= direction
+preserved). The outcome projects =ok(stream_result{response:R, events:_})= to
+=ok(R)=, so every existing caller shape (=direct_model_result/5=,
+planner paths, =completion_result{}= construction) is unchanged. A provider
+without stream dispatch yields the chain's =configuration_error= envelope.
+
+** Handler vocabulary (OQ2)
+
+The chain's =stream_event{}= shape stays private to the chain boundary. The
+completion runtime interposes an internal pump (below) as the transport
+EventHandler and delivers a closed, ground, completion-level vocabulary to
+the trusted handler:
+
+- =stream_message{call:CallRef, phase:started, role:assistant}=
+- =stream_message{call:CallRef, phase:delta, text:String}=
+- =stream_message{call:CallRef, phase:completed}=
+
+CallRef = =stream_call{operation:Operation, depth:Depth, seq:Seq}= where
+=Operation= is =planner= or =model=, =Depth= is the =depth= option value
+(0 when absent, i.e. root =completion=/=llm_query= executions), and =Seq= is
+a per-execution monotonic counter.
+
+** Message lifecycle ownership (OQ3)
+
+The completion runtime owns the lifecycle, because it owns the streaming
+call identity and the final validation:
+
+- =started= is delivered immediately before the first =delta= of a call
+  (a stream that produces no text never starts a message — no empty
+  messages, no started events for tool-only or failed streams).
+- =completed= is delivered exactly once per CallRef, only after the
+  delta-aggregate consistency check passes.
+- On error or cancellation, =completed= is never delivered; no completion is
+  fabricated. UI v1 has no failed-message event type; hosts observe the
+  error through the outcome envelope (accepted, documented consequence —
+  a message left =status:"streaming"= in a reducer view corresponds to the
+  failed run outcome).
+- Exactly-once =started=/=completed= per CallRef is a deliverable invariant,
+  verified by test.
+
+The agent runtime trace feed is *not* a delta owner in this slice; the trace
+vocabulary stays delta-free. Above the completion boundary, hosts wrap the
+handler: the conversation/UI layer projects each delivered
+=stream_message{}= to the existing canonical =agent_event(...)= terms (the
+conversation layer forwards =completion_options= verbatim, so a host adapter
+is a wrapper predicate, not new plumbing), and =ui_facade_event/4= does the
+UI v1 projection. Message ids for UI v1 are host-derived bijectively from
+CallRef (e.g. conversation id + turn + =Seq=), which keeps the completion
+runtime free of session-global identity state while preserving exactly-once
+finalize per message id at the reducer.
+
+** Reasoning deltas (OQ4)
+
+Reasoning deltas are aggregated internally and covered by the consistency
+check, but are *not* delivered to =text_delta_handler= in this slice. The
+handler is text-only (hence the name). None of the three enumerated UI v1
+surfacing options is taken: mapping reasoning to =text_delta= would pollute
+message text, a new known event type would change the UI v1 protocol (a
+declared non-goal), and an extension event is deferred. Surfacing reasoning
+deltas to hosts (handler vocabulary extension or UI extension event) is
+explicitly future scope; the closed vocabulary is additively extensible.
+
+** Coalescing (OQ5)
+
+No coalescing in this slice. One handler invocation per transport text
+event; the transport's per-SSE-chunk granularity is already the coalescing
+unit (providers batch tokens into chunks at network pace). Coalescing with a
+flush discipline adds failure modes (unflushed tails on cancel, divergence
+between delivered and checked aggregates) for speculative overhead gains.
+If profiling shows callback overhead, coalescing can be added later behind
+the same closed vocabulary as an additive change.
+
+** Scope of streaming (OQ1)
+
+The option applies to every model-text call dispatched through the
+completion runtime while present: the root planner call, the direct model
+primitive, and recursive subqueries at any depth. Ownership rule: each
+streaming call owns exactly one message lifecycle keyed by CallRef; because
+all calls execute sequentially inside one worker, delivered events are
+strictly ordered by execution and recursive lifecycles are properly nested
+(subquery =completed= precedes the parent's next event). The root planner
+call is streamed like any other: in direct-answer mode it is the user-facing
+text, in plan mode its text is plan JSON — attribute-and-forward is lossless,
+and presentation policy (filter by =Operation=) belongs to the host. The
+CallRef carries =operation= and =depth= so hosts can attribute and filter
+without completion-runtime special cases.
+
+** Seq counter
+
+=Seq= is assigned by the completion runtime as a monotonic counter keyed by
+the execution's cancellation token (the already-unique per-execution
+identity; shared host-supplied =cancel_token= groups continue the sequence,
+which is desirable). Allocation runs under the existing
+=rlm_completion_cancel= mutex as =stream_seq(Token, Count)= dynamic state in
+the =cancellation_state= style; entries share the cancellation-state
+lifecycle (retracted by =rlm_cancel/1= and =cleanup_cancellation/2=). No new
+global mutable identity and no second synchronization primitive.
+
+** The pump (internal, unit-testable)
+
+The pump is the internal EventHandler passed to =model_stream_execute=,
+implemented as an explicit state machine over a =stream_pump_state{}= dict
+with =pump_event/3= transitions, so transitions are unit-testable
+independently of the socket path while the real path uses the same code:
+
+- =type:text=: append to the local text aggregate, deliver =phase:delta=
+  with the raw delta text (no coalescing), emit =started= first if not yet
+  started.
+- =type:reasoning=: append to the local reasoning aggregate; no handler
+  delivery (OQ4).
+- =type:usage=: record the normalized usage as the call's observed partial
+  usage in call-local pump state; no handler delivery.
+- =type:tool_call=, =type:finish=, =type:done=: observed, no handler
+  delivery (chain-private vocabulary).
+- Handler failure: the transport already aborts with
+  =openai_stream_fault(event_handler_failed(Event))=; the completion layer
+  maps it to a conservative error envelope.
+
+** Outcome, accounting, and usage-exactly-once
+
+- Success: =ok(stream_result{response:R, events:_})= is projected to
+  =ok(R)=. Usage comes from =R.usage= exactly once through the existing
+  =response_usage= path; the =type:usage= event is never separately counted.
+  A successful finalize retracts the pump's observed-usage record.
+- Consistency gate: after a successful stream, the completion runtime
+  asserts the local text aggregate = R.text and (when the response carries
+  reasoning) the reasoning aggregate = R.reasoning. Divergence is a hard
+  =completion_error{phase:stream, kind:delta_final_divergence}= carrying
+  =usage=R.usage= (the call completed, tokens were consumed) — never a
+  silent reconciliation. This is defense-in-depth against a future transport
+  regression; today the transport makes divergence impossible by
+  construction.
+- Transport-dict errors (handler failure, =invalid_stream=, non-2xx): the
+  pump attaches its last observed =type:usage= value to the error envelope
+  as =stream_usage=; =execution_error_usage/2= gains one clause adding
+  =stream_usage= to recovered =model_responses= usage. All pump state is
+  call-local — no shared store, no cross-call attribution hazard.
+- Thrown exceptions mid-stream (=rlm_cancelled=, =time_limit_exceeded=): the
+  pump cannot act; partial usage of the in-flight call is unclaimed
+  (unknown), never fabricated. Completed sibling calls' usage is recovered
+  through the existing #44 mechanism.
+- Cancellation mid-stream: =rlm_cancelled= propagates unchanged through the
+  transport (verified); the guarded completion wrapper produces the
+  conservative error envelope with preserved usage; no =completed= event.
+- Trajectory and trace lineage unchanged: nested model events (#45) record
+  at execution time from the final response; raw deltas are never trajectory
+  facts, never persisted, never durable artifacts (research Method E).
+
+** Above the boundary
+
+- Conversation runtime: forwards =text_delta_handler= inside
+  =completion_options= unchanged (verified at =rlm_conversation.pl:721=); no
+  conversation-runtime change is required for delta delivery.
+- Canonical projection: a small trusted host-side adapter wraps the handler
+  and projects =stream_message{}= to canonical
+  =agent_event(message_started, MessageId, Role)= /
+  =agent_event(model_delta, MessageId, Text)= /
+  =agent_event(message_completed, MessageId)=, deriving MessageId bijectively
+  from CallRef (conversation/turn scoped). The facade mapping and UI v1
+  reducers already accept these.
+- CLI: the CLI surface registers a handler that prints deltas to stdout;
+  presentation-only.
+- The handler is invoked synchronously on the async worker thread; hosts own
+  any synchronization for their sinks. The handler contract is display-only:
+  deltas never feed back into prompts, trajectory, or persistence.
+
+* Open question resolutions
+
+- OQ1 :: Stream every model-text call dispatched through the completion
+  runtime while the option is present (root planner, direct model,
+  recursive subqueries), attributed by CallRef{operation, depth, seq};
+  sequential execution gives strictly ordered, properly nested lifecycles.
+- OQ2 :: Handler receives the closed completion-level =stream_message{}
+  vocabulary, not chain =stream_event{}= terms; the chain event shape stays
+  private to the chain boundary.
+- OQ3 :: The completion runtime owns =started=/=completed= emission
+  (first-delta start, post-validation complete, exactly once per CallRef);
+  hosts project to canonical =agent_event= terms and UI v1 frames. The agent
+  trace feed stays delta-free.
+- OQ4 :: Reasoning deltas are aggregated and consistency-checked but not
+  delivered to the handler; no UI v1 protocol change in this slice;
+  surfacing is deferred as an additive extension.
+- OQ5 :: No coalescing; one handler call per transport text event; transport
+  SSE-chunk granularity is the coalescing unit; revisit only with profiling
+  evidence.
+- OQ6 :: Yes — add a router-safe credentialed live OpenRouter streaming gate
+  at the completion layer (in the #46 style: skip without credentials, real
+  transport assertions with credentials), because the pump, conflict rule,
+  and accounting paths are exactly the new code this slice adds and the
+  chain-layer live gate does not exercise them.
+
+* Acceptance criteria and verification gates
+
+Deterministic:
+
+1. Option-absent path is byte-identical to today: existing suite green with
+   no streaming dispatch.
+2. Completion streaming end-to-end over a local fixture HTTP server serving
+   canned SSE lines (including =include_usage= chunk and =​[DONE]= sentinel):
+   deltas arrive in order inside the async task; final completion text
+   equals the delta aggregate; usage recorded exactly once; =llm_query= and
+   recursive =rlm_query= stream with correctly attributed CallRefs.
+3. Conflict rule: =text_delta_handler= with =planner_handler= or
+   =model_handler= yields =conflicting_stream_option=.
+4. Pump transitions: unit tests over =stream_pump_state{}= sequences,
+   including synthetic divergence between delivered aggregate and final
+   response text → =delta_final_divergence= with preserved usage.
+5. Mid-stream cancellation: =rlm_cancelled= during SSE consumption yields a
+   conservative completion error, no =completed= delivery, no fabricated
+   answer; transport-dict stream errors carry observed =stream_usage=.
+6. Parser-level conformance via =openai_compatible_parse_sse_lines/5= over
+   synthetic SSE lines (missing =​[DONE]= sentinel → =invalid_stream=).
+7. Lifecycle: exactly-once =started= and =completed= per CallRef; empty
+   streams start no message.
+8. UI projection: host adapter output through =ui_facade_event/4= produces
+   =message_started= → =text_delta*= → =message_completed= frames with
+   continuous seq numbers accepted by the v1 reducers; sequence-gap fault
+   handling unchanged.
+
+Credentialed (OQ6):
+
+9. Live OpenRouter streaming through the completion layer, router-safe skip
+   without credentials, real SSE assertions with credentials; fake providers
+   never count as live evidence.
+
+Existing gates unchanged: =make research-approval=, static load
+(=test/check_runtime.pl=, =test/load_all.pl=), complete deterministic suite
+(=test/run_tests.pl=), CLI demo smoke, =git diff --check= — all observed
+through the tracked =.prolog= verification ledger for task
+=issue-336-design=.
+
+* Non-goals
+
+- No new scheduler, event bus, or background streaming threads; no
+  =rlm_async= changes.
+- No model-controllable stream flag; =stream= remains a reserved direct-mode
+  native session control.
+- No durable persistence of raw deltas; no trajectory-shape or agent-trace
+  vocabulary changes.
+- No SSE transport contract, =stream_result= validation, or direct-mode
+  native streaming changes.
+- No UI v1 protocol change; no conversation-runtime plumbing beyond option
+  forwarding that already exists.
+- No reasoning-delta delivery or UI extension event in this slice.
+
+* Adversarial review
+
+Recorded pass over the design above; each attack was checked against the
+concrete contracts and the design was hardened where noted.
+
+- Concurrent handler sinks :: Deltas are delivered synchronously on the
+  async worker thread; the runtime makes no thread-safety promise to sinks
+  beyond serialization per execution. Hosts owning shared sinks must
+  synchronize. The seq counter and every pump structure are call-local or
+  mutex-protected, so two completions sharing a =cancel_token= group get
+  unique =seq= values without shared mutable pump state. *Hardened:* partial
+  stream usage deliberately has no token-keyed shared store — it rides the
+  call-local pump into transport-dict error envelopes only, so concurrent
+  executions can never misattribute each other's usage.
+- Mid-stream handler misuse :: A handler that throws or fails is not a
+  control channel: the transport aborts with =event_handler_failed=, mapped
+  to a conservative completion error with observed =stream_usage=; no
+  retry, no replay, no fabricated completion. Handler exceptions can never
+  widen authority (display-only contract; require_callable at dispatch).
+- Fabricated completion :: =completed= is emitted only after the consistency
+  gate on a validated =stream_result.response=; cancellation and errors
+  never emit it. Divergence fails hard instead of silently reconciling, per
+  the research contract.
+- Partial failure accounting :: Success uses =Response.usage= exactly once;
+  the =type:usage= event is never double-counted. Divergence errors carry
+  =usage= because the call completed. Thrown mid-stream exceptions claim no
+  partial usage (unknown ≠ zero-asserted); the conservative envelope states
+  what is knowable and nothing more.
+- Stale state / restart :: No durable delta state exists; =stream_seq=
+  entries share the cancellation-state lifecycle and nothing survives a
+  process restart. Deltas are transient observations, not artifacts —
+  research Method E stands.
+- Authority boundary :: The option is host-registered and validated like the
+  existing trusted handlers; it is not expressible in typed-plan model
+  options, so model output cannot select streaming. Deltas never gain
+  =call/1=, shell, filesystem, network, or effect authority; the durable
+  effect boundary is untouched (model text streaming submits no effect
+  attempt).
+- Scheduler direction :: Streaming executes inside the existing bounded
+  worker via the trusted execute ABI; the canonical =*_execute → Future →
+  synchronous facade= direction is preserved and no Future wait is nested
+  inside the worker.
+- Provider compatibility :: Providers without stream dispatch yield the
+  chain's =configuration_error= envelope (clean, typed), never a partial
+  outcome. Budget time limits still wrap the whole guarded execution, so
+  =time_limit_exceeded= remains enforced mid-stream.
+- Compatibility :: Absent option ⇒ byte-identical =model_complete_execute=
+  path. UI v1 reducers, facade, conversation protocol, and persistence are
+  unchanged. Injected-handler compositions fail fast instead of silently
+  regressing to Method B.
+- Test honesty :: Deterministic coverage uses a local fixture HTTP server
+  and the parser conformance entry; the live gate is router-safe and
+  credentialed. Fake providers are never live-provider evidence.
+
+No unresolved counterexample remained after the hardening notes above; the
+design is accepted for the decision gate as recorded.
+
+* Decision gate
+
+PENDING. Operator design approval on PR #350 authorizes implementation
+within exactly this scope on this branch. Per =prolog-rlm.research-approval.v1=
+and the ADADR workflow, research approval does not authorize implementation,
+and this prose does not approve anything.
+
+* Status
+
+Design complete for the approved research scope (Method A). Awaiting operator
+design approval on PR #350; realization follows the repository TDD workflow
+with the acceptance criteria above as the realization contract.
