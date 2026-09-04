@@ -107,6 +107,7 @@ not approval for PR #58, this record, implementation, or merge.
 - `RLM-RESEARCH-023-nim-ui.org` — Nim UI research comparing pure-Nim Illwill with OpenTUI C-ABI bindings.
 - `RLM-RESEARCH-024-emacs-ui.org` — full Emacs chat/coding UI, asynchronous process transport, optional Sweep bindings and native diff/editor integration.
 - `RLM-RESEARCH-025-lem-ui.org` — Lem editor UI and a reusable Common Lisp PrologAgent client shared with the standalone CL frontend.
+- `RLM-RESEARCH-336-text-streaming.org` — text streaming through the completion boundary: opt-in trusted delta handlers, accounting/cancellation contract, and UI v1 text_delta projection.
 
 The gaps are deliberate. New records must not reuse an ID already present in an open branch or PR merely because it is absent from canonical `main`.
 

@@ -235,7 +235,7 @@ The exact wire contract is documented in `docs/prolog-agent-ui-v1.md`.
 
 ### Headless workflow still required
 
-The protocol does **not** replace the real coding workflow. The downstream workflow still needs to emit canonical events such as run/message/tool/approval/question/subagent/verification/usage/trace/effect/completion transitions through the facade while remaining authoritative for execution and state.
+The protocol does **not** replace the real coding workflow. The downstream workflow still needs to emit canonical events such as run/message/tool/approval/question/subagent/verification/usage/trace/effect/completion transitions through the facade while remaining authoritative for execution and state. Model *text* events are no longer part of that gap: the completion runtime now produces canonical `message_started`/`model_delta`/`message_completed` projections through the opt-in trusted `text_delta_handler` boundary (issue #336), and downstream clients wrap that handler for their sessions; run/tool/approval lifecycle events still need their own emission wiring downstream.
 
 From the standalone AgentProlog product, a supported command should eventually feel like:
 
