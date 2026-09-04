@@ -1,6 +1,6 @@
 % Ground facts and machine observations for this worktree.
 task('issue-336-text-streaming').
-repo_state('fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+repo_state('17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
 research_required(false).
 
 % Slice scope: research-only slice for issue #336 (record + README index +
@@ -21,3 +21,9 @@ observation('d0ee4a6104a1a663', command(['bash', '-c', 'git diff --name-only ori
 observation('b9c6306a35369566', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
 observation('8117971e74090f44', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
 observation('cfef74da0550b65e', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '2587c4863b556cf4109fb868fb9b18508a10007207017b853180a503f7835b14', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('052871420b95e086', command(['make', 'research-approval']), exit(0), '29567e2882d92d39e31b7c724c7b5303db3a73cab814525f15f7f5a1dbb7486b', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('e6df0a4e010878e5', command(['bash', '-c', 'test -f research/RLM-RESEARCH-336-text-streaming.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('05fea2a15eafac04', command(['bash', '-c', 'git diff --name-only origin/main -- . \':!research\' \':!.prolog\' | grep . ; test $? -eq 1']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('88569e63b71fbc03', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('763e0acf25e3a622', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('ff100ec05b696ca7', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '008a2979160d3669385c2f77e138d5db5942d7f40d6fea00e972bce4def6e76a', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
