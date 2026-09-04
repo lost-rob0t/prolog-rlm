@@ -1506,4 +1506,3 @@ extract_json_object(Text, Json) :-
 between_last(High, Low, Value) :-
     between(Low, High, Offset),
     Value is High - Offset.
-

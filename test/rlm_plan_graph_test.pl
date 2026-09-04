@@ -461,4 +461,3 @@ test(run_async_awaits_same_future_as_run) :-
     assertion(AsyncOutcome = ok(_)).
 
 :- end_tests(rlm_plan_graph).
-
