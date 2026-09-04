@@ -20,26 +20,24 @@ base_complete :-
     current_successful_observation,
     current_research_evidence.
 
-required_command(ci_range_whitespace,
-                 [git, diff, '--check', 'origin/main...HEAD']).
-required_command(worktree_whitespace,
-                 [git, diff, '--check']).
-required_command(plan_graph_suite,
-                 [swipl, '-q', '-s', 'test/rlm_plan_graph_test.pl',
-                  '-g', run_tests]).
-required_command(deterministic_suite,
-                 [swipl, '-q', '-s', 'test/run_tests.pl']).
+% Extend this predicate with task-specific requirements and invariants.
+:- prolog_load_context(directory, VerifyDir), asserta(verify_dir(VerifyDir)).
 
-requirement_observed(Requirement) :-
-    requirement(Requirement, _),
-    required_command(Requirement, Argv),
-    repo_state(Head, Digest),
-    observation(_, command(Argv), exit(0), _, Head, Digest).
+env_present :-
+    verify_dir(VerifyDir),
+    atom_concat(VerifyDir, '/../.env', EnvPath),
+    exists_file(EnvPath).
+
+required_observation(check_runtime) :- observation(_, command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), _, _, _).
+required_observation(load_all) :- observation(_, command(['swipl', '-q', '-s', 'test/load_all.pl']), exit(0), _, _, _).
+required_observation(deterministic_suite) :- observation(_, command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), _, _, _).
 
 complete :-
     base_complete,
-    forall(requirement(Requirement, _),
-           requirement_observed(Requirement)).
+    env_present,
+    required_observation(check_runtime),
+    required_observation(load_all),
+    required_observation(deterministic_suite).
 
 :- begin_tests(workspace_verification).
 

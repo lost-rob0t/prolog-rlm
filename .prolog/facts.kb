@@ -1,13 +1,11 @@
 % Ground facts and machine observations for this worktree.
-task('293-ci-whitespace').
-repo_state('43405ed73d66da49564eb3ac255f0efaaf3d31a7', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+task('pr335-local-tests').
+repo_state('d2cc7a99879b845260bdbb8f82cb2925625cab70', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
 research_required(false).
-
-requirement(ci_range_whitespace, 'the PR base-to-head diff has no whitespace errors').
-requirement(worktree_whitespace, 'the worktree diff has no whitespace errors').
-requirement(plan_graph_suite, 'the focused plan-graph suite passes').
-requirement(deterministic_suite, 'the complete deterministic suite passes').
-observation('d39f761d152fc037', command(['git', 'diff', '--check', 'origin/main...HEAD']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '43405ed73d66da49564eb3ac255f0efaaf3d31a7', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('fef83433ef48989e', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '43405ed73d66da49564eb3ac255f0efaaf3d31a7', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('6b634a8ee84f5ccf', command(['swipl', '-q', '-s', 'test/rlm_plan_graph_test.pl', '-g', 'run_tests']), exit(0), 'ce83cbd17dc30e6fb5a6fadc1e73c8645cea5867b66d8078a0f1d384adf71774', '43405ed73d66da49564eb3ac255f0efaaf3d31a7', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('b8ce00e0c5634d95', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '134d56cde595991fa875aaf079837ab2a6ef5d64dbb55087cc44b5da326071b7', '43405ed73d66da49564eb3ac255f0efaaf3d31a7', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+requirement(env_present, 'the worktree has a local .env copied from the primary checkout for tests').
+requirement(runtime_check, 'swipl test/check_runtime.pl exits 0 at current HEAD').
+requirement(load_all, 'swipl test/load_all.pl exits 0 at current HEAD').
+requirement(deterministic_suite, 'the complete deterministic suite test/run_tests.pl exits 0 at current HEAD').
+observation('958f24f5522e0568', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', 'd2cc7a99879b845260bdbb8f82cb2925625cab70', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('e4527955787d65e7', command(['swipl', '-q', '-s', 'test/load_all.pl']), exit(0), 'beffcf94c6a9f2fd663cf4b8535174d3c07b791345180d3c1c5b82643506f6a0', 'd2cc7a99879b845260bdbb8f82cb2925625cab70', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('fe0abf38fc9e3b3f', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '7bc7aef13cf80227ca852cb2fcb9c4b8996b67ed1b054a033208a8051ca84339', 'd2cc7a99879b845260bdbb8f82cb2925625cab70', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
