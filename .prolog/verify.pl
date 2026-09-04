@@ -42,7 +42,7 @@ required_observation(whitespace,
 requirement_observed(Requirement) :-
     required_observation(Requirement, Command),
     repo_state(Head, Digest),
-    observation(_, Command, exit(0), _, Head, Digest).
+    observation(_, command(Command), exit(0), _, Head, Digest).
 
 all_requirements_observed :-
     forall(required_observation(Requirement, _),
