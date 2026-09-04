@@ -2,7 +2,8 @@
           [ ui_facade_ready/0,
             ui_facade_event/4,
             ui_facade_event/5,
-            ui_facade_snapshot/4
+            ui_facade_snapshot/4,
+            ui_stream_handler/3
           ]).
 
 /** <module> Canonical runtime to frontend protocol v1 facade
@@ -30,6 +31,35 @@ ui_facade_event(SessionId, Seq, CanonicalEvent, CausedBy, Frame) :-
 ui_facade_snapshot(SessionId, SnapshotId, View, Frame) :-
     ui_v1_snapshot_state(View, State),
     ui_v1_snapshot_frame(SessionId, SnapshotId, View.at_seq, State, Frame).
+
+%!  ui_stream_handler(+Scope, +Sink, +Message) is det.
+%
+%   Trusted host adapter for the issue-#336 completion streaming boundary:
+%   wraps a completion text_delta_handler so the closed completion-level
+%   stream_message{} vocabulary is projected to canonical agent_event
+%   terms and passed to Sink (called as call(Sink, Event)). Message ids are
+%   derived bijectively from the scope and the completion runtime's
+%   CallRef{operation, depth, seq} identity, so the UI v1 reducer's
+%   exactly-once finalize per message id holds by construction.
+ui_stream_handler(Scope, Sink,
+                  stream_message{call:CallRef, phase:started, role:Role}) :-
+    !,
+    stream_message_id(Scope, CallRef, MessageId),
+    call(Sink, agent_event(message_started, MessageId, Role)).
+ui_stream_handler(Scope, Sink,
+                  stream_message{call:CallRef, phase:delta, text:Text}) :-
+    !,
+    stream_message_id(Scope, CallRef, MessageId),
+    call(Sink, agent_event(model_delta, MessageId, Text)).
+ui_stream_handler(Scope, Sink,
+                  stream_message{call:CallRef, phase:completed}) :-
+    !,
+    stream_message_id(Scope, CallRef, MessageId),
+    call(Sink, agent_event(message_completed, MessageId)).
+
+stream_message_id(Scope, CallRef, MessageId) :-
+    format(string(MessageId), '~w:~w:~d:~d',
+           [Scope, CallRef.operation, CallRef.depth, CallRef.seq]).
 
 canonical_ui_event(agent_event(run_started, Meta0),
                    "run_started", Meta, none) :- !,

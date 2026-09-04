@@ -1,29 +1,31 @@
 % Ground facts and machine observations for this worktree.
-task('issue-336-text-streaming').
-repo_state('17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+task('issue-336-realize').
+repo_state('bef1b6ed659fb6a915a04f693630a4af4af15428', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
 research_required(false).
 
-% Slice scope: research-only slice for issue #336 (record + README index +
-% verification workspace). No source/implementation changes before operator
-% approval.
-requirement(research_approval, 'make research-approval passes with RLM-RESEARCH-336 present').
-requirement(record_present, 'research/RLM-RESEARCH-336-text-streaming.org exists in the worktree').
-requirement(slice_scope, 'no files outside research/ and .prolog/ changed in this slice').
+% Slice scope: ADADR realization for issue #336 per the approved design record
+% rage/336-text-streaming-design.org (design approval on PR #350). No behavior
+% outside the recorded design scope.
+requirement(design_approved, 'design record records a GO decision gate with operator approval evidence').
+requirement(text_delta_handler_option, 'trusted text_delta_handler completion option selects streaming dispatch with conflict rule').
+requirement(streaming_lifecycle, 'exactly-once started/completed per CallRef with no completion on error paths').
+requirement(consistency_gate, 'delta-aggregate vs final-response divergence is a hard error with preserved usage').
+requirement(stream_usage_on_error, 'transport-dict stream errors carry observed stream_usage').
+requirement(deterministic_stream_suite, 'focused completion streaming fixture suite passes').
+requirement(deterministic_suite, 'complete deterministic suite passes including the new suite').
+requirement(live_gate_router_safe, 'live completion streaming gate loads without credentials').
+requirement(live_gate_real, 'live completion streaming gate passes with real OpenRouter credentials').
+requirement(docs_updated, 'completion runtime docs document the streaming contract').
+requirement(research_approval, 'make research-approval passes').
 requirement(static_load, 'static runtime check passes').
-requirement(deterministic_suite, 'complete deterministic suite passes').
 requirement(whitespace, 'git diff --check reports no whitespace errors').
-observation('ed7c1928f6765f18', command(['make', 'research-approval']), exit(0), '29567e2882d92d39e31b7c724c7b5303db3a73cab814525f15f7f5a1dbb7486b', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '63fb9dec8d8604a886bc95c24ecfd1155a913b8cf2aaaeaf07daac1f8f8b74f9').
-observation('fda943fbb1d6270b', command(['bash', '-c', 'test -f research/RLM-RESEARCH-336-text-streaming.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '63fb9dec8d8604a886bc95c24ecfd1155a913b8cf2aaaeaf07daac1f8f8b74f9').
-observation('d795ef2d953f7c18', command(['bash', '-c', 'git diff --name-only origin/main -- . \':!research\' \':!.prolog\' | grep . ; test $? -eq 1']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '466bde0d4c3fc17f62d3bba1b40465e4c2ba6832', '63fb9dec8d8604a886bc95c24ecfd1155a913b8cf2aaaeaf07daac1f8f8b74f9').
-observation('3e00f0c3d530ad2c', command(['make', 'research-approval']), exit(0), '29567e2882d92d39e31b7c724c7b5303db3a73cab814525f15f7f5a1dbb7486b', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('d16a8cdecc87d69c', command(['bash', '-c', 'test -f research/RLM-RESEARCH-336-text-streaming.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('d0ee4a6104a1a663', command(['bash', '-c', 'git diff --name-only origin/main -- . \':!research\' \':!.prolog\' | grep . ; test $? -eq 1']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('b9c6306a35369566', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('8117971e74090f44', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('cfef74da0550b65e', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '2587c4863b556cf4109fb868fb9b18508a10007207017b853180a503f7835b14', 'fd8a7af7e10f5c6b643b248252363787957ff1e5', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('052871420b95e086', command(['make', 'research-approval']), exit(0), '29567e2882d92d39e31b7c724c7b5303db3a73cab814525f15f7f5a1dbb7486b', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('e6df0a4e010878e5', command(['bash', '-c', 'test -f research/RLM-RESEARCH-336-text-streaming.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('05fea2a15eafac04', command(['bash', '-c', 'git diff --name-only origin/main -- . \':!research\' \':!.prolog\' | grep . ; test $? -eq 1']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('88569e63b71fbc03', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('763e0acf25e3a622', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
-observation('ff100ec05b696ca7', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '008a2979160d3669385c2f77e138d5db5942d7f40d6fea00e972bce4def6e76a', '17ed526318a20e3718ef36828a340193d84fa818', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('83834b53864e9ecd', command(['bash', '-c', 'grep -q "GO. The operator approved the design" rage/336-text-streaming-design.org && grep -q "ok i aprove it, solve the open design issues" rage/336-text-streaming-design.org']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'bef1b6ed659fb6a915a04f693630a4af4af15428', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('035b93769334fa2f', command(['bash', '-c', 'grep -q "conflicting_stream_option" prolog/rlm_completion.pl && grep -q "text_delta_handler" prolog/rlm_completion.pl']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'bef1b6ed659fb6a915a04f693630a4af4af15428', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('8ef5964a766bfff3', command(['bash', '-c', 'grep -q "text_delta_handler" docs/completion-runtime.md && grep -q "delta_final_divergence" docs/completion-runtime.md']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'bef1b6ed659fb6a915a04f693630a4af4af15428', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('d3f62030fdb2b769', command(['make', 'research-approval']), exit(0), '29567e2882d92d39e31b7c724c7b5303db3a73cab814525f15f7f5a1dbb7486b', 'bef1b6ed659fb6a915a04f693630a4af4af15428', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('5d94f14d54f8d35b', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', 'bef1b6ed659fb6a915a04f693630a4af4af15428', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('b1edbb7f5aa54790', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', 'bef1b6ed659fb6a915a04f693630a4af4af15428', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('f75a9db1aa1df6a2', command(['bash', '-c', 'OPENROUTER_API_KEY= swipl -q -g halt -s test/live_completion_stream_openrouter_test.pl']), exit(0), 'b5a0936e96ff3beb9260e2ff5630a22c62b67329853b8ae258094e39ec592791', 'bef1b6ed659fb6a915a04f693630a4af4af15428', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('ef7b784150951124', command(['swipl', '-q', '-f', 'none', '-g', 'use_module(library(plunit)),[\'test/rlm_completion_stream_test.pl\'],run_tests(rlm_completion_stream),halt.', '-t', 'halt(1)']), exit(0), '12f90c348a6051f54064e5561ec720baf3141a4db72584391b6947833be23478', 'bef1b6ed659fb6a915a04f693630a4af4af15428', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('ab9080b138803812', command(['swipl', '-q', '-s', 'test/live_completion_stream_openrouter_test.pl', '-g', 'run_tests(live_completion_stream_openrouter),halt.']), exit(0), 'c5dfc17e6c784df23ed9717677d463e729eb9eb8b62f3c5a375e19f430d3e522', 'bef1b6ed659fb6a915a04f693630a4af4af15428', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('11723680ed124db5', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '71234957bbd8d8d065f8d9c39488e03dc28d8ec143e8cefd154287d293335c5e', 'bef1b6ed659fb6a915a04f693630a4af4af15428', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').

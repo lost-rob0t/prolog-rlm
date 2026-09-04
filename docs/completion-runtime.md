@@ -174,6 +174,67 @@ rlm_cancel(Token).
 
 Cancellation marks the token and signals currently registered execution threads so a pending model operation can be interrupted. `setup_call_cleanup/3` still runs cleanup paths before the public predicate returns a structured `completion_error{kind:cancelled,...}`.
 
+## Text streaming
+
+`rlm_completion`, `llm_query/3`, and recursive subqueries accept the trusted
+`text_delta_handler(Handler)` option (issue #336). When present, the model call
+at hand is dispatched through the chain streaming transport
+(`model_stream_execute`) inside the existing bounded async worker instead of
+`model_complete_execute`; no second scheduler or background thread is created.
+
+The handler is host-registered and validated with `require_callable/2` exactly
+like `planner_handler`/`model_handler`; it is never model-supplied and cannot
+be expressed in typed-plan model options (direct mode's `stream` native
+session control stays reserved). Combining `text_delta_handler` with an
+injected `planner_handler` or `model_handler` fails fast with
+`completion_error{phase:options,kind:conflicting_stream_option,...}`.
+
+The handler is invoked synchronously on the async worker thread with the
+closed completion-level vocabulary:
+
+```prolog
+stream_message{call:stream_call{operation:Operation, depth:Depth, seq:Seq},
+               phase:started, role:"assistant"}.
+stream_message{call:CallRef, phase:delta, text:String}.
+stream_message{call:CallRef, phase:completed}.
+```
+
+- `Operation` is `planner` or `model`; every model-text call dispatched by the
+  completion runtime streams while the option is present (root planner, direct
+  model primitive, recursive subqueries), attributed by `depth` and a
+  per-execution monotonic `seq`.
+- `started` is delivered exactly once, immediately before the first delta; a
+  stream that produces no text never starts a message. `completed` is
+  delivered exactly once, only after the delta-aggregate consistency check
+  passes. Error and cancellation paths never deliver `completed` and never
+  fabricate a final answer.
+- Deltas are display-only observations. They are never persisted, never enter
+  the trajectory or agent trace, and never gain authority. The chain
+  `stream_event{}` vocabulary stays private to the chain boundary.
+
+Accounting contract: the validated `stream_result.response` remains the
+authoritative outcome; usage is taken from it exactly once. A hard
+`completion_error{phase:stream,kind:delta_final_divergence,...}` with preserved
+usage fires if the delivered text/reasoning aggregate ever diverges from the
+final response. Transport-dict stream errors carry the observed partial usage
+as `stream_usage` on the error envelope; usage thrown away mid-stream by
+cancellation or timeouts is unclaimed, never fabricated.
+
+Above the completion boundary, hosts wrap the handler:
+`prolog_agent_ui_facade:ui_stream_handler(Scope, Sink, Message)` projects the
+vocabulary to canonical `agent_event(message_started/model_delta/
+message_completed, ...)` terms with message ids derived bijectively from
+`Scope` and `CallRef`, which the existing UI v1 facade and reducers already
+consume. The UI v1 wire protocol is unchanged.
+
+The credentialed live OpenRouter lane exercises the full path through the
+completion boundary:
+
+```sh
+swipl -q -s test/live_completion_stream_openrouter_test.pl \
+  -g "run_tests(live_completion_stream_openrouter),halt"
+```
+
 ## Direct completion
 
 Recursion is optional, and so is planning. The root model may return the strict direct-answer envelope `{"mode":"direct","answer":"..."}`, which performs no plan execution and returns `plan:none`, empty transitions/bindings, and zero recursion. Prior rejected planner attempts remain visible in usage if repair was required. A planner may alternatively emit a direct plan ending in `final(...)` when it wants plan-shaped bookkeeping, and `llm_query/3` remains the bounded direct model call for callers that manage their own protocol entirely.

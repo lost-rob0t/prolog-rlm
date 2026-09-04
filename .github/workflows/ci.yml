@@ -53,6 +53,7 @@ jobs:
           OPENROUTER_TEST_MODEL: ""
         run: |
           swipl -q -g halt -s test/live_chain_stream_openrouter_test.pl
+          swipl -q -g halt -s test/live_completion_stream_openrouter_test.pl
           swipl -q -g halt -s test/live_plan_openrouter_test.pl
           swipl -q -g halt -s test/live_tool_openrouter_test.pl
           swipl -q -g halt -s test/live_completion_openrouter_test.pl

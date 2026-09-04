@@ -75,6 +75,11 @@ predicates directly and never re-enter a synchronous public facade.
 
 :- dynamic cancellation_state/2.
 :- dynamic cancellation_thread/2.
+% Streaming-pump state for issue #336: one entry per in-flight streaming model
+% call, keyed by a fresh call key; and the per-execution stream sequence
+% counter keyed by the execution's cancellation token.
+:- dynamic stream_pump/2.
+:- dynamic stream_seq/2.
 
 default_completion_budget(
     completion_budget{max_iterations:32,
@@ -184,6 +189,7 @@ rlm_cancellation_token(Token) :-
 rlm_cancel(Token) :-
     with_mutex(rlm_completion_cancel,
                ( retractall(cancellation_state(Token, _)),
+                 retractall(stream_seq(Token, _)),
                  assertz(cancellation_state(Token, cancelled)),
                  findall(Thread,
                          cancellation_thread(Token, Thread),
@@ -826,8 +832,13 @@ execution_error_usage(Error, Usage) :-
     (   is_dict(Error),
         get_dict(model_responses, Error, Responses),
         is_list(Responses)
-    ->  model_responses_usage(Responses, Usage)
-    ;   zero_usage(Usage)
+    ->  model_responses_usage(Responses, Usage0)
+    ;   zero_usage(Usage0)
+    ),
+    (   is_dict(Error),
+        get_dict(stream_usage, Error, StreamUsage)
+    ->  usage_add(Usage0, StreamUsage, Usage)
+    ;   Usage = Usage0
     ).
 
 model_responses_usage(Responses, Usage) :-
@@ -1556,25 +1567,41 @@ safe_planner_repair_detail(tool_result_envelope_field(Key, Name),
 safe_planner_repair_detail(_, typed_plan_contract_rejected).
 
 call_planner(Options, Provider, Request, Outcome) :-
+    option_value(text_delta_handler, Options, none, DeltaHandler),
     option_value(planner_handler, Options, none, Handler),
-    (   Handler == none
-    ->  rlm_chain:model_complete_execute(Provider, Request, Outcome)
-    ;   require_callable(Handler, planner_handler),
-        catch(call(Handler, Request, RawOutcome),
-              Exception,
-              handler_exception(planner, Exception, RawOutcome)),
-        normalize_handler_outcome(RawOutcome, Outcome)
+    (   DeltaHandler == none
+    ->  (   Handler == none
+        ->  rlm_chain:model_complete_execute(Provider, Request, Outcome)
+        ;   require_callable(Handler, planner_handler),
+            catch(call(Handler, Request, RawOutcome),
+                  Exception,
+                  handler_exception(planner, Exception, RawOutcome)),
+            normalize_handler_outcome(RawOutcome, Outcome)
+        )
+    ;   Handler \== none
+    ->  throw(completion_fault(conflicting_stream_option(planner_handler)))
+    ;   require_callable(DeltaHandler, text_delta_handler),
+        completion_stream_call(planner, Options, Provider, Request,
+                               DeltaHandler, Outcome)
     ).
 
 call_model(Options, Provider, Request, Outcome) :-
+    option_value(text_delta_handler, Options, none, DeltaHandler),
     option_value(model_handler, Options, none, Handler),
-    (   Handler == none
-    ->  rlm_chain:model_complete_execute(Provider, Request, Outcome)
-    ;   require_callable(Handler, model_handler),
-        catch(call(Handler, Request, RawOutcome),
-              Exception,
-              handler_exception(model, Exception, RawOutcome)),
-        normalize_handler_outcome(RawOutcome, Outcome)
+    (   DeltaHandler == none
+    ->  (   Handler == none
+        ->  rlm_chain:model_complete_execute(Provider, Request, Outcome)
+        ;   require_callable(Handler, model_handler),
+            catch(call(Handler, Request, RawOutcome),
+                  Exception,
+                  handler_exception(model, Exception, RawOutcome)),
+            normalize_handler_outcome(RawOutcome, Outcome)
+        )
+    ;   Handler \== none
+    ->  throw(completion_fault(conflicting_stream_option(model_handler)))
+    ;   require_callable(DeltaHandler, text_delta_handler),
+        completion_stream_call(model, Options, Provider, Request,
+                               DeltaHandler, Outcome)
     ).
 
 normalize_handler_outcome(ok(Value), ok(Value)) :- !.
@@ -1599,6 +1626,167 @@ handler_exception(Kind, Exception,
                                          exception:Safe,
                                          message:"trusted injected handler raised an exception"})) :-
     safe_exception(Exception, Safe).
+
+/* -------------------------------------------------------------------------
+ * Streaming completion boundary (issue #336)
+ *
+ * The trusted text_delta_handler option selects the streaming transport for
+ * the model call at hand. The completion runtime interposes an internal pump
+ * between the chain layer and the trusted handler: the chain stream_event
+ * vocabulary stays private, the handler receives the closed
+ * stream_message{} vocabulary, and the validated stream_result.response
+ * remains the authoritative outcome. Raw deltas are display-only
+ * observations: they never persist, never enter the trajectory, and never
+ * gain authority.
+ * ---------------------------------------------------------------------- */
+
+completion_stream_call(Operation, Options, Provider, Request, Handler,
+                       Outcome) :-
+    option_value(depth, Options, 0, Depth),
+    stream_execution_token(Token, TokenScope),
+    next_stream_seq(Token, Seq),
+    CallRef = stream_call{operation:Operation,
+                          depth:Depth,
+                          seq:Seq},
+    uuid(Key, [version(4)]),
+    PumpState = stream_pump_state{call:CallRef,
+                                  handler:Handler,
+                                  started:false,
+                                  text:"",
+                                  reasoning:"",
+                                  usage:none},
+    setup_call_cleanup(
+        assertz(stream_pump(Key, PumpState)),
+        (   rlm_chain:model_stream_execute(Provider,
+                                           Request,
+                                           rlm_completion:pump_dispatch(Key),
+                                           StreamOutcome),
+            completion_stream_outcome(Key, StreamOutcome, Outcome)
+        ),
+        release_stream_pump(Key, Token, TokenScope)).
+
+%!  stream_execution_token(-Token, -Scope) is det.
+%
+%   The execution's cancellation token is the already-unique per-execution
+%   identity and keys the stream sequence counter. Public entries without a
+%   guarded registration (the rlm_query path) fall back to a temporary key
+%   that lives for exactly one streaming call.
+stream_execution_token(Token, registered) :-
+    thread_self(Self),
+    cancellation_thread(Token, Self),
+    !.
+stream_execution_token(Token, temporary) :-
+    uuid(Token, [version(4)]).
+
+next_stream_seq(Token, Seq) :-
+    with_mutex(rlm_completion_cancel,
+               (   (   retract(stream_seq(Token, N0))
+                   ->  true
+                   ;   N0 = 0
+                   ),
+                   N is N0 + 1,
+                   assertz(stream_seq(Token, N))
+               )),
+    Seq = N.
+
+release_stream_pump(Key, Token, temporary) :-
+    !,
+    with_mutex(rlm_completion_cancel,
+               retractall(stream_seq(Token, _))),
+    retractall(stream_pump(Key, _)).
+release_stream_pump(Key, _, registered) :-
+    retractall(stream_pump(Key, _)).
+
+%!  pump_dispatch(+Key, +Event) is det.
+%
+%   Internal transport handler. Applies one pump transition and delivers the
+%   resulting stream_message{} terms to the trusted completion handler.
+%   Handler failures and exceptions propagate unchanged so the transport's
+%   conservative error handling (including rlm_cancelled re-throw) applies.
+pump_dispatch(Key, Event) :-
+    retract(stream_pump(Key, State0)),
+    !,
+    stream_pump_step(State0, Event, State1, Deliveries),
+    assertz(stream_pump(Key, State1)),
+    Handler = State1.handler,
+    maplist(deliver_stream_message(Handler), Deliveries).
+
+deliver_stream_message(Handler, Message) :-
+    call(Handler, Message).
+
+%!  stream_pump_step(+State0, +Event, -State1, -Deliveries) is det.
+%
+%   Pure pump transition over one validated chain stream_event. Text deltas
+%   deliver started (exactly once, before the first delta) and one delta
+%   message per transport event (no coalescing); reasoning and usage are
+%   observed only; tool_call, finish and done remain chain-private.
+stream_pump_step(State0, Event, State1, Deliveries) :-
+    get_dict(type, Event, Type),
+    (   Type == text
+    ->  get_dict(delta, Event, Delta),
+        CallRef = State0.call,
+        (   State0.started == false
+        ->  StartedMessage = stream_message{call:CallRef,
+                                            phase:started,
+                                            role:"assistant"},
+            Deliveries = [StartedMessage, DeltaMessage],
+            Started = true
+        ;   Deliveries = [DeltaMessage],
+            Started = State0.started
+        ),
+        DeltaMessage = stream_message{call:CallRef,
+                                      phase:delta,
+                                      text:Delta},
+        string_concat(State0.text, Delta, Text),
+        State1 = State0.put(_{started:Started, text:Text})
+    ;   Type == reasoning
+    ->  get_dict(delta, Event, Delta),
+        string_concat(State0.reasoning, Delta, Reasoning),
+        State1 = State0.put(_{reasoning:Reasoning}),
+        Deliveries = []
+    ;   Type == usage
+    ->  get_dict(usage, Event, Usage),
+        State1 = State0.put(_{usage:Usage}),
+        Deliveries = []
+    ;   State1 = State0,
+        Deliveries = []
+    ).
+
+%!  stream_pump_finalize(+State, +Response) is det.
+%
+%   Defense-in-depth consistency gate: the delivered delta aggregate must
+%   equal the validated final response text (and reasoning when present).
+%   Divergence is a hard error, never a silent reconciliation.
+stream_pump_finalize(State, Response) :-
+    (   State.text == Response.text,
+        State.reasoning == Response.reasoning
+    ->  true
+    ;   throw(stream_fault(delta_final_divergence(Response.usage)))
+    ).
+
+completion_stream_outcome(Key, ok(StreamResult), ok(Response)) :-
+    !,
+    is_dict(StreamResult),
+    get_dict(response, StreamResult, Response),
+    stream_pump(Key, State),
+    !,
+    stream_pump_finalize(State, Response),
+    (   State.started == true
+    ->  Handler = State.handler,
+        CallRef = State.call,
+        call(Handler, stream_message{call:CallRef, phase:completed})
+    ;   true
+    ).
+completion_stream_outcome(Key, error(Error), error(Error1)) :-
+    !,
+    (   is_dict(Error),
+        stream_pump(Key, State),
+        State.usage \== none,
+        response_usage(_{usage:State.usage}, StreamSummary)
+    ->  put_dict(stream_usage, Error, StreamSummary, Error1)
+    ;   Error1 = Error
+    ).
+completion_stream_outcome(_, Outcome, Outcome).
 
 planner_output(Output, ProviderName, PlanInput, Usage, Summary) :-
     is_dict(Output),
@@ -2590,7 +2778,8 @@ cleanup_cancellation(Token, OwnToken) :-
                retractall(cancellation_thread(Token, Thread))),
     (   OwnToken == true
     ->  with_mutex(rlm_completion_cancel,
-                   retractall(cancellation_state(Token, _)))
+                   ( retractall(cancellation_state(Token, _)),
+                     retractall(stream_seq(Token, _)) ))
     ;   true
     ).
 
@@ -2671,6 +2860,18 @@ completion_exception(error(rlm_cancelled(Token), _),
                                             kind:cancelled,
                                             token:Token,
                                             message:"completion cancelled"})) :-
+    !.
+completion_exception(completion_fault(conflicting_stream_option(With)),
+                     error(completion_error{phase:options,
+                                            kind:conflicting_stream_option,
+                                            with:With,
+                                            message:"text_delta_handler conflicts with an injected complete-only handler"})) :-
+    !.
+completion_exception(stream_fault(delta_final_divergence(Usage)),
+                     error(completion_error{phase:stream,
+                                            kind:delta_final_divergence,
+                                            usage:Usage,
+                                            message:"streamed deltas diverge from the validated final response"})) :-
     !.
 completion_exception(completion_fault(invalid_prompt_compile_mode(Mode)),
                      error(completion_error{
