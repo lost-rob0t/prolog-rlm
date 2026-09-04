@@ -1,5 +1,5 @@
 #+title: RLM-336 Text streaming through the completion boundary — design record
-#+status: DESIGNING
+#+status: approved-for-realization
 
 * Run identity
 
@@ -17,9 +17,10 @@
   =scripts/validate_research_approval.pl= validates the research approval
   schema. RLM-RESEARCH-336 is =#+approval_state: APPROVED= (operator, 2026-09-04,
   PR #349), which authorizes this design slice only.
-- Design approval :: PENDING. This record is the design-approval artifact for
-  PR #350. Operator design approval authorizes implementation within the scope
-  recorded here; nothing below authorizes implementation by itself.
+- Design approval :: APPROVED. The operator approved the design in the
+  2026-09-04 session ("ok i aprove it, solve the open design issues") after
+  the design-approval gate was presented on PR #350. Design approval
+  authorizes implementation within the scope recorded here.
 
 * Analyze
 
@@ -412,13 +413,13 @@ design is accepted for the decision gate as recorded.
 
 * Decision gate
 
-PENDING. Operator design approval on PR #350 authorizes implementation
-within exactly this scope on this branch. Per =prolog-rlm.research-approval.v1=
-and the ADADR workflow, research approval does not authorize implementation,
-and this prose does not approve anything.
+GO. The operator approved the design in the 2026-09-04 session ("ok i
+aprove it, solve the open design issues") after the design-approval gate was
+presented on PR #350. Realization is limited to the design and acceptance
+criteria above.
 
 * Status
 
-Design complete for the approved research scope (Method A). Awaiting operator
-design approval on PR #350; realization follows the repository TDD workflow
-with the acceptance criteria above as the realization contract.
+Design approved by the operator on 2026-09-04 (see decision gate above).
+Realization proceeds on this branch under the repository TDD workflow with
+the acceptance criteria above as the realization contract.

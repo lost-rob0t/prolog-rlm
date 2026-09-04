@@ -36,10 +36,10 @@ requirement_satisfied(design_record_present) :-
     observed_command(['bash', '-c', 'test -f rage/336-text-streaming-design.org']).
 requirement_satisfied(oq_resolved) :-
     observed_command(['bash', '-c', 'test $(grep -c "OQ[1-6] ::" rage/336-text-streaming-design.org) -ge 6']).
-requirement_satisfied(decision_gate_pending) :-
-    observed_command(['bash', '-c', 'grep -q "PENDING. Operator design approval on PR #350" rage/336-text-streaming-design.org && ! grep -qE "^GO\\." rage/336-text-streaming-design.org']).
+requirement_satisfied(decision_gate_approved) :-
+    observed_command(['bash', '-c', 'grep -q "GO. The operator approved the design" rage/336-text-streaming-design.org && grep -q "ok i aprove it, solve the open design issues" rage/336-text-streaming-design.org']).
 requirement_satisfied(slice_scope) :-
-    observed_command(['bash', '-c', 'git diff --name-only origin/main -- . '':!rage'' '':!research'' '':!.prolog'' | grep . ; test $? -eq 1']).
+    observed_command(['bash', '-c', 'git diff --name-only origin/main -- . :!rage :!research :!.prolog | grep . ; test $? -eq 1']).
 requirement_satisfied(static_load) :-
     observed_command(['swipl', '-q', '-s', 'test/check_runtime.pl']).
 requirement_satisfied(deterministic_suite) :-
@@ -49,7 +49,7 @@ requirement_satisfied(whitespace) :-
 
 observed_command(Command) :-
     repo_state(Head, Digest),
-    observation(_, Command, exit(0), _, Head, Digest).
+    observation(_, command(Command), exit(0), _, Head, Digest).
 
 :- begin_tests(workspace_verification).
 

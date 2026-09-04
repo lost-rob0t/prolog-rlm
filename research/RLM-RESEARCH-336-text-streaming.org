@@ -240,5 +240,5 @@ ADADR workflow; the design record resolves the open questions OQ1-OQ6 before
 any runtime change lands.
 
 Design record: =rage/336-text-streaming-design.org= (design PR #350) resolves
-OQ1-OQ6 and records the adversarial review; operator design approval on that
-PR authorizes implementation within the recorded scope.
+OQ1-OQ6 and records the adversarial review; the operator approved the design
+on 2026-09-04, authorizing implementation within the recorded scope.
