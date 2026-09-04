@@ -1,0 +1,239 @@
+#+title: RLM-RESEARCH-336 Text streaming through the completion boundary
+#+status: RESEARCHING
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
+
+* Research Question
+
+How should prolog-rlm support *text streaming* — incremental delivery of
+assistant text while a model call is still executing — across the layers above
+the provider transport (completion runtime, conversation runtime, UI v1
+facade, CLI), without creating a second scheduler, weakening usage/trace
+accounting, or letting model output gain authority?
+
+Issue lost-rob0t/prolog-rlm#336: "Streaming is not currently implemented."
+That claim is only true above the chain layer. This record enumerates the
+correct method with repository evidence and defers the concrete design to the
+post-approval design phase.
+
+* Scope boundary
+
+- In scope: streaming of model *text* from the root completion path into the
+  surfaces an operator or client observes (conversation runtime, UI v1 event
+  stream, CLI output), plus the accounting/cancellation contract those deltas
+  must satisfy.
+- Out of scope: changing the OpenAI-compatible SSE transport itself, direct
+  mode native streaming (its =stream= key is a reserved native session control
+  and deserves its own slice), subagent child-model streaming, MCP or tool
+  streaming semantics.
+
+* Verified facts (main @ =466bde0d4c3f=, repository evidence, 2026-09-04)
+
+** Transport- and chain-layer streaming already exists
+
+- =prolog/rlm_openai_compatible.pl= implements true SSE streaming
+  (=openai_compatible_stream/5=): =http_open/3= with
+  =Accept: text/event-stream=, incremental =stream_event{}= delivery to a
+  handler as chunks arrive, =stream_options{include_usage:true}= always
+  requested (line 142-144), strict =\[[DONE]\]= sentinel enforcement ("stream
+  ended before the [DONE] sentinel", line 612), non-2xx responses normalized
+  via =normalize_http_error/3=, and parser exceptions classified without
+  leaking credentials.
+- The chain event vocabulary is: =stream_event{type:text}=,
+  =type:reasoning=, =type:tool_call=, =type:finish=, =type:usage=,
+  =type:done= (lines 351, 458, 474, 491, 515, 579, 590).
+- Cancellation composes with the stream: =stream_parser_exception/4=
+  re-throws =error(rlm_cancelled(Token), Context)= unchanged (line 669).
+- =prolog/rlm_chain.pl= exposes =model_stream/4=, =model_stream_async/4=,
+  =chain_stream/5=, =chain_stream_async/5= submitted through the canonical
+  =rlm_async_submit= scheduler with =async_metadata{operation:model_stream}=;
+  the synchronous facade awaits the same Future. The final outcome is
+  validated as =ok(stream_result{response:ModelResponse, events:Events})=.
+- =docs/async-runtime.md= (line 156) states the contract: "Streaming uses the
+  provider streaming transport incrementally inside the asynchronous task. It
+  does not wait for a complete synchronous stream and replay it afterward."
+- Live evidence: =test/live_chain_stream_openrouter_test.pl= exercises real
+  OpenRouter SSE streaming in the credentialed CI lane.
+- Deterministic conformance entry =openai_compatible_parse_sse_lines/5=
+  (line 224) lets tests drive the exact network parser without a socket.
+
+** Everything above the chain layer is complete-only
+
+- =prolog/rlm_completion.pl:1561,1572=: =call_planner/4= and =call_model/4=
+  dispatch only to =rlm_chain:model_complete_execute/2= (or trusted injected
+  handlers). No option in the completion runtime selects a streaming path.
+- =prolog/rlm_direct.pl:732=: =reject_native_request_control/1= reserves
+  =stream= alongside =messages=, =tools=, =tool_choice= — typed-plan model
+  options may not set streaming. Direct mode owns its own native session
+  controls; that boundary stays.
+- =prolog/rlm_agent.pl= has an internal, mutex-sequenced trace feed
+  (=trace_add/3=, =agent_trace_event/3=, line 1295-1313) with its own
+  vocabulary (=runtime_created=, =cancel=, =engine_failure=, ...). It never
+  carries text deltas.
+- =prolog/rlm_conversation_runtime.pl= has no streaming or event plumbing at
+  all.
+- The completion result envelope =completion_result{...}=
+  (=prolog/rlm_completion.pl:808,866=) carries =value=, =plan=, =vars=,
+  =transitions=, =recursion=, =child_capabilities=, =usage=, and
+  =trajectory= (#45 nested model events recorded at execution time). Usage is
+  recovered even on error paths (=execution_error_usage/2=, #44).
+
+** The UI v1 protocol anticipates streaming text but nothing produces it
+
+- =prolog/prolog_agent_ui_v1.pl:44= advertises the =streaming_text= server
+  capability; =known_event_type/1= accepts =message_started=, =text_delta=,
+  =message_completed= (lines 63-66); reducers create a message with
+  =status:"streaming"=, append =text_delta= payloads, and finalize
+  =status:"complete"= (lines 445-465). Sequence-gap detection exists
+  (line 370).
+- =prolog/prolog_agent_ui_facade.pl:40-42= maps a canonical
+  =agent_event(model_delta, MessageId, Text)= event to the =text_delta= UI
+  frame.
+- Repository-wide search finds *no producer* of =agent_event(model_delta,
+  ...)=, =agent_event(message_started, ...)=, or =agent_event(message_completed,
+  ...)= anywhere outside the facade and its hand-authored fixtures
+  (=test/support/prolog_agent_ui_fixture.pl=). The golden session fixture
+  =test/fixtures/prolog_agent_ui_v1_session.ndjson= is hand-built, not
+  runtime-generated.
+
+** Inference (not yet verified by implementation)
+
+The gap named by #336 is the *completion boundary*: no path carries
+incremental model text from the chain layer into completion results, agent
+traces, conversation events, or the UI v1 stream. The transport, validation,
+and frontend reducer layers are already streaming-ready; the missing piece is
+an opt-in, trusted, accounting-preserving delta path through
+=rlm_completion= and the runtimes above it.
+
+* Enumerated implementation methods
+
+** Method A — opt-in trusted delta handler through the completion options (recommended)
+
+Thread one new trusted option, provisionally =text_delta_handler=, through the
+completion runtime options vocabulary:
+
+1. =rlm_completion= accepts an optional =text_delta_handler= option with the
+   same trust model as the existing =model_handler= / =planner_handler=
+   options (host-registered callable; =require_callable/1=; never
+   model-supplied, never a tool).
+2. When present, the completion runtime dispatches through
+   =rlm_chain:model_stream_execute= (the trusted execute ABI) instead of
+   =model_complete_execute=, forwarding deltas to the handler. Deltas are
+   delivered incrementally inside the bounded async worker, satisfying the
+   documented "no replay afterward" contract and the canonical
+   execute -> Future -> sync-facade direction.
+3. The authoritative completion outcome remains the validated
+   =stream_result.response=. The completion runtime aggregates =type:text=
+   (and =type:reasoning=) deltas and asserts the aggregate equals the final
+   response text before returning; divergence is a hard error, not a silent
+   reconciliation.
+4. Usage is taken from the validated final response exactly once (same path
+   as #44); the =type:usage= stream event is observed, not double-counted.
+5. Trajectory/trace lineage is unchanged: nested model events (#45) keep
+   recording at execution time from the final response. Raw deltas are not
+   trajectory facts.
+6. Cancellation mid-stream propagates =rlm_cancelled= (transport already
+   does); the completion layer returns a conservative error envelope with
+   preserved usage — never a fabricated final answer.
+7. Above the completion boundary, the conversation/UI layer converts the
+   handler callback into canonical =agent_event(message_started/model_delta/
+   message_completed)= events for the facade projection; seq numbering and
+   gap detection already exist.
+
+Why it is correct: no new scheduler (handler = plain trusted callback inside
+the existing worker), no authority change (display-only events), accounting
+and validation unchanged (final response still authoritative), compatibility
+by construction (absent option = exactly today's =model_complete_execute=
+path).
+
+** Method B — pseudo-streaming by replaying accumulated text (rejected)
+
+Return the complete response and emit deltas after the fact. Explicitly
+contradicts the documented async-runtime contract (no complete-then-replay)
+and provides no latency benefit. Rejected.
+
+** Method C — a new event-bus/subscription subsystem (rejected)
+
+Publish deltas on a pub/sub broker that observers subscribe to. Creates a
+second async substrate parallel to =rlm_async=, duplicating
+cancellation/trace semantics; violates the "no second scheduler" invariant.
+The trusted-handler callback inside the existing worker achieves the same
+delivery without new lifecycle. Rejected.
+
+** Method D — let model output control streaming (rejected)
+
+Honoring a model-supplied =stream= request option would let model output
+steer transport semantics. Direct mode already reserves =stream= as a native
+session control (verified above); extending that reservation to all layers is
+the existing rule. Streaming is a host choice, expressed as a trusted option.
+Rejected.
+
+** Method E — durable persistence of raw deltas (rejected)
+
+Persisting every delta as an artifact or trajectory event would collapse
+distinct semantic classes: deltas are transient UI observations, while
+trajectory events, artifacts, and effect observations are durable classes.
+Storing raw deltas inflates storage, breaks deterministic trace replay, and
+adds no verifiable guarantee beyond the delta/final consistency check.
+Rejected.
+
+* Open questions (resolve at design phase)
+
+- OQ1: Do recursive sub-model calls inside the RLM loop stream, or only the
+  root planner call? Nested streaming interleaves deltas with tool-call
+  boundaries and needs an explicit ownership rule.
+- OQ2: Handler vocabulary — should the completion handler receive raw
+  =stream_event{}= terms from the chain layer, or completion-level
+  =agent_event(model_delta, ...)= terms only, keeping the chain event shape
+  private to the chain boundary?
+- OQ3: Which layer owns =message_started= / =message_completed= emission —
+  completion runtime, conversation runtime, or the agent runtime trace feed?
+  The UI reducer expects exactly-once finalize per message id.
+- OQ4: How do =type:reasoning= deltas surface in UI v1 — as =text_delta=, a
+  separate known event type, or an optional extension event?
+- OQ5: Coalescing — should the handler coalesce contiguous =type:text=
+  deltas into larger chunks to bound callback overhead in Prolog?
+- OQ6: Should the credentialed live OpenRouter lane gain a completion-layer
+  streaming gate (router-safe, in the style of #46), or is the existing
+  chain-layer live streaming test sufficient for CI?
+
+* Proposed acceptance experiments (design phase)
+
+- Deterministic completion streaming test with a trusted handler-driven
+  fake: deltas arrive in order inside the async task; final completion text
+  equals the delta aggregate; usage recorded exactly once; absent option
+  exercises the unchanged non-streaming path.
+- Mid-stream cancellation test: =rlm_cancelled= during SSE consumption yields
+  a conservative completion error with preserved usage and no final answer
+  fabrication.
+- Reuse =openai_compatible_parse_sse_lines/5= to conformance-test the
+  completion path over synthetic SSE lines including =include_usage= chunks
+  and a missing =\[[DONE]\]= sentinel.
+- UI projection test: =message_started= -> =text_delta=* -> =message_completed=
+  frames with continuous seq numbers pass facade reducers; sequence-gap
+  handling still faults.
+- Credentialed live OpenRouter streaming through the completion layer
+  (router-safe) if OQ6 resolves affirmatively.
+- Existing gates unchanged: =make research-approval=, static load, complete
+  deterministic suite, CLI demo smoke.
+
+* Non-goals
+
+- No new scheduler, event bus, or background streaming threads.
+- No model-controllable stream flag; =stream= remains a reserved native
+  request control.
+- No durable persistence of raw deltas; no trajectory-shape changes.
+- No change to the SSE transport contract, =stream_result= validation, or
+  direct-mode native streaming.
+- No UI protocol change; =text_delta= semantics are already canonical.
+
+* Status
+
+Research only. Per issue #336 and the ADADR workflow, implementation begins
+only after the operator approves this record (machine-readable
+=#+approval_state: APPROVED= set by the human operator on a reviewed commit).
