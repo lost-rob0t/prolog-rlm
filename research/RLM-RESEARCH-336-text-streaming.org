@@ -1,12 +1,12 @@
 #+title: RLM-RESEARCH-336 Text streaming through the completion boundary
-#+status: RESEARCHING
+#+status: accepted-for-realization
 #+approval_schema: prolog-rlm.research-approval.v1
 #+approval_state: APPROVED
 #+approval_actor: human
-#+approval_evidence: NONE
-#+approval_base_commit: NONE
-#+approval_base_blob: NONE
-#+approval_decided_at: NONE
+#+approval_evidence: Operator directed realization in the 2026-09-04 session ("USE git work trees tho to implement then push to remote and then merge on green") after reviewing PR #349 head bd457a5.
+#+approval_base_commit: bd457a546feac5e50cae43137730d7ba12c07e7e
+#+approval_base_blob: 3dcdc24cfa65845eb7b73c07e9db76715710e79e
+#+approval_decided_at: 2026-09-04T15:28:14Z
 
 * Research Question
 
@@ -234,6 +234,7 @@ Rejected.
 
 * Status
 
-Research only. Per issue #336 and the ADADR workflow, implementation begins
-only after the operator approves this record (machine-readable
-=#+approval_state: APPROVED= set by the human operator on a reviewed commit).
+Approved by the human operator on 2026-09-04 (see approval metadata above).
+Realization proceeds on the issue-#336 implementation branch under the
+ADADR workflow; the design record resolves the open questions OQ1-OQ6 before
+any runtime change lands.
