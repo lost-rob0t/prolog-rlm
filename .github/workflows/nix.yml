@@ -16,7 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: DeterminateSystems/nix-installer-action@v20
+      # data.forgejo.org does not mirror DeterminateSystems/nix-installer-action;
+      # reference the upstream action by full URL so the runner clones it
+      # directly from GitHub instead of the Forgejo action mirror.
+      - uses: https://github.com/DeterminateSystems/nix-installer-action@v20
       - name: Check flake outputs
         run: nix flake check --no-update-lock-file --print-build-logs
       - name: Build default package

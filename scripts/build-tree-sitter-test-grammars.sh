@@ -97,4 +97,6 @@ compile_incompatible_c_grammar() {
 compile_grammar c
 compile_grammar lua
 compile_grammar query
+compile_grammar python
+compile_grammar javascript
 compile_incompatible_c_grammar

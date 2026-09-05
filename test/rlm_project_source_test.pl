@@ -250,6 +250,56 @@ custom_language_backend_is_registry_data_(Registry) :-
                                    custom_lang,
                                    external(custom_parser)).
 
+test(custom_language_extensions_are_registry_evidence) :-
+    with_registry(custom_language_extensions_are_registry_evidence_).
+
+custom_language_extensions_are_registry_evidence_(Registry) :-
+    register_project(Registry, project(alpha)),
+    project_source_language_register(Registry,
+                                     custom_lang,
+                                     tree_sitter,
+                                     _{origin:test, extensions:['.custom']},
+                                     ok(language(custom_lang))),
+    register_file(Registry,
+                  project(alpha),
+                  _{path:"data/project.custom"},
+                  File),
+    project_source_language_evidence(Registry,
+                                     File,
+                                     custom_lang,
+                                     registered_extension('.custom'),
+                                     0.9),
+    project_source_file_language(Registry, File, ok(Resolution)),
+    assertion(Resolution.status == known),
+    assertion(Resolution.language == custom_lang).
+
+test(invalid_registered_extensions_fail_at_registration) :-
+    with_registry(invalid_registered_extensions_fail_at_registration_).
+
+invalid_registered_extensions_fail_at_registration_(Registry) :-
+    project_source_language_register(Registry,
+                                     broken,
+                                     tree_sitter,
+                                     _{extensions:not_a_list},
+                                     error(Error)),
+    assertion(Error.kind == invalid_language_extensions),
+    \+ project_source_language_parser(Registry, broken, _).
+
+test(structured_document_extensions_are_language_evidence) :-
+    assertion(extension_language('.md', markdown)),
+    assertion(extension_language('.markdown', markdown)),
+    assertion(extension_language('.json', json)),
+    assertion(extension_language('.org', org)),
+    assertion(extension_language('.lisp', common_lisp)),
+    assertion(extension_language('.nim', nim)).
+
+test(additional_builtin_structured_languages_have_generic_backends) :-
+    with_registry(additional_builtin_structured_languages_have_generic_backends_).
+
+additional_builtin_structured_languages_have_generic_backends_(Registry) :-
+    forall(member(Language, [markdown, json, org, common_lisp, nim]),
+           project_source_language_parser(Registry, Language, tree_sitter)).
+
 test(destroyed_registry_fails_structurally) :-
     project_source_registry_create(Registry),
     project_source_registry_destroy(Registry),

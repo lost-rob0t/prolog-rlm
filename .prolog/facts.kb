@@ -1,0 +1,9 @@
+% Ground facts and machine observations for this worktree.
+task('pr359-merge-reconcile').
+repo_state('23b9aff8e19c9d17f711110d45a926a84006e956', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+research_required(false).
+observation('b80ec11f01de4483', command(['swipl', '-q', '-s', 'test/check_runtime.pl']), exit(0), '8fb0c5bf0fe7099ac824d0d78b71ea6aefdeea19b27c2ab268b08346badf876b', '23b9aff8e19c9d17f711110d45a926a84006e956', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('21a4d130423f0763', command(['swipl', '-q', '-s', 'test/load_all.pl']), exit(0), '6855a3a34c8dff470692dddd3fc6fdc5511ed594390f466d783e02c2924d289e', '23b9aff8e19c9d17f711110d45a926a84006e956', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('d7f2e6b95b37f24d', command(['swipl', '-q', '-s', 'test/run_tests.pl']), exit(0), '131319fc792443284f25b93f1b311bc7248000ad75e83a63ba30cbba2b6d4bd4', '23b9aff8e19c9d17f711110d45a926a84006e956', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+observation('fe6f991c37ccf8a8', command(['git', 'diff', '--check']), exit(0), '6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d', '23b9aff8e19c9d17f711110d45a926a84006e956', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855').
+requirement(deterministic_suite, 'the complete deterministic suite test/run_tests.pl exits 0 at current HEAD').

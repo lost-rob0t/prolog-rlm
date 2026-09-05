@@ -1,0 +1,97 @@
+* Run identity
+- Consumed issue :: #288
+- Branch :: =rage/288-spec-plan-graph-executor=
+- RAGE start commit :: =7165680e31fa67053f19887026cd00e4e59ed0aa=
+
+* Pipeline
+
+Research (this session, Prolog-verified) -> adversarial review (fresh opencode
+subprocess) -> design (fresh opencode subprocess) -> implementation (this
+session, TDD) -> final adversarial review (fresh opencode subprocess) -> gates.
+
+* Research log
+- Confirmed existing closed plan AST: =prolog/rlm_plan.pl= ops
+  =context/3, model/4, rlm/2, tool/3, spawn_agent/3, parallel/2, retry/3,
+  checkpoint/1, final/1=; JSON parse path; whole-plan validation; host tool
+  registry with preflight; per-op capability requirements.
+- Confirmed SPEC substrate: =rlm_spec_lang= closed authoring,
+  =rlm_spec= validate/freeze, =rlm_verify= evidence states,
+  =rlm_spec_workflow= spec_plan_bind (fingerprint-bound).
+- Confirmed =rlm_graph= is a node/router state machine over trusted closures,
+  not a plan-op DAG; reusing it directly for step/depends_on scheduling would
+  conflate abstractions or require a second scheduler.
+- Gap: no typed project-op vocabulary; no plan dependency-graph executor;
+  no symbol_ref -> source_span contract; no validate/1 op bound to frozen Specs.
+- Contract gate added: scripts/plan_graph_contract_check.{pl,sh}; proven RED
+  (exit 1, module undefined) before implementation; loops over one Prolog
+  requirement fact per #288 requirement.
+- Research record: research/RLM-RESEARCH-027-spec-plan-graph-executor.org
+  (PENDING approval header; make research-approval PASS).
+- Adversarial review subprocess completed (opencode --auto, timeout enforced):
+  verdict sound-with-changes; report rage/288-review-research-report.md.
+- Required changes folded into research record I1/I1a/I2/I6/I6a/I8/I9 + R1;
+  citations corrected (F1/F4/F6/F7/F9); issue #288 body reconciled
+  (desugar shape, tool(Op) capabilities, cancellation, aggregate budget,
+  async surface, effect boundary, abandoned-terminal).
+* Implementation log (TDD)
+
+- Contract gate proven RED before implementation (module absent, exit 1).
+- test/rlm_plan_graph_test.pl: 24 PlUnit tests written first (red), then
+  prolog/rlm_plan_graph.pl implemented to green.
+- test/support/plan_graph_test_tools.pl: module-qualified expert closures
+  (repo convention: handlers must be visible from rlm_plan's call path).
+- Bugs caught by the loop: JSON path bypassed in execute_; empty-dict
+  variable tags broke ground/1 and outcome equality; dict-dot terms are
+  unevaluated in argument positions; sort/2 dedupe before adjacency check;
+  variable-functor syntax; PlUnit assertion/1 does not propagate bindings;
+  cancellation_throw arity (rlm_cancelled/1); rlm_plan handlers must
+  succeed-or-throw (plain failure fails the plan silently); runtime
+  exhaustion kind is budget_exhausted; the gate's own check_one cut pruned
+  findall enumeration (now generate-and-test, contract/2 only).
+- Full deterministic gate green: check_runtime, load_all, run_tests
+  (1019/1019), benchmark deterministic 16/16, CLI demo --json,
+  git diff --check, make research-approval, contract gate ALL DEFINED.
+- Docs: docs/plan-graph-runtime.md; cross-links in typed-plans.md,
+  spec-verify.md via guarantee boundary; roadmap long-horizon note added.
+- Registered in test/deterministic_corpus.pl (include(rlm_plan_graph)).
+* Final review loop
+
+- Final adversarial review subprocess: verdict sound-with-changes; report
+  rage/288-final-review-report.md. Required changes 1-7 all applied:
+  R1 deterministic fault_kind/graph_exception (zero choicepoint warnings),
+  R2 grounded invalid_args sentinels, edges/duplicate/ghost depends_on
+  rejection, malformed caps -> structured fault, validate fail-closed,
+  R3 per-op exact JSON key sets, R4 fundable/2 across feed-forward classes
+  + aggregate_unfundable_step_aborts test, R5 parse-phase attribution via
+  public wrapper, R6 pre_cancelled_token test, R7 docs corrected
+  (completed-step charging, delegate spawn re-check as host obligation)
+  + design-record deviations section.
+- Final suite: 1021/1021 (86 suites) incl. 26 plan-graph tests; contract
+  gate ALL DEFINED; check_runtime/load_all/benchmark/demo/diff-check/
+  research-approval all green.
+* D6-11 amendment (post-review operator decision, issue #355)
+
+- Operator decision (Forgejo #293 comment 3762): deterministic
+  state-mutating plan ops execute at the plan layer, not through a
+  "project plan expert"; expert routing adds contract overhead,
+  inner-capability checks, and model-grant surface to an operation that
+  needs none. Recorded verbatim as D6-11 in
+  =docs/research/spec-plan-authority.md= (main; PR #356 amends D6-8).
+- Implementation (branch =rage/355-d6-11-plan-native-dispatch= on top of
+  this BASE): =plan_native_op/1= closed set =sync_remote/1=, =run/1=,
+  =index/1=, =delete/1=; host deterministic adapter closures supplied via
+  the separate =native_handlers= option; preflight requires a native
+  handler for every native step (=unknown_native_handler=), rejects
+  native entries for non-native ops (=not_plan_native=), and rejects
+  expert-registry entries for plan-native ops
+  (=expert_mapping_excluded=). The desugared form is unchanged:
+  =plan([tool(Op, literal(Args), Bind), final(var(Bind))])= executed
+  through the =rlm_plan= validate/execute ABIs. The executor performs no
+  effects of its own and gains no ambient shell/git authority.
+- Environment fix required by this amendment's gate: =decode_args/4=
+  re-tagged unknown-op JSON args through =dict_pairs(Args, _, Pairs)=
+  (SWI 10.0.2 decodes JSON objects with a tag that does not unify with
+  =plan_graph_args=, so the invalid_args sentinel path silently failed
+  instead of feeding the vocabulary rejection). Restores the two
+  vocabulary-rejection tests on this SWI without changing the fault
+  contract.

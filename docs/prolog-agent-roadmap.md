@@ -71,6 +71,17 @@ standalone AgentProlog / DSH plugin / JS / CL / Nim / Emacs / Lem
   Spec + Verify + plan + graph + authority + async + effects + MCP
 ```
 
+Long-horizon execution substrate: `rlm_plan_graph` (#288, adopted into main
+with the D6-11 amendment) adds a closed project-op plan vocabulary with a
+`ready_step` dependency-graph executor, an aggregate budget,
+cancellation-as-token-rethrow, and a `symbol_ref`/`source_span` contract
+consumed by host experts. The D6-11 plan-native deterministic set
+(`sync_remote`/`run`/`index`/`delete`) dispatches at the plan layer through
+the canonical boundary and is excluded from expert mapping; `edit`/`create`
+remain write-expert-owned. `rlm_plan`
+remains the only step executor; AgentProlog planners can author graphs as
+inert data without gaining execution authority.
+
 Core must not gain ambient repository write access just because `PrologAgent` needs it. Coding tools remain separately loadable and capability-gated. A frontend never becomes a second execution engine. The project parser/indexer also remains a semantic observation producer, not a hidden executor.
 
 ## Phase 0: finish the write-safety substrate
@@ -166,7 +177,7 @@ product UX.
 
 Project instructions should enter the coding context with provenance. Repository instructions, current source/tests, operator requirements, skill instructions, and model inference are not the same kind of evidence.
 
-The direct Tree-sitter mechanics from #94 and the declarative Project/File/Language/grammar registry from #95 are now substrate. Implement #96-#99 behind the semantic project-state boundary established by `rlm_spec`/`rlm_verify`: project concrete syntax into versioned observations, run structural queries, normalize semantic source relations, and enforce incremental freshness. Source, build metadata, package metadata, and configuration should be parsed once into canonical project knowledge. Planner and verifier consumers query that knowledge through trusted semantic providers. Do not add a planner-only parser and a verifier-only parser.
+The direct Tree-sitter mechanics from #94, the declarative Project/File/Language/grammar registry from #95, and the bounded versioned CST observations from #96 are now substrate. The #96 layer handles both code and structured non-code project files, carries exact parse/grammar/source provenance, and keeps stale or partial generations explicit. Implement #97-#99 behind the same semantic project-state boundary established by `rlm_spec`/`rlm_verify`: run structural queries, normalize semantic source relations, and enforce incremental freshness. Source, build metadata, package metadata, and configuration should be parsed once into canonical project knowledge. Planner and verifier consumers query that knowledge through trusted semantic providers. Do not add a planner-only parser and a verifier-only parser.
 
 The project KB remains distinct from artifacts, graph checkpoints, authority, effect journals, and runtime observations. After a write, invalidate/re-index affected project state and verify the unchanged Frozen Spec against the new snapshot plus runtime evidence.
 
@@ -191,7 +202,7 @@ operator requirements
 
 Reuse `rlm_spec`, `rlm_verify`, `rlm_spec_workflow`, `rlm_agent`, `rlm_graph`, `rlm_async`, `rlm_authority`, traces, effects, artifacts, and the shared prompt-compiler inputs. Do not create a special coding-agent scheduler, a second acceptance language, or a frontend-owned prompt router.
 
-TaskIR work from #69 should carry/reference the exact Frozen Spec rather than becoming a second canonical owner of acceptance criteria. The INTENT -> SPEC -> VALIDATE (hard gate) -> PLAN -> plan-KB -> expert-loop flow, including the closed project-op plan vocabulary (rage/288 BASE + D6 deltas), typed expert dataflow, plan-vs-spec validation via `plan_validate_against_spec/4`, project retrieval/write/validation over the normalized reference grammar, and direct/symbolic/recursive strategy selection, is designed in `docs/research/spec-plan-authority.md` (rewrite of the PR #290 design; the merged `rlm_spec_lang` grammar is canonical and unchanged). Its implementation slices S0-S11 are the dependency graph for the remaining Phase 2/3 substrate, and `scripts/design_gate.pl` is the executable design gate for the record. Result acceptance work from #56 should share the same evidence/verifier substrate instead of growing an incompatible verifier stack. Resume/restart work from #71 must remain bound to the original Spec identity.
+TaskIR work from #69 should carry/reference the exact Frozen Spec rather than becoming a second canonical owner of acceptance criteria. The INTENT -> SPEC -> VALIDATE (hard gate) -> PLAN -> plan-KB -> expert-loop flow, including the closed project-op plan vocabulary (rage/288 BASE + D6 deltas, with D6-11 making `sync_remote`/`run`/`index`/`delete` plan-native deterministic mutations excluded from expert mapping), typed expert dataflow, plan-vs-spec validation via `plan_validate_against_spec/4`, project retrieval/write/validation over the normalized reference grammar, and direct/symbolic/recursive strategy selection, is designed in `docs/research/spec-plan-authority.md` (rewrite of the PR #290 design; the merged `rlm_spec_lang` grammar is canonical and unchanged). Its implementation slices S0-S11 are the dependency graph for the remaining Phase 2/3 substrate, and `scripts/design_gate.pl` is the executable design gate for the record. Result acceptance work from #56 should share the same evidence/verifier substrate instead of growing an incompatible verifier stack. Resume/restart work from #71 must remain bound to the original Spec identity.
 
 ### Frontend protocol foundation
 
@@ -224,7 +235,7 @@ The exact wire contract is documented in `docs/prolog-agent-ui-v1.md`.
 
 ### Headless workflow still required
 
-The protocol does **not** replace the real coding workflow. The downstream workflow still needs to emit canonical events such as run/message/tool/approval/question/subagent/verification/usage/trace/effect/completion transitions through the facade while remaining authoritative for execution and state.
+The protocol does **not** replace the real coding workflow. The downstream workflow still needs to emit canonical events such as run/message/tool/approval/question/subagent/verification/usage/trace/effect/completion transitions through the facade while remaining authoritative for execution and state. Model *text* events are no longer part of that gap: the completion runtime now produces canonical `message_started`/`model_delta`/`message_completed` projections through the opt-in trusted `text_delta_handler` boundary (issue #336), and downstream clients wrap that handler for their sessions; run/tool/approval lifecycle events still need their own emission wiring downstream.
 
 From the standalone AgentProlog product, a supported command should eventually feel like:
 
@@ -287,10 +298,10 @@ Current core and product issues that materially affect the roadmap:
 - #56: result acceptance should build on the shared evidence/provenance/verifier substrate now used by Spec Verify; the closed #144 path supplies child-owned bounded subagent completion, exact child capability/authority possession, typed parent result propagation, closed KB command selection, and fail-closed recursive subagent registration. Broader evidence/result acceptance remains #56 scope.
 - #68: verified workflow epic remains open; first-class Spec/Verify and graph composition are substrate, not the whole product workflow.
 - #69: TaskIR should reference the exact Frozen Spec and carry task/execution metadata rather than own a competing acceptance contract.
-- #70: project context should incorporate canonical project-KB snapshot references and provenance; #94 supplies direct Tree-sitter parser mechanics and #95 supplies Project/File/Language/grammar selection, while #96-#99 still need the versioned CST, structural-query, semantic, and freshness layers.
+- #70: project context should incorporate canonical project-KB snapshot references and provenance; #94 supplies direct Tree-sitter parser mechanics, #95 Project/File/Language/grammar selection, and #96/#97 versioned CST and structural-query observations, while #98-#99 still need semantic normalization and freshness layers.
 - #71: workflow execution/resume must remain bound to the exact Frozen Spec; the Spec-bound graph foundation now demonstrates that invariant, while full TaskIR/continuation integration remains open.
 - #74-#77: durable project state, instructions, and bounded persistent authorization.
-- #93/#96-#99: #94/#95 are the direct parser and declarative source-registry substrate; the remaining child issues are required before the canonical project parser/indexer and project KB are complete.
+- #93/#96-#99: #94/#95 are the direct parser and declarative source-registry substrate and #96/#97 now provide versioned CST/query observations; #98/#99 remain required before the canonical project parser/indexer and project KB are complete.
 - #101/#117/#173/#183: standard skill packages normalize into the one prompt compiler; permanent operating context and exact provider-bound adoption remain explicit follow-up scope.
 - #176: #216 supplies the root-planner local-tool schema projection through the canonical compiler while preserving separate trusted execution bindings; MCP/project-instruction/managed-context adoption and projection observability remain open.
 - #109: the renderer-independent `prolog_agent_ui_v1` protocol/replay foundation is landed in core; concrete renderer/product work is downstream.

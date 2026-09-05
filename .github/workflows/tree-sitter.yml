@@ -13,33 +13,54 @@ permissions:
 jobs:
   direct-swi-ffi:
     name: Direct SWI-Prolog Tree-sitter FFI
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
-      - name: Install SWI-Prolog and Tree-sitter development packages
+      # Forgejo runner jobs execute in Docker containers without systemd.
+      # Install Nix with --init none and spawn the daemon directly instead of
+      # relying on the installer's systemd integration or action detection.
+      - name: Install Nix and start daemon
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes \
-            swi-prolog-nox \
-            build-essential \
-            pkg-config \
-            libtree-sitter-dev \
-            tree-sitter-c-src \
-            tree-sitter-lua-src \
-            tree-sitter-query-src
+          set -euo pipefail
+          curl -sSfL https://install.determinate.systems/nix -o /tmp/nix-install.sh
+          sh /tmp/nix-install.sh install linux --init none --no-confirm
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          nix-daemon >/tmp/nix-daemon.log 2>&1 &
+          for _ in $(seq 1 120); do
+            [ -S /nix/var/nix/daemon-socket/socket ] && break
+            sleep 0.5
+          done
+          if [ ! -S /nix/var/nix/daemon-socket/socket ]; then
+            cat /tmp/nix-daemon.log
+            exit 1
+          fi
+          nix --version
 
       - name: Build direct foreign library
-        run: make tree-sitter-ffi
+        run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          nix develop --no-update-lock-file --command make tree-sitter-ffi
 
-      - name: Build packaged grammar fixtures
-        run: make tree-sitter-test-grammars
+      - name: Link packaged grammar fixtures
+        run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          mkdir -p test/fixtures/tree-sitter
+          nix develop --no-update-lock-file --command bash -c '
+            extension="$(swipl -q -g "current_prolog_flag(shared_object_extension,E),write(E),halt.")"
+            for language in c lua query python javascript markdown json org common_lisp nim; do
+              ln -sfn "$RLM_TREE_SITTER_GRAMMAR_DIR/$language" "test/fixtures/tree-sitter/$language.$extension"
+            done
+            ln -sfn "$RLM_TREE_SITTER_INCOMPATIBLE_ABI_FIXTURE/rlm-incompatible-abi.so" "test/fixtures/tree-sitter/c-incompatible.$extension"
+          '
 
       - name: Run direct FFI tests
-        run: swipl -q -s test/run_tree_sitter_tests.pl
+        run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          nix develop --no-update-lock-file --command swipl -q -s test/run_tree_sitter_tests.pl
 
       - name: Check whitespace errors
         run: git diff --check HEAD^ HEAD

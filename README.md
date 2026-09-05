@@ -255,6 +255,25 @@ The high-level RLM execution loop: task-first root model decisions, bounded cont
 
 Explicit graph state, fixed/conditional edges, reducers, bounded loops, subgraphs, checkpoints, replay, interrupts, event streaming, and cancellation propagation.
 
+### `rlm_project_source` and `rlm_project_syntax`
+
+Project/File/Language identity, inert grammar registration, explicit native
+activation, and bounded versioned CST observations for code and structured
+non-code project files. Materialized node identities are closed Prolog data;
+source ranges, grammar identity, parse generation, stale/partial state, and
+UTF-8 checked text reads remain inspectable without retaining native trees.
+See [the source registry](docs/project-source-registry.md) and
+[project syntax observations](docs/project-syntax.md).
+
+### `rlm_project_query`
+
+Bounded Tree-sitter query packs and grouped capture observations below the
+semantic project-KB boundary. Query source remains data, captures use closed
+syntax-node identities with grammar/pack/parse provenance, and extraction
+observations can persist under the trusted project-local `.kb` tree. This layer
+does not select expert tools or alter direct/symbolic execution. See
+[project query observations](docs/project-query.md).
+
 ### `rlm_agent`
 
 Logical agents using SWI engines/state machines, bounded workers, typed mailboxes, supervision, cancellation, capability inheritance, recursive subagents, structured outcomes, and durable artifact access.

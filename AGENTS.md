@@ -69,6 +69,22 @@ Creating and using:
 Exception: quick read-only questions about the current checkout state do not
 require a worktree.
 
+## Editor handoff
+
+When a task produces or references files for the operator to review, open them in the running Emacs instead of printing their contents:
+
+```sh
+emacsclient -n <file>...
+```
+
+Always hand off in distraction-free form: enable `writeroom-mode` and disable line markers in the opened buffers:
+
+```sh
+emacsclient -n --eval '(progn (writeroom-mode 1) (display-line-numbers-mode -1))'
+```
+
+The `--eval` runs in the buffer shown by the preceding `emacsclient -n <file>` call, so repeat the pair per file when opening several.
+
 ## Core architectural invariants
 
 Preserve these unless the task explicitly changes them with tests and design evidence:

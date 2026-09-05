@@ -54,6 +54,7 @@ corpus_entry('rlm_chain_test.pl', include(rlm_chain)).
 corpus_entry('rlm_chain_app_attribution_test.pl',
              include(rlm_chain_app_attribution)).
 corpus_entry('rlm_chain_runtime_test.pl', include(rlm_chain_runtime)).
+corpus_entry('rlm_completion_stream_test.pl', include(rlm_completion_stream)).
 corpus_entry('rlm_chain_message_metadata_test.pl',
              include(rlm_chain_message_metadata)).
 corpus_entry('rlm_chain_control_test.pl', include(rlm_chain_control)).
@@ -163,7 +164,11 @@ corpus_entry('rlm_spec_lang_test.pl', include(rlm_spec_lang)).
 corpus_entry('rlm_spec_workflow_test.pl', include(rlm_spec_workflow)).
 corpus_entry('rlm_spec_strategy_test.pl', include(rlm_spec_strategy)).
 corpus_entry('rlm_project_source_test.pl', include(rlm_project_source)).
+corpus_entry('rlm_project_grammar_pack_test.pl',
+              include(rlm_project_grammar_pack)).
 corpus_entry('rlm_research_approval_test.pl', include(research_approval)).
+corpus_entry('rlm_plan_graph_test.pl', include(rlm_plan_graph)).
+corpus_entry('rlm_plan_native_ops_test.pl', include(rlm_plan_native_ops)).
 corpus_entry('prolog_agent_ui_v1_test.pl', include(prolog_agent_ui_v1)).
 corpus_entry('prolog_agent_ui_fixture_command_codec_test.pl',
              include(prolog_agent_ui_fixture_command_codec)).
@@ -171,8 +176,20 @@ corpus_entry('prolog_agent_ui_fixture_command_codec_test.pl',
 corpus_entry('rlm_tree_sitter_test.pl',
              exclude(native_ffi, 'runs through the Tree-sitter gate')).
 corpus_entry('rlm_project_source_native_test.pl',
-             exclude(native_ffi, 'runs through the native source gate')).
+              exclude(native_ffi, 'runs through the native source gate')).
+corpus_entry('rlm_project_syntax_test.pl',
+               exclude(native_ffi, 'runs through the native source gate')).
+corpus_entry('rlm_tree_sitter_query_test.pl',
+             exclude(native_ffi, 'runs through the Tree-sitter gate')).
+corpus_entry('rlm_project_query_test.pl',
+             exclude(native_ffi, 'runs through the Tree-sitter gate')).
+corpus_entry('rlm_project_query_restart_test.pl',
+             exclude(native_ffi, 'runs through the Tree-sitter gate')).
+corpus_entry('rlm_tree_sitter_cancellation_test.pl',
+              exclude(native_ffi, 'runs through the Tree-sitter gate')).
 corpus_entry('live_chain_stream_openrouter_test.pl',
+             exclude(live_provider, 'requires the credentialed live gate')).
+corpus_entry('live_completion_stream_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).
 corpus_entry('live_plan_openrouter_test.pl',
              exclude(live_provider, 'requires the credentialed live gate')).
