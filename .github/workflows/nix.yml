@@ -20,10 +20,16 @@ jobs:
       # (same constraint as tree-sitter.yml): DeterminateSystems/nix-installer-
       # action hangs on its systemd init there, so install with --init none
       # and spawn the daemon directly.
+      # Bootstrap is pinned: the installer script is fetched from an immutable
+      # tag URL and verified against a known sha256 before execution.
       - name: Install Nix and start daemon
+        env:
+          NIX_INSTALLER_VERSION: v3.22.3
+          NIX_INSTALLER_SHA256: 7178e5ed86c64a86f48983ac459219d78df11a31cc03145f6f81ce058d0fd4f0
         run: |
           set -euo pipefail
-          curl -sSfL https://install.determinate.systems/nix -o /tmp/nix-install.sh
+          curl -sSfL "https://install.determinate.systems/nix/tag/${NIX_INSTALLER_VERSION}" -o /tmp/nix-install.sh
+          echo "${NIX_INSTALLER_SHA256}  /tmp/nix-install.sh" | sha256sum -c -
           sh /tmp/nix-install.sh install linux --init none --no-confirm
           . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
           nix-daemon >/tmp/nix-daemon.log 2>&1 &
