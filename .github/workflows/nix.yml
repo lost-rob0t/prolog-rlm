@@ -16,10 +16,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      # data.forgejo.org does not mirror DeterminateSystems/nix-installer-action;
-      # reference the upstream action by full URL so the runner clones it
-      # directly from GitHub instead of the Forgejo action mirror.
-      - uses: https://github.com/DeterminateSystems/nix-installer-action@v20
+      # Forgejo runner jobs execute in Docker containers without systemd
+      # (same constraint as tree-sitter.yml): DeterminateSystems/nix-installer-
+      # action hangs on its systemd init there, so install with --init none
+      # and spawn the daemon directly.
+      - name: Install Nix and start daemon
+        run: |
+          set -euo pipefail
+          curl -sSfL https://install.determinate.systems/nix -o /tmp/nix-install.sh
+          sh /tmp/nix-install.sh install linux --init none --no-confirm
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          nix-daemon >/tmp/nix-daemon.log 2>&1 &
+          for _ in $(seq 1 120); do
+            [ -S /nix/var/nix/daemon-socket/socket ] && break
+            sleep 0.5
+          done
+          if [ ! -S /nix/var/nix/daemon-socket/socket ]; then
+            cat /tmp/nix-daemon.log
+            exit 1
+          fi
       - name: Check flake outputs
         run: nix flake check --no-update-lock-file --print-build-logs
       - name: Build default package
