@@ -18,6 +18,10 @@ pipeline_consumer(381, retrieval_evidence_expert, depends_on([380])).
 semantic_layer(98, 'rlm_project_semantic', facts, ['normalize', 'knowledge_state', 'definitions', 'references', 'calls', 'imports', 'exports', 'contains', 'call_reachable', 'file_dependencies', 'resolve', 'symbol_index']).
 semantic_layer_adapter_protocol('capture names: @relation[.kind] principal + @relation.role details paired by native order inside one grouped match').
 semantic_layer_persistence('.kb/project-semantic per project identity; currentness never journaled; the #97 extraction journal stays authoritative').
+% One semantic_publication/3 row per normalize publication (atomic append);
+% observation ids restart at 1 per publication so re-publication re-journals
+% an identical row and replay is idempotent (see debugging-recipes.pl).
+semantic_layer_publication_row(one_atomic_row_per_extraction_publication).
 
 % Semantic pack conventions for future language adapters:
 % pack sources stay inert; predicate-bearing query patterns are rejected by

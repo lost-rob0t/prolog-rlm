@@ -76,7 +76,6 @@ under the already-trusted project KB root, mirroring #97.
 :- dynamic semantic_observation/4.
 :- dynamic semantic_current/3.
 :- dynamic semantic_persistence/3.
-:- dynamic semantic_sequence/3.
 
 rlm_project_semantic_ready.
 
@@ -155,7 +154,10 @@ project_semantic_normalize_(Registry, File, Source0, Options0, Outcome) :-
                                 FileRecord.project,
                                 ProjectMeta,
                                 Options.kb_root),
-    semantic_sequence_base(Id, Extraction, SequenceBase),
+    % Observation identity is deterministic per extraction: one publication
+    % of one extraction always yields the same ids, so a re-normalized
+    % extraction re-journals an identical publication row instead of
+    % accumulating divergent rows that hydration would replay as duplicates.
     normalize_all_packs(Registry,
                         SemanticPacks,
                         ExtractionRecord,
@@ -167,7 +169,7 @@ project_semantic_normalize_(Registry, File, Source0, Options0, Outcome) :-
                         Skipped),
     assign_observation_ids(Blueprints,
                            Extraction,
-                           SequenceBase,
+                           1,
                            FileRecord.project,
                            Observations),
     length(Observations, ObservationCount),
@@ -202,7 +204,8 @@ project_semantic_normalize_(Registry, File, Source0, Options0, Outcome) :-
     Outcome = ok(Summary).
 
 %% One pack contributes its observation blueprints, its summary status, and
-%% its skip reasons; statuses stay aligned with the pack order.
+%% its skip reasons; statuses stay aligned with the pack order.  Every step
+%% is deterministic: one invocation, one solution.
 normalize_all_packs(_, [], _, _, _, _, [], [], []).
 normalize_all_packs(Registry,
                     [Pack|Packs],
@@ -233,7 +236,8 @@ normalize_all_packs(Registry,
                         Statuses,
                         RestSkipped),
     append(PackObservations, RestObservations, Blueprints),
-    append(PackSkipped, RestSkipped, Skipped).
+    append(PackSkipped, RestSkipped, Skipped),
+    !.
 
 normalize_pack(Registry,
                Pack,
@@ -260,9 +264,10 @@ normalize_pack(Registry,
                          Skipped)
     ;   Observations = [],
         Skipped = []
-    ).
+    ),
+    !.
 
-match_blueprints([], _, _, _, _, _, _, []).
+match_blueprints([], _, _, _, _, _, [], []).
 match_blueprints([Match|Matches],
                  Pack,
                  ExtractionRecord,
@@ -294,7 +299,8 @@ match_blueprints([Match|Matches],
    reason).  Capture pairing: the first principal capture of a relation
    pairs with the first name/callee/target/alias/keyword detail of the same
    relation inside the match; capture order is the native order kept by
-   #97. */
+   #97.  The relation dispatch is total: exactly one blueprint outcome per
+   principal, no backtracking. */
 match_blueprint(Match,
                 Pack,
                 ExtractionRecord,
@@ -329,25 +335,26 @@ match_blueprint(Match,
                        Source,
                        Blueprint,
                        Skipped)
-    ).
+    ),
+    !.
 
 classified_captures([], _, _, []).
 classified_captures([Capture|Captures],
                     Relation,
                     Want,
-                    [Capture|Classified]) :-
-    capture_class(Capture, Relation, Class),
-    class_matches(Want, Class),
-    !,
-    classified_captures(Captures, Relation, Want, Classified).
-classified_captures([_|Captures], Relation, Want, Classified) :-
-    classified_captures(Captures, Relation, Want, Classified).
+                    Classified) :-
+    (   capture_class(Capture, Relation, Class),
+        class_matches(Want, Class)
+    ->  classified_captures(Captures, Relation, Want, Classified0),
+        Classified = [Capture|Classified0]
+    ;   classified_captures(Captures, Relation, Want, Classified)
+    ).
 
 class_matches(principal, principal).
 class_matches(principal, principal_kind(_)).
 class_matches(detail(Role), detail(Role)).
 
-zip_principals([], _, _, _, _, _, _, _, _, _, _, _, [], []).
+zip_principals([], _, _, _, _, _, _, _, _, _, _, _, [], []) :- !.
 zip_principals([Principal|Principals],
                Names,
                Keywords,
@@ -395,7 +402,8 @@ zip_principals([Principal|Principals],
                    RestBlueprints,
                    RestSkipped),
     append(PackBlueprints, RestBlueprints, Blueprints),
-    append(PackSkipped, RestSkipped, Skipped).
+    append(PackSkipped, RestSkipped, Skipped),
+    !.
 
 relation_for_purpose(definitions, definition).
 relation_for_purpose(references, reference).
@@ -732,35 +740,24 @@ publish_semantic(Registry, Id, Project, File, Extraction, Observations) :-
                  require_current_extraction(Registry, Id, File, Extraction),
                  retractall(semantic_observation(Id, File, _, _)),
                  retractall(semantic_current(Id, File, _)),
-                 publish_rows(Project, Extraction, Observations, 1, FinalSeq),
+                 % One atomic journal row for the whole publication: a crash
+                 % can never leave a partially journaled extraction behind.
+                 (   semantic_persistence(Id, Project, Path)
+                 ->  project_semantic_persist_publish(Path,
+                                                      Project,
+                                                      Extraction,
+                                                      Observations)
+                 ;   throw(project_semantic_fault(journal_unattached(Project)))
+                 ),
                  forall(member(Observation, Observations),
                         assertz(semantic_observation(Id,
                                                      File,
                                                      Extraction,
                                                      Observation))),
-                 retractall(semantic_sequence(Id, Extraction, _)),
-                 assertz(semantic_sequence(Id, Extraction, FinalSeq)),
                  assertz(semantic_current(Id, File, Extraction))
                )).
 
-publish_rows(_, _, [], Seq, LastSeq) :-
-    !,
-    LastSeq is Seq - 1.
-publish_rows(Project, Extraction, [Record|Records], Seq, LastSeq) :-
-    project_semantic_persist_append(Project, Extraction, Seq, Record),
-    NextSeq is Seq + 1,
-    publish_rows(Project, Extraction, Records, NextSeq, LastSeq).
-
 /* Publication currentness gate ------------------------------------------- */
-
-%% Observation sequence continuation: a re-normalized extraction keeps its
-%% journal sequence monotonic so restarted processes cannot reuse an
-%% observation identity that is already durable.
-semantic_sequence_base(Id, Extraction, Base) :-
-    (   semantic_sequence(Id, Extraction, Max)
-    ->  Base is Max + 1
-    ;   Base = 1
-    ).
 
 require_current_extraction(Registry, _Id, File, Extraction) :-
     project_query_current_extraction(Registry, File, Extraction),
@@ -832,16 +829,24 @@ semantic_read_gate(Registry, File, Extraction) :-
     project_query_current_extraction(Registry, File, Extraction),
     !.
 
+%% Every public read hydrates the project journal first (best effort: an
+%% epistemic-only project without a KB root stays memory-only instead of
+%% failing the read).
 ensure_semantic_reads(Registry, File) :-
     project_source_file(Registry, File, FileRecord),
-    project_source_project(Registry, FileRecord.project, ProjectMeta),
-    ensure_semantic_persistence(Registry,
-                                FileRecord.project,
-                                ProjectMeta,
-                                none).
+    ensure_semantic_project(Registry, FileRecord.project).
+
+ensure_semantic_project(Registry, Project) :-
+    (   project_source_project(Registry, Project, ProjectMeta)
+    ->  catch(ensure_semantic_persistence(Registry, Project, ProjectMeta, none),
+              project_semantic_fault(kb_unwritable(_)),
+              true)
+    ;   true
+    ).
 
 project_semantic_knowledge_state(Registry, File, State) :-
     registry_id(Registry, Id),
+    ensure_semantic_reads(Registry, File),
     (   semantic_current(Id, File, Extraction)
     ->  (   project_query_current_extraction(Registry, File, Extraction)
         ->  State = current
@@ -950,6 +955,7 @@ reach_path(Edges, Current, Target, Visited, Depth, [Step|Path]) :-
 project_semantic_file_dependencies(Registry, Project, FromFile, ToFile,
                                    Support) :-
     registry_id(Registry, Id),
+    ensure_semantic_project(Registry, Project),
     project_source_project_file(Registry, Project, FromFile),
     semantic_current(Id, FromFile, Extraction),
     project_query_current_extraction(Registry, FromFile, Extraction),
@@ -975,6 +981,7 @@ project_semantic_resolve(Registry, Project, Request, Outcome) :-
 project_semantic_resolve_(Registry, Project, Request, Outcome) :-
     registry_id(Registry, Id),
     project_source_project(Registry, Project, _),
+    ensure_semantic_project(Registry, Project),
     resolve_request(Registry, Id, Project, Request, Outcome).
 
 resolve_request(Registry, Id, Project, Request, Outcome) :-
@@ -992,7 +999,25 @@ resolve_request(Registry, Id, Project, Request, Outcome) :-
     ).
 
 resolve_definitions(Registry, Id, Project, Ref, Outcome) :-
-    require_project_knowledge(Registry, Id, Project),
+    unindexed_project_files(Registry, Id, Project, Missing),
+    (   Missing == []
+    ->  resolve_definitions_complete(Registry, Id, Project, Ref, Outcome)
+    ;   resolve_definitions_complete(Registry, Id, Project, Ref, Outcome0),
+        resolve_with_incompleteness(Outcome0, missing(Missing), Outcome)
+    ).
+
+%% "We have not looked" is never collapsed into "does not exist": when any
+%% registered project file has no current semantic knowledge, a name that is
+%% absent or ambiguous in the indexed part is reported incomplete.
+resolve_with_incompleteness(ok(unresolved), missing(Files), Outcome) :-
+    !,
+    Outcome = ok(incomplete(unresolved, missing(Files))).
+resolve_with_incompleteness(ok(ambiguous(Symbols)), missing(Files), Outcome) :-
+    !,
+    Outcome = ok(incomplete(ambiguous(Symbols), missing(Files))).
+resolve_with_incompleteness(Outcome, _, Outcome).
+
+resolve_definitions_complete(Registry, Id, Project, Ref, Outcome) :-
     get_dict(name, Ref, Name),
     atom(Name),
     Name \== '',
@@ -1021,6 +1046,21 @@ resolve_definitions(Registry, Id, Project, Ref, Outcome) :-
     ->  Outcome = ok(resolved(Symbol))
     ;   Outcome = ok(ambiguous(Symbols))
     ).
+
+%% Registered project files that hold no current semantic knowledge.  These
+%% are files nobody has normalized yet (or whose knowledge went stale), not
+%% evidence that a symbol does not exist.
+unindexed_project_files(Registry, Id, Project, Missing) :-
+    findall(File,
+            (   project_source_project_file(Registry, Project, File),
+                \+ semantic_file_current(Registry, Id, File)
+            ),
+            Missing0),
+    sort(Missing0, Missing).
+
+semantic_file_current(Registry, Id, File) :-
+    semantic_current(Id, File, Extraction),
+    project_query_current_extraction(Registry, File, Extraction).
 
 resolve_import(Registry, Id, Project, Import, Outcome) :-
     require_project_knowledge(Registry, Id, Project),
@@ -1065,11 +1105,13 @@ project_semantic_symbol_index(Registry, Project, Outcome) :-
 project_semantic_symbol_index_(Registry, Project, Outcome) :-
     registry_id(Registry, Id),
     project_source_project(Registry, Project, _),
+    ensure_semantic_project(Registry, Project),
     findall(File,
             project_source_project_file(Registry, Project, File),
             Files0),
     sort(Files0, Files),
     index_stale_files(Registry, Id, Files, Stale),
+    index_unindexed_files(Registry, Id, Files, Unindexed),
     findall(symbol_definition(Ref, Span, Provenance),
             (   member(File, Files),
                 index_file_definition(Registry, Id, File, Ref, Span,
@@ -1078,9 +1120,10 @@ project_semantic_symbol_index_(Registry, Project, Outcome) :-
             Definitions),
     findall(Kind, symbol_kind(Kind), Kinds0),
     sort(Kinds0, Kinds),
-    (   Stale == []
+    (   Stale == [],
+        Unindexed == []
     ->  Coherence = complete
-    ;   Coherence = partial(Stale)
+    ;   Coherence = partial(stale(Stale), unindexed(Unindexed))
     ),
     Index = symbol_index{project:Project,
                          kinds:Kinds,
@@ -1096,6 +1139,16 @@ index_stale_files(Registry, Id, Files, Stale) :-
             ),
             Stale0),
     sort(Stale0, Stale).
+
+%% Registered project files that have never been semantically indexed are
+%% reported, never silently treated as complete knowledge.
+index_unindexed_files(Registry, Id, Files, Unindexed) :-
+    findall(File,
+            (   member(File, Files),
+                \+ semantic_file_current(Registry, Id, File)
+            ),
+            Unindexed0),
+    sort(Unindexed0, Unindexed).
 
 index_file_definition(Registry, Id, File, Ref, Span, Provenance) :-
     semantic_current(Id, File, Extraction),
@@ -1156,23 +1209,23 @@ project_filename(Project, FileName) :-
     atom_concat(Prefix, '.pl', FileName).
 
 hydrate_semantic(Registry, Id, Project) :-
-    project_semantic_persist_snapshot(Project, Rows),
+    (   semantic_persistence(Id, Project, Path)
+    ->  project_semantic_persist_snapshot(Path, Project, Rows)
+    ;   Rows = []
+    ),
     hydrate_rows(Id, Rows),
     hydrate_current(Registry, Id, Project).
 
+%% Journal rows are whole publications: Extraction-Records pairs, one row
+%% per normalize publication, sorted and duplicate-collapsed by the adapter.
 hydrate_rows(_, []).
-hydrate_rows(Id, [Extraction-Seq-Record|Rows]) :-
+hydrate_rows(Id, [Extraction-Records|Rows]) :-
     Extraction = query_extraction(File, _),
-    (   semantic_observation(Id, File, Extraction, Record)
-    ->  true
-    ;   assertz(semantic_observation(Id, File, Extraction, Record))
-    ),
-    (   semantic_sequence(Id, Extraction, Max),
-        Max >= Seq
-    ->  true
-    ;   retractall(semantic_sequence(Id, Extraction, _)),
-        assertz(semantic_sequence(Id, Extraction, Seq))
-    ),
+    forall(member(Record, Records),
+           (   semantic_observation(Id, File, Extraction, Record)
+           ->  true
+           ;   assertz(semantic_observation(Id, File, Extraction, Record))
+           )),
     hydrate_rows(Id, Rows).
 
 %% Journal rows for superseded extractions stay historical: only an
@@ -1205,10 +1258,9 @@ project_semantic_registry_clear(Registry) :-
     with_mutex(rlm_project_semantic,
                (   retractall(semantic_observation(Id, _, _, _)),
                    retractall(semantic_current(Id, _, _)),
-                   retractall(semantic_sequence(Id, _, _)),
-                   (   semantic_persistence(Id, _, _)
-                   ->  retractall(semantic_persistence(Id, _, _)),
-                       project_semantic_persist_close
+                   retractall(semantic_persistence(Id, _, _)),
+                   (   \+ semantic_persistence(_, _, _)
+                   ->  project_semantic_persist_close
                    ;   true
                    )
                )).

@@ -5,7 +5,8 @@
             project_semantic_pack_activate/3,
             project_semantic_pack_source/3,
             project_semantic_standard_purposes/1,
-            language_analysis_capability/2
+            language_analysis_capability/2,
+            project_semantic_adapter_register/3
           ]).
 
 /** <module> Inert standard semantic adapter packs
@@ -39,9 +40,18 @@ declaration from issue #98: a purpose without a capability row reports
 :- use_module(rlm_project_query).
 :- use_module(rlm_project_source).
 
+:- dynamic semantic_adapter_entry_/3.
+
 rlm_project_semantic_pack_ready.
 
 /* Standard adapter table ---------------------------------------------- */
+
+%% Host-registered adapters shadow the standard table per language: a
+%% language with registered entries never falls through to the standard
+%% clauses, so a host can replace pack data for a standard language too.
+project_semantic_pack_source(Language, Purpose, Source) :-
+    semantic_adapter_entry_(Language, Purpose, Source),
+    !.
 
 % Python: definitions, references (attribute usage), calls, imports.
 project_semantic_pack_source(python, definitions,
@@ -76,7 +86,62 @@ project_semantic_pack_source(common_lisp, definitions,
 project_semantic_pack_source(common_lisp, calls,
                              "(list_lit . \"(\" (sym_lit) @call.callee (_)) @call").
 
+%% Host-registered adapters ------------------------------------------------
+%% Additional languages (e.g. a host-registered tree-sitter-typescript
+%% grammar mapped onto the `typescript` language identity) flow through the
+%% same protocol via project_semantic_adapter_register/3.  This is a
+%% trusted-host inert-data operation: it declares capabilities and pack
+%% sources and never loads a grammar, activates a pack, or grants any
+%% authority.  Registered adapters shadow the standard table per language;
+%% the standard languages keep their declarations.
+
+project_semantic_adapter_register(Language0, PackSources0, Outcome) :-
+    catch(project_semantic_adapter_register_(Language0,
+                                             PackSources0,
+                                             Outcome),
+          Exception,
+          semantic_pack_exception(adapter_register, Exception, Outcome)).
+
+project_semantic_adapter_register_(Language0, PackSources0, Outcome) :-
+    normalize_language(Language0, Language),
+    require_pack_source_list(PackSources0, PackSources),
+    retractall(semantic_adapter_entry_(Language, _, _)),
+    forall(member(Purpose-Source, PackSources),
+           assertz(semantic_adapter_entry_(Language, Purpose, Source))),
+    Outcome = ok(registered(Language)).
+
+require_pack_source_list(PackSources0, PackSources) :-
+    (   is_list(PackSources0),
+        PackSources0 \== []
+    ->  maplist(validate_pack_source, PackSources0),
+        findall(Purpose, member(Purpose-_, PackSources0), Purposes0),
+        sort(Purposes0, UniquePurposes),
+        length(UniquePurposes, PurposeCount),
+        length(PackSources0, SourceCount),
+        (   SourceCount == PurposeCount
+        ->  sort(PackSources0, PackSources)
+        ;   throw(project_semantic_fault(invalid_pack_source(duplicate)))
+        )
+    ;   throw(project_semantic_fault(invalid_pack_source(PackSources0)))
+    ).
+
+validate_pack_source(Purpose-Source) :-
+    semantic_purpose_valid(Purpose),
+    (   ( string(Source) ; ( atom(Source), Source \== '' ) )
+    ->  true
+    ;   throw(project_semantic_fault(invalid_pack_source(Purpose)))
+    ).
+validate_pack_source(Other) :-
+    throw(project_semantic_fault(invalid_pack_source(Other))).
+
+semantic_purpose_valid(Purpose) :-
+    memberchk(Purpose,
+              [definitions, references, calls, imports, exports]).
+
 /* Capabilities ---------------------------------------------------------- */
+
+language_analysis_capability(Language, Purpose) :-
+    semantic_adapter_entry_(Language, Purpose, _).
 
 language_analysis_capability(python, definitions).
 language_analysis_capability(python, references).

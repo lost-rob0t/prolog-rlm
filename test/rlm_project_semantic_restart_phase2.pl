@@ -35,7 +35,10 @@ run(Registry, Root, Mode) :-
                                    provenance:_{origin:fixture}},
                                  ok(File)),
     (   Mode == current
-    ->  findall(Name,
+    ->  % knowledge_state itself hydrates: assert currentness before any
+        % other read has touched the registry.
+        project_semantic_knowledge_state(Registry, File, current),
+        findall(Name,
                 ( project_semantic_definitions(Registry, File, none, Definition),
                   Name = Definition.name
                 ),
@@ -52,8 +55,7 @@ run(Registry, Root, Mode) :-
         (   Kinds == [function, function]
         ->  true
         ;   throw(error(semantic_fixture_kinds(Kinds), _))
-        ),
-        project_semantic_knowledge_state(Registry, File, current)
+        )
     ;   Mode == stale
     ->  project_semantic_knowledge_state(Registry, File, none),
         findall(_, project_semantic_definitions(Registry, File, none, _), Rows),

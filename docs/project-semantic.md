@@ -161,9 +161,15 @@ restart cannot resurrect superseded semantic facts as current.
 The journal mirrors the #97 project-query adapter: SWI `library(persistency)`
 with `sync(close)` (the strongest process-crash boundary SWI-Prolog 10.0.2
 supports), one journal per project identity, and hydration on first
-registry use. Derived relations are recomputed on demand and are never
-persisted. Raw captures stay in the #97 journal; there is no duplicate
-source index.
+registry use. Each normalize publication is journaled as a single atomic
+`semantic_publication/3` row — a crash can never leave a partially journaled
+extraction behind — and publish/snapshot operations self-attach the target
+project's journal, so several projects sharing one process never cross-write.
+Observation identities are deterministic per extraction (sequence restarting
+at 1 per publication), so re-normalizing an extraction re-journals an
+identical row and hydration replay is idempotent. Derived relations are
+recomputed on demand and are never persisted. Raw captures stay in the #97
+journal; there is no duplicate source index.
 
 ## Runtime layering
 

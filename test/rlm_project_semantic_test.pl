@@ -314,31 +314,59 @@ test(projects_remain_isolated, [nondet]) :-
     with_semantic_registry(projects_remain_isolated_).
 
 projects_remain_isolated_(Registry, Root) :-
-    register_project(Registry, Root, Project),
+    % Two DISTINCT projects, each with its own root and journal.
+    project_source_project_register(Registry,
+                                    project(isolated_a),
+                                    _{origin:test, project_root:Root},
+                                    ok(project(ProjectA))),
+    directory_file_path(Root, 'other', OtherRoot0),
+    make_directory_path(OtherRoot0),
+    project_source_project_register(Registry,
+                                    project(isolated_other),
+                                    _{origin:test, project_root:OtherRoot0},
+                                    ok(project(ProjectB))),
+    project_source_file_register(Registry, ProjectA, _{id:alpha, path:"src/alpha.py", provenance:_{origin:test}}, ok(AlphaFile)),
+    project_source_file_register(Registry, ProjectA, _{id:alpha2, path:"src/dup.py", provenance:_{origin:test}}, ok(Alpha2File)),
+    project_source_file_register(Registry, ProjectB, _{id:beta, path:"src/beta.py", provenance:_{origin:test}}, ok(BetaFile)),
     activate_fixture(Registry, python),
     project_semantic_pack_register(Registry, python, ok(_)),
     project_semantic_pack_activate(Registry, python, ok(_)),
-    register_file(Registry, Project, alpha, "src/alpha.py", AlphaFile),
-    register_file(Registry, Project, beta, "src/beta.py", BetaFile),
-    AlphaSource = "def helper(n):\n    return n\n",
-    BetaSource = "value = 1\n",
-    project_query_extract(Registry, AlphaFile, AlphaSource, [definitions], [kb_root(none)], ok(_)),
-    project_query_extract(Registry, BetaFile, BetaSource, [definitions], [kb_root(none)], ok(_)),
-    project_semantic_normalize(Registry, AlphaFile, AlphaSource, [kb_root(none)], ok(_)),
-    project_semantic_normalize(Registry, BetaFile, BetaSource, [kb_root(none)], ok(_)),
+    A = "def helper(n):\n    return n\n",
+    B = "def helper(n):\n    return n\n",
+    project_query_extract(Registry, AlphaFile, A, [definitions], [kb_root(none)], ok(_)),
+    project_query_extract(Registry, Alpha2File, A, [definitions], [kb_root(none)], ok(_)),
+    project_query_extract(Registry, BetaFile, B, [definitions], [kb_root(none)], ok(_)),
+    project_semantic_normalize(Registry, AlphaFile, A, [kb_root(none)], ok(_)),
+    project_semantic_normalize(Registry, Alpha2File, A, [kb_root(none)], ok(_)),
+    % Normalizing the OTHER project switches the attached journal; project A's
+    % journal must not absorb B's observations.
+    project_semantic_normalize(Registry, BetaFile, B, [kb_root(none)], ok(_)),
+    % Re-publish into A's journal after the switch.
+    project_semantic_normalize(Registry, AlphaFile, A, [kb_root(none)], ok(_)),
     findall(_, project_semantic_definitions(Registry, AlphaFile, none, _), AlphaDefs),
     assertion(length(AlphaDefs, 1)),
     findall(_, project_semantic_definitions(Registry, BetaFile, none, _), BetaDefs),
-    assertion(BetaDefs == []),
-    project_semantic_resolve(Registry,
-                             Project,
-                             symbol_ref{name:helper, kind:function},
-                             ok(resolved(OnlySymbol))),
-    assertion(OnlySymbol = project_symbol(Project,
-                                          helper,
-                                          function,
-                                          semantic_observation(query_extraction(AlphaFile, _),
-                                                               _))).
+    assertion(length(BetaDefs, 1)),
+    % Ambiguity is scoped per project: A has two helper definitions, B one.
+    project_semantic_resolve(Registry, ProjectA, symbol_ref{name:helper, kind:function}, ok(ambiguous(ASymbols))),
+    assertion(length(ASymbols, 2)),
+    project_semantic_resolve(Registry, ProjectB, symbol_ref{name:helper, kind:function}, ok(resolved(BOnlySymbol))),
+    assertion(BOnlySymbol = project_symbol(ProjectB, helper, function, semantic_observation(query_extraction(BetaFile, _), _))),
+    % The symbol index never mixes projects.
+    project_semantic_symbol_index(Registry, ProjectA, ok(IndexA)),
+    IndexA = symbol_index{project:ProjectA,
+                          kinds:_,
+                          definitions:ADefs2,
+                          coherence:complete},
+    forall(member(symbol_definition(Ref, _, _), ADefs2),
+           Ref.name == helper),
+    project_semantic_symbol_index(Registry, ProjectB, ok(IndexB)),
+    IndexB = symbol_index{project:ProjectB,
+                          kinds:_,
+                          definitions:BDefs2,
+                          coherence:complete},
+    forall(member(symbol_definition(RefB, _, _), BDefs2),
+           RefB.name == helper).
 
 test(stale_extraction_cannot_answer_a_current_query, [nondet]) :-
     with_semantic_registry(stale_extraction_cannot_answer_a_current_query_).
@@ -531,12 +559,126 @@ registry_clear_removes_semantic_state_(Registry, Root) :-
     project_query_extract(Registry, File, Source, [definitions], [kb_root(none)], ok(_)),
     project_semantic_normalize(Registry, File, Source, [kb_root(none)], ok(_)),
     project_semantic_registry_clear(Registry),
-    project_semantic_knowledge_state(Registry, File, none),
-    % The journal is durable by design (#97 symmetry): a read re-attaches and
-    % re-hydrates the knowledge whose extraction is still current.
+    % knowledge_state is a public read: it self-hydrates from the durable
+    % journal, whose extraction is still current in the query layer (#97
+    % symmetry).  The re-hydrated knowledge can only come from the journal:
+    % clear dropped every in-memory semantic fact and the attachment.
+    project_semantic_knowledge_state(Registry, File, current),
     findall(_, project_semantic_definitions(Registry, File, none, _), Rehydrated),
     assertion(Rehydrated \= []),
     project_semantic_knowledge_state(Registry, File, current).
+
+test(partial_index_is_never_reported_complete, [nondet]) :-
+    with_semantic_registry(partial_index_is_never_reported_complete_).
+
+partial_index_is_never_reported_complete_(Registry, Root) :-
+    register_project(Registry, Root, Project),
+    activate_fixture(Registry, python),
+    project_semantic_pack_register(Registry, python, ok(_)),
+    project_semantic_pack_activate(Registry, python, ok(_)),
+    register_file(Registry, Project, alpha, "src/alpha.py", AlphaFile),
+    register_file(Registry, Project, beta, "src/beta.py", BetaFile),
+    AlphaSource = "def answer():\n    return helper(1)\n",
+    project_query_extract(Registry, AlphaFile, AlphaSource, [definitions], [kb_root(none)], ok(_)),
+    project_semantic_normalize(Registry, AlphaFile, AlphaSource, [kb_root(none)], ok(_)),
+    % beta is registered but never indexed: the index reports it.
+    project_semantic_symbol_index(Registry, Project, ok(Index)),
+    Index = symbol_index{project:Project,
+                         kinds:_,
+                         definitions:Definitions,
+                         coherence:partial(stale([]), unindexed([BetaFile]))},
+    assertion(Definitions \= []),
+    % A resolve that cannot be checked against beta is incomplete, not
+    % "does not exist".
+    project_semantic_resolve(Registry, Project, symbol_ref{name:missing, kind:function}, ok(incomplete(unresolved, missing([BetaFile])))),
+    % A definition found in the indexed part is a complete answer.
+    project_semantic_resolve(Registry, Project, symbol_ref{name:answer, kind:function}, ok(resolved(AnswerSymbol))),
+    assertion(AnswerSymbol = project_symbol(Project, answer, function, _)),
+    % After indexing beta, coherence completes and plain unresolved appears.
+    BetaSource = "def helper(n):\n    return n\n",
+    project_query_extract(Registry, BetaFile, BetaSource, [definitions], [kb_root(none)], ok(_)),
+    project_semantic_normalize(Registry, BetaFile, BetaSource, [kb_root(none)], ok(_)),
+    project_semantic_resolve(Registry, Project, symbol_ref{name:nothing, kind:function}, ok(unresolved)),
+    project_semantic_symbol_index(Registry, Project, ok(Index2)),
+    Index2.coherence == complete.
+
+test(ambiguous_resolve_reports_missing_files, [nondet]) :-
+    with_semantic_registry(ambiguous_resolve_reports_missing_).
+
+ambiguous_resolve_reports_missing_(Registry, Root) :-
+    register_project(Registry, Root, Project),
+    activate_fixture(Registry, python),
+    project_semantic_pack_register(Registry, python, ok(_)),
+    project_semantic_pack_activate(Registry, python, ok(_)),
+    register_file(Registry, Project, alpha, "src/alpha.py", AlphaFile),
+    register_file(Registry, Project, beta, "src/beta.py", BetaFile),
+    % alpha carries two same-name definitions so the indexed part alone is
+    % ambiguous; beta is registered but never indexed, so the answer must be
+    % reported incomplete, never as a plain ambiguous.
+    AlphaSource = "def helper():\n    def helper():\n        return 1\n    return helper\n",
+    project_query_extract(Registry, AlphaFile, AlphaSource, [definitions], [kb_root(none)], ok(_)),
+    project_semantic_normalize(Registry, AlphaFile, AlphaSource, [kb_root(none)], ok(_)),
+    project_semantic_resolve(Registry, Project, symbol_ref{name:helper, kind:function}, ok(incomplete(ambiguous(Symbols), missing([BetaFile])))),
+    assertion(length(Symbols, 2)).
+
+test(shadowed_names_stay_ambiguous, [nondet]) :-
+    with_semantic_registry(shadowed_names_stay_ambiguous_).
+
+shadowed_names_stay_ambiguous_(Registry, Root) :-
+    setup_language(Registry, Root, python, "src/shadow.py", File, Project),
+    Source = "def helper():\n    def helper():\n        return 1\n    return helper\n",
+    project_query_extract(Registry, File, Source, [definitions], [kb_root(none)], ok(_)),
+    project_semantic_normalize(Registry, File, Source, [kb_root(none)], ok(Summary)),
+    assertion(Summary.definitions == 2),
+    project_semantic_resolve(Registry, Project, symbol_ref{name:helper, kind:function}, ok(ambiguous(Symbols))),
+    assertion(length(Symbols, 2)),
+    maplist(arg(1), Symbols, SymbolIds),
+    sort(SymbolIds, SortedIds),
+    SymbolIds \== SortedIds -> sort(SymbolIds, _).
+
+test(host_registered_adapter_extends_the_surface, [nondet]) :-
+    with_semantic_registry(host_registered_adapter_extends_the_surface_).
+
+% TypeScript has no grammar in the standard bundle: a host registers the
+% grammar (here the javascript library under the typescript language
+% identity - a host grammar-mapping decision, per the #95 registry design)
+% and the adapter data, after which .ts files flow through the generic path.
+host_registered_adapter_extends_the_surface_(Registry, Root) :-
+    register_project(Registry, Root, Project),
+    activate_fixture(Registry, javascript),
+    fixture_path(javascript, JsGrammar),
+    ts_grammar_register(Registry,
+                        typescript,
+                        _{identity:semantic_fixture(typescript),
+                          library:JsGrammar,
+                          symbol:tree_sitter_javascript,
+                          abi:unknown,
+                          version:"host-ts",
+                          provenance:_{origin:host_adapter_fixture}},
+                        ok(_)),
+    ts_grammar_activate(Registry, typescript, ok(_)),
+    project_semantic_adapter_register(typescript,
+                                      [definitions-"(function_declaration name: (identifier) @definition.name) @definition.function"],
+                                      ok(registered(typescript))),
+    language_analysis_capability(typescript, definitions),
+    \+ language_analysis_capability(typescript, imports),
+    project_semantic_pack_source(typescript, definitions, TsSource),
+    assertion(sub_atom(TsSource, _, _, _, "function_declaration")),
+    project_semantic_pack_register(Registry, typescript, ok(_)),
+    project_semantic_pack_activate(Registry, typescript, ok(_)),
+    register_file(Registry, Project, ts, "src/example.ts", TsFile),
+    project_source_file_language(Registry, TsFile, ok(TsResolution)),
+    TsResolution.language == typescript,
+    Source = "function answer() { return 1; }\n",
+    project_query_extract(Registry, TsFile, Source, [definitions], [kb_root(none)], ok(_)),
+    project_semantic_normalize(Registry, TsFile, Source, [kb_root(none)], ok(Summary)),
+    assertion(Summary.definitions == 1),
+    findall(Name,
+            ( project_semantic_definitions(Registry, TsFile, none, Definition),
+              Name = Definition.name
+            ),
+            Names),
+    assertion(Names == [answer]).
 
 test(no_provider_stack_is_imported_by_the_project_layers, [nondet]) :-
     \+ predicate_property(rlm_project_semantic:_, imported_from(rlm_chain)),
