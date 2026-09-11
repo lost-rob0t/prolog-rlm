@@ -183,6 +183,8 @@ corpus_entry('rlm_tree_sitter_query_test.pl',
              exclude(native_ffi, 'runs through the Tree-sitter gate')).
 corpus_entry('rlm_project_query_test.pl',
              exclude(native_ffi, 'runs through the Tree-sitter gate')).
+corpus_entry('rlm_project_semantic_test.pl',
+             exclude(native_ffi, 'runs through the Tree-sitter gate')).
 corpus_entry('rlm_project_query_restart_test.pl',
              exclude(native_ffi, 'runs through the Tree-sitter gate')).
 corpus_entry('rlm_tree_sitter_cancellation_test.pl',
@@ -216,6 +218,8 @@ corpus_entry('live_openrouter_test.pl',
 corpus_exclusion_policy('support/', support_fixture,
                         'support fixtures are not aggregate tests').
 corpus_exclusion_policy('effect_restart_', restart_phase_fixture,
+                        'restart phases run in fresh-process fixtures').
+corpus_exclusion_policy('rlm_project_semantic_restart_', restart_phase_fixture,
                         'restart phases run in fresh-process fixtures').
 corpus_exclusion_policy('effect_projection_', restart_phase_fixture,
                         'restart phases run in fresh-process fixtures').

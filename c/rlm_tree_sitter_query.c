@@ -620,6 +620,7 @@ static int unify_match(term_t match_term,
     for (index = match->capture_count; index > 0; index--) {
         const TSQueryCapture *item = &match->captures[index - 1];
         if (!PL_put_integer(capture_args + 0, item->index) ||
+            !PL_put_variable(capture_args + 1) ||
             !unify_node(capture_args + 1, cursor->tree, item->node) ||
             !PL_cons_functor_v(capture, functor_query_capture2, capture_args) ||
             !PL_cons_list(head, capture, captures) ||

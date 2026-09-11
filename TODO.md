@@ -22,6 +22,24 @@ The first-class Spec/Verify slice establishes immutable domain-neutral Specs, st
 
 The generic #57 effect substrate is already merged through #78, #83, and #85. That does **not** complete #57: canonical provider/tool/MCP/process adoption remains in #79, and open PR #86 is only the first tool-path slice until it is actually merged.
 
+### Current slice (#98 semantic project knowledge)
+
+#98 lands `rlm_project_semantic`, `rlm_project_semantic_pack`, and
+`rlm_project_semantic_persist`: grouped #97 captures normalize into closed
+definitions/references/calls/imports/exports observations with exact
+source/grammar/pack/parse/node provenance; extraction and bounded resolution
+stay separate with resolved/unresolved/ambiguous/external states; derived
+containment, call-reachability, and file-dependency relations expose their
+supporting observations; freshness reuses #97 currentness (stale extractions
+cannot answer current queries; pack replacement invalidates dependent
+semantic state and the journal cannot resurrect superseded knowledge as
+current after restart). The layer emits the `#288`-compatible symbol index
+over current knowledge only and performs zero model calls. #380
+(`project_knowledge_expert`) is not implemented here; #377 owns the expert
+runtime. The intended sequence after this slice: #99 freshness ->
+#377 expert registry -> #380 project knowledge expert -> #381 retrieval
+expert.
+
 ### Documentation and hygiene work
 
 #67 is closed: registry destruction now clears loader idempotency bookkeeping automatically, including the destroy-race regression.
@@ -96,7 +114,7 @@ GitHub Actions remains the authoritative executable gate. Do not encode a transi
 - [x] Document that project parsers/indexers should build canonical project knowledge once for both planner and verifier consumers.
 - [ ] Integrate #56 result acceptance with the shared evidence/verifier primitives instead of a second verification stack.
 - [ ] Normalize operator requirements into Frozen Spec references carried by TaskIR (#69), rather than duplicating acceptance ownership in TaskIR.
-- [ ] Build the actual project parser/indexer and canonical project-KB adapter consumed by #70/context and semantic assertion providers.
+- [ ] Build the actual project parser/indexer and canonical project-KB adapter consumed by #70/context and semantic assertion providers. *(#94-#98 are substrate: parser mechanics, declarative source registry, versioned CST, grouped query captures, and the `rlm_project_semantic` normalized-facts layer with provenance, bounded resolution, the #288-compatible symbol index, and a durable direct-observation journal; #99 coherent snapshot/freshness work remains before the parser/indexer contract is complete.)*
 - [ ] Finish #71 verified continuation/resume integration around TaskIR, context acquisition, artifacts, and exact Frozen Spec references.
 
 ## P1 — `rlm_agent`

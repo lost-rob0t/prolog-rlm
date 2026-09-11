@@ -157,12 +157,18 @@ native pointer crosses a process boundary.
 The dependency direction is:
 
 ```text
-#97 structural captures
-        -> #98 semantic normalization
+#97 structural captures (this layer)
+        -> #98 semantic normalization (rlm_project_semantic)
         -> #99 freshness/invalidation
         -> canonical project knowledge providers
         -> direct-mode tools and symbolic planner/verifier consumers
 ```
+
+#98 normalizes the grouped matches published here into closed semantic
+observations (definitions, references, calls, imports, exports) with full
+provenance and a durable journal of its own; see `docs/project-semantic.md`.
+Capture names intended for semantic normalization follow the
+`@relation[.kind]` + `@relation.role` protocol documented there.
 
 Direct mode remains the normal agentic model/tool loop with the context
 compiler. Symbolic mode remains the more constrained typed-plan loop in which

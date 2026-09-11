@@ -36,6 +36,8 @@
 :- use_module('../prolog/rlm_project_grammar_pack', []).
 :- use_module('../prolog/rlm_project_syntax', []).
 :- use_module('../prolog/rlm_project_query', []).
+:- use_module('../prolog/rlm_project_semantic_pack', []).
+:- use_module('../prolog/rlm_project_semantic', []).
 :- use_module('../prolog/rlm_runtime_status', []).
 :- use_module('../prolog/prolog_agent_ui_v1', []).
 :- use_module('../prolog/prolog_agent_ui_facade', []).
@@ -60,6 +62,8 @@ main(_) :-
         rlm_project_grammar_pack:rlm_project_grammar_pack_ready,
          rlm_project_syntax:rlm_project_syntax_ready,
          rlm_project_query:rlm_project_query_ready,
+         rlm_project_semantic_pack:rlm_project_semantic_pack_ready,
+         rlm_project_semantic:rlm_project_semantic_ready,
         rlm_runtime_status:rlm_runtime_status_ready,
         prolog_agent_ui_v1:ui_v1_ready,
         prolog_agent_ui_facade:ui_facade_ready
