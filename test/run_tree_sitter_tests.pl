@@ -7,6 +7,7 @@
 :- consult(rlm_tree_sitter_query_test).
 :- consult(rlm_project_query_test).
 :- consult(rlm_project_query_restart_test).
+:- consult(rlm_project_semantic_test).
 :- consult(rlm_tree_sitter_cancellation_test).
 
 main(_) :-
@@ -16,6 +17,7 @@ main(_) :-
                    rlm_tree_sitter_query,
                    rlm_project_query,
                    rlm_project_query_restart,
+                   rlm_project_semantic,
                    rlm_tree_sitter_cancellation])
     ->  halt(0)
     ;   halt(1)

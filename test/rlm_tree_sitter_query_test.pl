@@ -113,6 +113,41 @@ cursor_ranges_and_close_are_structured_(Parser, Language) :-
     ),
     ts_query_close(Query, _).
 
+test(multi_capture_matches_publish_every_capture, [nondet]) :-
+    with_parser(multi_capture_matches_publish_every_capture_).
+
+% Regression: unify_match reused the capture argument slot across capture
+% iterations, so any match with more than one capture failed to unify and
+% was silently dropped. Semantic normalization consumes grouped
+% multi-capture matches (principal + name/callee/target), so every capture
+% of a grouped match must reach Prolog.
+multi_capture_matches_publish_every_capture_(Parser, Language) :-
+    Source = "int answer(void) { return 42; }",
+    QuerySource = "(function_definition declarator: (function_declarator) @head) @function",
+    ts_query_compile(Language, QuerySource, Query),
+    setup_call_cleanup(
+        ts_query_cursor_create(Cursor),
+        ( ts_query_capture_count(Query, 2),
+          parse_root(Parser, Source, Tree, Root),
+          setup_call_cleanup(
+              true,
+              ( ts_query_cursor_exec(Cursor, Query, Root),
+                ts_query_next_match(Cursor,
+                                    ts_match(_, 0,
+                                             [ ts_capture(HeadId, _),
+                                               ts_capture(FunctionId, _) ])),
+                assertion(ts_capture(0) \= ts_capture(1)),
+                assertion(integer(HeadId)),
+                assertion(integer(FunctionId)),
+                \+ ts_query_next_match(Cursor, _)
+              ),
+              ts_tree_close(Tree, _)
+          )
+        ),
+        ts_query_cursor_close(Cursor, _)
+    ),
+    ts_query_close(Query, _).
+
 test(next_capture_preserves_match_group, [nondet]) :-
     with_parser(next_capture_preserves_match_group_).
 

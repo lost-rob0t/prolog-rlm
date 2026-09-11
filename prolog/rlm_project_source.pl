@@ -80,6 +80,7 @@ project_source_registry_destroy(project_source_registry(Id)) :-
                  )),
     clear_project_syntax_safely(project_source_registry(Id)),
     clear_project_query_safely(project_source_registry(Id)),
+    clear_project_semantic_safely(project_source_registry(Id)),
     maplist(close_language_handle_safely, Handles).
 
 project_source_registry_valid(Registry) :-
@@ -1225,6 +1226,14 @@ clear_project_syntax_safely(Registry) :-
 clear_project_query_safely(Registry) :-
     (   current_predicate(rlm_project_query:project_query_registry_clear/1)
     ->  catch(rlm_project_query:project_query_registry_clear(Registry), _, true)
+    ;   true
+    ).
+
+clear_project_semantic_safely(Registry) :-
+    (   current_predicate(rlm_project_semantic:project_semantic_registry_clear/1)
+    ->  catch(rlm_project_semantic:project_semantic_registry_clear(Registry),
+              _,
+              true)
     ;   true
     ).
 

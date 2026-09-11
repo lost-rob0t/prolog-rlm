@@ -274,6 +274,18 @@ observations can persist under the trusted project-local `.kb` tree. This layer
 does not select expert tools or alter direct/symbolic execution. See
 [project query observations](docs/project-query.md).
 
+### `rlm_project_semantic`
+
+Normalized semantic project knowledge (#98): grouped captures become closed
+symbol/definition/reference/call/import/export observations with exact
+source, grammar, pack, parse, and node provenance; bounded resolution keeps
+resolved/unresolved/ambiguous/external states explicit; derived containment,
+call-reachability, and file-dependency relations carry their supporting
+observations. The layer reuses #97 currentness, journals direct observations
+under `.kb/project-semantic/`, and emits the `#288`-compatible symbol index.
+No model calls and no expert registry. See
+[project semantic knowledge](docs/project-semantic.md).
+
 ### `rlm_agent`
 
 Logical agents using SWI engines/state machines, bounded workers, typed mailboxes, supervision, cancellation, capability inheritance, recursive subagents, structured outcomes, and durable artifact access.

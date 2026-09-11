@@ -8,6 +8,8 @@
             project_query_extract_async/6,
             project_query_extract_execute/6,
             project_query_current_extraction/3,
+            project_query_extraction_record/3,
+            project_query_active_packs/3,
             project_query_matches/3,
             project_query_captures/3,
             project_query_node_provenance/3,
@@ -1080,6 +1082,20 @@ project_query_current_extraction(Registry, File, Extraction) :-
                                         none),
         query_current_extraction(Id, File, Extraction)
     ).
+
+%% Read accessor for one extraction record (#98 semantic normalization needs
+%% the exact content/grammar/pack evidence the record carries; the record
+%% itself stays an internal observation with no native handles).
+project_query_extraction_record(Registry, Extraction, Record) :-
+    registry_id(Registry, Id),
+    query_extraction_fact(Id, _File, Extraction, Record).
+
+%% Nondet read of the currently active pack records for one language.
+%% #98 semantic normalization attributes grouped matches to relations
+%% through the active pack identity/hash binding.
+project_query_active_packs(Registry, Language, Pack) :-
+    registry_id(Registry, Id),
+    query_pack_active(Id, Language, _Purpose, Pack).
 
 project_query_matches(Registry, Extraction, Match) :-
     registry_id(Registry, Id),

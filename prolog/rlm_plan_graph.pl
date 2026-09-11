@@ -1439,8 +1439,11 @@ plan_graph_resolve_symbol(Index, Ref, Outcome) :-
                                          detail:symbol_ref(Ref)})
     ).
 
-resolve_supported(symbol_index{kinds:Kinds, definitions:Definitions},
-                  Ref, Outcome) :-
+% The index may carry additional coherence/provenance keys beyond the
+% kinds/definitions the resolver consumes (the #98 index does).
+resolve_supported(Index, Ref, Outcome) :-
+    get_dict(kinds, Index, Kinds),
+    get_dict(definitions, Index, Definitions),
     get_dict(kind, Ref, Kind),
     (   memberchk(Kind, Kinds)
     ->  findall(Span-Prov,
