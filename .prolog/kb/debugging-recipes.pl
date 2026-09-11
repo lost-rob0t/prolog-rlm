@@ -43,3 +43,12 @@ journal_rule(publication_ids_restart_at_one_per_extraction).
 %     and after each hypothesis (bogus pipe exit codes once hid a vacuous
 %     run).
 suite_debug_rule(bisect_with_runner_copies_and_verify_reproduction).
+
+% Forgejo CI runner constraint (verified 2026-09-11 on the #98 PR gates):
+% runner jobs are docker containers without systemd, so DeterminateSystems/
+% nix-installer-action@v20 hangs ~5m27s on its systemd init and the workflow
+% fails with every nix step skipped.  Install nix with --init none and spawn
+% nix-daemon directly (tree-sitter.yml pattern); action-page step summaries
+% are extractable from the run-page HTML even when the actions log API is
+% absent from the server build.
+ci_rule(forgejo_runners_are_systemd_less_use_determinate_script_install).
