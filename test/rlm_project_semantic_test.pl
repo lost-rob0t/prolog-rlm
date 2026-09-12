@@ -750,4 +750,56 @@ run_killed_phase(RelativeScript, Root, Mode) :-
         )
     ).
 
+%% WS3: a host adapter registered for a standard language shadows the whole
+%% standard table for that language. Purposes the host does not supply must
+%% report unsupported, and no standard pack source may leak through.
+test(host_override_shadows_standard_language_completely, [nondet]) :-
+    with_semantic_registry(host_override_shadows_standard_language_completely_).
+
+host_override_shadows_standard_language_completely_(Registry, Root) :-
+    HostDefinitions = "(function_definition name: (identifier) @definition.name) @definition.host_function",
+    project_semantic_adapter_register(python,
+                                      [definitions-HostDefinitions],
+                                      ok(registered(python))),
+    % (1) host Python definitions are used; (2) standard Python definitions
+    % are not used.
+    project_semantic_pack_source(python, definitions, Source),
+    assertion(Source == HostDefinitions),
+    \+ ( project_semantic_pack_source(python, definitions, Standard),
+         Standard \== HostDefinitions ),
+    % (3)-(5) standard calls, imports, and references do not leak through.
+    \+ project_semantic_pack_source(python, calls, _),
+    \+ project_semantic_pack_source(python, imports, _),
+    \+ project_semantic_pack_source(python, references, _),
+    % (6) absent host purposes report unsupported capability.
+    language_analysis_capability(python, definitions),
+    \+ language_analysis_capability(python, calls),
+    \+ language_analysis_capability(python, imports),
+    \+ language_analysis_capability(python, references),
+    \+ language_analysis_capability(python, exports),
+    % Pack registration and activation stay consistent with the shadowed
+    % surface: only the host purpose registers/activates, and the summary
+    % reports the absent purposes as unsupported, not zero matches.
+    project_semantic_pack_register(Registry, python, ok(registered(python))),
+    project_semantic_pack_activate(Registry, python, ok(activated(python))),
+    register_project(Registry, Root, Project),
+    register_file(Registry, Project, main, "src/hosted.py", File),
+    activate_fixture(Registry, python),
+    Source0 = "def answer():\n    return helper(1)\n\ndef helper(n):\n    return n\n",
+    project_query_extract(Registry, File, Source0, [definitions], [kb_root(none)], ok(_)),
+    project_semantic_normalize(Registry, File, Source0, [kb_root(none)], ok(Summary)),
+    member(PurposeStatus, Summary.purposes),
+    PurposeStatus = project_semantic_purpose_status{purpose:calls,
+                                                    status:unsupported},
+    member(RefStatus, Summary.purposes),
+    RefStatus = project_semantic_purpose_status{purpose:references,
+                                                status:unsupported},
+    member(ImportStatus, Summary.purposes),
+    ImportStatus = project_semantic_purpose_status{purpose:imports,
+                                                   status:unsupported}.
+
 :- end_tests(rlm_project_semantic).
+
+setup_language_files_only(Registry, Root, Path, File) :-
+    register_project(Registry, Root, _Project),
+    register_file(Registry, _Project, main, Path, File).

@@ -50,8 +50,9 @@ rlm_project_semantic_pack_ready.
 %% language with registered entries never falls through to the standard
 %% clauses, so a host can replace pack data for a standard language too.
 project_semantic_pack_source(Language, Purpose, Source) :-
-    semantic_adapter_entry_(Language, Purpose, Source),
-    !.
+    semantic_adapter_entry_(Language, _, _),
+    !,
+    semantic_adapter_entry_(Language, Purpose, Source).
 
 % Python: definitions, references (attribute usage), calls, imports.
 project_semantic_pack_source(python, definitions,
@@ -141,8 +142,12 @@ semantic_purpose_valid(Purpose) :-
 /* Capabilities ---------------------------------------------------------- */
 
 language_analysis_capability(Language, Purpose) :-
+    semantic_adapter_entry_(Language, _, _),
+    !,
     semantic_adapter_entry_(Language, Purpose, _).
 
+% Standard capability rows apply only when no host adapter is registered for
+% the language; a host override shadows the whole standard table per language.
 language_analysis_capability(python, definitions).
 language_analysis_capability(python, references).
 language_analysis_capability(python, calls).
