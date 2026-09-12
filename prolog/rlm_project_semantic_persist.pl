@@ -79,19 +79,31 @@ project_semantic_persist_publish(File0, Project, Extraction, Records) :-
     normalize_path(File0, File),
     with_mutex(rlm_project_semantic_persist,
                ( project_semantic_persist_open_locked(File),
-                 assert_semantic_publication(Project, Extraction, Records)
+                 (   semantic_publication(Project, Extraction, Existing)
+                 ->  (   Existing == Records
+                     ->  true
+                     ;   throw(project_semantic_fault(
+                                    conflicting_publication(Project,
+                                                            Extraction)))
+                     )
+                 ;   assert_semantic_publication(Project, Extraction, Records)
+                 )
                )).
 
-%% Ordered snapshot of one project's journaled publications.  A
-%% re-normalized extraction writes an identical row again; sort/2 collapses
-%% exact duplicates so replay is deterministic.
+%% Ordered snapshot of one project's journaled publications.  Identical
+%% publications are journaled once (physical idempotency); sort/2 keeps the
+%% replay order deterministic.
 project_semantic_persist_snapshot(File0, Project, Publications) :-
     normalize_path(File0, File),
+    % Journal attachment and the semantic_publication read share one critical
+    % section so a concurrent publication to another journal can never make
+    % this snapshot read against the wrong attached journal.
     with_mutex(rlm_project_semantic_persist,
-               project_semantic_persist_open_locked(File)),
-    findall(Extraction-Records,
-            semantic_publication(Project, Extraction, Records),
-            Rows0),
+               ( project_semantic_persist_open_locked(File),
+                 findall(Extraction-Records,
+                         semantic_publication(Project, Extraction, Records),
+                         Rows0)
+               )),
     sort(Rows0, Publications).
 
 project_semantic_persist_close :-
