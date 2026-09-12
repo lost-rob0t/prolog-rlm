@@ -798,6 +798,140 @@ host_override_shadows_standard_language_completely_(Registry, Root) :-
     ImportStatus = project_semantic_purpose_status{purpose:imports,
                                                    status:unsupported}.
 
+/* Durable publication idempotency ---------------------------------------- */
+% Publishing the exact same semantic publication again must be physically
+% idempotent: no new durable row may be appended for an identical
+% Project+Extraction+Records publication, and the same Project+Extraction
+% with different Records is a corruption condition that must be rejected
+% instead of silently journaled.
+
+%% Physical row count in the journal file itself: independent of any local
+%% ledger or snapshot collapsing.
+physical_publication_rows(File, Count) :-
+    project_semantic_persist_close,
+    read_file_to_string(File, Text, []),
+    string_codes(Text, Codes),
+    ( phrase(publication_row_credits(Count), Codes)
+    -> true
+    ; throw(error(semantic_fixture_journal_unreadable(File), _))
+    ).
+
+publication_row_credits(N) --> publication_row_credits_(0, N).
+publication_row_credits_(N0, N) --> "semantic_publication", !,
+    { N1 is N0 + 1 },
+    publication_row_credits_(N1, N).
+publication_row_credits_(N, N) --> [_],
+    publication_row_credits_(N, N).
+publication_row_credits_(N, N) --> [].
+
+publication_records([project_semantic_definition{name:answer,
+                                                 kind:function,
+                                                 start_byte:0,
+                                                 end_byte:11,
+                                                 provenance:_{origin:test}},
+                     project_semantic_definition{name:helper,
+                                                 kind:function,
+                                                 start_byte:12,
+                                                 end_byte:25,
+                                                 provenance:_{origin:test}}]).
+
+test(identical_publication_does_not_accumulate_durable_rows, [nondet]) :-
+    tmp_file(ws5_journal, File),
+    publication_records(Records),
+    Extraction = query_extraction(file(src_example), 1),
+    Project = project(ws5_fixture),
+    setup_call_cleanup(
+        true,
+        ( forall(between(1, 100, _),
+                 project_semantic_persist_publish(File,
+                                                  Project,
+                                                  Extraction,
+                                                  Records)),
+          physical_publication_rows(File, Rows),
+          assertion(Rows == 1),
+          project_semantic_persist_snapshot(File, Project, Publications),
+          assertion(Publications == [Extraction-Records])
+        ),
+        project_semantic_persist_close).
+
+test(restart_hydration_reproduces_the_same_journal_state, [nondet]) :-
+    tmp_file(ws5_journal, File),
+    publication_records(Records),
+    ExtractionA = query_extraction(file(src_example_a), 1),
+    ExtractionB = query_extraction(file(src_example_b), 2),
+    RecordsB = [project_semantic_definition{name:other,
+                                            kind:function,
+                                            start_byte:0,
+                                            end_byte:5,
+                                            provenance:_{origin:test}}],
+    Project = project(ws5_fixture),
+    setup_call_cleanup(
+        true,
+        ( project_semantic_persist_publish(File, Project, ExtractionA, Records),
+          project_semantic_persist_publish(File, Project, ExtractionA, Records),
+          project_semantic_persist_publish(File, Project, ExtractionB, RecordsB),
+          project_semantic_persist_close,
+          % Restart: a fresh attach of the same journal must hydrate the
+          % same logical state with a bounded number of durable rows.
+          project_semantic_persist_snapshot(File, Project, Publications),
+          sort([ExtractionA-Records, ExtractionB-RecordsB], Expected),
+          assertion(Publications == Expected),
+          physical_publication_rows(File, Rows),
+          assertion(Rows == 2)
+        ),
+        project_semantic_persist_close).
+
+test(conflicting_records_for_the_same_extraction_are_rejected, [nondet]) :-
+    tmp_file(ws5_journal, File),
+    publication_records(Records),
+    RecordsConflicting = [project_semantic_definition{name:answer,
+                                                      kind:function,
+                                                      start_byte:1,
+                                                      end_byte:12,
+                                                      provenance:_{origin:test}}],
+    Extraction = query_extraction(file(src_example), 1),
+    Project = project(ws5_fixture),
+    setup_call_cleanup(
+        true,
+        ( project_semantic_persist_publish(File, Project, Extraction, Records),
+          catch(project_semantic_persist_publish(File,
+                                                 Project,
+                                                 Extraction,
+                                                 RecordsConflicting),
+                Error,
+                true),
+          assertion(Error = error(project_semantic_fault(
+                                       conflicting_publication(Project,
+                                                               Extraction)),
+                                   _)),
+          physical_publication_rows(File, Rows),
+          assertion(Rows == 1),
+          project_semantic_persist_snapshot(File, Project, Publications),
+          assertion(Publications == [Extraction-Records])
+        ),
+        project_semantic_persist_close).
+
+test(repeated_normalize_keeps_the_journal_bounded, [nondet]) :-
+    with_semantic_registry(repeated_normalize_keeps_the_journal_bounded_).
+
+repeated_normalize_keeps_the_journal_bounded_(Registry, Root) :-
+    setup_language(Registry, Root, python, "src/example.py", File),
+    Source = "def answer():\n    return helper(1)\n",
+    project_query_extract(Registry, File, Source, [definitions], [kb_root(Root)], ok(_)),
+    forall(between(1, 10, _),
+           project_semantic_normalize(Registry,
+                                      File,
+                                      Source,
+                                      [kb_root(Root)],
+                                      ok(_))),
+    directory_file_path(Root, '.kb', KBRoot),
+    directory_file_path(KBRoot, 'project-semantic', SemanticRoot),
+    register_project(Registry, Root, Project),
+    project_filename(Project, FileName),
+    directory_file_path(SemanticRoot, FileName, Journal),
+    physical_publication_rows(Journal, Rows),
+    assertion(Rows == 1).
+
 :- end_tests(rlm_project_semantic).
 
 setup_language_files_only(Registry, Root, Path, File) :-
