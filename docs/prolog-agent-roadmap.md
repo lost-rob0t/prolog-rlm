@@ -86,7 +86,9 @@ The first #421 expert substrate now has a host-registered local registry,
 sanitized catalog, deterministic goal-shape/priority selection, explicit
 ambiguity, and capability preflight on selection and invocation. Its local
 handler ABI has a 100,000-inference and five-second ceiling but is not yet a
-plan or direct-mode projection. The remaining #421
+plan or direct-mode projection. Public results must be ground, acyclic, and
+bounded; arbitrary handler exceptions are sanitized and cancellation
+propagates. The remaining #421
 work includes invocation lineage, nested bounds/cancellation, fallback and
 metering, and adapters over the canonical plan/native tool paths; this first
 slice does not complete the expert-loop milestone.

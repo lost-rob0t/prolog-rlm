@@ -72,7 +72,7 @@ contract_checked(Contract) :-
       get_dict(handler, Contract, Handler),
       Handler = Module:Callable, atom(Module), callable(Callable)
     -> true
-    ;  throw(expert_fault(invalid_contract, Contract))
+    ;  throw(expert_fault(invalid_contract, invalid))
     ),
     ( plan_native_op(Goal)
     -> throw(expert_fault(plan_native_excluded, Goal))
@@ -181,14 +181,16 @@ invoke_checked(Registry, ExpertId, Goal, Context, Outcome) :-
              -> ( LimitStatus == inference_limit_exceeded
                 -> Outcome = error(expert_error{kind:work_limit_exceeded,
                                                 detail:ExpertId})
-                ;  Outcome = ok(expert_result{expert_id:ExpertId,
-                                              version:Contract.version,
-                                              value:Value}) )
+                ;  ( bounded_result(Value)
+                   -> Outcome = ok(expert_result{expert_id:ExpertId,
+                                                 version:Contract.version,
+                                                 value:Value})
+                   ;  Outcome = error(expert_error{kind:invalid_result,
+                                                   detail:ExpertId}) ) )
              ;  Outcome = error(expert_error{kind:handler_failed,
                                              detail:ExpertId}) ),
              Exception,
-             Outcome = error(expert_error{kind:handler_exception,
-                                          detail:Exception}))
+             handler_exception(ExpertId, Exception, Outcome))
     ; Outcome = error(expert_error{kind:not_applicable,
                                    candidate:Candidate}) ).
 
@@ -198,10 +200,68 @@ context_checked(Goal, Context, Caps) :-
       get_dict(capabilities, Context, Capabilities),
       capabilities_normalize(Capabilities, ok(Caps))
     -> true
-    ;  throw(expert_fault(invalid_call, call(Goal, Context)))
+    ;  throw(expert_fault(invalid_call, invalid))
     ).
+
+handler_exception(_, Exception, _) :-
+    Exception = error(rlm_cancelled(_), _),
+    !,
+    throw(Exception).
+handler_exception(_, rlm_cancelled(Token), _) :-
+    !,
+    throw(rlm_cancelled(Token)).
+handler_exception(Id, time_limit_exceeded,
+                  error(expert_error{kind:handler_timeout, detail:Id})) :- !.
+handler_exception(Id, error(time_limit_exceeded, _),
+                  error(expert_error{kind:handler_timeout, detail:Id})) :- !.
+handler_exception(Id, _,
+                  error(expert_error{kind:handler_exception,
+                                     detail:Id})).
+
+% Stop before projecting arbitrarily large or unserializable handler output.
+bounded_result(Value) :-
+    ground(Value),
+    acyclic_term(Value),
+    bounded_term(Value, 64, 1024, _, 65536, _).
+
+bounded_term(Term, Depth, Nodes0, Nodes, Chars0, Chars) :-
+    Nodes0 > 0,
+    Nodes1 is Nodes0 - 1,
+    (   atom(Term)
+    ->  atom_length(Term, Length),
+        Nodes = Nodes1
+    ;   string(Term)
+    ->  string_length(Term, Length),
+        Nodes = Nodes1
+    ;   number(Term)
+    ->  number_string(Term, Text),
+        string_length(Text, Length),
+        Nodes = Nodes1
+    ;   compound(Term), Depth > 0
+    ->  compound_name_arity(Term, Name, Arity),
+        atom_length(Name, Length),
+        NextDepth is Depth - 1,
+        Chars1 is Chars0 - Length,
+        Chars1 >= 0,
+        bounded_args(1, Arity, Term, NextDepth, Nodes1, Nodes,
+                     Chars1, Chars),
+        !
+    ),
+    (   atomic(Term)
+    ->  Chars is Chars0 - Length,
+        Chars >= 0
+    ;   true
+    ).
+
+bounded_args(Index, Arity, _, _, Nodes, Nodes, Chars, Chars) :-
+    Index > Arity, !.
+bounded_args(Index, Arity, Term, Depth, Nodes0, Nodes, Chars0, Chars) :-
+    arg(Index, Term, Arg),
+    bounded_term(Arg, Depth, Nodes0, Nodes1, Chars0, Chars1),
+    Next is Index + 1,
+    bounded_args(Next, Arity, Term, Depth, Nodes1, Nodes, Chars1, Chars).
 
 registry_id(expert_registry(Id), Id) :-
     registry_alive(Id), !.
-registry_id(Registry, _) :-
-    throw(expert_fault(invalid_registry, Registry)).
+registry_id(_, _) :-
+    throw(expert_fault(invalid_registry, invalid)).

@@ -7,6 +7,12 @@
 pure_read(read(File), _, path(File)).
 pure_search(search(Query, _), _, query(Query)).
 unbounded(_, _, _) :- unbounded(_, _, _).
+open_result(_, _, partial(_)).
+cyclic_result(_, _, Cyclic) :- Cyclic = cycle(Cyclic).
+large_result(_, _, Values) :- length(Values, 3000), maplist(=(x), Values).
+secret_exception(_, _, _) :- throw(error(secret_password, private_context)).
+cancelled_handler(_, _, _) :- throw(error(rlm_cancelled(cancel_token), expert)).
+timeout_handler(_, _, _) :- throw(time_limit_exceeded).
 
 contract(Id, Goal, Priority, Requires, Handler,
          expert_contract{id:Id, version:1, goal:Goal,
@@ -115,6 +121,53 @@ test(local_work_limit_stops_nonterminating_expert) :-
           expert_call(Registry, read(file),
                       expert_context{capabilities:[]}, error(Error)),
           assertion(Error.kind == work_limit_exceeded)
+        ),
+        expert_registry_destroy(Registry)).
+
+test(rejects_open_cyclic_and_oversized_results) :-
+    expert_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( forall(member(Id-Handler, [open-open_result,
+                                     cyclic-cyclic_result,
+                                     large-large_result]),
+                 ( contract(Id, read/1, 1, [], Handler, Contract),
+                   expert_register(Registry, Contract, ok(Id)),
+                   expert_invoke(Registry, Id, read(file),
+                                 expert_context{capabilities:[]}, error(Error)),
+                   assertion(Error.kind == invalid_result) ))
+        ),
+        expert_registry_destroy(Registry)).
+
+test(exception_is_sanitized_and_timeout_is_distinct) :-
+    expert_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( contract(secret, read/1, 1, [], secret_exception, Secret),
+          contract(timeout, read/1, 1, [], timeout_handler, Timeout),
+          expert_register(Registry, Secret, ok(secret)),
+          expert_register(Registry, Timeout, ok(timeout)),
+          expert_invoke(Registry, secret, read(file),
+                        expert_context{capabilities:[]}, error(SecretError)),
+          assertion(SecretError.kind == handler_exception),
+          term_string(SecretError, PublicText),
+          assertion(\+ sub_string(PublicText, _, _, _, "secret_password")),
+          expert_invoke(Registry, timeout, read(file),
+                        expert_context{capabilities:[]}, error(TimeoutError)),
+          assertion(TimeoutError.kind == handler_timeout)
+        ),
+        expert_registry_destroy(Registry)).
+
+test(cancellation_propagates) :-
+    expert_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        ( contract(cancel, read/1, 1, [], cancelled_handler, Contract),
+          expert_register(Registry, Contract, ok(cancel)),
+          catch(expert_invoke(Registry, cancel, read(file),
+                              expert_context{capabilities:[]}, _),
+                error(rlm_cancelled(cancel_token), _), Caught = true),
+          assertion(Caught == true)
         ),
         expert_registry_destroy(Registry)).
 
