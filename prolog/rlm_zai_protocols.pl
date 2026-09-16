@@ -6,12 +6,13 @@
             normalize_anthropic_messages_response/5
           ]).
 
-/** <module> Z.AI Coding Plan protocol adapters
+/** <module> Responses and Anthropic Messages protocol adapters
 
 Non-streaming adapters for the OpenAI Responses and Anthropic Messages wire
-protocols exposed by Z.AI. Chat Completions continues through the established
-`rlm_openai_compatible` transport. Provider-native reasoning blocks are retained
-in `reasoning_details` so tool continuations can replay them unchanged.
+protocols exposed by Z.AI and the official Claude API. Chat Completions
+continues through the established `rlm_openai_compatible` transport.
+Provider-native reasoning blocks are retained in `reasoning_details` so tool
+continuations can replay them unchanged.
 */
 
 :- use_module(library(http/http_client)).
@@ -46,8 +47,8 @@ complete_payload(ok(Payload), Protocol, Provider, Endpoint, Credential, Model,
 execute_credentialed(error(Error), _, _, _, _, _, _, _, _, error(Error)) :- !.
 execute_credentialed(ok(Key), Protocol, Provider, Endpoint, Model, Timeout,
                      AddressFamily, UserAgent, Payload, Outcome) :-
-    protocol_http_options(Protocol, Key, Timeout, AddressFamily, UserAgent,
-                          Status, HttpOptions),
+    protocol_http_options(Protocol, Provider, Key, Timeout, AddressFamily,
+                          UserAgent, Status, HttpOptions),
     catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),
           Exception,
           transport_exception_handler(Exception)),
@@ -762,9 +763,9 @@ resolve_credential(Provider, env(Name), Outcome) :-
                                        response_received:false})
     ).
 
-protocol_http_options(Protocol, Key, Timeout, AddressFamily, UserAgent, Status,
-                      Options) :-
-    credential_options(Key, CredentialOptions),
+protocol_http_options(Protocol, Provider, Key, Timeout, AddressFamily,
+                      UserAgent, Status, Options) :-
+    credential_options(Provider, Key, CredentialOptions),
     address_options(AddressFamily, AddressOptions),
     protocol_headers(Protocol, ProtocolHeaders),
     append([CredentialOptions, AddressOptions, ProtocolHeaders,
@@ -773,8 +774,9 @@ protocol_http_options(Protocol, Key, Timeout, AddressFamily, UserAgent, Status,
               user_agent(UserAgent)
             ]], Options).
 
-credential_options(none, []) :- !.
-credential_options(Key, [authorization(bearer(Key))]).
+credential_options(_, none, []) :- !.
+credential_options(claude_api, Key, [request_header('x-api-key'=Key)]) :- !.
+credential_options(_, Key, [authorization(bearer(Key))]).
 address_options(auto, []) :- !.
 address_options(Family, [domain(Family)]).
 protocol_headers(responses, []).

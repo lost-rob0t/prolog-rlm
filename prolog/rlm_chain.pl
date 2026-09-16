@@ -25,6 +25,7 @@
              zai_coding_provider/3,
              zai_codex_provider/2,
              zai_claude_provider/2,
+             claude_api_provider/2,
              default_openrouter_model/1,
              provider_capability/2,
              normalize_openai_chat_response/5,
@@ -97,6 +98,9 @@ provider_capability(zai_codex, structured_output).
 provider_capability(zai_claude, messages).
 provider_capability(zai_claude, usage_metadata).
 provider_capability(zai_claude, tool_calls).
+provider_capability(claude_api, messages).
+provider_capability(claude_api, usage_metadata).
+provider_capability(claude_api, tool_calls).
 
 %!  default_openrouter_model(-Model) is det.
 %
@@ -183,6 +187,20 @@ zai_codex_provider(Model, Provider) :-
 
 zai_claude_provider(Model, Provider) :-
     zai_coding_provider(anthropic_messages, Model, Provider).
+
+%!  claude_api_provider(+Model, -Provider) is det.
+%
+%   Construct the official Anthropic Messages API provider. Its Console API
+%   key is resolved from the environment only during request dispatch.
+
+claude_api_provider(Model,
+                    provider(claude_api,
+                             [ endpoint('https://api.anthropic.com/v1/messages'),
+                               credential(env('ANTHROPIC_API_KEY')),
+                               model(Model),
+                               timeout(30),
+                               default_max_tokens(4096)
+                             ])).
 
 /* Async/sync bridge ------------------------------------------------------ */
 
@@ -330,6 +348,10 @@ dispatch_provider(zai_codex, Config, Request, Outcome) :-
 dispatch_provider(zai_claude, Config, Request, Outcome) :-
     !,
     dispatch_zai_protocol(anthropic_messages, zai_claude, Config, Request,
+                          Outcome).
+dispatch_provider(claude_api, Config, Request, Outcome) :-
+    !,
+    dispatch_zai_protocol(anthropic_messages, claude_api, Config, Request,
                           Outcome).
 dispatch_provider(Provider, _, _,
                   error(provider_error{provider:Provider,

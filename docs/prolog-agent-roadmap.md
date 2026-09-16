@@ -15,6 +15,8 @@ Already available in core and the downstream application boundary:
 - real OpenAI-compatible providers and streaming, plus Z.AI Coding Plan
   constructors for Chat Completions, Codex/Responses, and Claude/Anthropic
   Messages (Responses and Anthropic streaming remain future work);
+- a named official Claude API Messages constructor using a Console API key;
+  live account conformance and native Anthropic streaming remain open;
 - typed model-selected plans;
 - capability-gated tools and a confined `project_read` tool;
 - confined Prolog-owned `SKILL.md` package discovery, inert resource indexing, and canonical skill prompt-unit normalization;
