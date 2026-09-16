@@ -48,6 +48,20 @@ Still missing for a useful coding agent:
 
 A reasonable description is: **the runtime foundation is roughly three quarters built, but the end-user coding agent is closer to halfway than finished.** The remaining work is smaller than building another agent framework, but larger than writing a terminal renderer.
 
+## Candidate coding-tool and expert slice
+
+The `feat/coding-expert-tools` slice adds `rlm_expert` bounded deterministic
+leaf contracts, symbolic goal/capability routing, ambiguity handling, and
+ordinary tool projections. See [experts.md](experts.md). This is a first #377
+slice, not completion of the expert-system or recursion/fallback milestones.
+
+The paired AgentProlog candidate supplies file read/search/write/patch,
+read-only Git inspection, bounded host process/test profiles, and write/test
+result experts. It still needs an accepted upstream pin, DSH wiring, project
+snapshot refresh, and a complete Frozen-Spec Verify/repair workflow. The
+existing missing-work list remains open until those changes are merged and
+integrated; do not infer product readiness from these tool-level tests.
+
 ## Product boundary
 
 Keep the layers boring and explicit:

@@ -45,6 +45,7 @@ user:message_hook(Message, error, Lines) :-
 % loaded and their suites are derived below; excluded entries document why a
 % test-shaped file belongs to another executable gate.
 corpus_entry('bootstrap_test.pl', include(bootstrap)).
+corpus_entry('rlm_expert_test.pl', include(rlm_expert)).
 corpus_entry('load_error_status_test.pl', include(load_error_status)).
 corpus_entry('rlm_closed_data_test.pl', include(rlm_closed_data)).
 corpus_entry('rlm_direct_context_peek_contract_test.pl',

@@ -2,6 +2,7 @@
 :- initialization(main, main).
 
 :- use_module('../prolog/rlm').
+:- use_module('../prolog/rlm_expert', []).
 :- use_module('../prolog/rlm_context_budget', []).
 :- use_module('../prolog/rlm_conversation', []).
 :- use_module('../prolog/rlm_conversation_warm', []).
