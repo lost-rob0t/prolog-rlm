@@ -62,6 +62,12 @@ snapshot refresh, and a complete Frozen-Spec Verify/repair workflow. The
 existing missing-work list remains open until those changes are merged and
 integrated; do not infer product readiness from these tool-level tests.
 
+The same candidate now provides inert file-local Common Lisp/Prolog source
+structure, character spans, and conservative local reference resolution.
+AgentProlog consumes it for inspect/edit/diagnostic experts, with real SWI and
+SBCL fail→edit→pass fixtures. This does not complete project-wide semantic
+freshness, macro expansion, custom reader state, or the full Verify loop.
+
 ## Product boundary
 
 Keep the layers boring and explicit:
