@@ -1,5 +1,11 @@
 /* Z.AI Coding Plan provider architecture, verified by deterministic fixtures. */
 
+:- multifile model_provider_protocol/2,
+             provider_streaming/2,
+             provider_credential/2,
+             provider_http_identity_default/2,
+             provider_http_identity_option/2.
+
 model_provider_protocol(zai_coding, openai_chat_completions).
 model_provider_protocol(zai_codex, openai_responses).
 model_provider_protocol(zai_claude, anthropic_messages).

@@ -50,6 +50,39 @@ test(zai_named_constructors_select_codex_and_claude_protocols) :-
     assertion(Codex = provider(zai_codex, _)),
     assertion(Claude = provider(zai_claude, _)).
 
+test(claude_api_constructor_uses_official_messages_endpoint_and_env_key) :-
+    claude_api_provider('claude-test', Provider),
+    Provider = provider(claude_api, Config),
+    assertion(memberchk(endpoint('https://api.anthropic.com/v1/messages'), Config)),
+    assertion(memberchk(credential(env('ANTHROPIC_API_KEY')), Config)),
+    assertion(memberchk(model('claude-test'), Config)),
+    assertion(memberchk(default_max_tokens(4096), Config)),
+    assertion(provider_capability(claude_api, messages)),
+    assertion(provider_capability(claude_api, tool_calls)),
+    assertion(\+ provider_capability(claude_api, streaming)).
+
+test(claude_api_missing_key_is_structured_and_not_sent) :-
+    claude_api_provider('claude-test', Provider),
+    Request = model_request{messages:[message{role:user, content:"ping"}]},
+    setup_call_cleanup(
+        ( getenv('ANTHROPIC_API_KEY', Old) -> HadKey = true ; HadKey = false ),
+        ( unsetenv('ANTHROPIC_API_KEY'),
+          model_complete_execute(Provider, Request, error(Error)),
+          assertion(Error.provider == claude_api),
+          assertion(Error.kind == missing_credential),
+          assertion(Error.response_received == false)
+        ),
+        ( HadKey == true -> setenv('ANTHROPIC_API_KEY', Old)
+        ; unsetenv('ANTHROPIC_API_KEY') )).
+
+test(claude_api_streaming_fails_explicitly_without_dispatch) :-
+    claude_api_provider('claude-test', Provider),
+    Request = model_request{messages:[message{role:user, content:"ping"}]},
+    model_stream_execute(Provider, Request, ignore_stream_event, error(Error)),
+    assertion(Error.provider == claude_api),
+    assertion(Error.kind == capability_denied),
+    assertion(Error.capability == streaming).
+
 test(zai_chat_maps_reasoning_controls_and_continuation_content) :-
     Request = model_request{
                   messages:[message{role:assistant, content:"",

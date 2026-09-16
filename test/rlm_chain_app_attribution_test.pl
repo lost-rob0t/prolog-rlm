@@ -132,6 +132,70 @@ test(zai_anthropic_dispatches_required_version_header_over_http) :-
     assertion(Message.role == "user"),
     assertion(Message.content == "Reply").
 
+test(claude_api_uses_x_api_key_and_preserves_provider_identity) :-
+    with_zai_server(run_claude_api_completion,
+                    zai_anthropic, Request-Payload),
+    assertion(request_header_value(Request, x_api_key,
+                                   'fixture-claude-api-key')),
+    assertion(\+ request_header_value(Request, authorization, _)),
+    assertion(request_header_value(Request, anthropic_version,
+                                   '2023-06-01')),
+    assertion(Payload.model == "claude-test"),
+    assertion(Payload.max_tokens == 4096).
+
+test(zai_anthropic_retains_bearer_auth) :-
+    with_zai_server(run_zai_bearer_completion,
+                    zai_anthropic, Request-_),
+    request_header_value(Request, authorization, Authorization),
+    assertion(memberchk(Authorization,
+                        [bearer('fixture-zai-key'),
+                         'Bearer fixture-zai-key'])),
+    assertion(\+ request_header_value(Request, x_api_key, _)).
+
+run_zai_bearer_completion(Port) :-
+    format(atom(Endpoint), 'http://127.0.0.1:~d/zai_anthropic', [Port]),
+    Provider = provider(zai_claude,
+                        [ endpoint(Endpoint),
+                          credential(env('ZAI_TEST_API_KEY')),
+                          model('glm-5.3'),
+                          default_max_tokens(4096)
+                        ]),
+    setup_call_cleanup(
+        ( getenv('ZAI_TEST_API_KEY', Old) -> HadKey = true ; HadKey = false ),
+        ( setenv('ZAI_TEST_API_KEY', 'fixture-zai-key'),
+          rlm_chain:model_complete_execute(
+              Provider,
+              model_request{messages:[message{role:user, content:"Reply"}],
+                            options:generation_options{}},
+              ok(_))
+        ),
+        ( HadKey == true -> setenv('ZAI_TEST_API_KEY', Old)
+        ; unsetenv('ZAI_TEST_API_KEY') )).
+
+run_claude_api_completion(Port) :-
+    format(atom(Endpoint), 'http://127.0.0.1:~d/zai_anthropic', [Port]),
+    Provider = provider(claude_api,
+                        [ endpoint(Endpoint),
+                          credential(env('CLAUDE_TEST_API_KEY')),
+                          model('claude-test'),
+                          default_max_tokens(4096)
+                        ]),
+    setup_call_cleanup(
+        ( getenv('CLAUDE_TEST_API_KEY', Old) -> HadKey = true ; HadKey = false ),
+        ( setenv('CLAUDE_TEST_API_KEY', 'fixture-claude-api-key'),
+          rlm_chain:model_complete_execute(
+              Provider,
+              model_request{messages:[message{role:user, content:"Reply"}],
+                            options:generation_options{}},
+              ok(Response)),
+          assertion(Response.provider == claude_api),
+          assertion(Response.text == "ok"),
+          term_string(Response, Text),
+          assertion(\+ sub_string(Text, _, _, _, "fixture-claude-api-key"))
+        ),
+        ( HadKey == true -> setenv('CLAUDE_TEST_API_KEY', Old)
+        ; unsetenv('CLAUDE_TEST_API_KEY') )).
+
 with_attribution_server(Goal, Headers) :-
     retractall(captured_attribution(_)),
     setup_call_cleanup(

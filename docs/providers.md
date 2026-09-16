@@ -120,7 +120,7 @@ Provider = provider(openai_compatible,
 ```
 
 `user_agent/1` applies to non-streaming and streaming Chat Completions and to
-the Z.AI Responses and Anthropic Messages adapters. It must be a nonempty atom
+the Responses and Anthropic Messages adapters. It must be a nonempty atom
 or string without control characters; invalid values fail before network I/O.
 This descriptive identity grants no capability or authority.
 
@@ -173,6 +173,30 @@ issued for the applicable Individual or Team Coding Plan and confirm that the
 intended client/integration is permitted by the current Z.AI plan terms. The
 deterministic suite validates wire behavior against loopback HTTP fixtures; it
 does not claim live account or quota conformance.
+
+## Claude API
+
+The official [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create)
+uses a Console API key, `X-Api-Key`, and `anthropic-version`. Construct it with:
+
+```prolog
+?- rlm_chain:claude_api_provider('your-claude-model', Provider).
+Provider = provider(claude_api,
+                    [endpoint('https://api.anthropic.com/v1/messages'),
+                     credential(env('ANTHROPIC_API_KEY')),
+                     model('your-claude-model'),
+                     timeout(30),
+                     default_max_tokens(4096)]).
+```
+
+The key is resolved only at dispatch and sent as `X-Api-Key`. The provider
+shares the Anthropic Messages request and response adapter with Z.AI's Claude
+protocol, while keeping a distinct provider identity and credential source.
+Non-streaming text and tool calls are supported. `model_stream/4` returns
+`capability_denied` until Anthropic's native event stream is implemented.
+Model-specific options still depend on the selected model. This constructor
+does not use a Claude subscription, and deterministic loopback tests do not
+establish live Claude account conformance.
 
 ## CI test classes
 

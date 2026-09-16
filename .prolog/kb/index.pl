@@ -14,4 +14,5 @@ kb_file(File) :-
                      kb_file('project-knowledge-pipeline.pl'),
                      kb_file('debugging-recipes.pl'),
                      kb_file('zai-provider-protocols.pl'),
+                     kb_file('claude-api-provider.pl'),
                      true ), now).
