@@ -13,4 +13,5 @@ kb_file(File) :-
 :- initialization(( kb_file('tree-sitter-ffi.pl'),
                     kb_file('project-knowledge-pipeline.pl'),
                     kb_file('debugging-recipes.pl'),
+                    kb_file('openai-api-provider.pl'),
                     true ), now).

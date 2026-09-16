@@ -12,7 +12,7 @@ exceptions.
 
 ## OpenRouter
 
-OpenRouter is the first production OpenAI-compatible backend.
+OpenRouter is a production OpenAI-compatible backend.
 
 ```prolog
 ?- rlm_chain:openrouter_provider('openrouter/free', Provider).
@@ -93,6 +93,28 @@ configuration likewise fails before credential resolution or network effects.
 This profile is supplied by trusted host/provider configuration. Model-produced
 request data cannot select it, widen it, or gain tool capability, execution
 authority, or effect permission from it.
+
+## OpenAI API
+
+Use the named Chat Completions provider with an OpenAI API key:
+
+```prolog
+?- rlm_chain:openai_api_provider('your-chat-model', Provider).
+Provider = provider(openai_api,
+                    [endpoint('https://api.openai.com/v1/chat/completions'),
+                     credential(env('OPENAI_API_KEY')),
+                     model('your-chat-model'),
+                     timeout(30)]).
+```
+
+The key is resolved from `OPENAI_API_KEY` only when the request executes. This
+provider uses the existing Chat Completions transport, including native tools
+and true SSE streaming. `model_response.provider` remains `openai_api` for
+attribution. Supported options and features still depend on the selected model.
+The constructor does not authenticate with a ChatGPT or Codex subscription and
+does not implement the separate OpenAI Responses API. The deterministic tests
+cover local dispatch and missing-key behavior; live OpenAI account conformance
+requires a configured key and has not been claimed here.
 
 ## Other OpenAI-compatible endpoints
 
