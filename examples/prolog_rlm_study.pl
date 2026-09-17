@@ -4,6 +4,8 @@
             study_budget/1,
             study_options/1,
             study_run/2,
+            study_variant_run/3,
+            study_compare/2,
             study_capability_failure/1,
             study_depth_failure/1
           ]).
@@ -55,21 +57,96 @@ study_budget(
         time_limit:2.0
     }).
 
+study_tool_registry([
+    tool(study_retrieve, prolog_rlm_study:study_retrieve),
+    tool(study_normalize, prolog_rlm_study:study_normalize),
+    tool(study_verify, prolog_rlm_study:study_verify)
+]).
+
 study_options([
     budget(Budget),
-    tools([
-        tool(study_retrieve, prolog_rlm_study:study_retrieve),
-        tool(study_normalize, prolog_rlm_study:study_normalize),
-        tool(study_verify, prolog_rlm_study:study_verify)
-    ])
+    tools(Tools)
 ]) :-
-    study_budget(Budget).
+    study_budget(Budget),
+    study_tool_registry(Tools).
 
 study_run(Topic, Outcome) :-
     study_plan(Plan),
     study_capabilities(Capabilities),
     study_options(Options),
     plan_run(Plan, Capabilities, Options, _{topic:Topic}, Outcome).
+
+study_variant_run(Variant, Topic, Outcome) :-
+    study_variant(Variant, Plan, Capabilities, Budget),
+    study_tool_registry(Tools),
+    Options = [budget(Budget), tools(Tools)],
+    plan_run(Plan, Capabilities, Options, _{topic:Topic}, Outcome).
+
+study_compare(Topic, study_report{topic:Topic, variants:Observations}) :-
+    Variants = [direct, retrieve, verify, recursive],
+    maplist(study_variant_observation(Topic), Variants, Observations).
+
+study_variant_observation(Topic, Variant, Observation) :-
+    study_variant(Variant, Plan, Capabilities, Budget),
+    plan_validate(Plan, Capabilities, Budget, ok(Validated)),
+    study_variant_run(Variant, Topic, ok(Result)),
+    get_dict(estimate, Validated, Estimate),
+    get_dict(value, Result, Value),
+    get_dict(transitions, Result, Transitions),
+    get_dict(budget_remaining, Result, Remaining),
+    Observation = study_variant_result{
+                      variant:Variant,
+                      estimate:Estimate,
+                      value:Value,
+                      transitions:Transitions,
+                      budget_remaining:Remaining
+                  }.
+
+study_variant(direct,
+              plan([
+                  final(input(topic))
+              ]),
+              [],
+              Budget) :-
+    study_variant_budget(1, 1, 0, Budget).
+study_variant(retrieve,
+              plan([
+                  tool(study_retrieve, input(topic), evidence),
+                  final(var(evidence))
+              ]),
+              [tool(study_retrieve)],
+              Budget) :-
+    study_variant_budget(2, 1, 1, Budget).
+study_variant(verify,
+              plan([
+                  tool(study_retrieve, input(topic), evidence),
+                  tool(study_normalize, var(evidence), claim),
+                  tool(study_verify, var(claim), verdict),
+                  final(var(verdict))
+              ]),
+              [
+                  tool(study_retrieve),
+                  tool(study_normalize),
+                  tool(study_verify)
+              ],
+              Budget) :-
+    study_variant_budget(4, 1, 3, Budget).
+study_variant(recursive, Plan, Capabilities, Budget) :-
+    study_plan(Plan),
+    study_capabilities(Capabilities),
+    study_budget(Budget).
+
+study_variant_budget(Steps, Depth, ToolCalls,
+                     plan_budget{
+                         max_steps:Steps,
+                         max_depth:Depth,
+                         max_parallel:1,
+                         max_model_calls:0,
+                         max_tool_calls:ToolCalls,
+                         max_context_ops:0,
+                         max_output_bytes:4096,
+                         time_limit:2.0
+                     }).
 
 study_capability_failure(Outcome) :-
     study_plan(Plan),
