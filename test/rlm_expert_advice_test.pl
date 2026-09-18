@@ -1,32 +1,45 @@
 :- begin_tests(rlm_expert_advice).
 
 :- use_module('../prolog/rlm_expert_advice').
+:- use_module('../prolog/rlm_expert').
 :- use_module('../prolog/rlm_reasoning_mode').
 :- use_module('../prolog/rlm_tool').
 :- use_module('support/tool_test_support').
 
 setup_registry(Registry) :-
     tool_registry_create(Registry),
-    git_diff_schema(GitSchema),
-    web_search_schema(WebSchema),
-    tool_register(Registry,
-                  GitSchema,
-                  tool_test_support:echo_tool,
-                  ok(_)),
-    tool_register(Registry,
-                  WebSchema,
-                  tool_test_support:echo_tool,
-                  ok(_)).
+    git_expert_contract(Git),
+    web_expert_contract(Web),
+    expert_register(
+        Registry,
+        Git,
+        tool_test_support:echo_tool,
+        ok(_)
+    ),
+    expert_register(
+        Registry,
+        Web,
+        tool_test_support:echo_tool,
+        ok(_)
+    ),
+    unrelated_tool_schema(Unrelated),
+    tool_register(
+        Registry,
+        Unrelated,
+        tool_test_support:echo_tool,
+        ok(_)
+    ).
 
 cleanup_registry(Registry) :-
     tool_registry_destroy(Registry).
 
-git_diff_schema(
-    tool_schema{
-        name:git_diff,
+git_expert_contract(
+    expert_contract{
+        id:git_diff,
+        version:1,
+        goal:review,
+        priority:100,
         description:"Review and inspect git diff changes in a repository",
-        capability:tool(git_diff),
-        effect:read,
         arguments:_{
             type:object,
             required:[],
@@ -39,15 +52,20 @@ git_diff_schema(
             additional_properties:true,
             properties:_{}
         },
-        limits:_{time_limit:1.0, max_output_bytes:2048}
+        limits:_{
+            time_limit:1.0,
+            max_output_bytes:2048,
+            inferences:10000
+        }
     }).
 
-web_search_schema(
-    tool_schema{
-        name:web_search,
+web_expert_contract(
+    expert_contract{
+        id:web_search,
+        version:1,
+        goal:research,
+        priority:50,
         description:"Search public web pages for current information",
-        capability:tool(web_search),
-        effect:read,
         arguments:_{
             type:object,
             required:[],
@@ -60,51 +78,95 @@ web_search_schema(
             additional_properties:true,
             properties:_{}
         },
+        limits:_{
+            time_limit:1.0,
+            max_output_bytes:2048,
+            inferences:10000
+        }
+    }).
+
+unrelated_tool_schema(
+    tool_schema{
+        name:plain_tool,
+        description:"Review git diff with a plain non-expert helper",
+        capability:tool(plain_tool),
+        effect:read,
+        arguments:_{
+            type:object,
+            required:[],
+            additional_properties:false,
+            properties:_{}
+        },
+        result:_{type:any},
         limits:_{time_limit:1.0, max_output_bytes:2048}
     }).
 
-test(candidate_projection_is_inert_and_handler_free) :-
+full_context(
+    expert_context{
+        capabilities:[tool(git_diff), tool(web_search), tool(plain_tool)]
+    }).
+
+test(candidate_projection_contains_only_registered_experts) :-
     setup_call_cleanup(
         setup_registry(Registry),
         ( expert_tool_candidates(Registry, ok(Candidates)),
           assertion(length(Candidates, 2)),
           member(Git, Candidates),
           Git.name == git_diff,
-          assertion(Git.id == tool(git_diff)),
+          assertion(Git.id == expert(git_diff)),
+          assertion(Git.goal == review),
           assertion(Git.required_capability == tool(git_diff)),
-          assertion(Git.source == tool_registry),
+          assertion(Git.source == expert_registry),
           assertion(Git.effect == read),
           assertion(\+ get_dict(handler, Git, _)),
-          assertion(is_dict(Git.schema, tool_schema))
+          assertion(is_dict(Git.schema, tool_schema)),
+          assertion(\+ (member(C, Candidates), C.name == plain_tool))
         ),
         cleanup_registry(Registry)).
 
-test(deterministic_query_selects_relevant_tool_expert) :-
+test(deterministic_query_selects_relevant_expert_then_canonical_goal_selection) :-
     setup_call_cleanup(
         setup_registry(Registry),
-        ( expert_tool_select(
+        ( full_context(Context),
+          expert_tool_select(
               Registry,
               "review the git diff before merge",
-              [],
+              Context,
               ok(Selection)),
           assertion(Selection.applicable == true),
           assertion(Selection.candidate.name == git_diff),
-          assertion(Selection.candidate.id == tool(git_diff)),
-          assertion(Selection.source == prompt_compiler),
-          assertion(Selection.score > 0)
+          assertion(Selection.candidate.id == expert(git_diff)),
+          assertion(Selection.candidate.goal == review),
+          assertion(Selection.decision.reason == goal_and_capability),
+          assertion(Selection.source == expert_registry),
+          assertion(Selection.query_score > 0)
         ),
         cleanup_registry(Registry)).
 
 test(unrelated_query_yields_no_applicable_expert) :-
     setup_call_cleanup(
         setup_registry(Registry),
-        ( expert_tool_select(
+        ( full_context(Context),
+          expert_tool_select(
               Registry,
               "calculate orbital mechanics",
-              [],
+              Context,
               ok(Selection)),
           assertion(Selection.applicable == false),
           assertion(Selection.candidate == none)
+        ),
+        cleanup_registry(Registry)).
+
+test(missing_expert_capability_prevents_applicability) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( Context = expert_context{capabilities:[tool(web_search)]},
+          expert_tool_select(
+              Registry,
+              "review git diff",
+              Context,
+              ok(Selection)),
+          assertion(Selection.applicable == false)
         ),
         cleanup_registry(Registry)).
 
@@ -113,10 +175,11 @@ test(expert_selection_projects_auto_mode_signal) :-
         setup_registry(Registry),
         setup_call_cleanup(
             reasoning_mode_open(expert_mode_fixture, ok(_)),
-            ( expert_tool_select(
+            ( full_context(Context),
+              expert_tool_select(
                   Registry,
                   "review git diff",
-                  [],
+                  Context,
                   ok(Selection)),
               expert_mode_signal(Selection, Signal),
               assertion(Signal.expert_applicable == true),
@@ -136,32 +199,35 @@ test(expert_selection_projects_auto_mode_signal) :-
 test(advice_is_closed_bounded_inert_data) :-
     setup_call_cleanup(
         setup_registry(Registry),
-        ( expert_tool_select(
+        ( full_context(Context),
+          expert_tool_select(
               Registry,
               "review git diff",
-              [],
+              Context,
               ok(Selection)),
           expert_advice_build(
               Selection,
               ["git repository is dirty", "review required"],
               ok(Advice)),
-          assertion(Advice.expert == tool(git_diff)),
+          assertion(Advice.expert == expert(git_diff)),
+          assertion(Advice.expert_goal == review),
           assertion(Advice.recommendation == recommend_tool(git_diff)),
           assertion(Advice.stop_condition == one_model_step),
-          assertion(Advice.source == tool_registry),
+          assertion(Advice.source == expert_registry),
           assertion(Advice.evidence ==
                     ["git repository is dirty", "review required"]),
           assertion(\+ get_dict(handler, Advice, _))
         ),
         cleanup_registry(Registry)).
 
-test(advice_request_exposes_only_selected_tool_schema) :-
+test(advice_request_exposes_only_selected_expert_tool_schema) :-
     setup_call_cleanup(
         setup_registry(Registry),
-        ( expert_tool_select(
+        ( full_context(Context),
+          expert_tool_select(
               Registry,
               "review git diff",
-              [],
+              Context,
               ok(Selection)),
           expert_advice_build(Selection, [], ok(Advice)),
           expert_advice_model_request(
@@ -182,17 +248,19 @@ test(advice_request_exposes_only_selected_tool_schema) :-
           assertion(Options.tools = [Wire]),
           assertion(Wire.type == "function"),
           assertion(Wire.function.name == "git_diff"),
-          assertion(\+ sub_string(System.content, _, _, _, "web_search"))
+          assertion(\+ sub_string(System.content, _, _, _, "web_search")),
+          assertion(\+ sub_string(System.content, _, _, _, "plain_tool"))
         ),
         cleanup_registry(Registry)).
 
-test(advice_does_not_grant_tool_capability) :-
+test(advice_does_not_grant_expert_tool_capability) :-
     setup_call_cleanup(
         setup_registry(Registry),
-        ( expert_tool_select(
+        ( full_context(Context),
+          expert_tool_select(
               Registry,
               "review git diff",
-              [],
+              Context,
               ok(Selection)),
           Candidate = Selection.candidate,
           tool_invoke(
@@ -208,25 +276,29 @@ test(advice_does_not_grant_tool_capability) :-
         ),
         cleanup_registry(Registry)).
 
-test(expert_selection_options_reject_authority_smuggling) :-
+test(selection_context_rejects_authority_smuggling) :-
     setup_call_cleanup(
         setup_registry(Registry),
         ( expert_tool_select(
               Registry,
               "review git diff",
-              [capabilities([tool(git_diff)])],
+              expert_context{
+                  capabilities:[tool(git_diff)],
+                  authority:dangerous
+              },
               error(Error)),
-          assertion(Error.kind == invalid_options)
+          assertion(Error.kind == invalid_context)
         ),
         cleanup_registry(Registry)).
 
 test(expert_evidence_is_bounded) :-
     setup_call_cleanup(
         setup_registry(Registry),
-        ( expert_tool_select(
+        ( full_context(Context),
+          expert_tool_select(
               Registry,
               "review git diff",
-              [],
+              Context,
               ok(Selection)),
           length(Evidence, 17),
           maplist(=("x"), Evidence),
