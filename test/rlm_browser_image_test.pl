@@ -20,10 +20,11 @@ test(browser_pack_registers_closed_read_and_write_surface) :-
                   Pairs),
           assertion(memberchk(browser_tabs-read, Pairs)),
           assertion(memberchk(browser_read-read, Pairs)),
+          assertion(memberchk(browser_elements-read, Pairs)),
           assertion(memberchk(browser_screenshot-read, Pairs)),
           assertion(memberchk(browser_open-network_write, Pairs)),
           assertion(memberchk(browser_submit-network_write, Pairs)),
-          assertion(length(Pairs, 9))
+          assertion(length(Pairs, 10))
         ),
         tool_registry_destroy(Registry)).
 
