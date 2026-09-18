@@ -623,8 +623,8 @@ normalize_identifier(Field, Value, Text) :-
     bounded_text(Field, Value, 128, Text),
     string_length(Text, Length),
     Length > 0,
-    + sub_string(Text, _, _, _, "\n"),
-    + sub_string(Text, _, _, _, "\r"),
+    \+ sub_string(Text, _, _, _, "\n"),
+    \+ sub_string(Text, _, _, _, "\r"),
     !.
 normalize_identifier(Field, _, _) :-
     throw(zara_runtime_fault(invalid_identifier(Field))).
