@@ -75,7 +75,7 @@ zara_runtime_descriptor(Descriptor) :-
         supports_cancel:true,
         supports_context_handles:false,
         supports_host_tools:false,
-        provenance:_{kind:"prolog-rlm", source:"local"}
+        provenance:"prolog-rlm:local"
     }.
 
 zara_runtime_health(Health) :-
