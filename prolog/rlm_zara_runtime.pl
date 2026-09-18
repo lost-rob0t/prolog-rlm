@@ -4,6 +4,7 @@
             zara_runtime_health/1,
             zara_runtime_execute/2,
             zara_runtime_cancel/2,
+            zara_runtime_set_profiles/1,
             zara_runtime_server_start/1,
             zara_runtime_server_stop/0
           ]).
@@ -33,6 +34,7 @@ surface is implemented and tested.
 
 :- dynamic zara_server_port/1.
 :- dynamic zara_request_token/2.
+:- dynamic zara_runtime_profile/1.
 
 :- http_handler(root('zara-runtime/v1/discover'),
                 zara_discover_handler,
@@ -53,6 +55,7 @@ zara_runtime_descriptor(Descriptor) :-
     rlm:rlm_version(Version0),
     text_string(Version0, Version),
     zara_runtime_protocol(Protocol),
+    findall(Profile, zara_runtime_profile(Profile), Profiles),
     Descriptor = _{
         id:"prolog-rlm",
         display_name:"Prolog-RLM",
@@ -65,7 +68,7 @@ zara_runtime_descriptor(Descriptor) :-
         locality:"local_sidecar",
         transport:"loopback_http",
         capabilities:["direct", "rlm", "context.inline", "cancel", "trace"],
-        profiles:[],
+        profiles:Profiles,
         provider_control:"runtime",
         model_control:"runtime",
         supports_streaming:false,
@@ -112,6 +115,34 @@ zara_runtime_execute_(Request, Reply) :-
                      Token,
                      Reply),
         unregister_request(RequestId, Token)).
+
+zara_runtime_set_profiles(Profiles0) :-
+    (   is_list(Profiles0),
+        length(Profiles0, Count),
+        Count =< 16
+    ->  maplist(normalize_profile, Profiles0, Profiles),
+        sort(Profiles, Unique),
+        ( length(Unique, Count)
+        -> true
+        ;  throw(zara_runtime_fault(duplicate_profile))
+        ),
+        with_mutex(zara_runtime_profiles,
+                   ( retractall(zara_runtime_profile(_)),
+                     maplist(assert_runtime_profile, Profiles)
+                   ))
+    ;   throw(zara_runtime_fault(invalid_profiles))
+    ).
+
+normalize_profile(Value, Profile) :-
+    normalize_identifier(profile, Value, Profile),
+    string_lower(Profile, Lower),
+    ( Profile == Lower
+    -> true
+    ;  throw(zara_runtime_fault(invalid_profile(Profile)))
+    ).
+
+assert_runtime_profile(Profile) :-
+    assertz(zara_runtime_profile(Profile)).
 
 zara_runtime_cancel(RequestId0, Reply) :-
     catch(( normalize_identifier(request_id, RequestId0, RequestId),
