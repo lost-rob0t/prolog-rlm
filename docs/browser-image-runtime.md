@@ -17,6 +17,7 @@ It advertises:
 | --- | --- |
 | `browser_tabs` | `read` |
 | `browser_read` | `read` |
+| `browser_elements` | `read` |
 | `browser_extract` | `read` |
 | `browser_screenshot` | `read` |
 | `browser_open` | `network_write` |
