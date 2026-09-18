@@ -33,6 +33,9 @@ authority and budget data are not accepted by this module, keeping strategy
 selection structurally separate from permission.
 */
 
+:- use_module(library(lists), [subtract/3]).
+:- use_module(library(pairs), [pairs_keys/2]).
+
 :- dynamic reasoning_mode_state/6.
 
 rlm_reasoning_mode_ready :-
