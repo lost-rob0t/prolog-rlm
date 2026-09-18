@@ -108,6 +108,7 @@ The same CLI supports JSONL traces and custom OpenAI-compatible endpoints. See:
 - `docs/cli-demo-traces.md` for commands, provider configuration, budgets, capabilities, failures, and trace format;
 - `docs/completion-runtime.md` for the task-first direct-or-plan protocol, trusted identity framing, repair, and live acceptance gates;
 - `docs/direct-runtime.md` for standard provider-native tools, opaque result contexts, SPEC/typed-plan native modes, budgets, effects, and cache boundaries;
+- `docs/reasoning-modes.md` for the canonical direct/symbolic/symbolic-recursive/auto strategy contract and deterministic expert-aware selector;
 - `docs/conversation-runtime.md` for bounded hot/warm packing, opaque cold retrieval, scale guarantees, and current storage limits;
 - `docs/deep-recursion-experiments.md` for the explicit depth >1 experiment gate, shared-tree safety invariants, deterministic/live benchmark commands, and promotion rule;
 - `docs/skills.md` for Prolog-owned skill discovery, automatic activation, budgets, dependency rules, and third-party skill loading;
@@ -137,6 +138,7 @@ Production namespaces live under `prolog/`:
 - `rlm_chain` — provider/model abstraction;
 - `rlm_context` — bounded opaque external-context operations;
 - `rlm_tool` — capability-gated local tool execution;
+- `rlm_reasoning_mode` — canonical strategy state and deterministic `/auto` selection, separate from authority;
 - `rlm_skill` — confined inert `SKILL.md` package discovery, normalization, provenance, and lazy resource access;
 - `rlm_prompt_compiler` — the single selector and bounded provider-context packer for skills, instructions, and tool metadata;
 - `adaptors/rlm_agent_zero_adapter` — Agent Zero DOX/skill/context compilation and
