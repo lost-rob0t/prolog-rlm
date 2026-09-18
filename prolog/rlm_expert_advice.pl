@@ -24,6 +24,8 @@ call. The request exposes only the selected tool's provider schema. This module
 does not execute a provider-returned tool call.
 */
 
+:- use_module(library(lists), [sum_list/2]).
+
 :- use_module(rlm_tool,
               [ tool_discover/2,
                 tool_lookup/3
