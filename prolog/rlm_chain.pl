@@ -19,12 +19,17 @@
             structured_schema_compile/2,
             structured_validate/3,
             structured_decode_validate/3,
-            default_retry_policy/1,
-            openrouter_provider/2,
-            openai_compatible_provider/4,
-            default_openrouter_model/1,
-            provider_capability/2,
-            normalize_openai_chat_response/5
+             default_retry_policy/1,
+             openrouter_provider/2,
+             openai_compatible_provider/4,
+             zai_coding_provider/3,
+             zai_codex_provider/2,
+             zai_claude_provider/2,
+             default_openrouter_model/1,
+             provider_capability/2,
+             normalize_openai_chat_response/5,
+             normalize_openai_responses_response/5,
+             normalize_anthropic_messages_response/5
           ]).
 
 /** <module> Provider-neutral model-chain runtime
@@ -59,6 +64,11 @@ public wrapper.
 :- use_module(rlm_openai_compatible,
               [ openai_compatible_complete/4,
                 openai_compatible_stream/5
+               ]).
+:- use_module(rlm_zai_protocols,
+              [ zai_protocol_complete/5,
+                normalize_openai_responses_response/5,
+                normalize_anthropic_messages_response/5
               ]).
 
 rlm_chain_ready.
@@ -76,6 +86,17 @@ provider_capability(openai_compatible, tool_calls).
 provider_capability(openai_compatible, streaming).
 provider_capability(openai_compatible, multimodal_input).
 provider_capability(openai_compatible, structured_output).
+provider_capability(zai_coding, chat_completions).
+provider_capability(zai_coding, tool_calls).
+provider_capability(zai_coding, streaming).
+provider_capability(zai_coding, structured_output).
+provider_capability(zai_codex, responses).
+provider_capability(zai_codex, usage_metadata).
+provider_capability(zai_codex, tool_calls).
+provider_capability(zai_codex, structured_output).
+provider_capability(zai_claude, messages).
+provider_capability(zai_claude, usage_metadata).
+provider_capability(zai_claude, tool_calls).
 
 %!  default_openrouter_model(-Model) is det.
 %
@@ -118,8 +139,50 @@ openai_compatible_provider(Endpoint, Credential, Model,
                                     [ endpoint(Endpoint),
                                       credential(Credential),
                                       model(Model),
-                                      timeout(30)
-                                    ])).
+                                       timeout(30)
+                                     ])).
+
+%!  zai_coding_provider(+Protocol, +Model, -Provider) is det.
+%
+%   Construct a Z.AI Coding Plan provider without resolving `ZAI_API_KEY`.
+%   Protocol is one of `chat_completions`, `responses`, or
+%   `anthropic_messages`.
+
+zai_coding_provider(chat_completions, Model,
+                    provider(zai_coding,
+                             [ endpoint('https://api.z.ai/api/coding/paas/v4/chat/completions'),
+                               credential(env('ZAI_API_KEY')),
+                               model(Model),
+                               timeout(30),
+                               address_family(inet)
+                             ])) :- !.
+zai_coding_provider(responses, Model,
+                    provider(zai_codex,
+                             [ endpoint('https://api.z.ai/api/v1/responses'),
+                               credential(env('ZAI_API_KEY')),
+                               model(Model),
+                               timeout(30),
+                               address_family(inet)
+                             ])) :- !.
+zai_coding_provider(anthropic_messages, Model,
+                    provider(zai_claude,
+                             [ endpoint('https://api.z.ai/api/anthropic/v1/messages'),
+                               credential(env('ZAI_API_KEY')),
+                               model(Model),
+                               timeout(30),
+                               address_family(inet),
+                               default_max_tokens(4096)
+                             ])) :- !.
+zai_coding_provider(Protocol, _, _) :-
+    throw(error(domain_error(zai_coding_protocol, Protocol),
+                context(rlm_chain:zai_coding_provider/3,
+                        'expected chat_completions, responses, or anthropic_messages'))).
+
+zai_codex_provider(Model, Provider) :-
+    zai_coding_provider(responses, Model, Provider).
+
+zai_claude_provider(Model, Provider) :-
+    zai_coding_provider(anthropic_messages, Model, Provider).
 
 /* Async/sync bridge ------------------------------------------------------ */
 
@@ -256,8 +319,18 @@ dispatch_provider(openai_compatible, Config, Request, Outcome) :-
     !,
     dispatch_openai_compatible_complete(openai_compatible,
                                         Config,
-                                        Request,
-                                        Outcome).
+                                         Request,
+                                         Outcome).
+dispatch_provider(zai_coding, Config, Request, Outcome) :-
+    !,
+    dispatch_openai_compatible_complete(zai_coding, Config, Request, Outcome).
+dispatch_provider(zai_codex, Config, Request, Outcome) :-
+    !,
+    dispatch_zai_protocol(responses, zai_codex, Config, Request, Outcome).
+dispatch_provider(zai_claude, Config, Request, Outcome) :-
+    !,
+    dispatch_zai_protocol(anthropic_messages, zai_claude, Config, Request,
+                          Outcome).
 dispatch_provider(Provider, _, _,
                   error(provider_error{provider:Provider,
                                        kind:capability_denied,
@@ -275,6 +348,15 @@ complete_normalized_request(ok(Request), Provider, Config, Outcome) :-
                                                      Config,
                                                      Request,
                                                      Outcome).
+
+dispatch_zai_protocol(Protocol, Provider, Config, Request0, Outcome) :-
+    normalize_provider_request(Provider, Config, Request0, Normalization),
+    complete_zai_normalized(Normalization, Protocol, Provider, Config, Outcome).
+
+complete_zai_normalized(error(Error), _, _, _, error(Error)) :- !.
+complete_zai_normalized(ok(Request), Protocol, Provider, Config, Outcome) :-
+    rlm_zai_protocols:zai_protocol_complete(Protocol, Provider, Config, Request,
+                                            Outcome).
 
 %!  model_stream_execute(+Provider, +Request, +EventHandler, -Outcome) is det.
 %
@@ -303,8 +385,12 @@ dispatch_stream_provider(openai_compatible, Config, Request, EventHandler,
     dispatch_openai_compatible_stream(openai_compatible,
                                       Config,
                                       Request,
-                                      EventHandler,
-                                      Outcome).
+                                       EventHandler,
+                                       Outcome).
+dispatch_stream_provider(zai_coding, Config, Request, EventHandler, Outcome) :-
+    !,
+    dispatch_openai_compatible_stream(zai_coding, Config, Request,
+                                      EventHandler, Outcome).
 dispatch_stream_provider(Provider, _, _, _,
                          error(provider_error{provider:Provider,
                                               kind:capability_denied,
