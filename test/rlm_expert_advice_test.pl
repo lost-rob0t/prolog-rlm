@@ -119,7 +119,8 @@ test(expert_selection_projects_auto_mode_signal) :-
                   [],
                   ok(Selection)),
               expert_mode_signal(Selection, Signal),
-              assertion(Signal == _{expert_applicable:true}),
+              assertion(Signal.expert_applicable == true),
+              assertion(ground(Signal)),
               reasoning_mode_select(
                   expert_mode_fixture,
                   Signal,
