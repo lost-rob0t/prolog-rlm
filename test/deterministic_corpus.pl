@@ -164,6 +164,7 @@ corpus_entry('rlm_result_accept_test.pl', include(rlm_result_accept)).
 corpus_entry('rlm_spec_lang_test.pl', include(rlm_spec_lang)).
 corpus_entry('rlm_spec_workflow_test.pl', include(rlm_spec_workflow)).
 corpus_entry('rlm_spec_strategy_test.pl', include(rlm_spec_strategy)).
+corpus_entry('rlm_reasoning_mode_test.pl', include(rlm_reasoning_mode)).
 corpus_entry('rlm_project_source_test.pl', include(rlm_project_source)).
 corpus_entry('rlm_project_grammar_pack_test.pl',
               include(rlm_project_grammar_pack)).
