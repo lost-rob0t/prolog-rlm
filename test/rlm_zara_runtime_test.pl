@@ -19,6 +19,23 @@ test(health_does_not_claim_provider_credential_readiness) :-
     assertion(Health.available == true),
     assertion(Health.health == "ready").
 
+test(valid_request_id_survives_machine_boundary) :-
+    rlm_zara_runtime:normalize_identifier(request_id, "not-active", RequestId),
+    assertion(RequestId == "not-active").
+
+test(control_character_request_id_fails_closed,
+     [throws(zara_runtime_fault(invalid_identifier(request_id)))]) :-
+    rlm_zara_runtime:normalize_identifier(request_id, "bad\nrequest", _).
+
+test(wrapped_runtime_fault_projects_to_typed_invalid_request) :-
+    rlm_zara_runtime:error_kind(
+        error(zara_runtime_fault(invalid_budget(max_tokens)), context(test, bridge)),
+        Kind,
+        Message
+    ),
+    assertion(Kind == "invalid_request"),
+    assertion(Message == "runtime request is invalid").
+
 test(incompatible_protocol_fails_closed_without_execution) :-
     Request = _{
         protocol:"ZARA-RUNTIME/99",
