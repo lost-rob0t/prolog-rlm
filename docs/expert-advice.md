@@ -1,128 +1,171 @@
 # Expert-guided symbolic advice
 
-`rlm_expert_advice` is the compatibility bridge between the canonical
-reasoning-mode contract (#335) and the full expert runtime (#377).
+`rlm_expert_advice` composes three existing authorities:
 
-It makes symbolic mode more open without creating a second tool executor:
-registered tool schemas can participate as deterministic expert candidates,
-while trusted handlers remain inside `rlm_tool`.
+1. `rlm_expert` — trusted deterministic Prolog experts;
+2. `rlm_prompt_compiler` — bounded relevance selection over inert metadata;
+3. `rlm_tool` / `rlm_chain` — the normal capability/tool and provider boundaries.
+
+It does **not** create another expert registry, tool executor, scheduler, or model
+loop.
+
+## Expert/tool identity
+
+A first-class leaf expert is registered once:
+
+```prolog
+expert_register(Registry, ExpertContract, TrustedHandler, Outcome).
+```
+
+`rlm_expert` simultaneously projects that same handler as a normal read-only
+registered tool. The expert system therefore decides over real expert contracts,
+while direct/planned/model-facing tool execution reuses the same canonical
+handler.
+
+The public expert catalog never contains handlers.
 
 ## Direction
 
 ```text
-registered tool schemas
-      |
-      v
-prompt compiler relevance selection
-      |
-      v
-inert expert_selection
-      |
-      +--> expert_applicable signal -> /auto
-      |
-      v
+trusted expert contracts
+        |
+        +---- projected as ordinary registered read tools
+        |
+        v
+prompt-compiler relevance search over sanitized schemas
+        |
+        v
+canonical expert_select(goal, capabilities, priority)
+        |
+        +--> expert_applicable signal -> /auto
+        |
+        v
 bounded expert_advice
-      |
-      v
-one canonical model request
-      |
-      v
-answer OR provider tool-call proposal
-      |
-      v
+        |
+        v
+exactly one canonical model request
+        |
+        v
+answer OR selected expert-tool proposal
+        |
+        v
 existing rlm_tool execution boundary
 ```
 
-The expert layer does not execute the selected tool.
+The advisory layer never executes the provider's returned tool call.
 
 ## Public API
 
 ```prolog
 expert_tool_candidates(+Registry, -Outcome).
-expert_tool_select(+Registry, +Query, +Options, -Outcome).
+expert_tool_select(+Registry, +Query, +Context, -Outcome).
 expert_mode_signal(+Selection, -Signal).
 expert_advice_build(+Selection, +Evidence, -Outcome).
 expert_advice_model_request(+Advice, +Query, +Options, -Outcome).
 expert_advice_model_step(+Provider, +Advice, +Query, +Options, -Outcome).
 ```
 
-### Tool-as-expert projection
+### Candidate projection
 
-`expert_tool_candidates/2` consumes `tool_discover/2`, which already strips
-trusted handlers. Each candidate contains only inert schema information:
+`expert_tool_candidates/2` begins with `expert_catalog/2`, then obtains the
+sanitized tool schema associated with each expert. Plain registered tools that
+have no expert contract are not candidates.
+
+A candidate is inert:
 
 ```prolog
 expert_candidate{
-    id:tool(Name),
+    id:expert(Name),
     name:Name,
+    goal:Goal,
+    version:Version,
+    priority:Priority,
     description:Description,
     required_capability:tool(Name),
-    effect:Effect,
+    effect:read,
     limits:Limits,
     schema:SanitizedSchema,
-    source:tool_registry
+    contract:InertExpertContract,
+    source:expert_registry
 }
 ```
 
-A candidate is knowledge that an operation exists. It is not authorization.
+No callable is present.
 
 ### Selection
 
-`expert_tool_select/4` imports the registry into a temporary
-`rlm_prompt_compiler` catalog and asks the existing compiler's bounded
-relevance search for one tool candidate.
+`expert_tool_select/4` accepts a trusted context containing exactly a
+`capabilities` field.
 
-This deliberately reuses the same lexical/metadata semantics already used for
-managed tool discovery. There is no second fuzzy router or model classifier.
+It performs two stages:
 
-The compatibility selector accepts no capability, authority, effect, provider,
-or budget override options. Those concerns remain owned by their canonical
-runtime boundaries.
+1. the prompt compiler ranks sanitized registered-tool metadata against the
+   natural-language query;
+2. results are filtered to actual expert contracts and the matching expert
+   goal is passed into canonical `expert_select/4`.
 
-A successful selection includes `applicable:true`. No relevant candidate is a
-normal `applicable:false` result.
+The second stage owns expert priority, ambiguity, and capability applicability.
+A model does not choose the expert and cannot claim a capability.
 
-### Auto-mode signal
+For example, if a normal non-expert tool has excellent matching keywords, it is
+still excluded from expert selection.
+
+A context containing authority, budget, provider, handler, or other unexpected
+fields fails closed.
+
+### Auto mode
 
 ```prolog
-expert_mode_signal(Selection, _{expert_applicable:true}).
+expert_mode_signal(Selection, reasoning_task_context{expert_applicable:true}).
 ```
 
-That signal can be supplied to `reasoning_mode_select/4`. It changes strategy
-only. It cannot grant the selected tool capability.
+The signal is ground data and plugs directly into
+`reasoning_mode_select/4`. It changes reasoning strategy only.
 
-### One-step advice
+An applicable expert therefore makes `/auto` prefer `symbolic`.
+An expert plus trusted decomposable/recursion signals may make the mode selector
+choose `symbolic-recursive`.
 
-`expert_advice_build/3` creates closed bounded data containing:
+### One-step model advice
 
-- selected expert/tool identity;
-- normal required capability and effect metadata;
-- deterministic relevance rationale;
-- at most 16 bounded evidence strings;
-- `stop_condition:one_model_step`;
-- the sanitized selected tool schema.
+`expert_advice_build/3` creates closed bounded advice containing the selected
+expert/tool identity, goal, version, normal capability/effect metadata,
+deterministic selection rationale, at most 16 bounded evidence strings, and
+`stop_condition:one_model_step`.
 
-`expert_advice_model_request/4` converts that advice into exactly one
-`model_request{}` with two messages: one expert-system instruction and the
-user/task query. Only the selected tool's provider schema is exposed.
+`expert_advice_model_request/4` renders only the selected expert-tool schema
+into one provider request.
 
-`expert_advice_model_step/5` submits that request once through the canonical
-`rlm_chain:model_complete/3` boundary. It does not loop and it does not
-execute any returned tool call.
+`expert_advice_model_step/5` calls `rlm_chain:model_complete/3` exactly once.
+It does not loop and it does not execute returned tool calls.
 
-If the provider proposes the selected tool, the supervising symbolic runtime
-must submit that proposal through normal `rlm_tool` invocation with the
-already-held capabilities and authority. A missing capability therefore fails
-exactly as it would without the expert system.
+If the model proposes the expert-tool, the supervising symbolic runtime submits
+that proposal through ordinary `rlm_tool` execution. Capability and authority
+are rechecked there. Expert selection therefore cannot make a denied tool
+executable.
 
-## Future #377 migration
+## Loop policy
 
-The full expert registry will replace tool-schema compatibility candidates with
-first-class expert contracts and Prolog applicability rules. The important
-invariants remain:
+The intended symbolic loop is deliberately incremental:
 
-- expert selection is deterministic where rules suffice;
-- expert output is advice/data, not hidden authority;
-- local expert success can avoid a model call entirely;
-- model fallback is explicitly bounded;
-- normal tool/effect/budget/cancellation accounting remains canonical.
+```text
+observe state
+-> apply local deterministic experts/rules
+-> choose one next expert/tool
+-> if model judgment is useful, advise exactly one model step
+-> validate/propose/execute through canonical boundaries
+-> observe new state
+-> repeat under the enclosing runtime budget
+```
+
+A deterministic expert may also be invoked locally through `expert_invoke/7`
+with zero model calls. Model advice is a fallback/operator, not mandatory
+reasoning glue.
+
+## Remaining #377 work
+
+The merged/integration slice is still a bounded **leaf** expert runtime.
+Recursive expert cooperation, aggregate nested expert budgets,
+evidence-aware applicability predicates, richer invocation lineage,
+per-expert unregister, and fully metered recursive/model fallback remain
+separate #377 work.
