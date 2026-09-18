@@ -22,6 +22,13 @@
             reasoning_mode_get/2,
             reasoning_mode_select/4,
             reasoning_mode_valid/1,
+            rlm_expert_advice_ready/0,
+            expert_tool_candidates/2,
+            expert_tool_select/4,
+            expert_mode_signal/2,
+            expert_advice_build/3,
+            expert_advice_model_request/4,
+            expert_advice_model_step/5,
             rlm_skill_ready/0,
             skill_catalog_empty/1,
             skill_catalog_load/3,
@@ -271,6 +278,15 @@ latency is represented by a deferred pending-operation Future; no shared
                 reasoning_mode_select/4,
                 reasoning_mode_valid/1
               ]).
+:- use_module(rlm_expert_advice,
+              [ rlm_expert_advice_ready/0,
+                expert_tool_candidates/2,
+                expert_tool_select/4,
+                expert_mode_signal/2,
+                expert_advice_build/3,
+                expert_advice_model_request/4,
+                expert_advice_model_step/5
+              ]).
 :- use_module(rlm_context_budget,
               [ rlm_context_budget_ready/0,
                 default_context_policy/1,
@@ -456,6 +472,7 @@ rlm_ready :-
     rlm_authority:rlm_authority(runtime(ready_probe), approve_diff),
     rlm_completion:default_completion_budget(_),
     rlm_reasoning_mode:rlm_reasoning_mode_ready,
+    rlm_expert_advice:rlm_expert_advice_ready,
     rlm_context_budget:rlm_context_budget_ready,
     rlm_conversation:rlm_conversation_ready,
     rlm_conversation_warm:rlm_conversation_warm_ready,
