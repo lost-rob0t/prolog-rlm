@@ -68,7 +68,7 @@ main(_) :-
          rlm_project_semantic_pack:rlm_project_semantic_pack_ready,
          rlm_project_semantic:rlm_project_semantic_ready,
         rlm_reasoning_mode:rlm_reasoning_mode_ready,
-        rlm_expert:expert_catalog(_, _),
+        rlm_expert:rlm_expert_ready,
         rlm_expert_advice:rlm_expert_advice_ready,
         rlm_runtime_status:rlm_runtime_status_ready,
         prolog_agent_ui_v1:ui_v1_ready,
