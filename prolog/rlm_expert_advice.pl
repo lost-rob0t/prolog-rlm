@@ -196,11 +196,7 @@ advice_wire_tool(Advice, Wire) :-
 advice_system_text(Advice, Text) :-
     format(
         string(Text),
-        "Symbolic expert ~q selected registered tool ~q. "
-        "You have exactly one reasoning step. Use the offered tool only if it "
-        "is necessary; otherwise answer directly. Do not assume any tool call "
-        "has executed. Return control to the symbolic supervisor after this "
-        "response. Expert evidence: ~q",
+        "Symbolic expert ~q selected registered tool ~q. You have exactly one reasoning step. Use the offered tool only if it is necessary; otherwise answer directly. Do not assume any tool call has executed. Return control to the symbolic supervisor after this response. Expert evidence: ~q",
         [Advice.expert, Advice.selected_tool, Advice.evidence]
     ).
 
@@ -218,7 +214,8 @@ require_advice(Advice) :-
       acyclic_term(Advice),
       Advice.stop_condition == one_model_step,
       Advice.source == tool_registry,
-      Advice.recommendation = recommend_tool(Advice.selected_tool)
+      SelectedTool = Advice.selected_tool,
+      Advice.recommendation = recommend_tool(SelectedTool)
     -> true
     ; throw(expert_fault(invalid_advice(Advice)))
     ).
