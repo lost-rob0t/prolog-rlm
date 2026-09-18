@@ -218,16 +218,23 @@ safe_relative_target(Target) :-
     throw(literate_fault(unsafe_tangle_target(Target))).
 
 block_targets(Blocks, Targets) :-
-    findall(Target, member(org_source_block{target:Target}, Blocks), Targets0),
+    findall(Target,
+            ( member(Block, Blocks),
+              Target = Block.target ),
+            Targets0),
     list_to_set(Targets0, Targets).
 
 render_target(Blocks, Target, Output) :-
     findall(Body,
-            member(org_source_block{target:Target, body:Body}, Blocks),
+            ( member(Block, Blocks),
+              Block.target == Target,
+              Body = Block.body ),
             Bodies),
     atomics_to_string(Bodies, "", Content),
     findall(Language,
-            member(org_source_block{target:Target, language:Language}, Blocks),
+            ( member(Block, Blocks),
+              Block.target == Target,
+              Language = Block.language ),
             Languages0),
     sort(Languages0, Languages),
     length(Bodies, Count),
