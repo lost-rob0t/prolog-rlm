@@ -47,6 +47,7 @@ user:message_hook(Message, error, Lines) :-
 corpus_entry('bootstrap_test.pl', include(bootstrap)).
 corpus_entry('load_error_status_test.pl', include(load_error_status)).
 corpus_entry('rlm_closed_data_test.pl', include(rlm_closed_data)).
+corpus_entry('rlm_semantic_compiler_test.pl', include(rlm_semantic_compiler)).
 corpus_entry('rlm_direct_context_peek_contract_test.pl',
              include(rlm_direct_context_peek_contract)).
 corpus_entry('rlm_native_any_schema_test.pl', include(rlm_native_any_schema)).
