@@ -54,6 +54,7 @@ corpus_entry('rlm_chain_test.pl', include(rlm_chain)).
 corpus_entry('rlm_chain_app_attribution_test.pl',
              include(rlm_chain_app_attribution)).
 corpus_entry('rlm_chain_runtime_test.pl', include(rlm_chain_runtime)).
+corpus_entry('rlm_browser_image_test.pl', include(rlm_browser_image)).
 corpus_entry('rlm_completion_stream_test.pl', include(rlm_completion_stream)).
 corpus_entry('rlm_chain_message_metadata_test.pl',
              include(rlm_chain_message_metadata)).
