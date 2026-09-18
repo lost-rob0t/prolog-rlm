@@ -20,10 +20,14 @@ jobs:
         with:
           fetch-depth: 2
 
-      # Forgejo runner jobs execute in Docker containers without systemd.
-      # Install Nix with --init none and spawn the daemon directly instead of
-      # relying on the installer's systemd integration or action detection.
-      - name: Install Nix and start daemon
+      # GitHub-hosted runners support the Determinate action directly. Keep
+      # the manual --init none path only for Forgejo's container runners.
+      - name: Install Nix on GitHub
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Install Nix on Forgejo container
+        if: ${{ github.server_url != 'https://github.com' }}
         run: |
           set -euo pipefail
           curl -sSfL https://install.determinate.systems/nix -o /tmp/nix-install.sh
