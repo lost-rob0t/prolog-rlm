@@ -36,6 +36,24 @@ test(wrapped_runtime_fault_projects_to_typed_invalid_request) :-
     assertion(Kind == "invalid_request"),
     assertion(Message == "runtime request is invalid").
 
+test(optional_product_profiles_are_advertised_without_changing_runtime_identity) :-
+    setup_call_cleanup(
+        zara_runtime_set_profiles(["agentprolog"]),
+        ( zara_runtime_descriptor(Descriptor),
+          assertion(Descriptor.id == "prolog-rlm"),
+          assertion(Descriptor.profiles == ["agentprolog"])
+        ),
+        zara_runtime_set_profiles([])
+    ).
+
+test(invalid_product_profile_fails_closed,
+     [throws(zara_runtime_fault(invalid_profile("Agent Prolog")))]) :-
+    zara_runtime_set_profiles(["Agent Prolog"]).
+
+test(duplicate_product_profile_fails_closed,
+     [throws(zara_runtime_fault(duplicate_profile))]) :-
+    zara_runtime_set_profiles(["agentprolog", "agentprolog"]).
+
 test(incompatible_protocol_fails_closed_without_execution) :-
     Request = _{
         protocol:"ZARA-RUNTIME/99",
