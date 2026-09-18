@@ -29,6 +29,7 @@ proposal; this module does not execute it.
 */
 
 :- use_module(library(lists), [sum_list/2]).
+:- use_module(library(pairs), [pairs_keys/2]).
 
 :- use_module(rlm_tool,
               [ tool_lookup/3,
@@ -122,11 +123,12 @@ select_from_catalog(Catalog, Registry, Contracts, Query, Context, Selection) :-
         RegisterOutcome
     ),
     require_compiler_outcome(RegisterOutcome, register),
+    Capabilities = Context.capabilities,
     prompt_catalog_search(
         Catalog,
         Query,
         [ limit(64),
-          capabilities(Context.capabilities),
+          capabilities(Capabilities),
           discovery_scope([kind(tool)])
         ],
         SearchOutcome
