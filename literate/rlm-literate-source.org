@@ -405,6 +405,18 @@ test(tangle_and_check_round_trip) :-
 :- end_tests(rlm_literate_org).
 #+end_src
 
+* Deterministic test-corpus bridge
+
+The legacy deterministic corpus still owns a hand-maintained inventory. This
+bootstrap adds one stable include seam so new literate tests can register
+themselves from Org without adding another hand-edited clause for every source
+unit. The legacy corpus file itself should later migrate into canonical Org.
+
+#+begin_src prolog :tangle test/generated/literate_corpus_entries.pl
+% Generated from literate/rlm-literate-source.org. Do not edit by hand.
+corpus_entry('rlm_literate_org_test.pl', include(rlm_literate_org)).
+#+end_src
+
 * Human writing and adversarial review skill
 
 The source format only works if the prose is worth reading. This skill defines
