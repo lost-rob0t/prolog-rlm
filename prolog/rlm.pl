@@ -22,6 +22,7 @@
             reasoning_mode_get/2,
             reasoning_mode_select/4,
             reasoning_mode_valid/1,
+            rlm_expert_ready/0,
             expert_register/4,
             expert_catalog/2,
             expert_select/4,
@@ -284,7 +285,8 @@ latency is represented by a deferred pending-operation Future; no shared
                 reasoning_mode_valid/1
               ]).
 :- use_module(rlm_expert,
-              [ expert_register/4,
+              [ rlm_expert_ready/0,
+                expert_register/4,
                 expert_catalog/2,
                 expert_select/4,
                 expert_invoke/7,
@@ -484,6 +486,7 @@ rlm_ready :-
     rlm_authority:rlm_authority(runtime(ready_probe), approve_diff),
     rlm_completion:default_completion_budget(_),
     rlm_reasoning_mode:rlm_reasoning_mode_ready,
+    rlm_expert:rlm_expert_ready,
     rlm_expert_advice:rlm_expert_advice_ready,
     rlm_context_budget:rlm_context_budget_ready,
     rlm_conversation:rlm_conversation_ready,
