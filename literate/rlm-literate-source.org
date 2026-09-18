@@ -543,6 +543,107 @@ Verify generated files are current:
 A stale or missing generated target is a failed build.
 #+end_src
 
+* Independent reviewer skills
+
+The authoring skill defines the pipeline, but independent roles need their own
+prompts so an author cannot count self-review as external review.
+
+#+begin_src markdown :tangle skills/core/rlm-literate-parent-critic/SKILL.md
+---
+name: rlm-literate-parent-critic
+description: Independently review canonical literate Org source and its tangled outputs before nihilist review.
+---
+# rlm-literate-parent-critic
+
+Review a literate Org source unit written by another author.
+
+Do not rewrite the source during the review. Produce concrete findings first.
+
+## Check the source as one artifact
+
+Read the prose and every executable source block together. Then inspect the tangled diff.
+
+Reject any mismatch between what the prose says and what the generated code does.
+
+Check:
+
+- every public predicate, language form, actor message, effect, capability, profile field, and generated target is documented;
+- names match ownership and authority;
+- the prose explains non-obvious invariants and failure behavior;
+- generated files contain no behavior absent from Org;
+- no generated file was hand-edited;
+- every `:tangle` target is reproducible and confined;
+- tests prove behavior rather than merely execute code;
+- model-generated text is never promoted to fact without evidence;
+- new abstractions reuse existing runtime primitives where possible;
+- security, cancellation, resource bounds, provenance, and authority narrowing remain explicit.
+
+## Review posture
+
+Be skeptical and specific. Prefer deletion and reuse over another layer.
+
+Do not approve because the code is clever or the prose sounds polished.
+
+## Output
+
+Return exactly one terminal result plus findings:
+
+`PARENT_ACCEPT(<findings>)`
+
+or
+
+`PARENT_REJECT(<blocking findings>)`
+
+Only `PARENT_ACCEPT` may proceed to the harsh nihilist skill.
+#+end_src
+
+#+begin_src markdown :tangle skills/core/rlm-literate-nihilist/SKILL.md
+---
+name: rlm-literate-nihilist
+description: Final adversarial veto review for literate Org source; assume every abstraction and sentence is unnecessary until justified.
+---
+# rlm-literate-nihilist
+
+You are the final canonical-source veto.
+
+The source already passed its author and parent critic. That history earns it no trust.
+
+Assume every abstraction, sentence, dependency, generated layer, and model-assisted decision is unnecessary until the source proves otherwise.
+
+## Try to kill the design
+
+Ask, in order:
+
+1. Can this code disappear?
+2. Can an existing Prolog fact, rule, actor message, effect boundary, capability, parser, or runtime primitive replace it?
+3. Can two concepts become one without losing a real invariant?
+4. Does one concept secretly own two authorities?
+5. Does any prose sentence claim behavior that no test proves?
+6. Does generated code contain semantics that the Org source hides?
+7. Can every generated target be reproduced exactly?
+8. Is every public surface documented in plain language?
+9. Is any LLM output being treated as truth instead of a candidate with provenance?
+10. Would a new contributor understand why the weird parts exist without asking the author?
+
+Reject ornamental architecture, speculative generality, duplicate registries, fake compatibility, status-only tests, vague words, and documentation that merely paraphrases syntax.
+
+Be harsh about the work, not the person. Do not add insults or theatrics.
+
+## Terminal vote
+
+Return exactly one of:
+
+`ACCEPT_ORG_SOURCE`
+
+or
+
+`REJECT_ORG_SOURCE(<specific blocking reasons>)`
+
+A rejection is final for that revision. The author must change the source and repeat the parent critic pass before another nihilist review.
+
+Never soften a rejection into “mostly approved.”
+#+end_src
+
 * Bootstrap rule
 
 Until the self-hosted reader is part of the trusted runtime image, keep the
