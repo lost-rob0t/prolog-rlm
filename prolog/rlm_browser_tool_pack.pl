@@ -36,6 +36,9 @@ rlm_tool_loader:tool_pack_manifest(
             tool_export{name:browser_read,
                         capability:tool(browser_read),
                         effect:read},
+            tool_export{name:browser_elements,
+                        capability:tool(browser_elements),
+                        effect:read},
             tool_export{name:browser_extract,
                         capability:tool(browser_extract),
                         effect:read},
@@ -135,6 +138,19 @@ browser_tool_definition(
       properties:_{
           tab_id:_{type:integer},
           max_chars:_{type:integer}
+      }}).
+
+browser_tool_definition(
+    browser_elements,
+    page_elements,
+    read,
+    "List bounded interactive page elements with generated CSS selectors",
+    _{type:object,
+      required:[],
+      additional_properties:false,
+      properties:_{
+          tab_id:_{type:integer},
+          max_items:_{type:integer}
       }}).
 
 browser_tool_definition(
