@@ -10,25 +10,34 @@
 
 /** <module> Expert-guided symbolic tool advice
 
-This is the compatibility bridge for issue #459 while the canonical expert
-registry from #377 is landing.
+This module composes the canonical leaf-expert runtime with the canonical
+prompt compiler and provider boundary.
 
-The bridge treats sanitized registered tool schemas as inert expert candidates.
-It never receives or exposes a trusted tool handler. Relevance selection reuses
-rlm_prompt_compiler rather than creating a second router. Advice is closed data.
-A selected tool remains subject to the ordinary rlm_tool capability, authority,
-schema, effect, budget, cancellation, and persistence boundaries.
+Experts are trusted deterministic Prolog handlers registered through
+rlm_expert. Registration projects each expert as an ordinary read-only tool,
+so an expert has one implementation and one capability boundary. This module
+does not register handlers and never receives a callable.
 
-The optional model step is exactly one canonical rlm_chain:model_complete/3
-call. The request exposes only the selected tool's provider schema. This module
-does not execute a provider-returned tool call.
+For natural-language routing, the prompt compiler ranks only sanitized tool
+metadata. Results are filtered back through the inert expert catalog, then
+rlm_expert performs the authoritative goal/priority/capability selection.
+Advice is closed data. It changes strategy, never authority.
+
+The optional model step is exactly one rlm_chain:model_complete/3 call. The
+request exposes only the selected expert-tool schema. A returned tool call is a
+proposal; this module does not execute it.
 */
 
 :- use_module(library(lists), [sum_list/2]).
 
 :- use_module(rlm_tool,
-              [ tool_discover/2,
-                tool_lookup/3
+              [ tool_lookup/3,
+                capabilities_normalize/2
+              ]).
+:- use_module(rlm_expert,
+              [ rlm_expert_ready/0,
+                expert_catalog/2,
+                expert_select/4
               ]).
 :- use_module(rlm_prompt_compiler,
               [ prompt_catalog_create/1,
@@ -44,49 +53,68 @@ does not execute a provider-returned tool call.
               [ model_complete/3
               ]).
 
-rlm_expert_advice_ready.
+rlm_expert_advice_ready :-
+    rlm_expert_ready.
 
 expert_tool_candidates(Registry, Outcome) :-
     catch(
-        ( tool_discover(Registry, Schemas),
-          maplist(schema_candidate, Schemas, Candidates),
+        ( expert_catalog(Registry, Contracts),
+          maplist(contract_candidate(Registry), Contracts, Candidates),
           Outcome = ok(Candidates)
         ),
         Exception,
         expert_exception(candidates, Exception, Outcome)
     ).
 
-schema_candidate(
-    Schema,
-    expert_candidate{
-        id:tool(Name),
-        name:Name,
-        description:Schema.description,
-        required_capability:Schema.capability,
-        effect:Schema.effect,
-        limits:Schema.limits,
-        schema:Schema,
-        source:tool_registry
-    }
-) :-
-    Name = Schema.name.
+contract_candidate(Registry, Contract, Candidate) :-
+    Name = Contract.id,
+    tool_lookup(Registry, Name, Lookup),
+    require_tool_lookup(Lookup, Name, Schema),
+    Candidate = expert_candidate{
+                    id:expert(Name),
+                    name:Name,
+                    goal:Contract.goal,
+                    version:Contract.version,
+                    priority:Contract.priority,
+                    description:Contract.description,
+                    required_capability:Schema.capability,
+                    effect:Schema.effect,
+                    limits:Schema.limits,
+                    schema:Schema,
+                    contract:Contract,
+                    source:expert_registry
+                }.
 
-expert_tool_select(Registry, Query0, Options0, Outcome) :-
+expert_tool_select(Registry, Query0, Context0, Outcome) :-
     catch(
         ( bounded_query(Query0, Query),
-          require_selection_options(Options0),
-          setup_call_cleanup(
-              prompt_catalog_create(Catalog),
-              select_from_catalog(Catalog, Registry, Query, Selection),
-              prompt_catalog_destroy(Catalog)
-          ),
+          normalize_expert_context(Context0, Context),
+          expert_catalog(Registry, Contracts),
+          select_with_contracts(Contracts, Registry, Query, Context, Selection),
           Outcome = ok(Selection)
         ),
         Exception,
         expert_exception(select, Exception, Outcome)
     ).
 
-select_from_catalog(Catalog, Registry, Query, Selection) :-
+select_with_contracts([], _, _, _, Selection) :-
+    !,
+    no_expert_selection(Selection).
+select_with_contracts(Contracts, Registry, Query, Context, Selection) :-
+    setup_call_cleanup(
+        prompt_catalog_create(Catalog),
+        select_from_catalog(
+            Catalog,
+            Registry,
+            Contracts,
+            Query,
+            Context,
+            Selection
+        ),
+        prompt_catalog_destroy(Catalog)
+    ).
+
+select_from_catalog(Catalog, Registry, Contracts, Query, Context, Selection) :-
     prompt_catalog_register_tool_registry(
         Catalog,
         Registry,
@@ -97,31 +125,65 @@ select_from_catalog(Catalog, Registry, Query, Selection) :-
     prompt_catalog_search(
         Catalog,
         Query,
-        [limit(1), discovery_scope([kind(tool)])],
+        [ limit(64),
+          capabilities(Context.capabilities),
+          discovery_scope([kind(tool)])
+        ],
         SearchOutcome
     ),
     require_compiler_value(SearchOutcome, search, Search),
-    search_selection(Search.results, Registry, Selection).
+    first_expert_match(Search.results, Contracts, Match),
+    select_matched_expert(Match, Registry, Contracts, Context, Selection).
 
-search_selection([], _,
-                 expert_selection{
-                     applicable:false,
-                     candidate:none,
-                     score:0,
-                     source:prompt_compiler
-                 }).
-search_selection([Metadata|_], Registry,
-                 expert_selection{
-                     applicable:true,
-                     candidate:Candidate,
-                     score:Score,
-                     source:prompt_compiler
-                 }) :-
-    Name = Metadata.name,
-    Score = Metadata.score,
-    tool_lookup(Registry, Name, Lookup),
-    require_tool_lookup(Lookup, Name, Schema),
-    schema_candidate(Schema, Candidate).
+first_expert_match([], _, none).
+first_expert_match([Metadata|Rest], Contracts, Match) :-
+    ( contract_named(Contracts, Metadata.name, Contract)
+    -> Match = match(Metadata, Contract)
+    ; first_expert_match(Rest, Contracts, Match)
+    ).
+
+contract_named([Contract|_], Name, Contract) :-
+    Contract.id == Name,
+    !.
+contract_named([_|Contracts], Name, Contract) :-
+    contract_named(Contracts, Name, Contract).
+
+select_matched_expert(none, _, _, _, Selection) :-
+    !,
+    no_expert_selection(Selection).
+select_matched_expert(
+    match(Metadata, MatchedContract),
+    Registry,
+    Contracts,
+    Context,
+    Selection
+) :-
+    expert_select(
+        Registry,
+        MatchedContract.goal,
+        Context,
+        DecisionOutcome
+    ),
+    require_expert_decision(DecisionOutcome, Decision),
+    contract_named(Contracts, Decision.selected, SelectedContract),
+    contract_candidate(Registry, SelectedContract, Candidate),
+    Selection = expert_selection{
+                    applicable:true,
+                    candidate:Candidate,
+                    decision:Decision,
+                    query_score:Metadata.score,
+                    source:expert_registry
+                }.
+
+no_expert_selection(
+    expert_selection{
+        applicable:false,
+        candidate:none,
+        decision:none,
+        query_score:0,
+        source:expert_registry
+    }
+).
 
 expert_mode_signal(Selection, Signal) :-
     ( is_dict(Selection, expert_selection),
@@ -137,12 +199,14 @@ expert_advice_build(Selection, Evidence0, Outcome) :-
           normalize_evidence(Evidence0, Evidence),
           Advice = expert_advice{
                        expert:Candidate.id,
+                       expert_goal:Candidate.goal,
+                       expert_version:Candidate.version,
                        selected_tool:Candidate.name,
                        recommendation:recommend_tool(Candidate.name),
                        required_capability:Candidate.required_capability,
                        effect:Candidate.effect,
                        source:Candidate.source,
-                       rationale:deterministic_registry_relevance,
+                       rationale:expert_goal_priority_and_registry_relevance,
                        evidence:Evidence,
                        stop_condition:one_model_step,
                        tool_schema:Candidate.schema
@@ -196,9 +260,34 @@ advice_wire_tool(Advice, Wire) :-
 advice_system_text(Advice, Text) :-
     format(
         string(Text),
-        "Symbolic expert ~q selected registered tool ~q. You have exactly one reasoning step. Use the offered tool only if it is necessary; otherwise answer directly. Do not assume any tool call has executed. Return control to the symbolic supervisor after this response. Expert evidence: ~q",
-        [Advice.expert, Advice.selected_tool, Advice.evidence]
+        "Symbolic expert ~q selected expert-tool ~q for goal ~q. You have exactly one reasoning step. Use the offered tool only if it is necessary; otherwise answer directly. Do not assume any tool call has executed. Return control to the symbolic supervisor after this response. Expert evidence: ~q",
+        [ Advice.expert,
+          Advice.selected_tool,
+          Advice.expert_goal,
+          Advice.evidence
+        ]
     ).
+
+normalize_expert_context(Context0, Context) :-
+    ( is_dict(Context0)
+    -> true
+    ; throw(expert_fault(invalid_context(expected_object)))
+    ),
+    dict_pairs(Context0, _, Pairs),
+    pairs_keys(Pairs, Keys0),
+    sort(Keys0, Keys),
+    ( Keys == [capabilities]
+    -> true
+    ; throw(expert_fault(invalid_context(unexpected_fields(Keys)))
+    ),
+    capabilities_normalize(Context0.capabilities, CapsOutcome),
+    require_capabilities(CapsOutcome, Capabilities),
+    Context = expert_context{capabilities:Capabilities}.
+
+require_capabilities(ok(Capabilities), Capabilities) :-
+    !.
+require_capabilities(error(Error), _) :-
+    throw(expert_fault(invalid_context(capabilities(Error)))).
 
 require_applicable_selection(Selection, Candidate) :-
     ( is_dict(Selection, expert_selection),
@@ -213,7 +302,7 @@ require_advice(Advice) :-
       ground(Advice),
       acyclic_term(Advice),
       Advice.stop_condition == one_model_step,
-      Advice.source == tool_registry,
+      Advice.source == expert_registry,
       SelectedTool = Advice.selected_tool,
       Advice.recommendation = recommend_tool(SelectedTool)
     -> true
@@ -265,14 +354,6 @@ bounded_query(Value, Query) :-
     ; throw(expert_fault(invalid_query_length(Length)))
     ).
 
-require_selection_options(Options) :-
-    ( Options == []
-    -> true
-    ; is_list(Options)
-    -> throw(expert_fault(invalid_options(unknown_options(Options))))
-    ; throw(expert_fault(invalid_options(expected_list)))
-    ).
-
 model_request_options(Options, MaxTokens) :-
     ( is_list(Options)
     -> model_request_options_(Options, 256, MaxTokens)
@@ -301,6 +382,11 @@ require_compiler_value(ok(Value), _, Value) :-
 require_compiler_value(error(Error), Phase, _) :-
     throw(expert_fault(compiler_error(Phase, Error))).
 
+require_expert_decision(ok(Decision), Decision) :-
+    !.
+require_expert_decision(error(Error), _) :-
+    throw(expert_fault(expert_selection(Error))).
+
 require_tool_lookup(ok(Schema), _, Schema) :-
     !.
 require_tool_lookup(error(Error), Name, _) :-
@@ -311,6 +397,17 @@ require_native_value(ok(Value), _, Value) :-
 require_native_value(error(Error), Phase, _) :-
     throw(expert_fault(native_schema_error(Phase, Error))).
 
+expert_exception(
+    Phase,
+    expert_fault(invalid_context(Detail)),
+    error(expert_advice_error{
+              phase:Phase,
+              kind:invalid_context,
+              detail:Detail,
+              message:"expert selection context is invalid"
+          })
+) :-
+    !.
 expert_exception(
     Phase,
     expert_fault(invalid_options(Detail)),
