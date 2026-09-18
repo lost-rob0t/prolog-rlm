@@ -596,6 +596,9 @@ request_id_or_unknown(Request, RequestId) :-
     !.
 request_id_or_unknown(_, "unknown").
 
+error_kind(error(Inner, _Context), Kind, Message) :-
+    !,
+    error_kind(Inner, Kind, Message).
 error_kind(zara_runtime_fault(incompatible_protocol(_)),
            "incompatible_protocol",
            "runtime protocol is incompatible") :- !.
@@ -620,14 +623,17 @@ error_kind(time_limit_exceeded,
 error_kind(_, "runtime_error", "Prolog-RLM runtime request failed").
 
 normalize_identifier(Field, Value, Text) :-
-    bounded_text(Field, Value, 128, Text),
-    string_length(Text, Length),
-    Length > 0,
-    \+ sub_string(Text, _, _, _, "\n"),
-    \+ sub_string(Text, _, _, _, "\r"),
-    !.
-normalize_identifier(Field, _, _) :-
-    throw(zara_runtime_fault(invalid_identifier(Field))).
+    (   text_string(Value, Candidate),
+        string_length(Candidate, Length),
+        Length > 0,
+        Length =< 128,
+        string_codes(Candidate, Codes),
+        \+ ( member(Code, Codes),
+             Code < 32
+           )
+    ->  Text = Candidate
+    ;   throw(zara_runtime_fault(invalid_identifier(Field)))
+    ).
 
 normalize_atom(_Field, Value, Atom) :-
     atom(Value),
