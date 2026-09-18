@@ -25,6 +25,11 @@ surface is implemented and tested.
 :- use_module(library(http/thread_httpd)).
 :- use_module(library(lists)).
 :- use_module(rlm).
+:- use_module(rlm_chain,
+              [ openrouter_provider/2,
+                openai_compatible_provider/4,
+                default_openrouter_model/1
+              ]).
 
 :- dynamic zara_server_port/1.
 :- dynamic zara_request_token/2.
@@ -405,7 +410,7 @@ request_provider(Request, ProviderName, Provider) :-
     ->  provider_spec(Spec, ProviderName, Provider)
     ;   request_openrouter_model(Request, Model),
         ProviderName = openrouter,
-        rlm:openrouter_provider(Model, Provider)
+        openrouter_provider(Model, Provider)
     ).
 
 provider_spec(Spec, _, _) :-
@@ -422,9 +427,9 @@ provider_spec(Spec, openrouter, Provider) :-
     !,
     (   get_dict(model, Spec, Model0)
     ->  normalize_atom(model, Model0, Model)
-    ;   rlm:default_openrouter_model(Model)
+    ;   default_openrouter_model(Model)
     ),
-    rlm:openrouter_provider(Model, Provider).
+    openrouter_provider(Model, Provider).
 provider_spec(Spec, openai_compatible, Provider) :-
     is_dict(Spec),
     get_dict(kind, Spec, Kind0),
@@ -434,14 +439,14 @@ provider_spec(Spec, openai_compatible, Provider) :-
     required_provider_atom(Spec, endpoint, Endpoint),
     required_provider_atom(Spec, model, Model),
     provider_credential(Spec, Credential),
-    rlm:openai_compatible_provider(Endpoint, Credential, Model, Provider).
+    openai_compatible_provider(Endpoint, Credential, Model, Provider).
 provider_spec(_, _, _) :-
     throw(zara_runtime_fault(invalid_provider)).
 
 request_openrouter_model(Request, Model) :-
     (   get_dict(model, Request, Model0)
     ->  normalize_atom(model, Model0, Model)
-    ;   rlm:default_openrouter_model(Model)
+    ;   default_openrouter_model(Model)
     ).
 
 required_provider_atom(Spec, Key, Atom) :-
