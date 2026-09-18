@@ -135,11 +135,30 @@ zara_runtime_set_profiles(Profiles0) :-
 
 normalize_profile(Value, Profile) :-
     normalize_identifier(profile, Value, Profile),
-    string_lower(Profile, Lower),
-    ( Profile == Lower
+    ( valid_runtime_name(Profile)
     -> true
     ;  throw(zara_runtime_fault(invalid_profile(Profile)))
     ).
+
+valid_runtime_name(Text) :-
+    string_codes(Text, [First|Rest]),
+    runtime_name_start(First),
+    maplist(runtime_name_code, Rest).
+
+runtime_name_start(Code) :-
+    Code >= 0'a,
+    Code =< 0'z,
+    !.
+runtime_name_start(Code) :-
+    Code >= 0'0,
+    Code =< 0'9.
+
+runtime_name_code(Code) :-
+    runtime_name_start(Code),
+    !.
+runtime_name_code(0'.).
+runtime_name_code(0'_).
+runtime_name_code(0'-).
 
 assert_runtime_profile(Profile) :-
     assertz(zara_runtime_profile(Profile)).
