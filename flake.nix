@@ -69,7 +69,7 @@
           installPhase = ''
             runHook preInstall
             mkdir -p ${packRoot}/prolog_rlm
-            cp -R pack.pl prolog ${packRoot}/prolog_rlm/
+            cp -R pack.pl prolog bin ${packRoot}/prolog_rlm/
             mkdir -p "$out/nix-support" "$out/bin"
             cat > "$out/nix-support/setup-hook" <<EOF
             addPrologRlmPackPath() {
@@ -79,6 +79,12 @@
             EOF
             makeWrapper ${swiProlog}/bin/swipl "$out/bin/prolog-rlm-swipl" \
               --prefix SWIPL_PACK_PATH : "${packRoot}"
+            makeWrapper ${swiProlog}/bin/swipl "$out/bin/prolog-rlm-zara" \
+              --prefix SWIPL_PACK_PATH : "${packRoot}" \
+              --add-flags "-q" \
+              --add-flags "-s" \
+              --add-flags "${packRoot}/prolog_rlm/bin/prolog-rlm-zara.pl" \
+              --add-flags "--"
             runHook postInstall
           '';
         };
@@ -145,6 +151,16 @@
             mkdir -p "$HOME" "$TMPDIR/outside-source"
             cd "$TMPDIR/outside-source"
             prolog-rlm-swipl -q -g "use_module(library(rlm)),rlm:rlm_ready,rlm:rlm_agent_zero_adapter_ready,halt"
+            touch "$out"
+          '';
+
+          zara-wrapper-help = pkgs.runCommand "prolog-rlm-zara-wrapper-help" {
+            nativeBuildInputs = [ prologRlm ];
+          } ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME" "$TMPDIR/outside-source"
+            cd "$TMPDIR/outside-source"
+            prolog-rlm-zara --help 2>&1 | grep -F "Usage: prolog-rlm-zara"
             touch "$out"
           '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
