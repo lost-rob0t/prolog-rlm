@@ -1,5 +1,6 @@
 :- module(rlm_expert,
-          [ expert_register/4, expert_catalog/2, expert_select/4,
+          [ rlm_expert_ready/0,
+            expert_register/4, expert_catalog/2, expert_select/4,
             expert_invoke/7, expert_invoke_execute/6 ]).
 
 /** <module> Bounded deterministic experts over the canonical tool registry
@@ -15,6 +16,9 @@ no capability. Recursive experts and metered fallback are not implemented.
 :- use_module(rlm_tool).
 :- dynamic contract/3.
 :- multifile rlm_tool:tool_registry_destroy_hook/1.
+
+rlm_expert_ready :-
+    rlm_tool:capabilities_normalize([], ok([])).
 
 rlm_tool:tool_registry_destroy_hook(Registry) :-
     with_mutex(rlm_expert_registry,
