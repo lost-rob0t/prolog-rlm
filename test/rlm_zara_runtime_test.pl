@@ -6,6 +6,7 @@ test(descriptor_is_backend_neutral_machine_contract) :-
     zara_runtime_descriptor(Descriptor),
     assertion(Descriptor.id == "prolog-rlm"),
     assertion(Descriptor.protocol == "ZARA-RUNTIME/1"),
+    assertion(Descriptor.provenance == "prolog-rlm:local"),
     assertion(Descriptor.locality == "local_sidecar"),
     assertion(Descriptor.transport == "loopback_http"),
     assertion(Descriptor.provider_control == "runtime"),
