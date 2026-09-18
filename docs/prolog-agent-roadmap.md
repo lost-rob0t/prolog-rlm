@@ -12,7 +12,9 @@ The hard runtime substrate is mostly here. The product layer is not.
 
 Already available in core and the downstream application boundary:
 
-- real OpenAI-compatible providers and streaming;
+- real OpenAI-compatible providers and streaming, including a named OpenAI API
+  Chat Completions constructor with deferred API-key resolution (live OpenAI
+  account conformance remains separate);
 - typed model-selected plans;
 - capability-gated tools and a confined `project_read` tool;
 - confined Prolog-owned `SKILL.md` package discovery, inert resource indexing, and canonical skill prompt-unit normalization;
