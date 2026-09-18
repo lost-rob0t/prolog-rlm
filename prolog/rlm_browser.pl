@@ -62,6 +62,7 @@ browser_bridge_call_(Action0, Args, Outcome) :-
 
 browser_action(tabs_list, 'tabs.list').
 browser_action(page_read, 'page.read').
+browser_action(page_elements, 'page.elements').
 browser_action(page_extract, 'page.extract').
 browser_action(page_screenshot, 'page.screenshot').
 browser_action(tabs_open, 'tabs.open').
