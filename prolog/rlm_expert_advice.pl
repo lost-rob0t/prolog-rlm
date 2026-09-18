@@ -127,7 +127,7 @@ expert_mode_signal(Selection, Signal) :-
     ( is_dict(Selection, expert_selection),
       get_dict(applicable, Selection, Applicable),
       memberchk(Applicable, [true,false])
-    -> Signal = _{expert_applicable:Applicable}
+    -> Signal = reasoning_task_context{expert_applicable:Applicable}
     ; throw(expert_fault(invalid_selection(Selection)))
     ).
 
