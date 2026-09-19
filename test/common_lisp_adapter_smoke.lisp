@@ -13,8 +13,20 @@
 
 (prolog-rlm:with-rlm (rlm :root *test-root*)
   (let ((exports (prolog-rlm:module-exports rlm "rlm")))
-    (check (member "rlm_version/1" exports :test #'string=)
-           "Root RLM export surface is not visible from Common Lisp."))
+    (dolist (expected '("rlm_version/1"
+                        "rlm_completion/4"
+                        "rlm_future_await/2"
+                        "rlm_authority/2"
+                        "conversation_turn/4"
+                        "recursion_execute/4"
+                        "artifact_put/7"
+                        "agent_spawn/5"
+                        "graph_run/4"
+                        "symbolic_tool_register/5"
+                        "cli_run/2"))
+      (check (member expected exports :test #'string=)
+             "Root RLM export ~A is not visible from Common Lisp."
+             expected)))
 
   (let ((ready (prolog-rlm:call-rlm rlm "rlm_ready")))
     (check (prolog-rlm:response-ok-p ready)
