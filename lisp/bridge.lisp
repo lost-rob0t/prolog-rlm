@@ -236,7 +236,7 @@
     (loop for ch across text do
       (case ch
         (#\\ (write-string "\\\\" out))
-        (#\" (write-string "\\"" out))
+        (#\" (write-string "\\\"" out))
         (#\Newline (write-string "\\n" out))
         (#\Return (write-string "\\r" out))
         (#\Tab (write-string "\\t" out))
