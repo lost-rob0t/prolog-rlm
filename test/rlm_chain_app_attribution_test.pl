@@ -47,13 +47,13 @@ test(openrouter_session_id_carries_sticky_routing_header) :-
     with_attribution_server(
         run_openrouter_completion(Port, [session_id("session-42")]),
         Headers),
-    memberchk('X-Session-Id'("session-42"), Headers).
+    memberchk('X-Session-Id'('session-42'), Headers).
 
 test(openrouter_stream_session_id_carries_sticky_routing_header) :-
     with_attribution_server(
         run_openrouter_stream(Port, [session_id("session-42")]),
         Headers),
-    memberchk('X-Session-Id'("session-42"), Headers).
+    memberchk('X-Session-Id'('session-42'), Headers).
 
 test(openrouter_session_id_rejects_control_characters) :-
     Provider = provider(openrouter,
