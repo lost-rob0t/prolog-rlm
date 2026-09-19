@@ -8,6 +8,7 @@
 :- dynamic captured_attribution/1.
 
 :- http_handler(root(attribution), attribution_handler, [method(post)]).
+:- http_handler(root('attribution-stream'), attribution_stream_handler, [method(post)]).
 
 test(openrouter_provider_defaults_identify_the_app) :-
     rlm_chain:openrouter_provider('test/model', Provider),
@@ -45,6 +46,12 @@ test(openrouter_request_carries_default_attribution_headers) :-
 test(openrouter_session_id_carries_sticky_routing_header) :-
     with_attribution_server(
         run_openrouter_completion(Port, [session_id("session-42")]),
+        Headers),
+    memberchk('X-Session-Id'("session-42"), Headers).
+
+test(openrouter_stream_session_id_carries_sticky_routing_header) :-
+    with_attribution_server(
+        run_openrouter_stream(Port, [session_id("session-42")]),
         Headers),
     memberchk('X-Session-Id'("session-42"), Headers).
 
@@ -150,6 +157,24 @@ run_provider_completion(ProviderName, Port, ExtraConfig) :-
                       options:_{}},
         ok(_)).
 
+run_openrouter_stream(Port, ExtraConfig, Port) :-
+    format(atom(Endpoint), 'http://127.0.0.1:~d/attribution-stream', [Port]),
+    append([ endpoint(Endpoint),
+             credential(none),
+             model('test/model')
+           ],
+           ExtraConfig,
+           Config),
+    Provider = provider(openrouter, Config),
+    rlm_chain:model_stream(
+        Provider,
+        model_request{messages:[message{role:user, content:"hi"}],
+                      options:_{}},
+        plunit_rlm_chain_app_attribution:accept_stream_event,
+        ok(_)).
+
+accept_stream_event(_).
+
 attribution_handler(Request) :-
     capture_attribution_headers(Request),
     reply_json(_{id:"gen-test",
@@ -159,6 +184,13 @@ attribution_handler(Request) :-
                  usage:_{prompt_tokens:1,
                          completion_tokens:1,
                          total_tokens:2}}).
+
+attribution_stream_handler(Request) :-
+    capture_attribution_headers(Request),
+    format('Content-type: text/event-stream\n\n'),
+    format('data: {"id":"chat-1","model":"test/model","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}\n'),
+    format('data: {"id":"chat-1","model":"test/model","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n'),
+    format('data: [DONE]\n').
 
 capture_attribution_headers(Request) :-
     findall(Header,
