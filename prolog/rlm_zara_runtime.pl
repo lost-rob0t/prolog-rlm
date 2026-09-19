@@ -323,37 +323,31 @@ runtime_options(RequestId,
 project_outcome(RequestId, Mode, ok(Result), Reply) :-
     !,
     outcome_text(Mode, Result, Text),
-    rlm:trace_encode(Result, Encoded),
     Reply = _{
         protocol:"ZARA-RUNTIME/1",
         runtime_id:"prolog-rlm",
         request_id:RequestId,
         status:"completed",
-        text:Text,
-        result:Encoded
+        text:Text
     }.
-project_outcome(RequestId, _Mode, error(Error), Reply) :-
+project_outcome(RequestId, _Mode, error(_Error), Reply) :-
     !,
-    rlm:trace_encode(Error, Encoded),
     Reply = _{
         protocol:"ZARA-RUNTIME/1",
         runtime_id:"prolog-rlm",
         request_id:RequestId,
         status:"failed",
         error:_{kind:"runtime_error",
-                message:"Prolog-RLM did not complete the request",
-                detail:Encoded}
+                message:"Prolog-RLM did not complete the request"}
     }.
-project_outcome(RequestId, _Mode, Other, Reply) :-
-    rlm:trace_encode(Other, Encoded),
+project_outcome(RequestId, _Mode, _Other, Reply) :-
     Reply = _{
         protocol:"ZARA-RUNTIME/1",
         runtime_id:"prolog-rlm",
         request_id:RequestId,
         status:"failed",
         error:_{kind:"runtime_error",
-                message:"Prolog-RLM returned an invalid outcome",
-                detail:Encoded}
+                message:"Prolog-RLM returned an invalid outcome"}
     }.
 
 outcome_text(direct, Result, Text) :-
