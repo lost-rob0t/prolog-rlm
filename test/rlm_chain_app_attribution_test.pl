@@ -16,6 +16,11 @@ test(openrouter_provider_defaults_identify_the_app) :-
     memberchk(app_referer('https://github.com/lost-rob0t/prolog-rlm'),
               Config).
 
+test(openrouter_provider_can_bind_sticky_session) :-
+    rlm_chain:openrouter_provider('test/model', "session-42", Provider),
+    Provider = provider(openrouter, Config),
+    memberchk(session_id("session-42"), Config).
+
 test(downstream_provider_terms_override_attribution_headers) :-
     with_attribution_server(
         run_completion(Port,
@@ -37,10 +42,65 @@ test(openrouter_request_carries_default_attribution_headers) :-
     memberchk('HTTP-Referer'('https://github.com/lost-rob0t/prolog-rlm'),
               Headers).
 
+test(openrouter_session_id_carries_sticky_routing_header) :-
+    with_attribution_server(
+        run_openrouter_completion(Port, [session_id("session-42")]),
+        Headers),
+    memberchk('X-Session-Id'("session-42"), Headers).
+
+test(openrouter_session_id_rejects_control_characters) :-
+    Provider = provider(openrouter,
+                        [ endpoint('https://example.invalid/v1/chat/completions'),
+                          credential(none),
+                          model('test/model'),
+                          session_id("bad\nsession")
+                        ]),
+    rlm_chain:model_complete_execute(
+        Provider,
+        model_request{messages:[message{role:user, content:"hi"}],
+                      options:_{}},
+        error(Error)),
+    assertion(Error.kind == configuration_error),
+    assertion(Error.field == session_id).
+
+test(openrouter_session_id_rejects_oversized_values) :-
+    length(Codes, 257),
+    maplist(=(0's), Codes),
+    string_codes(SessionId, Codes),
+    Provider = provider(openrouter,
+                        [ endpoint('https://example.invalid/v1/chat/completions'),
+                          credential(none),
+                          model('test/model'),
+                          session_id(SessionId)
+                        ]),
+    rlm_chain:model_complete_execute(
+        Provider,
+        model_request{messages:[message{role:user, content:"hi"}],
+                      options:_{}},
+        error(Error)),
+    assertion(Error.kind == configuration_error),
+    assertion(Error.field == session_id).
+
+test(generic_endpoint_cannot_enable_openrouter_session_header) :-
+    Provider = provider(openai_compatible,
+                        [ endpoint('https://example.invalid/v1/chat/completions'),
+                          credential(none),
+                          model('test/model'),
+                          session_id("session-42")
+                        ]),
+    rlm_chain:model_complete_execute(
+        Provider,
+        model_request{messages:[message{role:user, content:"hi"}],
+                      options:_{}},
+        error(Error)),
+    assertion(Error.kind == configuration_error),
+    assertion(Error.field == session_id).
+
 test(unattributed_custom_endpoint_sends_no_attribution_headers) :-
     with_attribution_server(run_completion(Port, []), Headers),
     (   memberchk('X-OpenRouter-Title'(_), Headers)
     ;   memberchk('HTTP-Referer'(_), Headers)
+    ;   memberchk('X-Session-Id'(_), Headers)
     ),
     !,
     assertion(fail)
@@ -70,6 +130,12 @@ with_attribution_server(Goal, Headers) :-
     captured_attribution(Headers).
 
 run_completion(Port, ExtraConfig, Port) :-
+    run_provider_completion(openai_compatible, Port, ExtraConfig).
+
+run_openrouter_completion(Port, ExtraConfig, Port) :-
+    run_provider_completion(openrouter, Port, ExtraConfig).
+
+run_provider_completion(ProviderName, Port, ExtraConfig) :-
     format(atom(Endpoint), 'http://127.0.0.1:~d/attribution', [Port]),
     append([ endpoint(Endpoint),
              credential(none),
@@ -77,7 +143,7 @@ run_completion(Port, ExtraConfig, Port) :-
            ],
            ExtraConfig,
            Config),
-    Provider = provider(openai_compatible, Config),
+    Provider = provider(ProviderName, Config),
     rlm_chain:model_complete_execute(
         Provider,
         model_request{messages:[message{role:user, content:"hi"}],
@@ -105,7 +171,9 @@ capture_attribution_headers(Request) :-
 
 attribution_header('X-OpenRouter-Title'(Value), 'X-OpenRouter-Title'(Value)).
 attribution_header('HTTP-Referer'(Value), 'HTTP-Referer'(Value)).
+attribution_header('X-Session-Id'(Value), 'X-Session-Id'(Value)).
 attribution_header(x_openrouter_title(Value), 'X-OpenRouter-Title'(Value)).
 attribution_header(http_referer(Value), 'HTTP-Referer'(Value)).
+attribution_header(x_session_id(Value), 'X-Session-Id'(Value)).
 
 :- end_tests(rlm_chain_app_attribution).
