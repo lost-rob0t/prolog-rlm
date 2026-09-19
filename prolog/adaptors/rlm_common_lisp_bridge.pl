@@ -234,9 +234,20 @@ write_lisp_string(Text) :-
     maplist(write_lisp_string_code, Codes),
     put_code(0'").
 
-write_lisp_string_code(0'") :- !, write('\\\"').
-write_lisp_string_code(0'\\) :- !, write('\\\\').
-write_lisp_string_code(10) :- !, write('\\n').
-write_lisp_string_code(13) :- !, write('\\r').
-write_lisp_string_code(9) :- !, write('\\t').
-write_lisp_string_code(Code) :- put_code(Code).
+write_lisp_string_code(0'") :- !,
+    put_code(0'\\),
+    put_code(0'").
+write_lisp_string_code(0'\\) :- !,
+    put_code(0'\\),
+    put_code(0'\\).
+write_lisp_string_code(10) :- !,
+    put_code(0'\\),
+    put_code(0'n).
+write_lisp_string_code(13) :- !,
+    put_code(0'\\),
+    put_code(0'r).
+write_lisp_string_code(9) :- !,
+    put_code(0'\\),
+    put_code(0't).
+write_lisp_string_code(Code) :-
+    put_code(Code).
