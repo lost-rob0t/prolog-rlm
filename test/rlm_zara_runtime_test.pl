@@ -135,4 +135,29 @@ test(cancel_identifier_rejects_control_characters) :-
     assertion(Reply.status == "failed"),
     assertion(Reply.error.kind == "invalid_request").
 
+test(completed_outcome_does_not_project_raw_runtime_result) :-
+    Secret = "RAW-PROVIDER-SECRET-MUST-NOT-CROSS",
+    Outcome = ok(_{
+        response:_{
+            text:"safe answer",
+            provider_payload:_{authorization:Secret}
+        }
+    }),
+    rlm_zara_runtime:project_outcome("redacted-complete", direct, Outcome, Reply),
+    assertion(Reply.status == "completed"),
+    assertion(Reply.text == "safe answer"),
+    assertion(\+ get_dict(result, Reply, _)),
+    term_string(Reply, Rendered),
+    assertion(\+ sub_string(Rendered, _, _, _, Secret)).
+
+test(failed_outcome_does_not_project_raw_runtime_error) :-
+    Secret = "RAW-ERROR-SECRET-MUST-NOT-CROSS",
+    Outcome = error(_{kind:provider_error, authorization:Secret}),
+    rlm_zara_runtime:project_outcome("redacted-failure", direct, Outcome, Reply),
+    assertion(Reply.status == "failed"),
+    assertion(Reply.error.kind == "runtime_error"),
+    assertion(\+ get_dict(detail, Reply.error, _)),
+    term_string(Reply, Rendered),
+    assertion(\+ sub_string(Rendered, _, _, _, Secret)).
+
 :- end_tests(rlm_zara_runtime).
