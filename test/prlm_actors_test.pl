@@ -1,24 +1,7 @@
 :- use_module('../prolog/prlm_actors').
+:- use_module(prlm_actors_support).
 :- use_module('../prolog/prlm_session').
 :- use_module('../prolog/prlm_kernel').
-
-% ============================================================
-% Support behaviors (loaded into user; referenced as user:Name/3)
-% ============================================================
-
-sup_host_behavior(_State, _Msg, outcome(counted, [])).
-sup_flaky_behavior(State, _, outcome(NewState, [])) :-
-    (   State == boom -> fail ; NewState = boom ).
-sup_counter_behavior(State, _, outcome(NewState, [])) :-
-    (   var(State) -> NewState = 1
-    ;   State == none -> NewState = 1
-    ;   NewState is State + 1
-    ).
-sup_collector(State, Msg, outcome(NewState, [])) :-
-    (   Msg = actor_failed(Id, _)
-    ->  NewState = [failed(Id)|State]
-    ;   NewState = [Msg|State]
-    ).
 
 :- begin_tests(prlm_actors).
 
@@ -51,7 +34,7 @@ test(lang_behavior_step_reply_and_state) :-
                            behavior: lang(demoactor:echo3/3),
                            caps: [], authority: approve_diff}, A),
     % a real sender actor so the reply has somewhere to go
-    spawn_simple(Session, host(user:sup_host_behavior/3), approve_diff, [], Sender),
+    spawn_simple(Session, host(prlm_actors_support:sup_host_behavior/3), approve_diff, [], Sender),
     prlm_send(Session, A, msg(Sender, ping)),
     prlm_actor_mail_len(Session, A, 1),
     prlm_actor_step(Session, A, stepped(Actions)),
@@ -77,7 +60,7 @@ test(reply_to_unknown_sender_is_observation_not_crash) :-
 
 test(host_behavior) :-
     fresh_session(Session),
-    spawn_simple(Session, host(user:sup_host_behavior/3), approve_diff, [], A),
+    spawn_simple(Session, host(prlm_actors_support:sup_host_behavior/3), approve_diff, [], A),
     prlm_send(Session, A, anything),
     prlm_actor_step(Session, A, stepped([])),
     prlm_actor_status(Session, A, alive),
@@ -91,7 +74,7 @@ test(spawn_rejects_bad_kind) :-
     fresh_session(Session),
     catch(prlm_actor_spawn(Session, none,
                            actor{name: x, kind: alien, strategy: restart,
-                                 behavior: host(user:sup_host_behavior/3),
+                                 behavior: host(prlm_actors_support:sup_host_behavior/3),
                                  caps: [], authority: approve_diff}, _),
           prlm_error(type_error, _),
           true),
@@ -101,7 +84,7 @@ test(spawn_rejects_bad_strategy) :-
     fresh_session(Session),
     catch(prlm_actor_spawn(Session, none,
                            actor{name: x, kind: actor, strategy: yolo,
-                                 behavior: host(user:sup_host_behavior/3),
+                                 behavior: host(prlm_actors_support:sup_host_behavior/3),
                                  caps: [], authority: approve_diff}, _),
           prlm_error(type_error, _),
           true),
@@ -115,11 +98,11 @@ test(child_authority_never_widens) :-
     fresh_session(Session),
     prlm_actor_spawn(Session, none,
                      actor{name: sup, kind: actor, strategy: stop,
-                           behavior: host(user:sup_host_behavior/3),
+                           behavior: host(prlm_actors_support:sup_host_behavior/3),
                            caps: [read], authority: allow_session}, Parent),
     prlm_actor_spawn(Session, Parent,
                      actor{name: kid, kind: actor, strategy: stop,
-                           behavior: host(user:sup_host_behavior/3),
+                           behavior: host(prlm_actors_support:sup_host_behavior/3),
                            caps: [read], authority: dangerous}, Child),
     prlm_actors:actor_dict(Session, Child, Dict),
     get_dict(authority, Dict, allow_session),
@@ -129,11 +112,11 @@ test(child_caps_violation_rejected) :-
     fresh_session(Session),
     prlm_actor_spawn(Session, none,
                      actor{name: sup, kind: actor, strategy: stop,
-                           behavior: host(user:sup_host_behavior/3),
+                           behavior: host(prlm_actors_support:sup_host_behavior/3),
                            caps: [read], authority: allow_session}, Parent),
     catch(prlm_actor_spawn(Session, Parent,
                            actor{name: kid, kind: actor, strategy: stop,
-                                 behavior: host(user:sup_host_behavior/3),
+                                 behavior: host(prlm_actors_support:sup_host_behavior/3),
                                  caps: [read, write], authority: allow_session}, _),
           prlm_error(forbidden, _),
           true),
@@ -146,19 +129,19 @@ test(child_caps_violation_rejected) :-
 test(depth_budget_enforced) :-
     prlm_session_new([budgets(_{steps: 100000, tool_calls: 10,
                                 depth: 6, repairs: 3})], Session),
-    spawn_simple(Session, host(user:sup_host_behavior/3), approve_diff, [], A1),
+    spawn_simple(Session, host(prlm_actors_support:sup_host_behavior/3), approve_diff, [], A1),
     prlm_actor_spawn(Session, A1,
                      actor{name: b, kind: actor, strategy: stop,
-                           behavior: host(user:sup_host_behavior/3),
+                           behavior: host(prlm_actors_support:sup_host_behavior/3),
                            caps: [], authority: approve_diff}, A2),
     prlm_actor_spawn(Session, A2,
                      actor{name: c, kind: actor, strategy: stop,
-                           behavior: host(user:sup_host_behavior/3),
+                           behavior: host(prlm_actors_support:sup_host_behavior/3),
                            caps: [], authority: approve_diff}, A3),
     % 1 + 2 + 3 = 6 depth charges exceed the budget of 5
     catch(prlm_actor_spawn(Session, A3,
                            actor{name: d, kind: actor, strategy: stop,
-                                 behavior: host(user:sup_host_behavior/3),
+                                 behavior: host(prlm_actors_support:sup_host_behavior/3),
                                  caps: [], authority: approve_diff}, _),
           prlm_error(budget_exceeded, _),
           true),
@@ -172,7 +155,7 @@ test(supervision_restart_then_success) :-
     fresh_session(Session),
     prlm_actor_spawn(Session, none,
                      actor{name: flaky, kind: actor, strategy: restart,
-                           behavior: host(user:sup_flaky_behavior/3),
+                           behavior: host(prlm_actors_support:sup_flaky_behavior/3),
                            caps: [], authority: approve_diff}, A),
     % first message succeeds and arms the bomb (state := boom)
     prlm_send(Session, A, m1),
@@ -189,7 +172,7 @@ test(supervision_stop_on_failure) :-
     fresh_session(Session),
     prlm_actor_spawn(Session, none,
                      actor{name: flaky, kind: actor, strategy: stop,
-                           behavior: host(user:sup_flaky_behavior/3),
+                           behavior: host(prlm_actors_support:sup_flaky_behavior/3),
                            caps: [], authority: approve_diff}, A),
     prlm_send(Session, A, m1),
     prlm_actor_step(Session, A, stepped(_)),
@@ -202,11 +185,11 @@ test(supervision_escalate_notifies_parent) :-
     fresh_session(Session),
     prlm_actor_spawn(Session, none,
                      actor{name: sup, kind: actor, strategy: stop,
-                           behavior: host(user:sup_collector/3),
+                           behavior: host(prlm_actors_support:sup_collector/3),
                            caps: [], authority: allow_session}, Parent),
     prlm_actor_spawn(Session, Parent,
                      actor{name: kid, kind: actor, strategy: escalate,
-                           behavior: host(user:sup_flaky_behavior/3),
+                           behavior: host(prlm_actors_support:sup_flaky_behavior/3),
                            caps: [], authority: allow_session}, Kid),
     prlm_send(Session, Kid, m1),
     prlm_actor_step(Session, Kid, stepped(_)),
@@ -223,8 +206,8 @@ test(supervision_escalate_notifies_parent) :-
 
 test(run_round_robin_processes_mailboxes) :-
     fresh_session(Session),
-    spawn_simple(Session, host(user:sup_counter_behavior/3), approve_diff, [], A1),
-    spawn_simple(Session, host(user:sup_counter_behavior/3), approve_diff, [], A2),
+    spawn_simple(Session, host(prlm_actors_support:sup_counter_behavior/3), approve_diff, [], A1),
+    spawn_simple(Session, host(prlm_actors_support:sup_counter_behavior/3), approve_diff, [], A2),
     prlm_send(Session, A1, x),
     prlm_send(Session, A2, x),
     prlm_actor_run(Session, 100, Stats),
@@ -239,14 +222,14 @@ test(run_round_robin_processes_mailboxes) :-
 
 test(cancel_cancels_subtree) :-
     fresh_session(Session),
-    spawn_simple(Session, host(user:sup_counter_behavior/3), approve_diff, [], Root),
+    spawn_simple(Session, host(prlm_actors_support:sup_counter_behavior/3), approve_diff, [], Root),
     prlm_actor_spawn(Session, Root,
                      actor{name: mid, kind: actor, strategy: stop,
-                           behavior: host(user:sup_counter_behavior/3),
+                           behavior: host(prlm_actors_support:sup_counter_behavior/3),
                            caps: [], authority: approve_diff}, Mid),
     prlm_actor_spawn(Session, Mid,
                      actor{name: leaf, kind: actor, strategy: stop,
-                           behavior: host(user:sup_counter_behavior/3),
+                           behavior: host(prlm_actors_support:sup_counter_behavior/3),
                            caps: [], authority: approve_diff}, Leaf),
     prlm_actor_cancel(Session, Root),
     prlm_actor_status(Session, Root, cancelled),
@@ -256,7 +239,7 @@ test(cancel_cancels_subtree) :-
 
 test(cancelled_session_blocks_step) :-
     fresh_session(Session),
-    spawn_simple(Session, host(user:sup_counter_behavior/3), approve_diff, [], A),
+    spawn_simple(Session, host(prlm_actors_support:sup_counter_behavior/3), approve_diff, [], A),
     prlm_send(Session, A, m),
     prlm_cancel(Session),
     catch(prlm_actor_step(Session, A, _),

@@ -1,0 +1,70 @@
+:- module(prlm_plan,
+          [ plan_spec/3,
+            req_ops/2,
+            plan_append/3,
+            number_ops/3
+          ]).
+
+/** <module> prlm_plan — in-language RLM plan construction (stage1 material)
+
+This is language, not library: ordinary Prolog text executed by the stage0
+kernel machine (prolog/prlm_kernel.pl), loaded into the session engine by
+prolog/prlm_rlm.pl and reached there through module `prlm_rlm_lang`
+(which imports this module's exports; a local clause in `prlm_rlm_lang`
+shadows this one, which is how plans are specialised in-language).
+
+Contract (shapes shared with the host dispatcher in prolog/prlm_rlm.pl)
+=======================================================================
+
+    plan_spec(spec(SpecId, Goal, Mode, Reqs), Tools, Steps)
+
+  * SpecId : atom.  Goal : ground term.
+  * Mode   : the RESOLVED mode (direct|symbolic|symbolic_recursive), not the
+    requested one.
+  * Reqs   : [req(Id, Desc, Check), ...] in spec order.
+  * Tools  : list of tool-name atoms (host side: names of prlm_tool_discover,
+    already deterministically ordered by name).
+  * Steps  : [step(n(I), Op), ...] with I = 1,2,3,... in plan order.
+    The step id is the compound n(I): the stage0 engine has no atom
+    construction, so positional ids are structured terms.  The host
+    dispatcher uses the identical shape, so plans are host/lang comparable.
+
+Op shapes understood by the host dispatcher:
+
+  * tool_call_step(FirstTool, none) — PREPENDED exactly when Mode == symbolic
+    and Tools \= [].  Documented approximation of NeedsTools: resolved
+    symbolic is what NeedsTools=true yields, and this predicate sees only the
+    resolved mode.  Args `none` means "no arguments"; the host dispatcher
+    converts it to the empty args dict at the tool gate.
+  * verify_step(ReqId) — one per requirement, in Reqs order.
+  * yield_step(goal_done(Goal)) — always the FINAL step.
+
+The whole plan is deterministic and total: exactly one solution for any
+ground input.  Implementation uses only the stage0 builtin surface (list
+recursion, arithmetic, if-then-else); the engine exposes no append/member,
+hence the local helpers below.
+*/
+
+plan_spec(spec(_SpecId, Goal, Mode, Reqs), Tools, Steps) :-
+    (   Mode == symbolic,
+        Tools = [FirstTool|_]
+    ->  Pre = [tool_call_step(FirstTool, none)]
+    ;   Pre = []
+    ),
+    req_ops(Reqs, VerifyOps),
+    plan_append(Pre, VerifyOps, Mid),
+    plan_append(Mid, [yield_step(goal_done(Goal))], Ops),
+    number_ops(Ops, 1, Steps).
+
+req_ops([], []).
+req_ops([req(Id, _, _)|Reqs], [verify_step(Id)|Ops]) :-
+    req_ops(Reqs, Ops).
+
+plan_append([], L, L).
+plan_append([X|Xs], L, [X|R]) :-
+    plan_append(Xs, L, R).
+
+number_ops([], _, []).
+number_ops([Op|Ops], N, [step(n(N), Op)|Steps]) :-
+    N1 is N + 1,
+    number_ops(Ops, N1, Steps).

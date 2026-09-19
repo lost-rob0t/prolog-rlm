@@ -18,6 +18,7 @@
             prlm_clause_src/4,
             prlm_module_exports/3,
             prlm_module_of_file/3,
+            prlm_import/4,
             prlm_read_goal/3,
             prlm_call_first/5,
             prlm_var/1,
@@ -771,8 +772,24 @@ step(Engine, st([it(M, call(G), Bar)|Rest], Env, CPs), _Limit, Next) :-
     !,
     charge(Engine),
     deref(G, Env, G2),
-    callable_check(G2),
-    Next = continue(st([it(M, G2, Bar)|Rest], Env, CPs)).
+    call_unwrap(G2, G3),
+    callable_check(G3),
+    Next = continue(st([it(M, G3, Bar)|Rest], Env, CPs)).
+
+% Unwrap nested call/1..7 wrappers: call(call(f, a), b) means call(f, a, b).
+call_unwrap(G, G3) :-
+    (   compound(G),
+        functor(G, call, _),
+        G = call(H)
+    ->  call_unwrap(H, G3)
+    ;   compound(G),
+        functor(G, call, Arity),
+        Arity >= 2,
+        G =.. [call, H|Extra]
+    ->  apply_args(H, Extra, H2),
+        call_unwrap(H2, G3)
+    ;   G3 = G
+    ).
 step(Engine, st([it(M, call(G, A1), Bar)|Rest], Env, CPs), _Limit, Next) :-
     !,
     charge(Engine),
@@ -849,10 +866,10 @@ step(Engine, st([it(M, G, Bar)|Rest], Env, CPs), Limit, Next) :-
     atomic(G),
     !,
     charge(Engine),
-    resolve_clauses(Engine, M, G, 0, Clauses),
+    resolve_clauses(Engine, M, G, 0, Origin, Clauses),
     (   Clauses == []
     ->  throw(prlm_error(existence_error, _{module: M, goal: G}))
-    ;   select_first_clause(Engine, M, G, Clauses, Bar, Rest, Env, CPs, Limit, Next)
+    ;   select_first_clause(Engine, Origin, G, Clauses, Bar, Rest, Env, CPs, Limit, Next)
     ).
 
 % --- user predicate: compounds ---
@@ -862,10 +879,10 @@ step(Engine, st([it(M, G, Bar)|Rest], Env, CPs), Limit, Next) :-
     charge(Engine),
     compound_name_arguments(G, F, As),
     length(As, Arity),
-    resolve_clauses(Engine, M, F, Arity, Clauses),
+    resolve_clauses(Engine, M, F, Arity, Origin, Clauses),
     (   Clauses == []
     ->  throw(prlm_error(existence_error, _{module: M, goal: G}))
-    ;   select_first_clause(Engine, M, G, Clauses, Bar, Rest, Env, CPs, Limit, Next)
+    ;   select_first_clause(Engine, Origin, G, Clauses, Bar, Rest, Env, CPs, Limit, Next)
     ).
 
 % --- unbound variable in goal position ---
@@ -874,9 +891,9 @@ step(_, st([it(_, G, _)|_], _, _), _, _) :-
     !,
     throw(prlm_error(instantiation_error, _{call: G})).
 
-select_first_clause(Engine, M, Goal, Clauses, Bar, Rest, Env, CPs, _Limit, Next) :-
+select_first_clause(Engine, DefM, Goal, Clauses, Bar, Rest, Env, CPs, _Limit, Next) :-
     charge(Engine),
-    try_clause(Engine, M, Goal, Clauses, Rest, Env, Bar, CPs, State),
+    try_clause(Engine, DefM, Goal, Clauses, Rest, Env, Bar, CPs, State),
     (   State = st(_, _, _)
     ->  Next = continue(State)
     ;   Next = fail
@@ -1124,13 +1141,22 @@ builtin_dispatch(retract, G, Engine, M, _, Rest, Env, CPs, _, Next) :-
     ).
 builtin_dispatch(clause, G, Engine, M, Bar, Rest, Env, CPs, _, Next) :-
     !,
-    goal_arg(G, 1, Env, HP),
+    goal_arg(G, 1, Env, HP0),
+    % module-qualified heads route enumeration to that module:
+    % clause(Module:Head, Body).
+    (   HP0 = ':'(QMH0, H00),
+        deref(QMH0, Env, QMH),
+        deref(H00, Env, H1),
+        atom(QMH)
+    ->  Target = QMH, HP = H1
+    ;   Target = M, HP = HP0
+    ),
     goal_arg(G, 2, Env, BP),
-    (   enum_clause(Engine, M, HP, BP, Env, 0, Seq, Env2, BR)
+    (   enum_clause(Engine, Target, HP, BP, Env, 0, Seq, Env2, BR)
     ->  length(CPs, BaseDepth),
-        body_goals(M, BR, BaseDepth, Rest, Goals),
+        body_goals(Target, BR, BaseDepth, Rest, Goals),
         Next = continue(st(Goals, Env2,
-                           [cp_clause_enum(M, HP, BP, Seq, Rest, Env, Bar)|CPs]))
+                           [cp_clause_enum(Target, HP, BP, Seq, Rest, Env, Bar)|CPs]))
     ;   Next = fail
     ).
 
@@ -1648,6 +1674,20 @@ run_initializations(Engine, File) :-
                  throw(prlm_error(Type, Info.put(file, File))))),
     retractall(engine_init(Engine, M, _)).
 
+%! prlm_import(+Engine, +From, +To, +NameArity) is det
+%
+% Make To's exported Name/Arity resolvable, unqualified, from From.
+% Trusted runtime wiring (e.g. stage1 importing the stdlib into user).
+prlm_import(Engine, From, To, Name/Arity) :-
+    (   atom(From), atom(To), atom(Name), integer(Arity)
+    ->  true
+    ;   throw(prlm_error(type_error, _{import: bad_indicator(From, To, Name, Arity)}))
+    ),
+    (   engine_import(Engine, From, Name, Arity, To)
+    ->  true
+    ;   assertz(engine_import(Engine, From, Name, Arity, To))
+    ).
+
 %! prlm_module_of_file(+Engine, +Path, -Module) is det
 %
 % The module name a consulted file declared (user when none).
@@ -1661,14 +1701,16 @@ prlm_module_of_file(Engine, Path, Module) :-
     ;   Module = user
     ).
 
-% clause resolution: local module first, then imports
-resolve_clauses(Engine, M, F, A, Clauses) :-
+% clause resolution: local module first, then imports. Yields the ORIGIN
+% (defining module) so clause bodies run in the module that defines them.
+resolve_clauses(Engine, M, F, A, Origin, Clauses) :-
     findall(Seq-cl(H, B, File, Line),
             engine_clause(Engine, M, F, A, Seq, cl(H, B, File, Line)),
             Local),
     keysort(Local, LocalSorted),
     (   LocalSorted \== []
-    ->  pairs_values(LocalSorted, Clauses)
+    ->  pairs_values(LocalSorted, Clauses),
+        Origin = M
     ;   findall(To-Seq-cl(H, B, File, Line),
                 (   engine_import(Engine, M, F, A, To),
                     engine_clause(Engine, To, F, A, Seq, cl(H, B, File, Line))
@@ -1676,11 +1718,15 @@ resolve_clauses(Engine, M, F, A, Clauses) :-
                 Imported),
         Imported \== [],
         keysort(Imported, ImportedSorted),
+        ImportedSorted = [Pair|_],
+        first_pair_origin(Pair, Origin),
         pairs_values(ImportedSorted, Clauses)
     ),
     !.
+
+first_pair_origin((To-_)-_, To).
 % Deterministic: empty result must survive backtracking unchanged.
-resolve_clauses(_, _, _, _, []).
+resolve_clauses(_, _, _, _, user, []).
 
 % ============================================================
 % Public DB/introspection API

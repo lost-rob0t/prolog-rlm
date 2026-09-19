@@ -68,6 +68,19 @@ corpus_entry('rlm_mcp_dual_test.pl', include(rlm_mcp_dual)).
 corpus_entry('rlm_mcp_boundary_test.pl', include(rlm_mcp_boundary)).
 corpus_entry('rlm_mcp_declaration_security_test.pl',
              include(rlm_mcp_declaration_security)).
+corpus_entry('prlm_kernel_test.pl', include(prlm_kernel)).
+corpus_entry('prlm_session_test.pl', include(prlm_session)).
+corpus_entry('prlm_context_test.pl', include(prlm_context)).
+corpus_entry('prlm_tools_test.pl', include(prlm_tools)).
+corpus_entry('prlm_providers_test.pl', include(prlm_providers)).
+corpus_entry('prlm_actors_test.pl', include(prlm_actors)).
+corpus_entry('prlm_rlm_test.pl', include(prlm_rlm)).
+corpus_entry('prlm_selfhost_test.pl', include(prlm_selfhost)).
+corpus_entry('prlm_usage_test.pl', include(prlm_usage)).
+corpus_entry('prlm_mcp_export_test.pl', include(prlm_mcp_export)).
+corpus_entry('prlm_learn_test.pl', include(prlm_learn)).
+corpus_entry('prlm_rsi_test.pl', include(prlm_rsi)).
+corpus_entry('prlm_cli_test.pl', include(prlm_cli)).
 corpus_entry('rlm_context_test.pl', include(rlm_context)).
 corpus_entry('rlm_context_adapter_test.pl', include(rlm_context_adapter)).
 corpus_entry('rlm_context_budget_test.pl', include(rlm_context_budget)).
