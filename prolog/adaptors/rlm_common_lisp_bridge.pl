@@ -37,16 +37,26 @@ bridge_loop :-
     ).
 
 bridge_handle_line(Line, Continue) :-
+    bridge_line_id(Line, RequestId),
     catch(bridge_request(Line, Reply, Continue0),
           Exception,
           ( safe_term_text(Exception, ErrorText),
-            Reply = reply{id:0,status:error,error:ErrorText},
+            Reply = reply{id:RequestId,status:error,error:ErrorText},
             Continue0 = true
           )),
     write_lisp(Reply),
     nl,
     flush_output,
     Continue = Continue0.
+
+bridge_line_id(Line, Id) :-
+    split_string(Line, "\t", "", [IdText|_]),
+    catch(number_string(Id0, IdText), _, fail),
+    integer(Id0),
+    Id0 >= 0,
+    !,
+    Id = Id0.
+bridge_line_id(_, 0).
 
 bridge_request(Line, Reply, Continue) :-
     split_string(Line, "\t", "", Fields),
