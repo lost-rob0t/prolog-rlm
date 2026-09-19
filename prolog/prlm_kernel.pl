@@ -19,6 +19,7 @@
             prlm_module_exports/3,
             prlm_module_of_file/3,
             prlm_read_goal/3,
+            prlm_call_first/5,
             prlm_var/1,
             prlm_host_primitive/1
           ]).
@@ -114,7 +115,7 @@ writes to streams.
 
 prlm_kernel_ready.
 
-:- discontiguous step/5.
+:- discontiguous step/4.
 :- discontiguous builtin_dispatch/10.
 :- discontiguous resume_cp/5.
 
@@ -199,6 +200,12 @@ fresh_name(Engine, F) :-
     N1 is N0 + 1,
     assertz(engine_counter(Engine, fresh, N1)),
     atom_concat('$f', N1, F).
+
+fresh_name(global, F) :-
+    (   retract(engine_counter(global, fresh, N0)) -> true ; N0 = 0 ),
+    N1 is N0 + 1,
+    assertz(engine_counter(global, fresh, N1)),
+    atom_concat('$g', N1, F).
 
 anon_name(N) :-
     (   retract(engine_counter(global, anon, N0)) -> true ; N0 = 0 ),
@@ -1369,6 +1376,50 @@ replace_args([], []).
 replace_args([A|As], [A2|As2]) :-
     replace_free(A, A2),
     replace_args(As, As2).
+
+%! prlm_call_first(+Engine, +Module, +Goal0, +OutSpec, -Result) is semidet
+%
+% Bridge for trusted host code that builds goals with host variables:
+% Goal0 may contain unbound host variables; every variable in OutSpec
+% (Key - VarTerm) is converted to an engine variable, Goal0 runs once and
+% Result is a dict Key -> projected value. Host variables elsewhere in
+% Goal0 are converted too (they act as anonymous inputs).
+%
+% Why this exists: the machine's unifier only understands '$v'(Name)
+% variables; raw host variables in goal position cannot unify (fail
+% closed). This bridge is the single sanctioned crossing point.
+prlm_call_first(Engine, Module, Goal0, OutSpec, Result) :-
+    convert_host_vars(Goal0),
+    convert_outspec(OutSpec),
+    machine_solve(Engine, Module, Goal0, env{}, 1, [Env|_]),
+    !,
+    outspec_result(OutSpec, Env, Pairs),
+    dict_create(Result, result, Pairs).
+
+convert_host_vars(T) :-
+    (   var(T)
+    ->  fresh_name(global, F),
+        T = '$v'(F)
+    ;   compound(T)
+    ->  T =.. [_|Args],
+        maplist(convert_host_vars, Args)
+    ;   true
+    ).
+
+convert_outspec([]).
+convert_outspec([_-Var|Rest]) :-
+    convert_host_vars(Var),
+    convert_outspec(Rest).
+
+outspec_result([], _, []).
+outspec_result([Key-Var|Rest], Env, [Key-Val|Pairs]) :-
+    (   is_v(Var)
+    ->  v_name(Var, Name),
+        (   get_dict(Name, Env, V0) -> true ; V0 = Var ),
+        project(V0, Env, Val)
+    ;   Val = Var
+    ),
+    outspec_result(Rest, Env, Pairs).
 
 % ============================================================
 % Source loading
