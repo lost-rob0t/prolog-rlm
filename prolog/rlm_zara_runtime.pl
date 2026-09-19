@@ -96,6 +96,7 @@ zara_runtime_execute_(Request, Reply) :-
     require_request_dict(Request),
     require_protocol(Request),
     request_id(Request, RequestId),
+    request_session(Request, RequestId, SessionId),
     request_mode(Request, Mode),
     request_prompt(Request, Prompt),
     request_context(Request, Context),
@@ -106,6 +107,7 @@ zara_runtime_execute_(Request, Reply) :-
         register_request(RequestId, Token),
         execute_mode(Mode,
                      RequestId,
+                     SessionId,
                      Prompt,
                      Context,
                      ProviderName,
@@ -273,6 +275,7 @@ zara_cancel_handler(HttpRequest) :-
 
 execute_mode(Mode,
              RequestId,
+             SessionId,
              Prompt,
              Context,
              ProviderName,
@@ -282,6 +285,7 @@ execute_mode(Mode,
              Token,
              Reply) :-
     runtime_options(RequestId,
+                    SessionId,
                     ProviderName,
                     Provider,
                     Budget,
@@ -301,6 +305,7 @@ execute_mode_outcome(Mode, _, _, _, _) :-
     throw(zara_runtime_fault(unsupported_mode(Mode))).
 
 runtime_options(RequestId,
+                SessionId,
                 ProviderName,
                 Provider,
                 Budget,
@@ -311,6 +316,7 @@ runtime_options(RequestId,
                   planner_max_tokens(MaxTokens),
                   cancel_token(Token),
                   trace_id(RequestId),
+                  session_id(SessionId),
                   capabilities([rlm,
                                 context(peek),
                                 context(search),
@@ -402,6 +408,12 @@ request_id(Request, RequestId) :-
     (   get_dict(request_id, Request, RequestId0)
     ->  normalize_identifier(request_id, RequestId0, RequestId)
     ;   throw(zara_runtime_fault(missing_field(request_id)))
+    ).
+
+request_session(Request, RequestId, SessionId) :-
+    (   get_dict(session_id, Request, SessionId0)
+    ->  normalize_identifier(session_id, SessionId0, SessionId)
+    ;   SessionId = RequestId
     ).
 
 request_mode(Request, Mode) :-
