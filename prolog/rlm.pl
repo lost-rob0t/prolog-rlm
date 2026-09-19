@@ -13,6 +13,10 @@
             rlm_cancellation_token/1,
             rlm_cancel/1,
             default_completion_budget/1,
+            rlm_symbolic_tool_ready/0,
+            symbolic_program_validate/2,
+            symbolic_eval/3,
+            symbolic_tool_register/5,
             rlm_skill_ready/0,
             skill_catalog_empty/1,
             skill_catalog_load/3,
@@ -197,6 +201,12 @@ latency is represented by a deferred pending-operation Future; no shared
 :- use_module(rlm_context).
 :- use_module(rlm_plan).
 :- use_module(rlm_tool).
+:- use_module(rlm_symbolic_tool,
+              [ rlm_symbolic_tool_ready/0,
+                symbolic_program_validate/2,
+                symbolic_eval/3,
+                symbolic_tool_register/5
+              ]).
 :- use_module(rlm_skill,
               [ rlm_skill_ready/0,
                 skill_catalog_empty/1,
@@ -431,6 +441,7 @@ rlm_ready :-
     rlm_context:context_backend(memory, _),
     rlm_plan:default_plan_budget(_),
     rlm_tool:capabilities_normalize([], ok([])),
+    rlm_symbolic_tool:rlm_symbolic_tool_ready,
     rlm_skill:rlm_skill_ready,
     rlm_async:rlm_async_ready,
     rlm_authority:rlm_authority(runtime(ready_probe), approve_diff),

@@ -70,6 +70,8 @@
             runHook preInstall
             mkdir -p ${packRoot}/prolog_rlm
             cp -R pack.pl prolog bin ${packRoot}/prolog_rlm/
+            mkdir -p "$out/share/common-lisp/source/prolog-rlm-cl"
+            cp -R lisp/* "$out/share/common-lisp/source/prolog-rlm-cl/"
             mkdir -p "$out/nix-support" "$out/bin"
             cat > "$out/nix-support/setup-hook" <<EOF
             addPrologRlmPackPath() {
@@ -88,6 +90,19 @@
             runHook postInstall
           '';
         };
+        commonLispAdapterCheck = pkgs.runCommand "prolog-rlm-common-lisp-adapter" {
+          nativeBuildInputs = [ swiProlog pkgs.sbcl ];
+          src = self;
+        } ''
+          export HOME="$TMPDIR/home"
+          mkdir -p "$HOME"
+          cp -R "$src" "$TMPDIR/source"
+          chmod -R +w "$TMPDIR/source"
+          cd "$TMPDIR/source"
+          sbcl --noinform --non-interactive --load test/common_lisp_adapter_smoke.lisp | tee "$TMPDIR/common-lisp.log"
+          grep -F "COMMON_LISP_ADAPTER_OK" "$TMPDIR/common-lisp.log"
+          touch "$out"
+        '';
         projectSyntaxCheck = pkgs.stdenv.mkDerivation {
           pname = "prolog-rlm-project-syntax-check";
           version = "0.1.0";
@@ -126,7 +141,7 @@
         apps.default = self.apps.${system}.swipl;
 
         devShells.default = pkgs.mkShell {
-          packages = [ swiProlog prologRlm pkgs.tree-sitter pkgs.pkg-config grammarBundle ];
+          packages = [ swiProlog prologRlm pkgs.sbcl pkgs.tree-sitter pkgs.pkg-config grammarBundle ];
           RLM_TREE_SITTER_GRAMMAR_DIR = "${grammarBundle}";
           RLM_TREE_SITTER_INCOMPATIBLE_ABI_FIXTURE = "${incompatibleAbiFixture}";
           LANG = "C.UTF-8";
@@ -153,6 +168,8 @@
             prolog-rlm-swipl -q -g "use_module(library(rlm)),rlm:rlm_ready,rlm:rlm_agent_zero_adapter_ready,halt"
             touch "$out"
           '';
+
+          common-lisp-adapter = commonLispAdapterCheck;
 
           zara-wrapper-help = pkgs.runCommand "prolog-rlm-zara-wrapper-help" {
             nativeBuildInputs = [ prologRlm ];

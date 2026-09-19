@@ -82,6 +82,7 @@ corpus_entry('rlm_conversation_scale_test.pl',
              include(rlm_conversation_scale)).
 corpus_entry('rlm_plan_test.pl', include(rlm_plan)).
 corpus_entry('rlm_tool_test.pl', include(rlm_tool)).
+corpus_entry('rlm_symbolic_tool_test.pl', include(rlm_symbolic_tool)).
 corpus_entry('rlm_tool_effect_test.pl', include(rlm_tool_effect)).
 corpus_entry('rlm_tool_loader_test.pl', include(rlm_tool_loader)).
 corpus_entry('rlm_tool_loader_security_test.pl',

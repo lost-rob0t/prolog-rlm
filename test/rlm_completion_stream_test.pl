@@ -170,6 +170,24 @@ test(pump_reasoning_and_usage_observed_without_delivery) :-
     rlm_completion:stream_pump_step(State2, Done, State3, []),
     assertion(State3 == State2).
 
+test(pump_reasoning_details_without_delta_are_observed_without_failure) :-
+    CallRef = stream_call{operation:model, depth:0, seq:1},
+    State0 = stream_pump_state{call:CallRef,
+                               handler:collect_stream,
+                               started:false,
+                               text:"",
+                               reasoning:"",
+                               usage:none},
+    Event = stream_event{type:reasoning,
+                         choice_index:0,
+                         details:[stream_data{type:"reasoning.text",
+                                              format:"unknown",
+                                              index:0,
+                                              text:"The"}]},
+    rlm_completion:stream_pump_step(State0, Event, State1, Deliveries),
+    assertion(Deliveries == []),
+    assertion(State1 == State0).
+
 test(pump_aggregate_mismatch_is_hard_divergence_error) :-
     CallRef = stream_call{operation:model, depth:0, seq:1},
     State = stream_pump_state{call:CallRef,

@@ -1740,9 +1740,11 @@ stream_pump_step(State0, Event, State1, Deliveries) :-
         string_concat(State0.text, Delta, Text),
         State1 = State0.put(_{started:Started, text:Text})
     ;   Type == reasoning
-    ->  get_dict(delta, Event, Delta),
-        string_concat(State0.reasoning, Delta, Reasoning),
-        State1 = State0.put(_{reasoning:Reasoning}),
+    ->  (   get_dict(delta, Event, Delta)
+        ->  string_concat(State0.reasoning, Delta, Reasoning),
+            State1 = State0.put(_{reasoning:Reasoning})
+        ;   State1 = State0
+        ),
         Deliveries = []
     ;   Type == usage
     ->  get_dict(usage, Event, Usage),
