@@ -190,7 +190,7 @@
     (string (%encode-string value))
     (integer (write-to-string value :base 10 :radix nil))
     (float (%encode-float value))
-    (ratio (format nil "(~A/~A)" (numerator value) (denominator value)))
+    (ratio (%encode-float (coerce value 'double-float)))
     (null "[]")
     (cons
      (unless (list-length value)
