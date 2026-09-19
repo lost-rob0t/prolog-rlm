@@ -174,7 +174,7 @@ validate_key(Key) :-
 validate_key(Key) :-
     throw(symbolic_fault(invalid_key(Key))).
 
-require_closed_term(Value, Label) :-
+require_closed_term(Value, _Label) :-
     ground(Value),
     acyclic_term(Value),
     !.
