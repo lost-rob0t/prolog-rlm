@@ -23,13 +23,16 @@ jobs:
       - name: Install SWI-Prolog
         run: |
           sudo apt-get update
-          sudo apt-get install --yes swi-prolog-nox
+          sudo apt-get install --yes swi-prolog-nox sbcl
 
       - name: Verify supported SWI-Prolog runtime
         run: swipl -q -s test/check_runtime.pl
 
       - name: Static load all production modules
         run: swipl -q -s test/load_all.pl
+
+      - name: Verify Common Lisp adapter and symbolic tool harness
+        run: sbcl --noinform --non-interactive --load test/common_lisp_adapter_smoke.lisp
 
       - name: Validate research approval metadata
         run: swipl -q -s scripts/validate_research_approval.pl
