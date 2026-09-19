@@ -196,6 +196,90 @@ test(expert_selection_projects_auto_mode_signal) :-
         ),
         cleanup_registry(Registry)).
 
+test(expert_auto_route_selects_symbolic) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        setup_call_cleanup(
+            reasoning_mode_open(auto_route_symbolic, ok(_)),
+            ( full_context(Context),
+              expert_auto_route(
+                  auto_route_symbolic,
+                  Registry,
+                  "review git diff",
+                  Context,
+                  _{},
+                  ok(Route)),
+              assertion(Route.selection.applicable == true),
+              assertion(Route.mode.effective == symbolic),
+              assertion(Route.mode.reason == expert_applicable),
+              assertion(Route.signals.expert_applicable == true)
+            ),
+            reasoning_mode_destroy(auto_route_symbolic, _)
+        ),
+        cleanup_registry(Registry)).
+
+test(expert_auto_route_selects_symbolic_recursive_when_trusted_signals_allow) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        setup_call_cleanup(
+            reasoning_mode_open(auto_route_recursive, ok(_)),
+            ( full_context(Context),
+              expert_auto_route(
+                  auto_route_recursive,
+                  Registry,
+                  "review git diff",
+                  Context,
+                  _{decomposable:true, recursion_allowed:true},
+                  ok(Route)),
+              assertion(Route.mode.effective == 'symbolic-recursive'),
+              assertion(Route.mode.reason == expert_decomposition),
+              assertion(Route.signals.expert_applicable == true)
+            ),
+            reasoning_mode_destroy(auto_route_recursive, _)
+        ),
+        cleanup_registry(Registry)).
+
+test(expert_auto_route_without_expert_falls_back_direct) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        setup_call_cleanup(
+            reasoning_mode_open(auto_route_direct, ok(_)),
+            ( full_context(Context),
+              expert_auto_route(
+                  auto_route_direct,
+                  Registry,
+                  "calculate orbital mechanics",
+                  Context,
+                  _{},
+                  ok(Route)),
+              assertion(Route.selection.applicable == false),
+              assertion(Route.mode.effective == direct),
+              assertion(Route.mode.reason == flexible_default),
+              assertion(Route.signals.expert_applicable == false)
+            ),
+            reasoning_mode_destroy(auto_route_direct, _)
+        ),
+        cleanup_registry(Registry)).
+
+test(expert_auto_route_cannot_spoof_expert_signal) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        setup_call_cleanup(
+            reasoning_mode_open(auto_route_spoof, ok(_)),
+            ( full_context(Context),
+              expert_auto_route(
+                  auto_route_spoof,
+                  Registry,
+                  "review git diff",
+                  Context,
+                  _{expert_applicable:false},
+                  error(Error)),
+              assertion(Error.kind == invalid_route_signals)
+            ),
+            reasoning_mode_destroy(auto_route_spoof, _)
+        ),
+        cleanup_registry(Registry)).
+
 test(advice_is_closed_bounded_inert_data) :-
     setup_call_cleanup(
         setup_registry(Registry),
