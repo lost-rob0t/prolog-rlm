@@ -60,6 +60,7 @@ The advisory layer never executes the provider's returned tool call.
 expert_tool_candidates(+Registry, -Outcome).
 expert_tool_select(+Registry, +Query, +Context, -Outcome).
 expert_mode_signal(+Selection, -Signal).
+expert_auto_route(+ModeContext, +Registry, +Query, +ExpertContext, +TaskSignals, -Outcome).
 expert_advice_build(+Selection, +Evidence, -Outcome).
 expert_advice_model_request(+Advice, +Query, +Options, -Outcome).
 expert_advice_model_step(+Provider, +Advice, +Query, +Options, -Outcome).
@@ -125,6 +126,23 @@ The signal is ground data and plugs directly into
 An applicable expert therefore makes `/auto` prefer `symbolic`.
 An expert plus trusted decomposable/recursion signals may make the mode selector
 choose `symbolic-recursive`.
+
+### Expert-aware auto route
+
+`expert_auto_route/6` is the normal composition point for downstream `/auto`
+frontends.
+
+It:
+
+1. performs expert selection from the query and real capability context;
+2. derives `expert_applicable` internally;
+3. refuses a caller-supplied `expert_applicable` field;
+4. merges the derived signal with the remaining trusted task signals;
+5. calls canonical `reasoning_mode_select/4`;
+6. returns both the expert selection and resulting mode state.
+
+This makes expert-aware `auto` a single runtime operation rather than forcing
+each frontend to duplicate the routing sequence.
 
 ### One-step model advice
 
