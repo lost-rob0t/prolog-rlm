@@ -270,7 +270,8 @@ normalize_auto_task_signals(Input, Signals) :-
                  )))
     ; true
     ),
-    Signals = Input.
+    dict_pairs(Input, _, Pairs),
+    dict_pairs(Signals, reasoning_task_context, Pairs).
 
 require_advice_outcome(ok(Value), _, Value) :-
     !.
