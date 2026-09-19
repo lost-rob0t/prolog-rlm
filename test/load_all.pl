@@ -7,6 +7,7 @@
 :- use_module('../prolog/rlm_conversation_warm', []).
 :- use_module('../prolog/rlm_conversation_runtime', []).
 :- use_module('../prolog/rlm_prompt_compiler', []).
+:- use_module('../prolog/rlm_symbolic_tool', []).
 :- use_module('../prolog/rlm_prompt_command', []).
 :- use_module('../prolog/rlm_skill_graph', []).
 :- use_module('../prolog/rlm_delegation_runtime', []).
@@ -49,6 +50,7 @@ main(_) :-
         rlm_conversation_warm:rlm_conversation_warm_ready,
         rlm_conversation_runtime:rlm_conversation_runtime_ready,
         rlm_prompt_compiler:rlm_prompt_compiler_ready,
+        rlm_symbolic_tool:rlm_symbolic_tool_ready,
         rlm_skill_graph:rlm_skill_graph_ready,
         rlm_delegation_runtime:rlm_delegation_runtime_ready,
         rlm_evidence:rlm_evidence_ready,
