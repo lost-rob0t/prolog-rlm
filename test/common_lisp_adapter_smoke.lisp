@@ -16,6 +16,27 @@
     (check (member "rlm_version/1" exports :test #'string=)
            "Root RLM export surface is not visible from Common Lisp."))
 
+  (let ((ready (prolog-rlm:call-rlm rlm "rlm_ready")))
+    (check (prolog-rlm:response-ok-p ready)
+           "rlm_ready/0 failed through the Common Lisp bridge: ~S"
+           ready))
+
+  (let ((compiler-ready
+          (prolog-rlm:call-prolog
+           rlm
+           "rlm_prompt_compiler"
+           "rlm_prompt_compiler_ready")))
+    (check (prolog-rlm:response-ok-p compiler-ready)
+           "Prompt compiler public module is not usable from Common Lisp: ~S"
+           compiler-ready))
+
+  (let ((blocked nil))
+    (handler-case
+        (prolog-rlm:call-prolog rlm "lists" "member" nil)
+      (error () (setf blocked t)))
+    (check blocked
+           "Bridge unexpectedly allowed a non-RLM module."))
+
   (let* ((version-reply
            (prolog-rlm:call-rlm
             rlm
