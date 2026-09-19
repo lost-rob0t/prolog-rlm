@@ -127,12 +127,10 @@ select_from_catalog(Catalog, Registry, Contracts, Query, Context, Selection) :-
         RegisterOutcome
     ),
     require_compiler_outcome(RegisterOutcome, register),
-    Capabilities = Context.capabilities,
     prompt_catalog_search(
         Catalog,
         Query,
         [ limit(64),
-          capabilities(Capabilities),
           discovery_scope([kind(tool)])
         ],
         SearchOutcome
@@ -170,7 +168,40 @@ select_matched_expert(
         Context,
         DecisionOutcome
     ),
-    require_expert_decision(DecisionOutcome, Decision),
+    selection_from_expert_decision(
+        DecisionOutcome,
+        Metadata,
+        Registry,
+        Contracts,
+        Selection
+    ).
+
+selection_from_expert_decision(
+    error(Error),
+    _,
+    _,
+    _,
+    Selection
+) :-
+    is_dict(Error, expert_error),
+    Error.kind == no_applicable_expert,
+    !,
+    no_expert_selection(Selection).
+selection_from_expert_decision(
+    error(Error),
+    _,
+    _,
+    _,
+    _
+) :-
+    throw(expert_fault(expert_selection(Error))).
+selection_from_expert_decision(
+    ok(Decision),
+    Metadata,
+    Registry,
+    Contracts,
+    Selection
+) :-
     contract_named(Contracts, Decision.selected, SelectedContract),
     contract_candidate(Registry, SelectedContract, Candidate),
     Selection = expert_selection{
@@ -471,11 +502,6 @@ require_compiler_value(ok(Value), _, Value) :-
     !.
 require_compiler_value(error(Error), Phase, _) :-
     throw(expert_fault(compiler_error(Phase, Error))).
-
-require_expert_decision(ok(Decision), Decision) :-
-    !.
-require_expert_decision(error(Error), _) :-
-    throw(expert_fault(expert_selection(Error))).
 
 require_tool_lookup(ok(Schema), _, Schema) :-
     !.
