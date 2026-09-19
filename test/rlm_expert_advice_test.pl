@@ -212,7 +212,8 @@ test(expert_auto_route_selects_symbolic) :-
               assertion(Route.selection.applicable == true),
               assertion(Route.mode.effective == symbolic),
               assertion(Route.mode.reason == expert_applicable),
-              assertion(Route.signals.expert_applicable == true)
+              assertion(Route.signals.expert_applicable == true),
+              assertion(ground(Route.signals))
             ),
             reasoning_mode_destroy(auto_route_symbolic, _)
         ),
