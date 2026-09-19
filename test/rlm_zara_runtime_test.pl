@@ -160,4 +160,14 @@ test(failed_outcome_does_not_project_raw_runtime_error) :-
     term_string(Reply, Rendered),
     assertion(\+ sub_string(Rendered, _, _, _, Secret)).
 
+test(invalid_outcome_does_not_project_raw_runtime_payload) :-
+    Secret = "RAW-INVALID-OUTCOME-SECRET-MUST-NOT-CROSS",
+    Outcome = _{unexpected:_{provider_payload:_{authorization:Secret}}},
+    rlm_zara_runtime:project_outcome("redacted-invalid", direct, Outcome, Reply),
+    assertion(Reply.status == "failed"),
+    assertion(Reply.error.kind == "runtime_error"),
+    assertion(\+ get_dict(detail, Reply.error, _)),
+    term_string(Reply, Rendered),
+    assertion(\+ sub_string(Rendered, _, _, _, Secret)).
+
 :- end_tests(rlm_zara_runtime).
