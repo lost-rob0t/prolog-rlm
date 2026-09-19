@@ -32,6 +32,7 @@
             expert_tool_candidates/2,
             expert_tool_select/4,
             expert_mode_signal/2,
+            expert_auto_route/6,
             expert_advice_build/3,
             expert_advice_model_request/4,
             expert_advice_model_step/5,
@@ -297,6 +298,7 @@ latency is represented by a deferred pending-operation Future; no shared
                 expert_tool_candidates/2,
                 expert_tool_select/4,
                 expert_mode_signal/2,
+                expert_auto_route/6,
                 expert_advice_build/3,
                 expert_advice_model_request/4,
                 expert_advice_model_step/5
