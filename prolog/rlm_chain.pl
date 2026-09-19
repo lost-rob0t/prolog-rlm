@@ -21,6 +21,7 @@
             structured_decode_validate/3,
             default_retry_policy/1,
             openrouter_provider/2,
+            openrouter_provider/3,
             openai_compatible_provider/4,
             default_openrouter_model/1,
             provider_capability/2,
@@ -90,19 +91,30 @@ default_openrouter_model(Model) :-
     ).
 
 %!  openrouter_provider(+ModelOrVar, -Provider) is det.
+%!  openrouter_provider(+ModelOrVar, +SessionId, -Provider) is det.
 %
 %   Construct an OpenRouter provider term without resolving the credential.
+%   The session-aware form records trusted host correlation in the provider
+%   configuration; transport validation decides whether it is safe to emit.
 
-openrouter_provider(Model0,
-                    provider(openrouter,
-                             [ endpoint('https://openrouter.ai/api/v1/chat/completions'),
-                               credential(env('OPENROUTER_API_KEY')),
-                               model(Model),
-                               timeout(30),
-                               address_family(inet),
-                               app_title('prolog-rlm'),
-                               app_referer('https://github.com/lost-rob0t/prolog-rlm')
-                             ])) :-
+openrouter_provider(Model0, Provider) :-
+    openrouter_provider_config(Model0, [], Provider).
+
+openrouter_provider(Model0, SessionId, Provider) :-
+    openrouter_provider_config(Model0, [session_id(SessionId)], Provider).
+
+openrouter_provider_config(
+    Model0,
+    ExtraConfig,
+    provider(openrouter,
+             [ endpoint('https://openrouter.ai/api/v1/chat/completions'),
+               credential(env('OPENROUTER_API_KEY')),
+               model(Model),
+               timeout(30),
+               address_family(inet),
+               app_title('prolog-rlm'),
+               app_referer('https://github.com/lost-rob0t/prolog-rlm')
+             | ExtraConfig])) :-
     (   var(Model0)
     ->  default_openrouter_model(Model)
     ;   Model = Model0
@@ -450,8 +462,9 @@ simple_tool_choice_mode(Value, Mode) :-
 %   run exactly once here. Provider effects use model_complete_execute/3 rather
 %   than re-entering the public synchronous facade.
 
-chain_invoke_execute(ProviderSpec, Request0, Options, Outcome) :-
+chain_invoke_execute(ProviderSpec0, Request0, Options, Outcome) :-
     canonical_runtime_request(Request0, Request),
+    bind_provider_session(ProviderSpec0, Options, ProviderSpec),
     rlm_chain_runtime:chain_invoke_with_transport(ProviderSpec,
                                                   Request,
                                                   Options,
@@ -462,14 +475,34 @@ chain_invoke_execute(ProviderSpec, Request0, Options, Outcome) :-
 %
 %   Canonical incremental chain streaming path.
 
-chain_stream_execute(ProviderSpec, Request0, Options, EventHandler, Outcome) :-
+chain_stream_execute(ProviderSpec0, Request0, Options, EventHandler, Outcome) :-
     canonical_runtime_request(Request0, Request),
+    bind_provider_session(ProviderSpec0, Options, ProviderSpec),
     rlm_chain_runtime:chain_stream_with_transport(ProviderSpec,
                                                   Request,
                                                   Options,
                                                   rlm_chain:model_stream_execute,
                                                   EventHandler,
                                                   Outcome).
+
+/* Session correlation is host/runtime metadata, not model-controlled request
+   data. Bind it only to OpenRouter, whose transport defines sticky session
+   routing. Explicit provider configuration wins, and generic OpenAI-compatible
+   endpoints never inherit the vendor-specific field. */
+
+bind_provider_session(provider_context(Messages, Provider0), Options,
+                      provider_context(Messages, Provider)) :-
+    !,
+    bind_provider_session(Provider0, Options, Provider).
+bind_provider_session(provider(openrouter, Config0), Options,
+                      provider(openrouter, Config)) :-
+    is_list(Config0),
+    \+ memberchk(session_id(_), Config0),
+    metadata_option(session_id, Options, none, SessionId),
+    SessionId \== none,
+    !,
+    append(Config0, [session_id(SessionId)], Config).
+bind_provider_session(Provider, _, Provider).
 
 /* Canonicalize anonymous dict tags in generation options.  SWI's `_{}' and
    `_{...}' syntax intentionally creates an anonymous tag variable.  The chain
