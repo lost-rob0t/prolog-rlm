@@ -3,6 +3,7 @@
             expert_tool_candidates/2,
             expert_tool_select/4,
             expert_mode_signal/2,
+            expert_auto_route/6,
             expert_advice_build/3,
             expert_advice_model_request/4,
             expert_advice_model_step/5
@@ -52,6 +53,9 @@ proposal; this module does not execute it.
               ]).
 :- use_module(rlm_chain,
               [ model_complete/3
+              ]).
+:- use_module(rlm_reasoning_mode,
+              [ reasoning_mode_select/4
               ]).
 
 rlm_expert_advice_ready :-
@@ -194,6 +198,89 @@ expert_mode_signal(Selection, Signal) :-
     -> Signal = reasoning_task_context{expert_applicable:Applicable}
     ; throw(expert_fault(invalid_selection(Selection)))
     ).
+
+
+expert_auto_route(
+    ModeContext,
+    Registry,
+    Query,
+    ExpertContext,
+    TaskSignals0,
+    Outcome
+) :-
+    catch(
+        expert_auto_route_(
+            ModeContext,
+            Registry,
+            Query,
+            ExpertContext,
+            TaskSignals0,
+            Outcome
+        ),
+        Exception,
+        expert_exception(auto_route, Exception, Outcome)
+    ).
+
+expert_auto_route_(
+    ModeContext,
+    Registry,
+    Query,
+    ExpertContext,
+    TaskSignals0,
+    Outcome
+) :-
+    normalize_auto_task_signals(TaskSignals0, TaskSignals),
+    expert_tool_select(
+        Registry,
+        Query,
+        ExpertContext,
+        SelectionOutcome
+    ),
+    require_advice_outcome(SelectionOutcome, expert_selection, Selection),
+    expert_mode_signal(Selection, ExpertSignal),
+    ExpertApplicable = ExpertSignal.expert_applicable,
+    put_dict(
+        expert_applicable,
+        TaskSignals,
+        ExpertApplicable,
+        CombinedSignals
+    ),
+    reasoning_mode_select(
+        ModeContext,
+        CombinedSignals,
+        [],
+        ModeOutcome
+    ),
+    require_mode_outcome(ModeOutcome, ModeState),
+    Outcome = ok(expert_auto_route{
+                     mode:ModeState,
+                     selection:Selection,
+                     signals:CombinedSignals
+                 }).
+
+normalize_auto_task_signals(Input, Signals) :-
+    ( is_dict(Input)
+    -> true
+    ; throw(expert_fault(invalid_route_signals(expected_object)))
+    ),
+    ( get_dict(expert_applicable, Input, _)
+    -> throw(expert_fault(
+                 invalid_route_signals(
+                     reserved_field(expert_applicable)
+                 )))
+    ; true
+    ),
+    Signals = Input.
+
+require_advice_outcome(ok(Value), _, Value) :-
+    !.
+require_advice_outcome(error(Error), Phase, _) :-
+    throw(expert_fault(nested_error(Phase, Error))).
+
+require_mode_outcome(ok(Value), Value) :-
+    !.
+require_mode_outcome(error(Error), _) :-
+    throw(expert_fault(mode_selection(Error))).
 
 expert_advice_build(Selection, Evidence0, Outcome) :-
     catch(
@@ -399,6 +486,17 @@ require_native_value(ok(Value), _, Value) :-
 require_native_value(error(Error), Phase, _) :-
     throw(expert_fault(native_schema_error(Phase, Error))).
 
+expert_exception(
+    Phase,
+    expert_fault(invalid_route_signals(Detail)),
+    error(expert_advice_error{
+              phase:Phase,
+              kind:invalid_route_signals,
+              detail:Detail,
+              message:"expert auto-route task signals are invalid"
+          })
+) :-
+    !.
 expert_exception(
     Phase,
     expert_fault(invalid_context(Detail)),
