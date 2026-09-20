@@ -112,15 +112,16 @@ test(candidate_projection_contains_only_registered_experts) :-
         ( expert_tool_candidates(Registry, ok(Candidates)),
           assertion(length(Candidates, 2)),
           member(Git, Candidates),
-          Git.name == git_diff,
-          assertion(Git.id == expert(git_diff)),
-          assertion(Git.goal == review),
-          assertion(Git.required_capability == tool(git_diff)),
-          assertion(Git.source == expert_registry),
-          assertion(Git.effect == read),
+          get_dict(name, Git, git_diff),
+          assertion(get_dict(id, Git, expert(git_diff))),
+          assertion(get_dict(goal, Git, review)),
+          assertion(get_dict(required_capability, Git, tool(git_diff))),
+          assertion(get_dict(source, Git, expert_registry)),
+          assertion(get_dict(effect, Git, read)),
           assertion(\+ get_dict(handler, Git, _)),
-          assertion(is_dict(Git.schema, tool_schema)),
-          assertion(\+ (member(C, Candidates), C.name == plain_tool))
+          get_dict(schema, Git, GitSchema),
+          assertion(is_dict(GitSchema, tool_schema)),
+          assertion(\+ (member(C, Candidates), get_dict(name, C, plain_tool)))
         ),
         cleanup_registry(Registry)).
 
@@ -324,17 +325,21 @@ test(advice_request_exposes_only_selected_expert_tool_schema) :-
                                   messages:[System, User],
                                   options:Options
                               }),
-          assertion(System.role == system),
-          assertion(User.role == user),
-          assertion(User.content == "Should I merge this change?"),
-          assertion(Options.max_tokens =:= 96),
-          assertion(Options.temperature =:= 0),
-          assertion(Options.tool_choice == auto),
-          assertion(Options.tools = [Wire]),
-          assertion(Wire.type == "function"),
-          assertion(Wire.function.name == "git_diff"),
-          assertion(\+ sub_string(System.content, _, _, _, "web_search")),
-          assertion(\+ sub_string(System.content, _, _, _, "plain_tool"))
+          assertion(get_dict(role, System, system)),
+          assertion(get_dict(role, User, user)),
+          assertion(get_dict(content, User, "Should I merge this change?")),
+          get_dict(max_tokens, Options, MaxTokens),
+          assertion(MaxTokens =:= 96),
+          get_dict(temperature, Options, Temperature),
+          assertion(Temperature =:= 0),
+          assertion(get_dict(tool_choice, Options, auto)),
+          assertion(get_dict(tools, Options, [Wire])),
+          assertion(get_dict(type, Wire, "function")),
+          get_dict(function, Wire, Function),
+          assertion(get_dict(name, Function, "git_diff")),
+          get_dict(content, System, SystemContent),
+          assertion(\+ sub_string(SystemContent, _, _, _, "web_search")),
+          assertion(\+ sub_string(SystemContent, _, _, _, "plain_tool"))
         ),
         cleanup_registry(Registry)).
 
