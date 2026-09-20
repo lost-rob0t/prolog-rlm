@@ -1,0 +1,57 @@
+name: Style Overlay Contract
+
+on:
+  pull_request:
+    paths:
+      - 'prolog/rlm_style_overlay.pl'
+      - 'test/run_style_overlay_contract.pl'
+      - '.github/workflows/style-overlay-contract.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'prolog/rlm_style_overlay.pl'
+      - 'test/run_style_overlay_contract.pl'
+      - '.github/workflows/style-overlay-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  style-overlay-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install SWI-Prolog and syscall audit tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y swi-prolog-nox strace
+
+      - name: Prove deterministic zero-model overlay contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          trace="$RUNNER_TEMP/style-overlay-network.trace"
+          env \
+            -u OPENAI_API_KEY \
+            -u ANTHROPIC_API_KEY \
+            -u OPENROUTER_API_KEY \
+            -u GOOGLE_API_KEY \
+            -u GEMINI_API_KEY \
+            -u GROQ_API_KEY \
+            -u ZAI_API_KEY \
+            -u AZURE_OPENAI_API_KEY \
+            -u HF_TOKEN \
+            strace -f -e trace=network -o "$trace" \
+            swipl -q -s test/run_style_overlay_contract.pl
+          if grep -Eq 'socket\(AF_INET6?,' "$trace"; then
+            echo 'unexpected IPv4/IPv6 network syscall during style overlay contract' >&2
+            cat "$trace" >&2
+            exit 1
+          fi
