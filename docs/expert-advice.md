@@ -39,20 +39,17 @@ canonical expert_select(goal, capabilities, priority)
         |
         +--> expert_applicable signal -> /auto
         |
-        v
-bounded expert_advice
+        +--> PURE SYMBOLIC: expert_invoke/7 -> deterministic result
+        |                    model/provider calls = 0
         |
-        v
-exactly one canonical model request
-        |
-        v
-answer OR selected expert-tool proposal
-        |
-        v
-existing rlm_tool execution boundary
+        `--> OPTIONAL MODEL ADVICE: bounded expert_advice
+                                  -> exactly one canonical model request
+                                  -> answer OR selected expert-tool proposal
+                                  -> existing rlm_tool execution boundary
 ```
 
-The advisory layer never executes the provider's returned tool call.
+The optional advisory layer never executes the provider's returned tool call.
+Pure-symbolic execution never enters the model-advice branch.
 
 ## Public API
 
@@ -144,11 +141,35 @@ It:
 This makes expert-aware `auto` a single runtime operation rather than forcing
 each frontend to duplicate the routing sequence.
 
-### One-step model advice
+### Pure-symbolic zero-model path
 
-`expert_advice_build/3` creates closed bounded advice containing the selected
-expert/tool identity, goal, version, normal capability/effect metadata,
-deterministic selection rationale, at most 16 bounded evidence strings, and
+Pure-symbolic consumers stop at deterministic expert selection and invoke the
+selected expert through canonical `rlm_expert:expert_invoke/7`. They do **not**
+call `expert_advice_build/3`, `expert_advice_model_request/4`, or
+`expert_advice_model_step/5`.
+
+That distinction is normative for zero-model acceptance:
+
+- provider configuration and credentials are unnecessary;
+- `max_model_calls=0` remains valid for the whole deterministic expert path;
+- parse miss, ambiguity, missing expert, or expert error returns deterministic
+  typed state to the symbolic supervisor rather than entering a provider
+  fallback;
+- capability, cancellation, budget, and effect checks remain owned by the
+  canonical expert/tool runtime;
+- downstream Zara pure-symbolic consumers must treat the model-advice API as an
+  explicitly opt-in fallback surface, never as mandatory reasoning glue.
+
+A deterministic expert result is therefore complete symbolic evidence in its
+own right. No model call is implied by expert selection, applicability, auto
+routing, or local expert invocation.
+
+### Optional one-step model advice
+
+`expert_advice_build/3` belongs specifically to the optional model-advice path.
+It creates closed bounded advice containing the selected expert/tool identity,
+goal, version, normal capability/effect metadata, deterministic selection
+rationale, at most 16 bounded evidence strings, and
 `stop_condition:one_model_step`.
 
 `expert_advice_model_request/4` renders only the selected expert-tool schema
@@ -162,23 +183,27 @@ that proposal through ordinary `rlm_tool` execution. Capability and authority
 are rechecked there. Expert selection therefore cannot make a denied tool
 executable.
 
+The `one_model_step` stop condition is intentionally local to this opt-in API.
+It is not the stop condition for pure-symbolic expert execution and must not be
+propagated into zero-model consumers.
+
 ## Loop policy
 
-The intended symbolic loop is deliberately incremental:
+The deterministic loop is the base path:
 
 ```text
 observe state
 -> apply local deterministic experts/rules
 -> choose one next expert/tool
--> if model judgment is useful, advise exactly one model step
--> validate/propose/execute through canonical boundaries
+-> invoke through canonical expert/tool authority
+-> validate result/effects
 -> observe new state
 -> repeat under the enclosing runtime budget
 ```
 
-A deterministic expert may also be invoked locally through `expert_invoke/7`
-with zero model calls. Model advice is a fallback/operator, not mandatory
-reasoning glue.
+Only when the enclosing policy explicitly permits provider use may that loop
+branch to exactly one model-advice step. Model advice is a fallback/operator,
+not mandatory reasoning glue.
 
 ## Remaining #377 work
 
