@@ -387,7 +387,7 @@ resolve_checks([], _, _, [], []).
 resolve_checks([Check|Rest], Rules, Applicable,
                [Winner|EffectiveRest], [Decision|DecisionRest]) :-
     rules_for_check(Applicable, Check, Group),
-    choose_winner(Check, Rules, Group, Winner),
+    choose_winner(Check, Applicable, Group, Winner),
     shadowed_rules(Group, Winner.id, Shadowed),
     shadow_ids(Shadowed, ShadowIds),
     shadow_provenance(Shadowed, ShadowProvenance),
