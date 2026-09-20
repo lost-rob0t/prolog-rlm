@@ -399,7 +399,7 @@ normalize_expert_context(Context0, Context) :-
     sort(Keys0, Keys),
     ( Keys == [capabilities]
     -> true
-    ; throw(expert_fault(invalid_context(unexpected_fields(Keys)))
+    ; throw(expert_fault(invalid_context(unexpected_fields(Keys))))
     ),
     capabilities_normalize(Context0.capabilities, CapsOutcome),
     require_capabilities(CapsOutcome, Capabilities),
@@ -497,7 +497,6 @@ require_compiler_outcome(ok(_), _) :-
     !.
 require_compiler_outcome(error(Error), Phase) :-
     throw(expert_fault(compiler_error(Phase, Error))).
-
 require_compiler_value(ok(Value), _, Value) :-
     !.
 require_compiler_value(error(Error), Phase, _) :-
