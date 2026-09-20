@@ -95,6 +95,21 @@ test(explicit_same_rank_override_is_deterministic) :-
     Result.decisions = [Decision],
     assertion(Decision.shadowed == [user_b]).
 
+test(non_applicable_override_path_cannot_break_active_scope_tie,
+     [throws(style_overlay_fault(equal_precedence_conflict(naming, user_a, user_b)))]) :-
+    rule(user_a, user_global, any, any, any, one, [foreign_bridge], A),
+    rule(user_b, user_global, any, any, any, two, [], B),
+    rule(foreign_bridge,
+         project_language,
+         python,
+         project_a,
+         7,
+         foreign,
+         [user_b],
+         Bridge),
+    context(project_b, 3, python, Context),
+    style_overlay_resolve([A,B,Bridge], Context, _).
+
 test(override_cycle_fails_closed,
      [throws(style_overlay_fault(override_cycle([user_a,user_b,user_a])))]) :-
     rule(user_a, user_global, any, any, any, one, [user_b], A),
