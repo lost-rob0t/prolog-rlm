@@ -44,6 +44,10 @@ user:message_hook(Message, error, Lines) :-
 % This is the sole deterministic corpus inventory.  Included entries are
 % loaded and their suites are derived below; excluded entries document why a
 % test-shaped file belongs to another executable gate.
+%
+% Literate-source registrations enter through one generated include seam so
+% new canonical Org units do not require hand-editing this legacy inventory.
+:- include('generated/literate_corpus_entries.pl').
 corpus_entry('bootstrap_test.pl', include(bootstrap)).
 corpus_entry('load_error_status_test.pl', include(load_error_status)).
 corpus_entry('rlm_closed_data_test.pl', include(rlm_closed_data)).
