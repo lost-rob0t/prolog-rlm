@@ -33,6 +33,7 @@
 :- use_module('../prolog/rlm_spec_workflow', []).
 :- use_module('../prolog/rlm_spec_strategy', []).
 :- use_module('../prolog/rlm_plan_graph', []).
+:- use_module('../prolog/rlm_expert', []).
 :- use_module('../prolog/rlm_project_source', []).
 :- use_module('../prolog/rlm_project_grammar_pack', []).
 :- use_module('../prolog/rlm_project_syntax', []).
@@ -61,6 +62,7 @@ main(_) :-
         rlm_verify:rlm_verify_ready,
         rlm_spec_workflow:rlm_spec_workflow_ready,
         rlm_spec_strategy:rlm_spec_strategy_ready,
+        rlm_expert:rlm_expert_ready,
         rlm_project_source:rlm_project_source_ready,
         rlm_project_grammar_pack:rlm_project_grammar_pack_ready,
         rlm_project_syntax:rlm_project_syntax_ready,
