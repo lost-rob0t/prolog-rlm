@@ -174,6 +174,7 @@ corpus_entry('rlm_plan_native_ops_test.pl', include(rlm_plan_native_ops)).
 corpus_entry('prolog_agent_ui_v1_test.pl', include(prolog_agent_ui_v1)).
 corpus_entry('prolog_agent_ui_fixture_command_codec_test.pl',
              include(prolog_agent_ui_fixture_command_codec)).
+corpus_entry('native_sdk_v1_test.pl', include(native_sdk_v1)).
 
 corpus_entry('rlm_tree_sitter_test.pl',
              exclude(native_ffi, 'runs through the Tree-sitter gate')).
