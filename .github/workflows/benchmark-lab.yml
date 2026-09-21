@@ -1,0 +1,65 @@
+name: Benchmark Lab
+
+on:
+  push:
+    branches:
+      - feat/benchmark-lab
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lab-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile benchmark Python
+        run: |
+          python3 -m py_compile \
+            lab/benchmark/run.py \
+            lab/benchmark/codegen_evalplus.py \
+            lab/benchmark/llm_starintel.py
+
+      - name: Validate immutable matrix
+        run: |
+          python3 lab/benchmark/run.py --dry-run
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          matrix = json.loads(Path("lab/benchmark/matrix.json").read_text())
+          tasks = json.loads(Path("lab/benchmark/tasks.json").read_text())
+          assert matrix["schema"] == "prolog-rlm.benchmark-lab.matrix.v1"
+          assert len(matrix["subjects"]) >= 7
+          assert len([x for x in tasks if x["suite"] == "starintel"]) >= 8
+          assert all(x.get("provenance", {}).get("ref") for x in tasks)
+          PY
+
+  prolog-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes swi-prolog-nox
+
+      - name: Run deterministic benchmark
+        run: |
+          mkdir -p benchmark-artifacts
+          swipl -q -s benchmark/run.pl -- deterministic \
+            benchmark-artifacts/deterministic.json
+
+      - name: Run deterministic deep experiment
+        run: |
+          swipl -q -s benchmark/run.pl -- deep-experiment \
+            benchmark-artifacts/deep-experiment.json
+
+      - name: Upload branch-only benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-lab-deterministic-${{ github.sha }}
+          path: benchmark-artifacts/
+          if-no-files-found: error
