@@ -1,0 +1,51 @@
+{
+  "schema": "prolog-rlm.benchmark-lab.matrix.v1",
+  "subjects": {
+    "claude-code": {
+      "command": [
+        "claude",
+        "-p"
+      ],
+      "family": "common-agent",
+      "kind": "command"
+    },
+    "codex": {
+      "command": [
+        "codex",
+        "exec"
+      ],
+      "family": "common-agent",
+      "kind": "command"
+    },
+    "gemini-cli": {
+      "command": [
+        "gemini",
+        "-p"
+      ],
+      "family": "common-agent",
+      "kind": "command"
+    },
+    "opencode": {
+      "family": "common-agent",
+      "kind": "opencode"
+    },
+    "prolog-rlm": {
+      "family": "prolog-rlm",
+      "kind": "prolog_rlm",
+      "max_tokens": 1024,
+      "mode": "rlm",
+      "time_limit": 120
+    },
+    "prolog-rlm-direct": {
+      "family": "prolog-rlm",
+      "kind": "prolog_rlm",
+      "max_tokens": 1024,
+      "mode": "direct",
+      "time_limit": 120
+    },
+    "zara": {
+      "family": "zara",
+      "kind": "zara"
+    }
+  }
+}
