@@ -56,7 +56,7 @@ else
 fi
 
 if [[ -n "${EXPLOITGYM_ROOT:-}" ]]; then
-  "$ROOT/lab/benchmark/exploitgym.sh" "$OUT/exploitgym"
+  bash "$ROOT/lab/benchmark/exploitgym.sh" "$OUT/exploitgym"
 else
   echo "SKIP ExploitGym: set EXPLOITGYM_ROOT to a prepared official checkout"     | tee "$OUT/exploitgym.SKIP"
 fi
