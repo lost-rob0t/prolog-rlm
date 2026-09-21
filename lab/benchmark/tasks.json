@@ -1,0 +1,135 @@
+[
+  {
+    "context": "APPROVED Ablation Harness\n\nThe first benchmark compares fixed repository tasks under the same budget:\n- serial baseline using one research chain\n- branched pipeline without sibling memory\n- branched pipeline with sibling memory\n- branched pipeline with independent reviewers\n- full scoped pipeline\n\nThe benchmark corpus and scoring rules are versioned before runs begin.",
+    "expected_regex": [
+      "\\b5\\b|five",
+      "serial",
+      "without sibling memory",
+      "with sibling memory",
+      "independent reviewers",
+      "full scoped"
+    ],
+    "id": "starintel-ablation-modes",
+    "prompt": "How many configurations does the first ablation benchmark compare, and what are they?",
+    "provenance": {
+      "path": "roam/design/auto-research/STAR-RESEARCH-PIPELINE-001-adaptive-research-dag-evaluation-harness.org",
+      "ref": "25f083a25c1168ff085d891995d85bda7504ec2e",
+      "repo": "lost-rob0t/starintel-auto-research"
+    },
+    "suite": "starintel"
+  },
+  {
+    "context": "APPROVED Acceptance Criteria\n- only one candidate may be promoted per run\n- promotion does not activate the implementation slot\n- a run may end unresolved without fabricating a winner",
+    "expected_regex": [
+      "only one|one candidate|\\b1\\b",
+      "does not activate|must not activate|cannot activate",
+      "implementation slot"
+    ],
+    "id": "starintel-promotion-boundary",
+    "prompt": "State the promotion-count invariant and whether promotion itself activates the implementation slot.",
+    "provenance": {
+      "path": "roam/design/auto-research/STAR-RESEARCH-PIPELINE-001-adaptive-research-dag-evaluation-harness.org",
+      "ref": "25f083a25c1168ff085d891995d85bda7504ec2e",
+      "repo": "lost-rob0t/starintel-auto-research"
+    },
+    "suite": "starintel"
+  },
+  {
+    "context": "Deterministic vetoes:\n- fabricated or unresolved citation\n- unsupported central claim\n- contradiction with an approved decision without an explicit supersession proposal\n- hidden dependency\n- unbounded recursion or budget\n- direct write to canonical files by a branch actor\n- proposal that requires multiple active implementation designs\n- security or data-loss risk without mitigation\n- claim that a test passed when it was not executed",
+    "expected_regex": [
+      "citation",
+      "unsupported central claim",
+      "contradiction.*approved decision",
+      "hidden dependency"
+    ],
+    "id": "starintel-evaluation-vetoes",
+    "prompt": "Name the first four deterministic veto classes listed in the evaluation contract, in order.",
+    "provenance": {
+      "path": "roam/design/auto-research/STAR-RESEARCH-PIPELINE-001-adaptive-research-dag-evaluation-harness.org",
+      "ref": "25f083a25c1168ff085d891995d85bda7504ec2e",
+      "repo": "lost-rob0t/starintel-auto-research"
+    },
+    "suite": "starintel"
+  },
+  {
+    "context": "Default production policy should permit depth 1. Depth >1 remains experimental until benchmark evidence supports it under fixed budgets.\n\nRequesting max_recursion_depth > 1 through the supported prolog/rlm facade is rejected before planner execution unless the caller also passes experimental_deep_recursion(true).",
+    "expected_regex": [
+      "depth\\s*1|depth-1",
+      ">\\s*1.*experimental|greater than.*experimental|experimental.*depth"
+    ],
+    "id": "prolog-rlm-recursion-policy",
+    "prompt": "What recursion depth is the default production policy, and what is the status of depth greater than that?",
+    "provenance": {
+      "path": "research/RLM-RESEARCH-008-adaptive-recursion.org",
+      "ref": "4715b5ee53d0e7a26c55705ea85c0d16c3916504",
+      "repo": "lost-rob0t/prolog-rlm"
+    },
+    "suite": "starintel"
+  },
+  {
+    "context": "Promotion is intentionally separate from execution. deep_experiment_promotion/2 requires at least 20 live trials, at least 3 independent fixtures, a positive quality delta, bounded cost/latency ratios, and zero budget/capability/cancellation failures. Deterministic fixture evidence reports zero live trials and therefore cannot promote deeper recursion by itself.",
+    "expected_regex": [
+      "20",
+      "3",
+      "positive quality",
+      "cost.*latency|latency.*cost",
+      "zero.*failure|no.*failure"
+    ],
+    "id": "prolog-rlm-deep-promotion",
+    "prompt": "List the minimum live-evidence conditions required to promote deeper recursion.",
+    "provenance": {
+      "path": "research/RLM-RESEARCH-008-adaptive-recursion.org",
+      "ref": "4715b5ee53d0e7a26c55705ea85c0d16c3916504",
+      "repo": "lost-rob0t/prolog-rlm"
+    },
+    "suite": "starintel"
+  },
+  {
+    "context": "Accepted modes:\ndeterministic\nintegration\ndeep-experiment\ndeep-integration\ndeep-smoke",
+    "expected_regex": [
+      "deterministic",
+      "integration",
+      "deep-experiment",
+      "deep-integration",
+      "deep-smoke"
+    ],
+    "id": "prolog-rlm-benchmark-modes",
+    "prompt": "Enumerate every benchmark mode accepted by this CLI.",
+    "provenance": {
+      "path": "benchmark/run.pl",
+      "ref": "4715b5ee53d0e7a26c55705ea85c0d16c3916504",
+      "repo": "lost-rob0t/prolog-rlm"
+    },
+    "suite": "starintel"
+  },
+  {
+    "context": "elif args.command:\n    command_text = \" \".join(args.command)\n    if not args.standalone:\n        endpoint = args.connect or _default_daemon_endpoint()\n        sys.exit(_run_connected_text(endpoint, command_text))\n    from .console import ZaraConsole\n    console = ZaraConsole()\n    success = console.execute_command(command_text)\n\nCLI help: --standalone = Use the private in-process compatibility path for a text command.",
+    "expected_regex": [
+      "daemon|connected",
+      "--standalone|standalone",
+      "private|in-process"
+    ],
+    "id": "zara-text-routing",
+    "prompt": "For a normal text command, what path is used by default, and what explicit flag selects the private in-process compatibility path?",
+    "provenance": {
+      "path": "zara/__main__.py",
+      "ref": "0561fdbeadde3c2d7ed4ac94c5427f0c10421dac",
+      "repo": "lost-rob0t/zara"
+    },
+    "suite": "starintel"
+  },
+  {
+    "context": "CLI_REPLAY_VERSION = \"ZARA-CONVERSATION-REPLAY/1\"\n\nThe replay payload includes:\n\"version\": CLI_REPLAY_VERSION",
+    "expected_regex": [
+      "ZARA-CONVERSATION-REPLAY/1"
+    ],
+    "id": "zara-replay-version",
+    "prompt": "What exact version marker identifies the canonical conversation replay payload?",
+    "provenance": {
+      "path": "zara/__main__.py",
+      "ref": "0561fdbeadde3c2d7ed4ac94c5427f0c10421dac",
+      "repo": "lost-rob0t/zara"
+    },
+    "suite": "starintel"
+  }
+]
