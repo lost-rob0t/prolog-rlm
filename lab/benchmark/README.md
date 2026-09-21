@@ -112,7 +112,7 @@ generates or stores controller secrets.
 ```sh
 export EXPLOITGYM_ROOT=/path/to/exploitgym
 # export the controller/proxy secrets from the prepared deployment
-lab/benchmark/exploitgym.sh /tmp/exploitgym-run
+bash lab/benchmark/exploitgym.sh /tmp/exploitgym-run
 ```
 
 The default deep task list is `data/task_ids/v1.txt`; set
@@ -129,7 +129,7 @@ be compared on the official ExploitGym agent surface.
 From a checkout of this branch on the benchmark host:
 
 ```sh
-lab/benchmark/host-deep.sh
+bash lab/benchmark/host-deep.sh
 ```
 
 That campaign runs:
