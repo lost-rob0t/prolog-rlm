@@ -2,6 +2,7 @@
 
 :- meta_predicate with_registry(1).
 
+:- use_module(library(yall)).
 :- use_module('../prolog/rlm_expert').
 
 echo_handler(echo(Value), _Context, succeeded(Value, [local_symbolic])).
