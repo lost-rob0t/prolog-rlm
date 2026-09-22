@@ -36,6 +36,13 @@ contract(Id, Accepts, Handler, Priority, ChildPolicy, Contract) :-
                    handler:Handler
                }.
 
+with_limits(Contract0, MaxDepth, MaxInvocations, Contract) :-
+    put_dict(limits,
+             Contract0,
+             expert_limits{max_depth:MaxDepth,
+                           max_invocations:MaxInvocations},
+             Contract).
+
 with_registry(Goal) :-
     expert_registry_create([], Registry),
     setup_call_cleanup(true,
@@ -132,6 +139,64 @@ test(nested_experts_share_runtime_and_stay_zero_model) :-
             assertion(ChildOutcome.usage.model_calls =:= 0),
             expert_invocations(Registry, Events),
             assertion(Events \== [])
+        )).
+
+test(parent_depth_limit_remains_shared_ceiling_for_children) :-
+    with_registry(
+        [Registry]>>(
+            contract(child_expert,
+                     [child/1],
+                     plunit_rlm_expert:child_handler,
+                     10,
+                     never,
+                     Child),
+            contract(parent_expert,
+                     [parent/1],
+                     plunit_rlm_expert:parent_handler,
+                     10,
+                     children,
+                     Parent0),
+            with_limits(Parent0, 1, 32, Parent),
+            expert_register(Registry, Child, ok(_)),
+            expert_register(Registry, Parent, ok(_)),
+            expert_call(Registry,
+                        parent(payload),
+                        _{capabilities:[]},
+                        ParentOutcome),
+            assertion(ParentOutcome.status == succeeded),
+            ChildOutcome = ParentOutcome.result,
+            assertion(ChildOutcome.status == error),
+            assertion(ChildOutcome.error == depth_exceeded(2, 1)),
+            assertion(ChildOutcome.usage.model_calls =:= 0)
+        )).
+
+test(parent_invocation_limit_remains_shared_ceiling_for_children) :-
+    with_registry(
+        [Registry]>>(
+            contract(child_expert,
+                     [child/1],
+                     plunit_rlm_expert:child_handler,
+                     10,
+                     never,
+                     Child),
+            contract(parent_expert,
+                     [parent/1],
+                     plunit_rlm_expert:parent_handler,
+                     10,
+                     children,
+                     Parent0),
+            with_limits(Parent0, 8, 1, Parent),
+            expert_register(Registry, Child, ok(_)),
+            expert_register(Registry, Parent, ok(_)),
+            expert_call(Registry,
+                        parent(payload),
+                        _{capabilities:[]},
+                        ParentOutcome),
+            assertion(ParentOutcome.status == succeeded),
+            ChildOutcome = ParentOutcome.result,
+            assertion(ChildOutcome.status == error),
+            assertion(ChildOutcome.error == invocation_budget_exceeded(2, 1)),
+            assertion(ChildOutcome.usage.model_calls =:= 0)
         )).
 
 test(recursion_cycle_is_structurally_blocked) :-
