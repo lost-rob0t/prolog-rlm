@@ -101,7 +101,7 @@ test(snapshot_and_patch_are_revisioned_inert_data) :-
     assertion(S1.generation =:= 1),
     assertion(memberchk(observed(alpha), S1.facts)),
     assertion(S1.meta.strategy_version =:= 1),
-    assertion(S1.rules = [Rule]),
+    S1.rules = [Rule],
     assertion(Rule.id == r1).
 
 test(closed_patch_vocabulary_rejects_executable_mutation,
@@ -137,7 +137,7 @@ test(run_reaches_stable_fixed_point) :-
     assertion(Result.status == stable),
     assertion(Result.snapshot.generation =:= 1),
     assertion(Result.evaluation.score =:= 1),
-    assertion(Result.lineage = [Lineage]),
+    Result.lineage = [Lineage],
     assertion(Lineage.candidate_id == add_learned_rule).
 
 test(semantic_cycle_is_bounded_even_as_generation_changes) :-
