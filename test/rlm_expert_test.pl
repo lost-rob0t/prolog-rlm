@@ -1,5 +1,7 @@
 :- begin_tests(rlm_expert).
 
+:- meta_predicate with_registry(1).
+
 :- use_module('../prolog/rlm_expert').
 
 echo_handler(echo(Value), _Context, succeeded(Value, [local_symbolic])).
