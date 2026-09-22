@@ -82,6 +82,32 @@ flow_graph_case(ExpertRegistry, AgentRuntime) :-
     assertion(ExpertOutcome.usage.model_calls =:= 0),
     assertion(Result.state.agent_result == ok(agent_value)).
 
+test(agent_graph_projection_uses_execute_abi_not_sync_future_wrapper) :-
+    clause(rlm_expert_graph:agent_node(_, _, _, _, _, _, _, _), Body),
+    assertion(body_contains_qualified(Body,
+                                      rlm_agent,
+                                      agent_supervised_call_execute,
+                                      6)),
+    assertion(\+ body_contains_unqualified(Body,
+                                           agent_supervised_call,
+                                           6)).
+
+body_contains_qualified(Body, Module, Name, Arity) :-
+    sub_term(Term, Body),
+    nonvar(Term),
+    Term = Module:Goal,
+    callable(Goal),
+    functor(Goal, Name, Arity),
+    !.
+
+body_contains_unqualified(Body, Name, Arity) :-
+    sub_term(Term, Body),
+    nonvar(Term),
+    callable(Term),
+    \+ Term = _:_ ,
+    functor(Term, Name, Arity),
+    !.
+
 test(flow_binding_rejects_untrusted_value_spec) :-
     flow_spec(Spec),
     flow_graph_compile(
