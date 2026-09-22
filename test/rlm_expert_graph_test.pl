@@ -93,6 +93,8 @@ test(flow_binding_rejects_untrusted_value_spec) :-
                 expert_result)],
         [],
         Outcome),
-    assertion(Outcome = error(flow_graph_error{})).
+    Outcome = error(Error),
+    assertion(Error.kind == invalid_binding),
+    assertion(Error.detail == invalid_value_spec(callable(goal))).
 
 :- end_tests(rlm_expert_graph).
