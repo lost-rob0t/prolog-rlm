@@ -25,9 +25,7 @@ can feed later nodes via state(Key) value specs.
               [ expert_call/4,
                 expert_invoke/5
               ]).
-:- use_module(rlm_agent,
-              [ agent_supervised_call/6
-              ]).
+:- use_module(rlm_agent, []).
 :- use_module(rlm_strange_loop,
               [ strange_loop_run/4
               ]).
@@ -161,12 +159,12 @@ agent_node(Runtime,
            _GraphContext,
            update(Patch)) :-
     resolve_value_spec(WorkSpec, State, Work),
-    agent_supervised_call(Runtime,
-                          Agent,
-                          Handler,
-                          Work,
-                          [],
-                          Outcome),
+    rlm_agent:agent_supervised_call_execute(Runtime,
+                                            Agent,
+                                            Handler,
+                                            Work,
+                                            [],
+                                            Outcome),
     singleton_patch(ResultKey, Outcome, Patch).
 
 strange_loop_node(SnapshotSpec,
