@@ -509,6 +509,8 @@ invoke_root(Id, ExpertId, Goal, Context0, Outcome) :-
                      [],
                      Capabilities,
                      any,
+                     RegistryOptions.max_depth,
+                     RegistryOptions.max_invocations,
                      Outcome),
         retractall(expert_run_state(Token, Id, _, _, _))).
 
@@ -520,7 +522,9 @@ invoke_nested(Id,
                              ParentDepth,
                              Stack,
                              ParentCapabilities,
-                             ParentPolicy),
+                             ParentPolicy,
+                             ParentMaxDepth,
+                             ParentMaxInvocations),
               Outcome) :-
     (   expert_run_state(Token, Id, _, _, _)
     ->  true
@@ -546,6 +550,8 @@ invoke_nested(Id,
                      Stack,
                      ChildCapabilities,
                      ParentPolicy,
+                     ParentMaxDepth,
+                     ParentMaxInvocations,
                      Outcome)
     ).
 
@@ -558,6 +564,8 @@ invoke_frame(Id,
              Stack,
              Capabilities,
              _ParentPolicy,
+             InheritedMaxDepth,
+             InheritedMaxInvocations,
              Outcome) :-
     (   expert_registry_entry(Id, ExpertId, Contract)
     ->  true
@@ -565,7 +573,14 @@ invoke_frame(Id,
     ),
     goal_matches_contract_or_throw(Goal, Contract),
     capabilities_satisfy_or_throw(Capabilities, Contract.requires),
-    run_budget_admit(Token, Contract, ParentDepth, Depth),
+    run_budget_admit(Token,
+                     Contract,
+                     ParentDepth,
+                     InheritedMaxDepth,
+                     InheritedMaxInvocations,
+                     Depth,
+                     MaxDepth,
+                     MaxInvocations),
     term_hash(Goal, GoalHash),
     Frame = ExpertId-GoalHash,
     (   memberchk(Frame, Stack)
@@ -594,7 +609,9 @@ invoke_frame(Id,
                                 Depth,
                                 [Frame|Stack],
                                 Capabilities,
-                                Contract.child_policy),
+                                Contract.child_policy,
+                                MaxDepth,
+                                MaxInvocations),
                  Context1),
         put_dict(_{expert_registry:expert_registry(Id),
                    expert_invocation_id:InvocationId,
@@ -722,20 +739,30 @@ base_outcome(Contract, InvocationId, Generation, Status,
                  usage:expert_usage{model_calls:0, cost:0}
              }).
 
-run_budget_admit(Token, Contract, ParentDepth, Depth) :-
+run_budget_admit(Token,
+                 Contract,
+                 ParentDepth,
+                 InheritedMaxDepth,
+                 InheritedMaxInvocations,
+                 Depth,
+                 MaxDepth,
+                 MaxInvocations) :-
     expert_run_state(Token,
                      RegistryId,
                      RegistryMaxDepth,
                      RegistryMaxInvocations,
                      Count0),
     Depth is ParentDepth+1,
-    MaxDepth is min(RegistryMaxDepth, Contract.limits.max_depth),
+    ContractMaxDepth is min(RegistryMaxDepth, Contract.limits.max_depth),
+    MaxDepth is min(InheritedMaxDepth, ContractMaxDepth),
     (   Depth =< MaxDepth
     ->  true
     ;   throw(expert_fault(depth_exceeded(Depth, MaxDepth)))
     ),
-    MaxInvocations is min(RegistryMaxInvocations,
-                          Contract.limits.max_invocations),
+    ContractMaxInvocations is min(RegistryMaxInvocations,
+                                  Contract.limits.max_invocations),
+    MaxInvocations is min(InheritedMaxInvocations,
+                          ContractMaxInvocations),
     Count is Count0+1,
     (   Count =< MaxInvocations
     ->  with_mutex(rlm_expert_run,
