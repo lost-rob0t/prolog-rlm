@@ -335,6 +335,7 @@ expert_applicable(expert_registry(Id), Goal, Context0, Candidates) :-
                                  Generation,
                                  Candidate),
             Candidates0),
+    require_registry_generation_current(Id, Generation),
     sort_candidates(Candidates0, Candidates).
 
 applicable_candidate(Id,
@@ -782,14 +783,17 @@ run_expected_generation(Token, Id, ExpectedGeneration) :-
     ;   throw(expert_fault(stale_runtime(Token)))
     ).
 
-require_run_generation_current(Token, Id) :-
-    run_expected_generation(Token, Id, ExpectedGeneration),
+require_registry_generation_current(Id, ExpectedGeneration) :-
     expert_registry_state(Id, CurrentGeneration, _),
     (   CurrentGeneration =:= ExpectedGeneration
     ->  true
     ;   throw(expert_fault(stale_registry_generation(ExpectedGeneration,
                                                       CurrentGeneration)))
     ).
+
+require_run_generation_current(Token, Id) :-
+    run_expected_generation(Token, Id, ExpectedGeneration),
+    require_registry_generation_current(Id, ExpectedGeneration).
 
 run_budget_admit(Token,
                  Contract,
