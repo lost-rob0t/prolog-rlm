@@ -2,12 +2,34 @@
 
 :- use_module('../prolog/rlm_expert').
 
+:- dynamic stale_child_dispatches/1.
+
 echo_handler(echo(Value), _Context, succeeded(Value, [local_symbolic])).
 
 child_handler(child(Value), _Context, succeeded(Value, [child_symbolic])).
 
+stale_counting_child_handler(child(Value),
+                             _Context,
+                             succeeded(Value, [child_symbolic])) :-
+    retract(stale_child_dispatches(Count0)),
+    Count is Count0+1,
+    assertz(stale_child_dispatches(Count)).
+
 parent_handler(parent(Value), Context, succeeded(ChildOutcome, [delegated])) :-
     Registry = Context.expert_registry,
+    expert_call(Registry, child(Value), Context, ChildOutcome).
+
+stale_parent_handler(parent(Value),
+                     Context,
+                     succeeded(ChildOutcome, [delegated])) :-
+    Registry = Context.expert_registry,
+    contract(nested_generation_bump,
+             [nested_generation_bump/0],
+             plunit_rlm_expert:echo_handler,
+             0,
+             never,
+             Bump),
+    expert_register(Registry, Bump, ok(_)),
     expert_call(Registry, child(Value), Context, ChildOutcome).
 
 cycle_handler(loop(Value), Context, succeeded(ChildOutcome, [cycle_observed])) :-
@@ -231,6 +253,44 @@ stale_generation_result_case(Registry) :-
 
 test(result_is_rejected_when_registry_generation_changes_during_handler) :-
     with_registry(stale_generation_result_case).
+
+stale_generation_nested_admission_case(Registry) :-
+    contract(child_expert,
+             [child/1],
+             plunit_rlm_expert:stale_counting_child_handler,
+             10,
+             never,
+             Child),
+    contract(parent_expert,
+             [parent/1],
+             plunit_rlm_expert:stale_parent_handler,
+             10,
+             children,
+             Parent),
+    expert_register(Registry, Child, ok(_)),
+    expert_register(Registry, Parent, ok(_)),
+    retractall(stale_child_dispatches(_)),
+    assertz(stale_child_dispatches(0)),
+    setup_call_cleanup(
+        true,
+        ( expert_registry_generation(Registry, StartedGeneration),
+          expert_call(Registry,
+                      parent(payload),
+                      _{capabilities:[]},
+                      Outcome),
+          expert_registry_generation(Registry, CurrentGeneration),
+          assertion(CurrentGeneration > StartedGeneration),
+          assertion(Outcome.status == blocked),
+          assertion(Outcome.reason == stale_registry_generation(StartedGeneration,
+                                                                 CurrentGeneration)),
+          assertion(Outcome.usage.model_calls =:= 0),
+          stale_child_dispatches(Dispatches),
+          assertion(Dispatches =:= 0)
+        ),
+        retractall(stale_child_dispatches(_))).
+
+test(stale_parent_generation_blocks_child_before_dispatch) :-
+    with_registry(stale_generation_nested_admission_case).
 
 recursion_cycle_case(Registry) :-
     contract(loop_expert,
