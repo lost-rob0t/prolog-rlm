@@ -46,6 +46,23 @@ test(unattributed_custom_endpoint_sends_no_attribution_headers) :-
     assertion(fail)
     ;   true.
 
+test(openai_api_dispatch_preserves_provider_identity) :-
+    setup_call_cleanup(
+        http_server(http_dispatch, [port(Port)]),
+        ( format(atom(Endpoint), 'http://127.0.0.1:~d/attribution', [Port]),
+          Provider = provider(openai_api,
+                              [endpoint(Endpoint), credential(none),
+                               model('test/model')]),
+          rlm_chain:model_complete_execute(
+              Provider,
+              model_request{messages:[message{role:user, content:"hi"}],
+                            options:_{}},
+              ok(Response)),
+          assertion(Response.provider == openai_api),
+          assertion(Response.text == "ok")
+        ),
+        http_stop_server(Port, [])).
+
 test(invalid_app_title_fails_configuration) :-
     Provider = provider(openai_compatible,
                         [ endpoint('https://example.invalid/v1/chat/completions'),

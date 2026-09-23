@@ -19,6 +19,10 @@
 :- prolog_load_context(directory, DirectTestDirectory),
    assertz(direct_test_directory(DirectTestDirectory)).
 
+test(openai_api_uses_standard_native_tool_wire_format) :-
+    rlm_direct:provider_format([], openai_api, Format),
+    assertion(Format == openai_compatible).
+
 reset_direct(Scenario) :-
     retractall(direct_scenario(_)),
     retractall(direct_request(_, _)),
