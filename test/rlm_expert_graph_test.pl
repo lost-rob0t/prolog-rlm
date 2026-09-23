@@ -40,6 +40,12 @@ flow_spec(
             edge(agent_step, end)
           ])).
 
+expect_ok(Stage, Outcome, Value) :-
+    (   Outcome = ok(Value)
+    ->  true
+    ;   throw(error(expert_graph_stage_failed(Stage, Outcome), _))
+    ).
+
 test(flow_graph_runs_symbolic_expert_and_supervised_agent_in_one_scheduler) :-
     expert_registry_create([], ExpertRegistry),
     agent_runtime_create([worker_count(1)], AgentRuntime),
@@ -52,12 +58,14 @@ test(flow_graph_runs_symbolic_expert_and_supervised_agent_in_one_scheduler) :-
 
 flow_graph_case(ExpertRegistry, AgentRuntime) :-
     expert_contract(Contract),
-    expert_register(ExpertRegistry, Contract, ok(_)),
+    expert_register(ExpertRegistry, Contract, RegisterOutcome),
+    expect_ok(expert_register, RegisterOutcome, _),
     agent_spawn(AgentRuntime,
                 none,
                 agent_spec(flow_worker),
                 [],
-                ok(Agent)),
+                SpawnOutcome),
+    expect_ok(agent_spawn, SpawnOutcome, Agent),
     flow_spec(Spec),
     Bindings = [
         expert_id(expert_handler,
@@ -73,8 +81,10 @@ flow_graph_case(ExpertRegistry, AgentRuntime) :-
               literal(work(echo, agent_value)),
               agent_result)
     ],
-    flow_graph_compile(Spec, Bindings, [], ok(Compiled)),
-    flow_graph_run(Compiled, _{}, [], ok(Result)),
+    flow_graph_compile(Spec, Bindings, [], CompileOutcome),
+    expect_ok(flow_graph_compile, CompileOutcome, Compiled),
+    flow_graph_run(Compiled, _{}, [], RunOutcome),
+    expect_ok(flow_graph_run, RunOutcome, Result),
     assertion(Result.status == completed),
     ExpertOutcome = Result.state.expert_result,
     assertion(ExpertOutcome.status == succeeded),
