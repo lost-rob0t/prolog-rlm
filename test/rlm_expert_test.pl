@@ -14,6 +14,16 @@ cycle_handler(loop(Value), Context, succeeded(ChildOutcome, [cycle_observed])) :
     Registry = Context.expert_registry,
     expert_call(Registry, loop(Value), Context, ChildOutcome).
 
+stale_generation_handler(echo(Value), Context, succeeded(Value, [stale_generation])) :-
+    Registry = Context.expert_registry,
+    contract(generation_bump,
+             [generation_bump/0],
+             plunit_rlm_expert:echo_handler,
+             0,
+             never,
+             Bump),
+    expert_register(Registry, Bump, ok(_)).
+
 specific_applicability(echo(special), _Context, applicable(10, exact_special)).
 specific_applicability(echo(_), _Context, not_applicable(not_special)).
 
@@ -198,6 +208,29 @@ parent_invocation_limit_case(Registry) :-
 
 test(parent_invocation_limit_remains_shared_ceiling_for_children) :-
     with_registry(parent_invocation_limit_case).
+
+stale_generation_result_case(Registry) :-
+    contract(stale_expert,
+             [echo/1],
+             plunit_rlm_expert:stale_generation_handler,
+             10,
+             never,
+             Contract),
+    expert_register(Registry, Contract, ok(_)),
+    expert_registry_generation(Registry, StartedGeneration),
+    expert_call(Registry,
+                echo(payload),
+                _{capabilities:[]},
+                Outcome),
+    expert_registry_generation(Registry, CurrentGeneration),
+    assertion(CurrentGeneration > StartedGeneration),
+    assertion(Outcome.status == blocked),
+    assertion(Outcome.reason == stale_registry_generation(StartedGeneration,
+                                                           CurrentGeneration)),
+    assertion(Outcome.usage.model_calls =:= 0).
+
+test(result_is_rejected_when_registry_generation_changes_during_handler) :-
+    with_registry(stale_generation_result_case).
 
 recursion_cycle_case(Registry) :-
     contract(loop_expert,
