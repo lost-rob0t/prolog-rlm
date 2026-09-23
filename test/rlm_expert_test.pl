@@ -3,8 +3,16 @@
 :- use_module('../prolog/rlm_expert').
 
 :- dynamic stale_child_dispatches/1.
+:- dynamic selection_dispatches/1.
 
 echo_handler(echo(Value), _Context, succeeded(Value, [local_symbolic])).
+
+counting_echo_handler(echo(Value),
+                      _Context,
+                      succeeded(Value, [local_symbolic])) :-
+    retract(selection_dispatches(Count0)),
+    Count is Count0+1,
+    assertz(selection_dispatches(Count)).
 
 child_handler(child(Value), _Context, succeeded(Value, [child_symbolic])).
 
@@ -48,6 +56,18 @@ stale_generation_handler(echo(Value), Context, succeeded(Value, [stale_generatio
 
 specific_applicability(echo(special), _Context, applicable(10, exact_special)).
 specific_applicability(echo(_), _Context, not_applicable(not_special)).
+
+stale_selection_applicability(echo(_),
+                              Context,
+                              applicable(10, stale_selection)) :-
+    Registry = Context.registry_for_test,
+    contract(selection_generation_bump,
+             [selection_generation_bump/0],
+             plunit_rlm_expert:echo_handler,
+             0,
+             never,
+             Bump),
+    expert_register(Registry, Bump, ok(_)).
 
 contract(Id, Accepts, Handler, Priority, ChildPolicy, Contract) :-
     Contract = expert_contract{
@@ -142,6 +162,41 @@ symbolic_applicability_case(Registry) :-
 
 test(symbolic_applicability_changes_selection_without_model) :-
     with_registry(symbolic_applicability_case).
+
+stale_selection_generation_case(Registry) :-
+    contract(stale_selector,
+             [echo/1],
+             plunit_rlm_expert:counting_echo_handler,
+             10,
+             never,
+             Contract0),
+    put_dict(applicability,
+             Contract0,
+             plunit_rlm_expert:stale_selection_applicability,
+             Contract),
+    expert_register(Registry, Contract, ok(_)),
+    retractall(selection_dispatches(_)),
+    assertz(selection_dispatches(0)),
+    setup_call_cleanup(
+        true,
+        ( expert_registry_generation(Registry, StartedGeneration),
+          expert_call(Registry,
+                      echo(payload),
+                      _{capabilities:[], registry_for_test:Registry},
+                      Outcome),
+          expert_registry_generation(Registry, CurrentGeneration),
+          assertion(CurrentGeneration > StartedGeneration),
+          assertion(Outcome.status == blocked),
+          assertion(Outcome.reason == stale_registry_generation(StartedGeneration,
+                                                                 CurrentGeneration)),
+          assertion(Outcome.usage.model_calls =:= 0),
+          selection_dispatches(Dispatches),
+          assertion(Dispatches =:= 0)
+        ),
+        retractall(selection_dispatches(_))).
+
+test(selection_generation_cutover_blocks_handler_dispatch) :-
+    with_registry(stale_selection_generation_case).
 
 nested_experts_case(Registry) :-
     contract(child_expert,
