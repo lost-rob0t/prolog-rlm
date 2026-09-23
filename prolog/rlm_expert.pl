@@ -492,12 +492,13 @@ expert_invoke_entry(Id, ExpertId, Goal, Context0, Outcome) :-
 
 invoke_root(Id, ExpertId, Goal, Context0, Outcome) :-
     normalize_public_context(Context0, Context, Capabilities, _),
-    expert_registry_state(Id, _, RegistryOptions),
+    expert_registry_state(Id, ExpectedGeneration, RegistryOptions),
     new_run_token(Token),
     setup_call_cleanup(
         assertz(expert_run_state(Token,
                                  Id,
-                                 RegistryOptions.max_depth,
+                                 run_generation(ExpectedGeneration,
+                                                RegistryOptions.max_depth),
                                  RegistryOptions.max_invocations,
                                  0)),
         invoke_frame(Id,
@@ -530,6 +531,7 @@ invoke_nested(Id,
     ->  true
     ;   throw(expert_fault(stale_runtime(Token)))
     ),
+    require_run_generation_current(Token, Id),
     (   ParentPolicy == never
     ->  Outcome = expert_outcome{
                       status:blocked,
@@ -567,6 +569,7 @@ invoke_frame(Id,
              InheritedMaxDepth,
              InheritedMaxInvocations,
              Outcome) :-
+    require_run_generation_current(Token, Id),
     (   expert_registry_entry(Id, ExpertId, Contract)
     ->  true
     ;   throw(expert_fault(not_registered(ExpertId)))
@@ -593,7 +596,7 @@ invoke_frame(Id,
                       usage:expert_usage{model_calls:0, cost:0}
                   }
     ;   new_invocation_id(InvocationId),
-        expert_registry_state(Id, Generation, _),
+        run_expected_generation(Token, Id, Generation),
         record_event(Id,
                      expert_invocation{
                          event:started,
@@ -622,11 +625,12 @@ invoke_frame(Id,
                        Goal,
                        HandlerContext,
                        RawOutcome),
-        normalize_handler_outcome(Contract,
-                                  InvocationId,
-                                  Generation,
-                                  RawOutcome,
-                                  Outcome),
+        admit_handler_outcome(Id,
+                              Contract,
+                              InvocationId,
+                              Generation,
+                              RawOutcome,
+                              Outcome),
         record_event(Id,
                      expert_invocation{
                          event:finished,
@@ -647,6 +651,24 @@ invoke_handler(Contract, Goal, Context, RawOutcome) :-
           ),
           Exception,
           RawOutcome = error(handler_exception(Exception))).
+
+admit_handler_outcome(Id,
+                      Contract,
+                      InvocationId,
+                      ExpectedGeneration,
+                      RawOutcome,
+                      Outcome) :-
+    expert_registry_state(Id, CurrentGeneration, _),
+    (   CurrentGeneration =:= ExpectedGeneration
+    ->  normalize_handler_outcome(Contract,
+                                  InvocationId,
+                                  ExpectedGeneration,
+                                  RawOutcome,
+                                  Outcome)
+    ;   stale_generation_outcome(ExpectedGeneration,
+                                 CurrentGeneration,
+                                 Outcome)
+    ).
 
 normalize_handler_outcome(Contract,
                           InvocationId,
@@ -739,6 +761,36 @@ base_outcome(Contract, InvocationId, Generation, Status,
                  usage:expert_usage{model_calls:0, cost:0}
              }).
 
+stale_generation_outcome(ExpectedGeneration,
+                         CurrentGeneration,
+                         expert_outcome{
+                             status:blocked,
+                             reason:stale_registry_generation(ExpectedGeneration,
+                                                              CurrentGeneration),
+                             evidence:[],
+                             registry_generation:ExpectedGeneration,
+                             usage:expert_usage{model_calls:0, cost:0}
+                         }).
+
+run_expected_generation(Token, Id, ExpectedGeneration) :-
+    (   expert_run_state(Token,
+                         Id,
+                         run_generation(ExpectedGeneration, _),
+                         _,
+                         _)
+    ->  true
+    ;   throw(expert_fault(stale_runtime(Token)))
+    ).
+
+require_run_generation_current(Token, Id) :-
+    run_expected_generation(Token, Id, ExpectedGeneration),
+    expert_registry_state(Id, CurrentGeneration, _),
+    (   CurrentGeneration =:= ExpectedGeneration
+    ->  true
+    ;   throw(expert_fault(stale_registry_generation(ExpectedGeneration,
+                                                      CurrentGeneration)))
+    ).
+
 run_budget_admit(Token,
                  Contract,
                  ParentDepth,
@@ -749,7 +801,7 @@ run_budget_admit(Token,
                  MaxInvocations) :-
     expert_run_state(Token,
                      RegistryId,
-                     RegistryMaxDepth,
+                     run_generation(ExpectedGeneration, RegistryMaxDepth),
                      RegistryMaxInvocations,
                      Count0),
     Depth is ParentDepth+1,
@@ -768,12 +820,14 @@ run_budget_admit(Token,
     ->  with_mutex(rlm_expert_run,
                    ( retract(expert_run_state(Token,
                                               RegistryId,
-                                              RegistryMaxDepth,
+                                              run_generation(ExpectedGeneration,
+                                                             RegistryMaxDepth),
                                               RegistryMaxInvocations,
                                               Count0)),
                      assertz(expert_run_state(Token,
                                              RegistryId,
-                                             RegistryMaxDepth,
+                                             run_generation(ExpectedGeneration,
+                                                            RegistryMaxDepth),
                                              RegistryMaxInvocations,
                                              Count))
                    ))
@@ -988,6 +1042,18 @@ safe_exception(Exception, Safe) :-
                     [quoted(true), max_depth(8)])
     ).
 
+expert_exception(_Phase,
+                 expert_fault(stale_registry_generation(ExpectedGeneration,
+                                                        CurrentGeneration)),
+                 expert_outcome{
+                     status:blocked,
+                     reason:stale_registry_generation(ExpectedGeneration,
+                                                      CurrentGeneration),
+                     evidence:[],
+                     registry_generation:ExpectedGeneration,
+                     usage:expert_usage{model_calls:0, cost:0}
+                 }) :-
+    !.
 expert_exception(_Phase, expert_fault(Fault),
                  expert_outcome{
                      status:error,
