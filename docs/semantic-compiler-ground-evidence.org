@@ -1,0 +1,114 @@
+#+title: MACHINE SPIRIT — ground evidence producer (experimental)
+#+date: 2026-09-15
+
+* Scope and dependency direction
+
+This is a first executable producer surface toward #393/#396, using a bounded,
+representation-only profile toward #392. It is not the full general semantic IR,
+reasoner, or north-star acceptance. Those issues remain open.
+
+Arbitrary source English is sent to the existing =rlm_completion:llm_query/3=
+model runtime. The model returns candidate relations and annotated statements.
+The compiler checks closed schema, scalar types, record links, bounds and exact
+source quotations. A unique quote receives deterministic Unicode character
+offsets; a repeated quote must be disambiguated rather than choosing a first hit.
+
+=source -> model interpretation -> closed-data normalization -> evidence/schema
+validation -> candidate package + actual runtime usage receipt=
+
+No persistence or Symbolic Memory dependency is introduced upstream. Hosts own
+source storage, attempt receipts, admission, history and publication. No new
+provider, scheduler, tool runtime, or general callback selection by model output.
+
+* Public API
+
+#+begin_src prolog
+:- use_module('prolog/rlm_semantic_compiler').
+
+interpret(HostModelOptions, Outcome) :-
+    semantic_compile("Use ZMQ. Remember to add timeout tests.",
+      [source_id("source-123"), request_id("interpretation-123"),
+       project("star-lang"), requested_by("caller"), run_id("run-7"),
+       budget(_{max_total_tokens:8192, max_cost_usd:0.25,
+                max_output_bytes:65536, time_limit:30})|HostModelOptions],
+      Outcome).
+#+end_src
+
+=HostModelOptions= uses the existing trusted =llm_query= provider configuration.
+The caller may choose a middle model through that configuration. This module
+contains no hardcoded model name and makes no model-size/quality claim.
+
+=semantic_request/3= builds a serializable source/hash/caller/project/run envelope.
+=semantic_compile_request/3= consumes that same envelope locally or behind a
+trusted delegated service adapter. The envelope conveys attribution, not a
+capability or authenticated identity by itself. This is not A2A wire compliance.
+
+=semantic_validate/3= validates candidate data against exact source text with
+zero model calls. It is also used by the downstream consumer to validate returned
+packages before publication. Unknown fields and schema versions are rejected.
+
+* Profile
+
+The profile ID is =machine_spirit_ground_evidence_v0=. The kernel admits at most
+64 records and 64 explicit gaps. Records carry:
+
+- local identity, inert predicate and scalar arguments;
+- readable statement and kind (fact, claim, decision, TODO, preference, event,
+  procedure, rule, constraint, or question);
+- independent positive/negative polarity, modality, attribution and context;
+- exact source quote/span and package-local dependency references.
+
+Every kind is *represented*, not thereby entailed or executable. In particular,
+procedure/rule/constraint prose is not a compiled formula or a safely lowerable
+program. Quantifier/default/temporal reasoning, full formula ASTs, multi-source
+identity and formal semantic fidelity remain future profiles, not silently
+claimed capabilities. Unsupported/unresolved material belongs in =gaps=.
+
+A receipt explicitly reports =interpretation_trust:model_inferred=,
+=semantic_fidelity:unverified=, =coverage:unverified= and
+=reasoning_supported:false=. A valid quotation does not prove a correct
+interpretation. No made-up numeric confidence is supplied. Source attribution,
+uncertainty and negation have separate fields; they are not flattened into one
+unqualified truth value.
+
+No text is consulted or passed to =call/1=. Predicate names remain strings even
+when they look like host operations. TODO output proposes work; it does not mark
+work complete, execute it, or grant capability.
+
+* Bounds and outcomes
+
+Input source: 1–65,536 Unicode characters. Raw model JSON: at most 65,536
+characters. At most 64 records, 16 arguments per record; text fields and quotes
+have additional explicit bounds. Native integer arguments are restricted to the
+exact interoperable JSON integer range. Non-finite floats, rationals, compounds,
+cycles and real variables are rejected.
+
+Exactly one model interpretation request is allowed per compiler call, using
+existing runtime budgets/cancellation. No retry loop silently resamples. Hosts
+may lower token/output/cost/time limits; maximum accepted time is 120 seconds,
+maximum token budget 16,384, maximum requested output 8,192 tokens. These are
+bounds, not measured throughput or semantic-accuracy guarantees.
+
+Outcomes are =ok(Compilation)= or =error(semantic_error{...})=. Invalid model
+output retains actual runtime usage when it is available. Unknown provider
+usage remains unknown, not zero. A caller cancellation or transport timeout does
+not prove the provider performed no work.
+
+* Verification
+
+The deterministic suite includes the producer through the real =llm_query=
+runtime with a fixture model adapter, as well as invalid JSON, span, ambiguity,
+Unicode, attribution, polarity, unknown fields, duplicate IDs, dangling links,
+compound data and nonground-data cases. Fixture responses are not live-model
+accuracy evidence.
+
+#+begin_src sh
+swipl -q -g "load_files('test/rlm_semantic_compiler_test.pl'),run_tests(rlm_semantic_compiler),halt" -t 'halt(1)'
+swipl -q -s test/run_tests.pl
+#+end_src
+
+The suite is registered in the existing deterministic corpus, not hidden in a
+parallel runner. Full repository checks and a separately authorized real-model
+language fixture are required before release. The implementation environment
+used to author this change lacked =swipl= and =nix=; no executable green result
+is claimed by this draft.
