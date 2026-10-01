@@ -12,7 +12,14 @@ main([PackRoot]) :-
     rlm:skill_default_catalog(ok(SkillCatalog)),
     rlm:skill_catalog_skills(SkillCatalog, Skills),
     findall(Name, (member(Skill, Skills), Name = Skill.name), Names0),
-    sort(Names0, ['rlm-constraints','rlm-facts','rlm-operate','rlm-recurse']),
+    sort(Names0,
+         ['rlm-constraints',
+          'rlm-facts',
+          'rlm-literate-human',
+          'rlm-literate-nihilist',
+          'rlm-literate-parent-critic',
+          'rlm-operate',
+          'rlm-recurse']),
     format('installed_rlm_version=~w~n', [Version]),
     halt(0).
 main(Args) :-
