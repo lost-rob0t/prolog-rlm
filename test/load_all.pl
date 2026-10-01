@@ -24,6 +24,10 @@
 :- use_module('../prolog/rlm_mcp_server', []).
 :- use_module('../prolog/rlm_mcp_tool', []).
 :- use_module('../prolog/rlm_mcp_tool_pack', []).
+:- use_module('../prolog/rlm_browser', []).
+:- use_module('../prolog/rlm_browser_tool_pack', []).
+:- use_module('../prolog/rlm_image', []).
+:- use_module('../prolog/rlm_image_tool_pack', []).
 :- use_module('../prolog/rlm_evidence', []).
 :- use_module('../prolog/rlm_assertion', []).
 :- use_module('../prolog/rlm_spec', []).
