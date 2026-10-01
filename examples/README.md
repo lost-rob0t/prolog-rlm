@@ -114,3 +114,23 @@ swipl -q -s bin/prolog-rlm.pl -- trace-view /tmp/agent-example.jsonl \
 ```
 
 See `docs/cli-demo-traces.md` for the trace schema, budgets, capability boundaries, and failure semantics.
+
+## 10. Prolog-RLM book study fixture
+
+The companion *Prolog + LLMs* capstone uses a deterministic fixture that runs through the production typed-plan runtime without contacting a model provider. This makes the control invariants reproducible before provider-dependent experiments are introduced.
+
+```sh
+swipl -q -g "use_module('examples/prolog_rlm_study'), study_run('prolog-rlm', Outcome), portray_clause(Outcome), halt"
+```
+
+The plan performs one trusted retrieval step, enters one nested `rlm/2` plan, normalizes and verifies the retrieved evidence with host-authored tool closures, checkpoints the verified state, and returns the typed verification result. The nested plan shares the parent's step/tool/output budget; this is plan recursion, not a claim that a language-model provider was called.
+
+Two negative cases expose the same validation boundary directly:
+
+```sh
+swipl -q -g "use_module('examples/prolog_rlm_study'), study_capability_failure(Outcome), portray_clause(Outcome), halt"
+
+swipl -q -g "use_module('examples/prolog_rlm_study'), study_depth_failure(Outcome), portray_clause(Outcome), halt"
+```
+
+The first removes the verifier capability and must fail validation. The second narrows `max_depth` below the plan's static estimate and must fail before execution. The aggregate deterministic suite carries matching regressions in `test/rlm_book_study_test.pl`.
