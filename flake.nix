@@ -183,5 +183,11 @@
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           project-syntax = projectSyntaxCheck;
         };
+
+        hydraJobs = {
+          package = prologRlm;
+          tree-sitter-grammars = grammarBundle;
+          checks = self.checks.${system};
+        };
       });
 }
