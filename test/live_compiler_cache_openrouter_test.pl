@@ -17,13 +17,14 @@
 
 test(fifteen_fresh_explicit_all_tools_compilations_report_provider_cache_hits) :-
     require_cache_environment(Model, Key),
+    cache_session_id(SessionId),
     cache_skill_catalog(SkillCatalog),
     tool_registry_create(ToolRegistry),
     context_register(text("stable opaque cache context"), [], ok(ContextRef)),
     setup_call_cleanup(
         register_cache_tool(ToolRegistry),
-        run_cache_turns(1, 15, Model, Key, SkillCatalog, ToolRegistry,
-                        ContextRef, CacheSamples),
+        run_cache_turns(1, 15, Model, SessionId, Key, SkillCatalog,
+                        ToolRegistry, ContextRef, CacheSamples),
         ( context_delete(ContextRef.handle, _),
           tool_registry_destroy(ToolRegistry)
         )),
@@ -44,13 +45,21 @@ test(fifteen_fresh_explicit_all_tools_compilations_report_provider_cache_hits) :
     format(user_error, 'compiler_cache_hit_requests: ~d~n', [HitCount]),
     format(user_error, 'compiler_cache_hit_percent: ~2f~n', [HitPercent]).
 
-run_cache_turns(Turn, Last, _, _, _, _, _, []) :-
+cache_session_id(SessionId) :-
+    (   getenv('GITHUB_RUN_ID', RunId),
+        RunId \== '',
+        RunId \== ""
+    ->  format(string(SessionId), "prolog-rlm-cache-~w", [RunId])
+    ;   SessionId = "prolog-rlm-cache-local"
+    ).
+
+run_cache_turns(Turn, Last, _, _, _, _, _, _, []) :-
     Turn > Last,
     !.
-run_cache_turns(Turn, Last, Model, Key, SkillCatalog, ToolRegistry,
-                ContextRef, [Sample|Samples]) :-
+run_cache_turns(Turn, Last, Model, SessionId, Key, SkillCatalog,
+                ToolRegistry, ContextRef, [Sample|Samples]) :-
     cache_query(Turn, Query, Expected),
-    openrouter_provider(Model, Provider),
+    openrouter_provider(Model, SessionId, Provider),
     all_mode_capabilities(Capabilities),
     Options = [provider(Provider),provider_name(openrouter),
                tool_registry(ToolRegistry),
@@ -70,8 +79,8 @@ run_cache_turns(Turn, Last, Model, Key, SkillCatalog, ToolRegistry,
     assertz(cache_generation(Turn,GenerationId,Sample.cached_tokens,
                              Sample.response_cache_hit)),
     Next is Turn+1,
-    run_cache_turns(Next, Last, Model, Key, SkillCatalog, ToolRegistry,
-                    ContextRef, Samples).
+    run_cache_turns(Next, Last, Model, SessionId, Key, SkillCatalog,
+                    ToolRegistry, ContextRef, Samples).
 
 all_mode_capabilities([
     context(peek),context(slice),context(search),tool(cache_probe),

@@ -24,6 +24,43 @@ test(valid_request_id_survives_machine_boundary) :-
     rlm_zara_runtime:normalize_identifier(request_id, "not-active", RequestId),
     assertion(RequestId == "not-active").
 
+test(explicit_session_id_is_distinct_from_request_id) :-
+    Request = _{session_id:"session-42"},
+    rlm_zara_runtime:request_session(Request, "request-1", SessionId),
+    assertion(SessionId == "session-42").
+
+test(missing_session_id_defaults_to_request_id) :-
+    rlm_zara_runtime:request_session(_{}, "request-1", SessionId),
+    assertion(SessionId == "request-1").
+
+test(session_id_is_forwarded_as_runtime_metadata) :-
+    Budget = completion_budget{},
+    rlm_zara_runtime:runtime_options("request-1",
+                                     "session-42",
+                                     openrouter,
+                                     provider_fixture,
+                                     Budget,
+                                     64,
+                                     cancel_fixture,
+                                     Options),
+    assertion(memberchk(trace_id("request-1"), Options)),
+    assertion(memberchk(session_id("session-42"), Options)).
+
+test(control_character_session_id_fails_closed,
+     [throws(zara_runtime_fault(invalid_identifier(session_id)))]) :-
+    rlm_zara_runtime:request_session(_{session_id:"bad\nsession"},
+                                     "request-1",
+                                     _).
+
+test(oversized_session_id_fails_closed,
+     [throws(zara_runtime_fault(invalid_identifier(session_id)))]) :-
+    length(Codes, 129),
+    maplist(=(0's), Codes),
+    string_codes(SessionId, Codes),
+    rlm_zara_runtime:request_session(_{session_id:SessionId},
+                                     "request-1",
+                                     _).
+
 test(control_character_request_id_fails_closed,
      [throws(zara_runtime_fault(invalid_identifier(request_id)))]) :-
     rlm_zara_runtime:normalize_identifier(request_id, "bad\nrequest", _).

@@ -706,15 +706,86 @@ provider_config(Provider, Config, Outcome) :-
         config_value(address_family, Config, auto, AddressFamily),
         config_value(app_title, Config, none, AppTitle),
         config_value(app_referer, Config, none, AppReferer),
-        validate_provider_config(Provider, Endpoint, Model, Credential,
-                                 Timeout, AddressFamily, AppTitle,
-                                 AppReferer, Outcome)
+        config_value(session_id, Config, none, SessionId),
+        session_http_options(Provider, SessionId, SessionOutcome),
+        provider_config_with_session(SessionOutcome,
+                                     Provider,
+                                     Endpoint,
+                                     Model,
+                                     Credential,
+                                     Timeout,
+                                     AddressFamily,
+                                     AppTitle,
+                                     AppReferer,
+                                     Outcome)
     ;   Outcome = error(provider_error{provider:Provider,
                                        kind:configuration_error,
                                        field:config,
                                        message:"provider config must be a list",
                                        response_received:false})
     ).
+
+provider_config_with_session(error(Error), _, _, _, _, _, _, _, _,
+                             error(Error)) :-
+    !.
+provider_config_with_session(ok(SessionOptions), Provider, Endpoint, Model,
+                             Credential, Timeout, AddressFamily, AppTitle,
+                             AppReferer, Outcome) :-
+    validate_provider_config(Provider, Endpoint, Model, Credential,
+                             Timeout, AddressFamily, AppTitle, AppReferer,
+                             ConfigOutcome),
+    append_session_http_options(ConfigOutcome, SessionOptions, Outcome).
+
+append_session_http_options(error(Error), _, error(Error)) :-
+    !.
+append_session_http_options(ok(Endpoint, Credential, Model, Timeout,
+                               AddressFamily, Attribution0),
+                            SessionOptions,
+                            ok(Endpoint, Credential, Model, Timeout,
+                               AddressFamily, Attribution)) :-
+    append(Attribution0, SessionOptions, Attribution).
+
+session_http_options(openrouter, none, ok([])) :-
+    !.
+session_http_options(openrouter, SessionId,
+                     ok([request_header('X-Session-Id'=SessionId)])) :-
+    valid_session_id(SessionId),
+    !.
+session_http_options(openrouter, _, error(Error)) :-
+    !,
+    Error = provider_error{provider:openrouter,
+                           kind:configuration_error,
+                           field:session_id,
+                           message:"session_id must be a nonempty atom or string of at most 256 characters without control characters",
+                           response_received:false}.
+session_http_options(Provider, none, ok([])) :-
+    Provider \== openrouter,
+    !.
+session_http_options(Provider, _, error(Error)) :-
+    Error = provider_error{provider:Provider,
+                           kind:configuration_error,
+                           field:session_id,
+                           message:"session_id is supported only by OpenRouter",
+                           response_received:false}.
+
+valid_session_id(Value) :-
+    header_text_string(Value, Text),
+    string_length(Text, Length),
+    Length > 0,
+    Length =< 256,
+    string_codes(Text, Codes),
+    \+ ( member(Code, Codes),
+         ( Code < 32
+         ; Code =:= 127
+         )
+       ).
+
+header_text_string(Value, Value) :-
+    string(Value),
+    !.
+header_text_string(Value, Text) :-
+    atom(Value),
+    atom_string(Value, Text).
 
 validate_provider_config(Provider, none, _, _, _, _, error(Error)) :-
     !,
@@ -1153,7 +1224,6 @@ config_value(Key, Config, Default, Value) :-
     ->  Value = Found
     ;   Value = Default
     ).
-
 dict_default(Key, Dict, Default, Value) :-
     (   get_dict(Key, Dict, Found)
     ->  Value = Found
