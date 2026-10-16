@@ -1166,10 +1166,15 @@ charge_call(Resolved, State0, State) :-
 execute_one(Resolved, Runtime, State, context(ContextOutcome)) :-
     Resolved.binding.kind = context(Operation),
     !,
-    context_arguments(Resolved.binding.kind, Resolved.call.arguments, Args),
-    context_handle(Args.context, State.contexts, Handle),
-    context_runtime_options(Runtime.options, ContextOptions),
-    call_context(Operation, Handle, Args, ContextOptions, ContextOutcome).
+    catch(( context_arguments(Resolved.binding.kind,
+                              Resolved.call.arguments, Args),
+            context_handle(Args.context, State.contexts, Handle),
+            context_runtime_options(Runtime.options, ContextOptions),
+            call_context(Operation, Handle, Args, ContextOptions,
+                         ContextOutcome)
+          ),
+          direct_fault(Cause),
+          ContextOutcome = error(Cause)).
 execute_one(Resolved, Runtime, _, tool(Result)) :-
     Resolved.binding.kind = tool(Name),
     tool_invocation_options(Runtime.options, InvocationOptions),
@@ -1186,10 +1191,20 @@ execute_one(Resolved, Runtime, State, runtime(Result)) :-
                       State,
                       Result).
 
+after_execution(context(error(Cause)), Resolved, Calls, Runtime, State0,
+                Outcome) :-
+    Resolved.binding.effect == read,
+    recoverable_context_fault(Cause),
+    !,
+    Call = Resolved.call,
+    context_fault_observation(Resolved, Cause, Event, Result),
+    append_observation(Call, Result, Event, Runtime, State0, StateOutcome),
+    continue_observation(StateOutcome, Calls, Runtime, Outcome).
 after_execution(context(error(Cause)), _, _, _, State, error(Error)) :-
     !,
     state_error(State, context, context_operation_failed, _{cause:Cause},
                 "native context operation failed", Error).
+
 after_execution(context(ok(ContextResult)), Resolved, Calls, Runtime, State0,
                 Outcome) :-
     !,
@@ -1219,6 +1234,41 @@ after_execution(runtime(ok(Execution)), Resolved, Calls, Runtime, State0,
                         Calls,
                         Runtime,
                         Outcome).
+
+recoverable_context_fault(Cause) :-
+    is_dict(Cause),
+    get_dict(kind, Cause, Kind),
+    memberchk(Kind, [unknown_context_alias, unsupported_selector,
+                     out_of_range]),
+    (   get_dict(phase, Cause, Phase)
+    ->  Phase == context
+    ;   is_dict(Cause, context_error)
+    ).
+
+context_fault_observation(Resolved, Cause, Event, Result) :-
+    Call = Resolved.call,
+    context_fault_value(Cause, Value),
+    Trace = context_failure_trace{phase:context,kind:Cause.kind},
+    Result = native_tool_result{call_id:Call.id,name:Call.name,
+                                operation:Resolved.binding.kind,
+                                value:Value,truncated:false,trace:Trace},
+    Event = direct_event{type:native_context,call_id:Call.id,
+                         name:Call.name,status:error,kind:Cause.kind,
+                         result:Result,trace:Trace}.
+
+context_fault_value(Cause, Value) :-
+    Base = _{error:Cause.kind,message:Cause.message},
+    (   Cause.kind == unsupported_selector
+    ->  term_string(Cause.selector, SelectorText, [quoted(true)]),
+        string_length(SelectorText, Length),
+        Keep is min(Length, 80),
+        sub_string(SelectorText, 0, Keep, _, BoundedSelector),
+        put_dict(_{context_kind:Cause.context_kind,
+                   selector:BoundedSelector}, Base, Value)
+    ;   Cause.kind == out_of_range
+    ->  put_dict(index, Base, Cause.index, Value)
+    ;   Value = Base
+    ).
 
 after_tool(ToolResult, Resolved, _, _, State, error(Error)) :-
     ToolResult.outcome = error(Cause),

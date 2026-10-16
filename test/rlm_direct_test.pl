@@ -151,6 +151,32 @@ scenario_response(peek_head_default, 1, _, "", [ToolCall], "") :-
                 ToolCall).
 scenario_response(peek_head_default, 2, _, "HEAD_DEFAULT_DONE", [], "").
 
+scenario_response(selector_repair(peek), 1, _, "", [ToolCall], "") :-
+    native_call("bad_peek_1", "context_peek",
+                _{context:"input", selector:_{type:"item",index:5}}, ToolCall).
+scenario_response(selector_repair(slice), 1, _, "", [ToolCall], "") :-
+    native_call("bad_slice_1", "context_slice",
+                _{context:"input",start:6000,length:2288}, ToolCall).
+scenario_response(selector_repair(alias), 1, _, "", [ToolCall], "") :-
+    native_call("bad_alias_1", "context_peek",
+                _{context:"missing",selector:_{type:"metadata"}}, ToolCall).
+scenario_response(selector_repair(Kind), 2, Request, "SELECTOR_REPAIRED", [], "") :-
+    ( Kind == peek -> Id = "bad_peek_1", Name = context_peek,
+                      Fault = "unsupported_selector"
+    ; Kind == slice -> Id = "bad_slice_1", Name = context_slice,
+                       Fault = "out_of_range"
+    ; Id = "bad_alias_1", Name = context_peek,
+      Fault = "unknown_context_alias" ),
+    request_tool_message(Request, Id, Name, Content),
+    assertion(sub_string(Content, _, _, _, Fault)),
+    assertion(\+ sub_string(Content, _, _, _, "context_handle(")).
+
+scenario_response(selector_repeat, Call, _, "", [ToolCall], "") :-
+    Call =< 3,
+    format(string(Id), "bad_peek_~d", [Call]),
+    native_call(Id, "context_peek",
+                _{context:"input", selector:_{type:"item",index:5}}, ToolCall).
+
 scenario_response(two_context_calls, 1, _, "", [ToolCall], "") :-
     native_call("ctx_1", "context_search", _{query:"needle"}, ToolCall).
 scenario_response(two_context_calls, 2, _, "", [ToolCall], "") :-
@@ -478,6 +504,51 @@ test(native_context_search_round_trip_returns_exact_final_text) :-
     member(ContextSchema, FirstRequest.options.tools),
     assertion(ContextSchema.function.name == "context_search"),
     assertion(FirstRequest.options.tools == SecondRequest.options.tools).
+
+test(read_only_selector_fault_returns_correlated_bounded_observation,
+     [forall(member(Kind, [peek, slice, alias]))]) :-
+    reset_direct(selector_repair(Kind)),
+    ( Kind == peek -> Capability = context(peek), Id = "bad_peek_1",
+                     Fault = unsupported_selector
+    ; Kind == slice -> Capability = context(slice), Id = "bad_slice_1",
+                       Fault = out_of_range
+    ; Capability = context(peek), Id = "bad_alias_1",
+      Fault = unknown_context_alias ),
+    direct_provider_options([Capability], [], Options),
+    rlm_direct("Repair the selector", text("short"), Options, ok(Result)),
+    assertion(Result.value == "SELECTOR_REPAIRED"),
+    assertion(Result.turns =:= 2),
+    assertion(Result.iterations =:= 2),
+    assertion(Result.context_calls =:= 1),
+    assertion(Result.tool_calls =:= 0),
+    assertion(Result.usage.total_tokens =:= 6),
+    once((member(Event, Result.trajectory),
+          Event.type == native_context,
+          Event.call_id == Id)),
+    assertion(Event.kind == Fault),
+    assertion(Event.status == error),
+    assertion(Event.trace.phase == context),
+    assertion(Event.result.call_id == Id),
+    direct_request(2, Request),
+    request_tool_message(Request, Id, Event.name, Content),
+    string_length(Content, Length),
+    assertion(Length < 512),
+    assertion(sub_string(Content, _, _, _, "\"phase\":\"context\"")),
+    assertion(sub_string(Content, _, _, _, "\"call_id\"")),
+    ( Kind == peek -> assertion(sub_string(Content, _, _, _, "item(5)"))
+    ; Kind == slice -> assertion(sub_string(Content, _, _, _, "6000"))
+    ; true ).
+
+test(repeated_invalid_selector_stops_at_model_call_budget) :-
+    reset_direct(selector_repeat),
+    direct_provider_options([context(peek)],
+                            [budget(_{max_model_calls:3})], Options),
+    rlm_direct("Bound invalid repairs", text("short"), Options,
+               error(Error)),
+    assertion(Error.kind == model_call_budget_exhausted),
+    assertion(Error.iterations =:= 3),
+    assertion(Error.context_calls =:= 3),
+    direct_call_count(3).
 
 test(native_registered_tool_round_trip_uses_canonical_registry) :-
     Token = "runtime-generated-tool-token",

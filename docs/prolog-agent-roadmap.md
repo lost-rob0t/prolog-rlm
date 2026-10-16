@@ -169,7 +169,11 @@ the standard coding tool package, and the headless coding workflow remain open.
 The same branch now adds a domain-neutral native direct loop. Standard provider
 function tools cover bounded context, compiler-selected registered tools, SPEC
 source compilation/observation/verification, and complete typed-plan execution.
-Non-context results are retained behind opaque context aliases. A separate
+Read-only direct context alias and selector errors now return bounded,
+correlated native-context observations for model repair within existing
+budgets; capability, authority, effect, cancellation, and internal failures
+remain terminal. Non-context results are retained behind opaque context
+aliases. A separate
 Spec-strategy graph composes either direct or typed execution with
 Observe/Verify/bounded Repair under one unchanged Frozen Spec. This is runtime
 substrate only; it does not supply AgentProlog project policy, coding tools, or
