@@ -5,6 +5,7 @@
 :- use_module('../prolog/rlm_reasoning_mode').
 :- use_module('../prolog/rlm_tool').
 :- use_module('support/tool_test_support').
+:- use_module('support/completion_test_support', []).
 
 setup_registry(Registry) :-
     tool_registry_create(Registry),
@@ -220,6 +221,33 @@ test(expert_auto_route_selects_symbolic) :-
         ),
         cleanup_registry(Registry)).
 
+test(pure_symbolic_route_invokes_expert_without_model,
+     [setup(completion_test_support:reset_calls)]) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        setup_call_cleanup(
+            reasoning_mode_open(pure_symbolic_fixture, ok(_)),
+            ( full_context(Context),
+              expert_auto_route(
+                  pure_symbolic_fixture,
+                  Registry,
+                  "review git diff",
+                  Context,
+                  _{},
+                  ok(Route)),
+              assertion(Route.mode.effective == symbolic),
+              assertion(Route.selection.applicable == true),
+              Id = Route.selection.decision.selected,
+              expert_invoke(Registry, Id, _{}, Context, [], ok(Result), Trace),
+              assertion(Result.value == json{}),
+              assertion(ground(Trace)),
+              completion_test_support:model_calls(Calls),
+              assertion(Calls =:= 0)
+            ),
+            reasoning_mode_destroy(pure_symbolic_fixture, _)
+        ),
+        cleanup_registry(Registry)).
+
 test(expert_auto_route_selects_symbolic_recursive_when_trusted_signals_allow) :-
     setup_call_cleanup(
         setup_registry(Registry),
@@ -321,10 +349,10 @@ test(advice_request_exposes_only_selected_expert_tool_schema) :-
               "Should I merge this change?",
               [max_tokens(96)],
               ok(Request)),
-          assertion(Request = model_request{
-                                  messages:[System, User],
-                                  options:Options
-                              }),
+          Request = model_request{
+                        messages:[System, User],
+                        options:Options
+                    },
           assertion(get_dict(role, System, system)),
           assertion(get_dict(role, User, user)),
           assertion(get_dict(content, User, "Should I merge this change?")),
@@ -333,7 +361,7 @@ test(advice_request_exposes_only_selected_expert_tool_schema) :-
           get_dict(temperature, Options, Temperature),
           assertion(Temperature =:= 0),
           assertion(get_dict(tool_choice, Options, auto)),
-          assertion(get_dict(tools, Options, [Wire])),
+          get_dict(tools, Options, [Wire]),
           assertion(get_dict(type, Wire, "function")),
           get_dict(function, Wire, Function),
           assertion(get_dict(name, Function, "git_diff")),
