@@ -1065,17 +1065,19 @@ schema_from_wire(Wire, Schema) :-
     ),
     ( get_dict(properties, WithRequired, PropertiesWire)
     -> is_dict(PropertiesWire),
-       dict_pairs(PropertiesWire, Tag, PropertyPairs),
+       dict_pairs(PropertiesWire, _, PropertyPairs),
        maplist(schema_property_from_wire, PropertyPairs, ConvertedPairs),
-       dict_pairs(Properties, Tag, ConvertedPairs),
+       dict_pairs(Properties, json, ConvertedPairs),
        put_dict(properties, WithRequired, Properties, WithProperties)
     ;  WithProperties = WithRequired
     ),
     ( get_dict(items, WithProperties, ItemsWire)
     -> schema_from_wire(ItemsWire, Items),
-       put_dict(items, WithProperties, Items, Schema)
-    ;  Schema = WithProperties
+       put_dict(items, WithProperties, Items, Schema0)
+    ;  Schema0 = WithProperties
     ),
+    dict_pairs(Schema0, _, SchemaPairs),
+    dict_pairs(Schema, json, SchemaPairs),
     !.
 schema_from_wire(_, _) :-
     throw(zara_runtime_fault(invalid_host_callback_schema)).
