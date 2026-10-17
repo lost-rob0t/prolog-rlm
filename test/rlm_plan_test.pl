@@ -4,6 +4,51 @@
 :- use_module('../prolog/rlm_context').
 :- use_module('support/plan_test_tools').
 
+pending_write_tool(_, tool_result{status:approval_required,
+                                  value:_{id:approval_resume_1},
+                                  approval_id:approval_resume_1}).
+
+resume_model_fixture(fake, Prompt, _, _, Outcome) :-
+    assertion(Prompt == "saved"),
+    response_fixture(resumed_model, "model saw saved", 3, Response),
+    Outcome = ok(native_model_execution{
+                     response:Response,responses:[Response],
+                     iterations:1,model_calls:1,tool_calls:0,
+                     context_calls:0,observation_bytes:0}).
+
+test(pending_tool_suspends_and_resume_feeds_result_to_model_once) :-
+    Plan = plan([tool(pending_write, literal(_{}), written),
+                 model(fake,
+                       field(field(var(written), value), result),
+                       _{}, reply),
+                 final(field(var(reply), text))]),
+    Options = [tools([tool(pending_write,
+                           plunit_rlm_plan:pending_write_tool)]),
+               providers([provider_ref(fake,provider(fake,[]))]),
+               model_step_handler(plunit_rlm_plan:resume_model_fixture)],
+    plan_run(Plan, [tool(pending_write),model(fake)], Options, _{},
+             PlanOutcome),
+    PlanOutcome = suspended(Cursor),
+    ResumeValue = tool_result{status:ok,value:_{result:"saved"},
+                              approval_id:approval_resume_1},
+    plan_resume(Cursor, wrong_approval, ResumeValue, error(Wrong)),
+    assertion(Wrong.kind == cursor_not_found),
+    plan_resume(Cursor, approval_resume_1, ResumeValue, ResumeOutcome),
+    ResumeOutcome = ok(Result),
+    assertion(Result.value == "model saw saved"),
+    plan_resume(Cursor, approval_resume_1, ResumeValue, error(Stale)),
+    assertion(Stale.kind == cursor_not_found).
+
+test(pending_tool_in_nested_plan_fails_explicitly) :-
+    Child = plan([tool(pending_write,literal(_{}),written),
+                  final(var(written))]),
+    Plan = plan([rlm(Child,child),final(var(child))]),
+    Options = [tools([tool(pending_write,
+                           plunit_rlm_plan:pending_write_tool)])],
+    plan_run(Plan,[rlm,tool(pending_write)],Options,_{},error(Error)),
+    assertion(Error.kind == pending_nested_unsupported),
+    assertion(Error.approval_id == approval_resume_1).
+
 native_model_step_fixture(fake, Prompt, RequestOptions, Budget, Outcome) :-
     assertion(Prompt == "inspect with native tools"),
     assertion(RequestOptions.max_tokens =:= 32),
