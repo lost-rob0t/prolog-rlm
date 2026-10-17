@@ -7,6 +7,7 @@
             zara_runtime_pending/3,
             zara_runtime_approval/5,
             zara_runtime_approval_status/4,
+            zara_runtime_resume/4,
             zara_runtime_set_profiles/1,
             zara_runtime_set_host_tools/2,
             zara_runtime_set_host_callback/4,
@@ -55,6 +56,7 @@ surface is implemented and tested.
 :- dynamic zara_host_callback/5.
 :- dynamic zara_bootstrap_token/1.
 :- dynamic zara_retained_registry/3.
+:- dynamic zara_retained_completion/4.
 
 :- http_handler(root('zara-runtime/v1/discover'),
                 zara_discover_handler,
@@ -79,6 +81,9 @@ surface is implemented and tested.
                 [method(post)]).
 :- http_handler(root('zara-runtime/v1/host-approval-status'),
                 zara_host_approval_status_handler,
+                [method(post)]).
+:- http_handler(root('zara-runtime/v1/resume'),
+                zara_resume_handler,
                 [method(post)]).
 
 zara_runtime_protocol("ZARA-RUNTIME/1").
@@ -436,9 +441,16 @@ release_host_registry(RequestId, Registry) :-
     zara_host_callback(_, _, _, Generation, _),
     host_authority_context(RequestId, Generation, Context),
     rlm_authority:rlm_pending_approvals(Context, Approvals),
-    Approvals \== [],
+    include(unresolved_host_approval, Approvals, Unresolved),
+    Unresolved \== [],
     !,
     assertz(zara_retained_registry(RequestId, Generation, Registry)).
+release_host_registry(RequestId, Registry) :-
+    zara_host_callback(_, _, _, Generation, _),
+    !,
+    rlm_tool:tool_registry_destroy(Registry),
+    host_authority_context(RequestId, Generation, Context),
+    rlm_authority:rlm_authority_clear(Context).
 release_host_registry(_, Registry) :-
     release_host_registry(Registry).
 
@@ -530,6 +542,9 @@ project_host_resolution(FutureStatus, "failed", _{}) :-
     !.
 project_host_resolution(_, "running", _{}).
 
+maybe_release_resolved_host_registry(RequestId, Generation, _, _, _) :-
+    zara_retained_completion(RequestId, Generation, _, _),
+    !.
 maybe_release_resolved_host_registry(RequestId, Generation, Registry,
                                      Context, Status) :-
     memberchk(Status, ["completed","failed","indeterminate"]),
@@ -541,6 +556,78 @@ maybe_release_resolved_host_registry(RequestId, Generation, Registry,
     rlm_tool:tool_registry_destroy(Registry),
     rlm_authority:rlm_authority_clear(Context).
 maybe_release_resolved_host_registry(_, _, _, _, _).
+
+zara_runtime_resume(RequestId, Generation, ApprovalId, Reply) :-
+    ( zara_retained_completion(RequestId, Generation, Mode, Cursor),
+      zara_retained_registry(RequestId, Generation, Registry),
+      host_authority_context(RequestId, Generation, Context),
+      rlm_authority:rlm_pending_approval(Context, ApprovalId, Approval),
+      Cursor.plan_cursor = plan_cursor(_, ApprovalId),
+      rlm_authority:rlm_pending_resolution_async(ApprovalId, Future)
+    -> rlm_async:rlm_future_status(Future, FutureStatus),
+       project_host_resolution(FutureStatus, Status, Value),
+       resume_resolution(Status, Value, Approval, RequestId, Generation,
+                         Mode, Cursor, Registry, Context, Reply)
+    ;  Reply = _{protocol:"ZARA-RUNTIME/1",request_id:RequestId,
+                 generation:Generation,status:"not_found"}
+    ).
+
+resume_resolution("running", _, _, RequestId, Generation, _, _, _, _, Reply) :-
+    !,
+    Reply = _{protocol:"ZARA-RUNTIME/1",request_id:RequestId,
+              generation:Generation,status:"running"}.
+resume_resolution("completed", ToolValue, Approval, RequestId, Generation,
+                  Mode, Cursor, Registry, Context, Reply) :-
+    !,
+    ( claim_retained_for_resume(RequestId, Generation, Mode, Cursor)
+    -> ToolResult = tool_result{status:ok,value:ToolValue,
+                                approval_id:Approval.id},
+       setup_call_cleanup(
+           true,
+           ( setup_call_cleanup(
+                 rlm_completion:register_current_thread(Cursor.token),
+                 rlm_completion:rlm_completion_resume(Cursor, Approval.id,
+                                                      ToolResult, Outcome),
+                 rlm_completion:cleanup_cancellation(Cursor.token, false)),
+             ( Outcome = suspended(NextCursor)
+             -> assertz(zara_retained_completion(RequestId, Generation,
+                                                 Mode, NextCursor))
+             ;  release_resumed_host_registry(RequestId, Generation,
+                                              Registry, Context) ),
+             project_outcome(RequestId, Mode, Outcome, Reply) ),
+           unregister_request(RequestId, Cursor.token))
+    ;  resume_not_found(RequestId, Generation, Reply) ).
+resume_resolution(_, _, _, RequestId, Generation, Mode, Cursor,
+                  Registry, Context, Reply) :-
+    ( claim_retained_completion(RequestId, Generation, Mode, Cursor)
+    -> rlm_completion:rlm_completion_discard(Cursor),
+       release_resumed_host_registry(RequestId, Generation,
+                                    Registry, Context),
+       Reply = _{protocol:"ZARA-RUNTIME/1",request_id:RequestId,
+                 generation:Generation,status:"failed",
+                 error:_{kind:"effect_resolution_failed",
+                         message:"Approved effect did not produce an observed result"}}
+    ;  resume_not_found(RequestId, Generation, Reply) ).
+
+claim_retained_completion(RequestId, Generation, Mode, Cursor) :-
+    with_mutex(zara_runtime_completion,
+               retract(zara_retained_completion(RequestId, Generation,
+                                                Mode, Cursor))).
+
+claim_retained_for_resume(RequestId, Generation, Mode, Cursor) :-
+    with_mutex(zara_runtime_completion,
+               ( retract(zara_retained_completion(RequestId, Generation,
+                                                  Mode, Cursor)),
+                 register_request(RequestId, Cursor.token) )).
+
+resume_not_found(RequestId, Generation,
+                 _{protocol:"ZARA-RUNTIME/1",request_id:RequestId,
+                   generation:Generation,status:"not_found"}).
+
+release_resumed_host_registry(RequestId, Generation, Registry, Context) :-
+    retractall(zara_retained_registry(RequestId, Generation, Registry)),
+    rlm_tool:tool_registry_destroy(Registry),
+    rlm_authority:rlm_authority_clear(Context).
 
 callback_effect_preflight(RequestId, Generation, Args, Args,
                           callback_identity{request_id:RequestId,
@@ -713,6 +800,7 @@ cancel_request(RequestId, Reply) :-
                )),
     (   Found == true
     ->  rlm:rlm_cancel(Token),
+        ( claim_pending_cancel(RequestId) -> true ; true ),
         Reply = _{
             protocol:"ZARA-RUNTIME/1",
             runtime_id:"prolog-rlm",
@@ -720,6 +808,19 @@ cancel_request(RequestId, Reply) :-
             status:"cancel_requested",
             found:true
         }
+    ;   claim_pending_cancel(RequestId)
+    ->  Reply = _{
+            protocol:"ZARA-RUNTIME/1",
+            runtime_id:"prolog-rlm",
+            request_id:RequestId,
+            status:"cancel_requested",
+            found:true
+        }
+    ;   active_request_token(RequestId, ResumingToken)
+    ->  rlm:rlm_cancel(ResumingToken),
+        Reply = _{protocol:"ZARA-RUNTIME/1",runtime_id:"prolog-rlm",
+                  request_id:RequestId,status:"cancel_requested",
+                  found:true}
     ;   Reply = _{
             protocol:"ZARA-RUNTIME/1",
             runtime_id:"prolog-rlm",
@@ -728,6 +829,25 @@ cancel_request(RequestId, Reply) :-
             found:false
         }
     ).
+
+active_request_token(RequestId, Token) :-
+    with_mutex(zara_runtime_requests,
+               zara_request_token(RequestId, Token)).
+
+claim_pending_cancel(RequestId) :-
+    with_mutex(zara_runtime_completion,
+               retract(zara_retained_completion(RequestId,
+                                                Generation, _, Cursor))),
+    rlm:rlm_cancel(Cursor.token),
+    host_authority_context(RequestId, Generation, Context),
+    rlm_authority:rlm_pending_approvals(Context, Approvals),
+    forall(( member(Approval, Approvals), Approval.state == pending ),
+           rlm_authority:rlm_deny(Approval.id, zara_cancelled, _)),
+    rlm_completion:rlm_completion_discard(Cursor),
+    ( zara_retained_registry(RequestId, Generation, Registry)
+    -> maybe_release_resolved_host_registry(RequestId, Generation,
+                                            Registry, Context, "failed")
+    ;  true ).
 
 zara_runtime_server_start(Port) :-
     with_mutex(zara_runtime_server,
@@ -835,6 +955,10 @@ zara_host_approval_status_handler(HttpRequest) :-
     host_approval_http(HttpRequest, status, Reply),
     reply_json_dict(Reply).
 
+zara_resume_handler(HttpRequest) :-
+    host_approval_http(HttpRequest, resume, Reply),
+    reply_json_dict(Reply).
+
 host_approval_http(HttpRequest, Action, Reply) :-
     catch(( ( require_effect_authorization(HttpRequest),
             bounded_config_body(HttpRequest, Body),
@@ -875,6 +999,10 @@ host_approval_action(status, Body, RequestId, Generation, Reply) :-
     normalize_atom(approval_id, ApprovalId0, ApprovalId),
     zara_runtime_approval_status(RequestId, Generation,
                                  ApprovalId, Reply).
+host_approval_action(resume, Body, RequestId, Generation, Reply) :-
+    get_dict(approval_id, Body, ApprovalId0),
+    normalize_atom(approval_id, ApprovalId0, ApprovalId),
+    zara_runtime_resume(RequestId, Generation, ApprovalId, Reply).
 
 require_bootstrap_authorization(HttpRequest, Token) :-
     zara_bootstrap_token(Token),
@@ -992,7 +1120,22 @@ execute_mode(Mode,
                     Token,
                     Options),
     execute_mode_outcome(Mode, Prompt, Context, Options, Outcome),
+    ( Outcome = error(_),
+      zara_host_callback(_, _, _, Generation, _)
+    -> deny_unresumable_pending(RequestId, Generation)
+    ;  true ),
+    ( Outcome = suspended(Cursor),
+      zara_host_callback(_, _, _, Generation, _)
+    -> assertz(zara_retained_completion(RequestId, Generation,
+                                        Mode, Cursor))
+    ;  true ),
     project_outcome(RequestId, Mode, Outcome, Reply).
+
+deny_unresumable_pending(RequestId, Generation) :-
+    host_authority_context(RequestId, Generation, Context),
+    rlm_authority:rlm_pending_approvals(Context, Approvals),
+    forall(( member(Approval, Approvals), Approval.state == pending ),
+           rlm_authority:rlm_deny(Approval.id, unresumable_plan, _)).
 
 execute_mode_outcome(direct, Prompt, _Context, Options, Outcome) :-
     !,
@@ -1342,7 +1485,8 @@ bounded_cost(Dict, Maximum, Cost) :-
 
 register_request(RequestId, Token) :-
     with_mutex(zara_runtime_requests,
-               ( zara_request_token(RequestId, _)
+               ( ( zara_request_token(RequestId, _)
+                 ; zara_retained_completion(RequestId, _, _, _) )
                -> throw(zara_runtime_fault(duplicate_request_id))
                ;  assertz(zara_request_token(RequestId, Token))
                )).

@@ -1,6 +1,8 @@
 :- module(rlm_completion,
           [ rlm_completion/4,
             rlm_completion_async/4,
+            rlm_completion_resume/4,
+            rlm_completion_discard/1,
             llm_query/3,
             llm_query_async/3,
             rlm_query/4,
@@ -230,13 +232,52 @@ completion_with_context(Query, Context, Options, Budget, Token, Outcome) :-
     acquire_context(Context, ContextRef, ContextOwned),
     setup_call_cleanup(
         true,
-        completion_with_handle(Query,
-                               ContextRef,
-                               Options,
-                               Budget,
-                               Token,
-                               Outcome),
-        cleanup_context(ContextRef, ContextOwned)).
+        ( completion_with_handle(Query,
+                                 ContextRef,
+                                 Options,
+                                 Budget,
+                                 Token,
+                                 RawOutcome),
+          retain_completion_context(RawOutcome, ContextRef,
+                                    ContextOwned, Outcome) ),
+        ( nonvar(Outcome), Outcome = suspended(_)
+        -> true
+        ;  cleanup_context(ContextRef, ContextOwned) )).
+
+retain_completion_context(suspended(Cursor0), ContextRef, Owned,
+                          suspended(Cursor)) :-
+    !,
+    put_dict(_{context_ref:ContextRef,context_owned:Owned},
+             Cursor0, Cursor).
+retain_completion_context(Outcome, _, _, Outcome).
+
+rlm_completion_resume(Cursor, ApprovalId, ToolResult, Outcome) :-
+    get_dict(plan_cursor, Cursor, PlanCursor),
+    PlanCursor = plan_cursor(_, ApprovalId),
+    !,
+    catch(( rlm_plan:plan_resume(PlanCursor, ApprovalId, ToolResult,
+                                 PlanOutcome),
+            completion_after_execution(PlanOutcome, Cursor.planner,
+                                       Cursor.plan, Cursor.stats,
+                                       Cursor.child_capabilities,
+                                       Cursor.budget, Cursor.token,
+                                       RawOutcome) ),
+          Exception,
+          completion_exception(Exception, RawOutcome)),
+    retain_completion_context(RawOutcome, Cursor.context_ref,
+                              Cursor.context_owned, Outcome),
+    ( Outcome = suspended(_)
+    -> true
+    ;  cleanup_context(Cursor.context_ref, Cursor.context_owned) ).
+rlm_completion_resume(_, _, _,
+                      error(completion_error{phase:execute,
+                                             kind:cursor_not_found,
+                                             message:"approval identity does not match completion cursor"})).
+
+rlm_completion_discard(Cursor) :-
+    get_dict(plan_cursor, Cursor, PlanCursor),
+    rlm_plan:plan_discard(PlanCursor),
+    cleanup_context(Cursor.context_ref, Cursor.context_owned).
 
 completion_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
     context_metadata(ContextRef.handle, MetadataOutcome),
@@ -769,6 +810,15 @@ completion_after_recursive_validation(ok(Stats),
                                Budget,
                                Token,
                                Outcome).
+
+completion_after_execution(suspended(PlanCursor), Planner, Plan, Stats,
+                           ChildCapabilities, Budget, Token,
+                           suspended(completion_cursor{
+                               plan_cursor:PlanCursor,planner:Planner,
+                               plan:Plan,stats:Stats,
+                               child_capabilities:ChildCapabilities,
+                               budget:Budget,token:Token})) :-
+    !.
 
 completion_after_execution(error(Error0),
                            Planner,

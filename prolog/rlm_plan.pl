@@ -4,6 +4,8 @@
             plan_validate/4,
             plan_execute/4,
             plan_run/5,
+            plan_resume/4,
+            plan_discard/1,
             json_object_text/2,
             default_plan_budget/1
           ]).
@@ -19,8 +21,11 @@ callable.
 :- use_module(library(http/json)).
 :- use_module(library(time)).
 :- use_module(library(lists)).
+:- use_module(library(gensym)).
 :- use_module(rlm_chain).
 :- use_module(rlm_context).
+
+:- dynamic suspended_plan_cursor/3.
 
 default_plan_budget(plan_budget{max_steps:64,
                                 max_depth:4,
@@ -735,6 +740,37 @@ plan_execute(Validated, Options, Inputs, Outcome) :-
           Exception,
           execution_exception(Exception, Outcome)).
 
+plan_resume(plan_cursor(Id, CursorApprovalId), ApprovalId,
+            ToolResult, Outcome) :-
+    CursorApprovalId == ApprovalId,
+    !,
+    ( with_mutex(rlm_plan_cursor,
+                 retract(suspended_plan_cursor(Id, ApprovalId,
+                                               CursorState)))
+    -> catch(( resume_cursor_state(CursorState, ToolResult, ExecOutcome),
+               finalize_execution(ExecOutcome, Outcome) ),
+             Exception, execution_exception(Exception, Outcome))
+    ;  Outcome = error(plan_error{phase:execute,
+                                  kind:cursor_not_found,
+                                  message:"plan cursor is stale or approval identity does not match"})
+    ).
+plan_resume(_, _, _,
+            error(plan_error{phase:execute,kind:cursor_not_found,
+                             message:"plan cursor is stale or approval identity does not match"})).
+
+plan_discard(plan_cursor(Id, _)) :-
+    with_mutex(rlm_plan_cursor,
+               retractall(suspended_plan_cursor(Id, _, _))).
+
+resume_cursor_state(cursor_state{pending:Pending,steps:Steps,
+                                 runtime:Runtime,inputs:Inputs},
+                    ToolResult, Outcome) :-
+    get_dict(name, Pending, Name),
+    get_dict(bind, Pending, Bind),
+    get_dict(state, Pending, State),
+    handle_tool_result(ToolResult, Name, Bind, State, StepOutcome),
+    continue_after_step(StepOutcome, Steps, Runtime, Inputs, Outcome).
+
 plan_execute_(Validated, Options, Inputs, Outcome) :-
     must_validated_plan(Validated),
     must_dict_execution(Inputs, inputs),
@@ -865,6 +901,11 @@ execute_steps([Step|Steps], Runtime, Inputs, State0, Outcome) :-
 
 continue_after_step(error(Error, State), _, _, _, error(Error, State)) :- !.
 continue_after_step(final(Value, State), _, _, _, final(Value, State)) :- !.
+continue_after_step(suspended(Pending), Steps, Runtime, Inputs,
+                    suspended(CursorState)) :-
+    !,
+    CursorState = cursor_state{pending:Pending,steps:Steps,
+                               runtime:Runtime,inputs:Inputs}.
 continue_after_step(ok(State), Steps, Runtime, Inputs, Outcome) :-
     execute_steps(Steps, Runtime, Inputs, State, Outcome).
 
@@ -983,6 +1024,8 @@ execute_step(parallel(Plans, Bind), Runtime, Inputs, State0, Outcome) :-
                      BranchOutcome),
     (   BranchOutcome = error(Error, State)
     ->  Outcome = error(Error, State)
+    ;   BranchOutcome = suspended(Cursor)
+    ->  pending_nested_error(Cursor, State0, Outcome)
     ;   BranchOutcome = ok(Values, State1),
         restore_scope(State1, ParentVars, ParentTrace, Restored),
         bind_value(Bind, Values, Restored, BindOutcome),
@@ -1002,6 +1045,8 @@ execute_step(retry(Attempts, Plan, Bind), Runtime, Inputs, State0, Outcome) :-
                   RetryOutcome),
     (   RetryOutcome = error(Error, State)
     ->  Outcome = error(Error, State)
+    ;   RetryOutcome = suspended(Cursor)
+    ->  pending_nested_error(Cursor, State0, Outcome)
     ;   RetryOutcome = ok(Value, State1),
         restore_scope(State1, ParentVars, ParentTrace, Restored),
         bind_value(Bind, Value, Restored, BindOutcome),
@@ -1336,6 +1381,15 @@ handle_tool_result(tool_exception(Exception), Name, _, State,
                        tool:Name,
                        exception:Safe,
                        message:"trusted host tool raised an exception"}.
+handle_tool_result(Result, Name, Bind, State,
+                   suspended(Pending)) :-
+    is_dict(Result),
+    get_dict(status, Result, approval_required),
+    get_dict(approval_id, Result, ApprovalId),
+    atom(ApprovalId),
+    !,
+    Pending = pending_tool_step{name:Name,bind:Bind,state:State,
+                                approval_id:ApprovalId}.
 handle_tool_result(Result, Name, Bind, State0, Outcome) :-
     bind_value(Bind, Result, State0, BindOutcome),
     transition_result(BindOutcome, tool(Name), Bind, Outcome).
@@ -1418,6 +1472,8 @@ execute_branches([Plan|Plans],
                        ParentTrace,
                        BranchState),
         Outcome = error(Error, BranchState)
+    ;   BranchOutcome = suspended(Cursor),
+        pending_nested_error(Cursor, State0, Outcome)
     ).
 
 execute_retry(Attempts,
@@ -1434,6 +1490,8 @@ execute_retry(Attempts,
     execute_plan(Plan, Runtime, Inputs, AttemptState, AttemptOutcome),
     (   AttemptOutcome = final(Value, State1)
     ->  Outcome = ok(Value, State1)
+    ;   AttemptOutcome = suspended(Cursor)
+    ->  pending_nested_error(Cursor, State0, Outcome)
     ;   AttemptOutcome = error(Error, State1),
         restore_scope(State1, ParentVars, ParentTrace, RetryState),
         Attempts1 is Attempts-1,
@@ -1454,6 +1512,9 @@ nested_result(_, error(Error, NestedState), ParentVars, ParentTrace, _,
               error(Error, Restored)) :-
     !,
     restore_scope(NestedState, ParentVars, ParentTrace, Restored).
+nested_result(_, suspended(Cursor), _, _, _, Outcome) :-
+    !,
+    pending_nested_error(Cursor, Cursor.pending.state, Outcome).
 nested_result(Operation,
               final(Value, NestedState),
               ParentVars,
@@ -1463,6 +1524,14 @@ nested_result(Operation,
     restore_scope(NestedState, ParentVars, ParentTrace, Restored),
     bind_value(Bind, Value, Restored, BindOutcome),
     transition_result(BindOutcome, Operation, Bind, Outcome).
+
+pending_nested_error(Cursor, State,
+                     error(plan_error{phase:execute,
+                                      kind:pending_nested_unsupported,
+                                      approval_id:ApprovalId,
+                                      message:"pending effect in nested plan cannot resume"},
+                           State)) :-
+    ApprovalId = Cursor.pending.approval_id.
 
 parent_vars(State, Vars) :-
     get_dict(vars, State, Vars).
@@ -1617,6 +1686,15 @@ finalize_execution(final(Value, State), ok(Result)) :-
                          transitions:Transitions,
                          checkpoints:Checkpoints,
                          budget_remaining:Remaining}.
+finalize_execution(suspended(CursorState),
+                   suspended(plan_cursor(Id, ApprovalId))) :-
+    Pending = CursorState.pending,
+    ApprovalId = Pending.approval_id,
+    with_mutex(rlm_plan_cursor,
+               ( gensym(plan_cursor_, Id),
+                 assertz(suspended_plan_cursor(Id, ApprovalId,
+                                               CursorState)) )),
+    !.
 finalize_execution(error(Error0, State), error(Error)) :-
     !,
     get_dict(transitions, State, RevTransitions),
