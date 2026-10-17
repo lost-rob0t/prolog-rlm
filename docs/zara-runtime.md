@@ -110,28 +110,37 @@ The sidecar accepts only literal IPv4 loopback at the fixed `/zara-host-tool/v1/
 
 For each admitted read tool invocation, Prolog-RLM sends a bounded authenticated POST to Zara's configured endpoint with `protocol:"ZARA-HOST-TOOL/1"`, `request_id`, a fresh `tool_call_id`, `generation`, `name`, and schema-validated `args`. Zara must return HTTP 200 with the same protocol and exact identity fields plus either `status:"ok", value:<schema-valid result>` or `status:"denied"`. The sidecar disables proxies and redirects, limits response bytes and time, and rejects mismatched identities. Zara remains responsible for principal/project/repository lease checks and its canonical plugin authorization before reading. A denied or invalid callback returns a tool failure to the planner.
 
-This callback is limited to reads. Write/process tools, approval resume, durable effect reconciliation, and cancellation of a callback already in flight remain future work. A stock sidecar without a configured token and read descriptors still advertises `supports_host_tools=false`.
+An effectful callback also needs an operator-selected durable journal path in `ZARA_RUNTIME_EFFECT_STORE`. The sidecar opens this store at startup and rejects effectful host configuration without it. A stock sidecar without a configured token and descriptors still advertises `supports_host_tools=false`.
 
-### Proposed effectful Zara host callback contract
+### Effectful Zara host callbacks and approval
 
-The next slice should configure the callback endpoint, secret, tool descriptors, and generation from trusted launch state. A model-visible plan may select only a registered name and schema-valid arguments. After Prolog capability, pure preflight, and `rlm_authority` admission, the adapter sends a bounded request to the literal loopback Zara endpoint:
+An authenticated `host-config` request may add an `effect_endpoint` at the fixed literal loopback path `/zara-host-tool/v1/effect` and descriptors with `effect:"write"` or `effect:"process"`. The descriptor set replaces the previous complete set atomically while idle, including the read descriptors. Reconfiguration fails while generate is active or an approval is retained. Each generate request still grants only explicit `host_tools` names. The model cannot select an effect class, endpoint, handler, Prolog source, or authority tier.
+
+Prolog's native `approve_diff` mode returns `status:"approval_required"` with `request_id`, `generation`, and bounded approval records containing `id`, `name`, `effect`, `args`, `fingerprint` (authority fingerprint), `attempt_id`, `effect_fingerprint`, and `idempotency_key`. The sidecar retains that request's registry. Zara must bind its post-approval callback lease to the exact request, generation, attempt, effect fingerprint, idempotency key, name, and arguments before invoking the approval endpoint. The authority fingerprint and effect fingerprint are distinct. Zara can inspect and resolve the pending operation using the same bearer token:
+
+- `POST /zara-runtime/v1/host-pending` with `{protocol,request_id,generation}`;
+- `POST /zara-runtime/v1/host-approval` with those fields plus `approval_id` and `decision:"approve"|"deny"`;
+- `POST /zara-runtime/v1/host-approval-status` with those fields plus `approval_id`.
+
+The approval endpoint calls `rlm_authority` directly; there is no second approval authority. Wrong request, generation, or approval ID returns `not_found`. Approval schedules the existing pending continuation. Status reports `running`, `completed` with a value, `failed`, or `indeterminate`; a terminal status releases the retained registry after all approvals for that request have resolved. Approval records exist only in the running sidecar process. A restart discards unapproved continuations, so old approval IDs cannot dispatch. The durable effect journal retains already dispatched attempts and requires reconciliation for uncertainty.
+
+After native approval and durable dispatch, the adapter sends a bounded authenticated request to Zara's fixed effect endpoint:
 
 ```json
 {
-  "protocol": "ZARA-HOST-TOOL/1",
-  "request_id": "runtime-generated request id",
-  "tool_call_id": "runtime-generated call id",
+  "protocol": "ZARA-HOST-EFFECT/1",
+  "request_id": "generate request id",
+  "tool_call_id": "durable attempt id",
   "generation": 7,
-  "name": "file_read",
-  "args": {"path": "src/main.py"},
-  "effect": "read",
-  "fingerprint": "normalized operation fingerprint"
+  "attempt_id": "durable attempt id",
+  "idempotency_key": "durable attempt idempotency key",
+  "effect_fingerprint": "normalized executable fingerprint",
+  "name": "file_write",
+  "args": {"path": "src/main.py", "content": "..."}
 }
 ```
 
-Zara authenticates the sidecar, checks the request/session/generation/principal, resolves the Prolog-configured repository alias, and applies its canonical plugin capability and approval policy. The response echoes `protocol`, `request_id`, `tool_call_id`, `generation`, and `fingerprint`, with exactly one bounded `ok`, `denied`, `approval_required`, or `indeterminate` outcome. Mismatches and stale generations fail closed. The callback has no redirect/proxy path and no executable source fields.
-
-For effectful operations, approval must resume the **same** admitted normalized operation via the existing `rlm_authority` pending continuation and durable effect attempt. A transport failure after dispatch is indeterminate unless Zara can reconcile the effect by idempotency identity. Approval, cancellation, restart, and retry must not resubmit an uncertain write. This callback contract is proposed for the next implementation; the current sidecar does not send these messages.
+Zara must authenticate the bearer, check its active turn lease and generation, and use `idempotency_key` to deduplicate the write. It must echo `protocol`, `request_id`, `tool_call_id`, `generation`, `attempt_id`, and `effect_fingerprint`. `status:"observed"` requires a schema-valid, byte-bounded `value`; `in_progress` and `indeterminate` are also accepted. A missing response, identity mismatch, invalid result, or transport timeout leaves the attempt indeterminate. The sidecar does not resubmit it. No remote reconciliation callback is implemented yet, so an uncertain write cannot be resolved automatically after restart. Zara's effect handler and idempotency store must be implemented and tested before enabling write descriptors in production.
 
 ## Android deployment
 

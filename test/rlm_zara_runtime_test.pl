@@ -6,9 +6,171 @@
 :- use_module(library(http/http_dispatch)).
 :- use_module(library(http/http_json)).
 :- use_module('../prolog/rlm_tool').
+:- use_module('../prolog/rlm_effect').
+:- use_module('../prolog/rlm_authority').
+:- use_module('../prolog/rlm_async').
+
+:- dynamic effect_callback_count/1.
 
 :- http_handler(root('zara-host-tool/v1/read'), host_read_fixture,
                 [method(post)]).
+:- http_handler(root('zara-host-tool/v1/effect'), host_effect_fixture,
+                [method(post)]).
+
+host_effect_fixture(Request) :-
+    member(authorization('Bearer test-secret-123456'), Request),
+    http_read_json_dict(Request, Body, [value_string_as(string)]),
+    with_mutex(zara_effect_fixture,
+               ( ( retract(effect_callback_count(N0)) -> true ; N0 = 0 ),
+                 N is N0+1,
+                 assertz(effect_callback_count(N)) )),
+    reply_json_dict(_{protocol:"ZARA-HOST-EFFECT/1",
+                      request_id:Body.request_id,
+                      tool_call_id:Body.tool_call_id,
+                      generation:Body.generation,
+                      attempt_id:Body.attempt_id,
+                      effect_fingerprint:Body.effect_fingerprint,
+                      status:"observed", value:_{seen:Body.args.value}}).
+
+test(effect_callback_requires_approval_and_dispatches_once) :-
+    write_host_wire_schema(Wire),
+    tmp_file(zara_effect_store, Ledger),
+    setup_call_cleanup(
+        ( retractall(effect_callback_count(_)),
+          assertz(effect_callback_count(0)),
+          rlm_effect_store_open(Ledger),
+          zara_runtime_server_start(Port),
+          zara_runtime_set_bootstrap_token("test-secret-123456"),
+          format(string(ReadURL),
+                 'http://127.0.0.1:~d/zara-host-tool/v1/read', [Port]),
+          format(string(EffectURL),
+                 'http://127.0.0.1:~d/zara-host-tool/v1/effect', [Port]),
+          format(string(ConfigURL),
+                 'http://127.0.0.1:~d/zara-runtime/v1/host-config', [Port]),
+          Config = _{protocol:"ZARA-RUNTIME/1",endpoint:ReadURL,
+                     effect_endpoint:EffectURL,generation:7,tools:[Wire]},
+          host_post(ConfigURL, Config, true, ConfigReply),
+          assertion(ConfigReply.status == "configured") ),
+        ( rlm_zara_runtime:request_host_tools("effect-request",
+                    _{host_tools:["host_write"]}, Registry, Caps),
+          Context = session(zara_host("effect-request", 7)),
+          tool_invoke(Registry, Caps, host_write, json{value:42},
+                      [authority_context(Context)],
+                      approval_required(Pending), _),
+          effect_callback_count(Before), assertion(Before =:= 0),
+          rlm_zara_runtime:project_outcome("effect-request", rlm,
+                                          error(pending_tool), Projected),
+          assertion(Projected.status == "approval_required"),
+          rlm_zara_runtime:request_host_tools("different-request",
+                    _{host_tools:["host_write"]}, OtherRegistry, OtherCaps),
+          OtherContext = session(zara_host("different-request", 7)),
+          tool_invoke(OtherRegistry, OtherCaps, host_write,
+                      json{value:42},
+                      [authority_context(OtherContext)],
+                      approval_required(OtherPending), _),
+          assertion(Pending.operation.effect_identity.fingerprint \==
+                    OtherPending.operation.effect_identity.fingerprint),
+          rlm_deny(OtherPending.id, test_cleanup, ok(_)),
+          rlm_authority_clear(OtherContext),
+          tool_registry_destroy(OtherRegistry),
+          rlm_zara_runtime:release_host_registry("effect-request", Registry),
+          host_post(ConfigURL, Config, true, Busy),
+          assertion(Busy.status == "failed"),
+          format(string(PendingURL),
+                 'http://127.0.0.1:~d/zara-runtime/v1/host-pending', [Port]),
+          PendingBody = _{protocol:"ZARA-RUNTIME/1",
+                          request_id:"effect-request",generation:7},
+          host_post(PendingURL, PendingBody, false, Unauthorized),
+          assertion(Unauthorized.error.kind == "unauthorized"),
+          host_post(PendingURL, PendingBody, true, PendingHTTP),
+          assertion(PendingHTTP.status == "approval_required"),
+          zara_runtime_pending("effect-request", 8, Missing),
+          assertion(Missing.status == "not_found"),
+          zara_runtime_pending("effect-request", 7, PendingReply),
+          assertion(PendingReply.status == "approval_required"),
+          PendingReply.approvals = [Approval],
+          assertion(Approval.id == Pending.id),
+          assertion(Approval.attempt_id ==
+                    Pending.operation.effect_identity.attempt_id),
+          assertion(Approval.effect_fingerprint ==
+                    Pending.operation.effect_identity.fingerprint),
+          rlm_pending_resolution_async(Pending.id, Future),
+          format(string(ApprovalURL),
+                 'http://127.0.0.1:~d/zara-runtime/v1/host-approval', [Port]),
+          ApprovalBody = PendingBody.put(_{approval_id:Pending.id,
+                                           decision:"approve"}),
+          host_post(ApprovalURL, ApprovalBody, true, ApprovalReply),
+          assertion(ApprovalReply.status == "accepted"),
+          rlm_future_await(Future, 2.0, Resolution),
+          assertion(Resolution.outcome = ok(_)),
+          format(string(StatusURL),
+                 'http://127.0.0.1:~d/zara-runtime/v1/host-approval-status',
+                 [Port]),
+          StatusBody = PendingBody.put(approval_id, Pending.id),
+          host_post(StatusURL, StatusBody, true, StatusReply),
+          assertion(StatusReply.status == "completed"),
+          host_post(ConfigURL, Config, true, Reconfigured),
+          assertion(Reconfigured.status == "configured"),
+          effect_callback_count(After), assertion(After =:= 1),
+          rlm_future_destroy(Future),
+          rlm_authority_clear(Context),
+          tool_registry_destroy(Registry) ),
+        ( zara_runtime_set_host_tools("", []),
+          zara_runtime_set_bootstrap_token(""),
+          zara_runtime_server_stop,
+          rlm_effect_store_close,
+          catch(delete_file(Ledger), _, true),
+          retractall(effect_callback_count(_)) )).
+
+host_post(URL, Body, Authorized, Reply) :-
+    atom_json_dict(BodyAtom, Body, []),
+    ( Authorized == true
+    -> Headers = [request_header('Authorization'='Bearer test-secret-123456')]
+    ;  Headers = []
+    ),
+    append([method(post),post(atom(BodyAtom)),
+            request_header('Content-Type'='application/json')],
+           Headers, Options),
+    setup_call_cleanup(
+        http_open(URL, Stream, Options),
+        json_read_dict(Stream, Reply),
+        close(Stream)).
+
+write_host_wire_schema(_{name:"host_write", effect:"write",
+                         description:"Bounded write fixture",
+                         arguments:_{type:"object",
+                                     properties:_{value:_{type:"integer"}},
+                                     required:["value"]},
+                         result:_{type:"object",
+                                  properties:_{seen:_{type:"integer"}},
+                                  required:["seen"]}}).
+
+test(authenticated_host_config_requires_effect_store_for_write) :-
+    write_host_wire_schema(Wire),
+    setup_call_cleanup(
+        ( zara_runtime_set_bootstrap_token("test-secret-123456"),
+          zara_runtime_server_start(Port) ),
+        ( format(string(URL),
+                 'http://127.0.0.1:~d/zara-runtime/v1/host-config', [Port]),
+          format(string(ReadURL),
+                 'http://127.0.0.1:~d/zara-host-tool/v1/read', [Port]),
+          format(string(EffectURL),
+                 'http://127.0.0.1:~d/zara-host-tool/v1/effect', [Port]),
+          Body = _{protocol:"ZARA-RUNTIME/1",endpoint:ReadURL,
+                   effect_endpoint:EffectURL,generation:7,tools:[Wire]},
+          atom_json_dict(BodyAtom, Body, []),
+          setup_call_cleanup(
+              http_open(URL, Stream,
+                        [method(post),post(atom(BodyAtom)),
+                         request_header('Content-Type'='application/json'),
+                         request_header('Authorization'='Bearer test-secret-123456')]),
+              json_read_dict(Stream, Reply),
+              close(Stream)),
+          assertion(Reply.status == "failed"),
+          assertion(Reply.error.kind == "effect_store_required") ),
+        ( zara_runtime_set_host_tools("", []),
+          zara_runtime_set_bootstrap_token(""),
+          zara_runtime_server_stop )).
 
 host_read_fixture(Request) :-
     member(authorization('Bearer test-secret-123456'), Request),
