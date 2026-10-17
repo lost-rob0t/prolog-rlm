@@ -5,6 +5,10 @@
 main(Argv) :-
     (   parse_args(Argv, 18765, [], Port, Profiles)
     ->  rlm_zara_runtime:zara_runtime_set_profiles(Profiles),
+        ( getenv('ZARA_RUNTIME_HOST_TOKEN', HostToken)
+        -> rlm_zara_runtime:zara_runtime_set_bootstrap_token(HostToken)
+        ;  true
+        ),
         rlm_zara_runtime:zara_runtime_server_start(Port),
         format(user_error,
                'Prolog-RLM ZARA-RUNTIME/1 listening on http://localhost:~d/zara-runtime/v1/~n',

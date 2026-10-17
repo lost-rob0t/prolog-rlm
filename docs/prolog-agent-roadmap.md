@@ -32,7 +32,7 @@ Already available in core and the downstream application boundary:
 - the #95 declarative Project/File/Language and Tree-sitter grammar registry, with explicit language evidence, parser selection, versioned grammar identity/provenance, and separate trusted native activation over #94;
 - `prolog_agent_ui_v1`, a renderer-independent application boundary with bounded snapshots, ordered semantic events, explicit correlated commands, capability negotiation, deterministic replay, reconnect semantics, NDJSON framing, a child-process fixture server, and polyglot golden fixtures;
 - on the #176/#216 candidate path, root-planner tool-schema visibility is compiled by the canonical `rlm_prompt_compiler` while trusted executable bindings remain separate for capability, authority, and effect enforcement.
-- the optional Zara sidecar can project trusted in-process registered tools into Prolog-RLM with authenticated per-request capability grants; it does not yet call Zara-hosted plugins.
+- the optional Zara sidecar can project trusted in-process tools and has a bounded authenticated loopback callback for Zara-hosted read tools, with generation/request/call echo checks; Zara integration still owns its lease and plugin authorization.
 
 Still missing for a useful coding agent:
 
