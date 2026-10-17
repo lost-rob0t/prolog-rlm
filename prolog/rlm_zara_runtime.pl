@@ -6,6 +6,8 @@
             zara_runtime_cancel/2,
             zara_runtime_set_profiles/1,
             zara_runtime_set_host_tools/2,
+            zara_runtime_set_host_callback/4,
+            zara_runtime_set_bootstrap_token/1,
             zara_runtime_server_start/1,
             zara_runtime_server_stop/0
           ]).
@@ -25,7 +27,11 @@ surface is implemented and tested.
 :- use_module(library(http/http_dispatch)).
 :- use_module(library(http/http_json)).
 :- use_module(library(http/thread_httpd)).
+:- use_module(library(http/http_open)).
+:- use_module(library(http/json)).
 :- use_module(library(lists)).
+:- use_module(library(uri)).
+:- use_module(library(uuid)).
 :- use_module(rlm).
 :- use_module(rlm_tool, []).
 :- use_module(rlm_chain,
@@ -39,6 +45,8 @@ surface is implemented and tested.
 :- dynamic zara_runtime_profile/1.
 :- dynamic zara_host_registry/1.
 :- dynamic zara_host_token/1.
+:- dynamic zara_host_callback/4.
+:- dynamic zara_bootstrap_token/1.
 
 :- http_handler(root('zara-runtime/v1/discover'),
                 zara_discover_handler,
@@ -51,6 +59,9 @@ surface is implemented and tested.
                 [method(post)]).
 :- http_handler(root('zara-runtime/v1/cancel'),
                 zara_cancel_handler,
+                [method(post)]).
+:- http_handler(root('zara-runtime/v1/host-config'),
+                zara_host_config_handler,
                 [method(post)]).
 
 zara_runtime_protocol("ZARA-RUNTIME/1").
@@ -81,7 +92,10 @@ zara_runtime_descriptor(Descriptor) :-
         supports_host_tools:HostTools,
         provenance:"prolog-rlm:local"
     },
-    ( zara_host_registry(_) -> HostTools = true ; HostTools = false ).
+    ( (zara_host_registry(_) ; zara_host_callback(_, _, _, _))
+    -> HostTools = true
+    ;  HostTools = false
+    ).
 
 zara_runtime_health(Health) :-
     zara_runtime_descriptor(Descriptor),
@@ -109,8 +123,11 @@ zara_runtime_execute_(Request, Reply) :-
     rlm:rlm_cancellation_token(Token),
     setup_call_cleanup(
         register_request(RequestId, Token),
-        ( request_host_tools(Request, ToolRegistry, ToolCapabilities),
-          execute_mode(Mode,
+        ( request_host_tools(RequestId, Request,
+                             ToolRegistry, ToolCapabilities),
+          setup_call_cleanup(
+              true,
+              execute_mode(Mode,
                      RequestId,
                      Prompt,
                      Context,
@@ -121,7 +138,8 @@ zara_runtime_execute_(Request, Reply) :-
                      ToolRegistry,
                      ToolCapabilities,
                      Token,
-                     Reply) ),
+                     Reply),
+              release_host_registry(ToolRegistry)) ),
         unregister_request(RequestId, Token)).
 
 zara_runtime_set_host_tools("", []) :-
@@ -129,14 +147,7 @@ zara_runtime_set_host_tools("", []) :-
     with_mutex(zara_runtime_host_tools,
                replace_host_registry(none, none)).
 zara_runtime_set_host_tools(Token0, Specs) :-
-    normalize_identifier(host_token, Token0, Token),
-    string_length(Token, Length),
-    ( Length >= 16,
-      string_codes(Token, Codes),
-      maplist(host_token_code, Codes)
-    -> true
-    ;  throw(zara_runtime_fault(invalid_host_token))
-    ),
+    require_host_token(Token0, Token),
     ( is_list(Specs), Specs \== [],
       length(Specs, Count), Count =< 16
     -> true
@@ -149,6 +160,86 @@ zara_runtime_set_host_tools(Token0, Specs) :-
           ),
           Error,
           ( rlm_tool:tool_registry_destroy(Registry), throw(Error) )).
+
+zara_runtime_set_host_callback(Token0, Endpoint0, Generation, Schemas) :-
+    require_host_token(Token0, Token),
+    require_callback_endpoint(Endpoint0, Endpoint),
+    ( integer(Generation), Generation >= 0,
+      is_list(Schemas), Schemas \== [],
+      length(Schemas, Count), Count =< 16
+    -> true
+    ;  throw(zara_runtime_fault(invalid_host_callback))
+    ),
+    validate_callback_schemas(Schemas),
+    with_mutex(zara_runtime_host_tools,
+               ( replace_host_registry(none, none),
+                 assertz(zara_host_callback(Token, Endpoint,
+                                            Generation, Schemas)),
+                 assertz(zara_host_token(Token))
+               )).
+
+zara_runtime_set_bootstrap_token("") :-
+    !,
+    retractall(zara_bootstrap_token(_)).
+zara_runtime_set_bootstrap_token(Token0) :-
+    require_host_token(Token0, Token),
+    with_mutex(zara_runtime_host_tools,
+               ( retractall(zara_bootstrap_token(_)),
+                 assertz(zara_bootstrap_token(Token))
+               )).
+
+validate_callback_schemas(Schemas) :-
+    maplist(require_read_schema, Schemas),
+    rlm_tool:tool_registry_create(Registry),
+    setup_call_cleanup(
+        true,
+        maplist(validate_callback_schema(Registry), Schemas),
+        rlm_tool:tool_registry_destroy(Registry)).
+
+validate_callback_schema(Registry, Schema) :-
+    rlm_tool:tool_register(Registry, Schema,
+                           rlm_zara_runtime:callback_unreachable,
+                           ok(_)),
+    !.
+validate_callback_schema(_, _) :-
+    throw(zara_runtime_fault(invalid_host_callback_schema)).
+
+callback_unreachable(_, _) :-
+    throw(zara_runtime_fault(host_callback_unavailable)).
+
+require_host_token(Token0, Token) :-
+    normalize_identifier(host_token, Token0, Token),
+    string_length(Token, Length),
+    ( Length >= 16,
+      string_codes(Token, Codes),
+      maplist(host_token_code, Codes)
+    -> true
+    ;  throw(zara_runtime_fault(invalid_host_token))
+    ).
+
+require_callback_endpoint(Endpoint0, Endpoint) :-
+    text_string(Endpoint0, Endpoint),
+    uri_components(Endpoint,
+                   uri_components(http, Authority,
+                                  '/zara-host-tool/v1/read', Search, Fragment)),
+    var(Search), var(Fragment),
+    uri_authority_components(Authority,
+                             uri_authority(User, Password,
+                                           '127.0.0.1', Port)),
+    var(User), var(Password),
+    integer(Port), Port >= 1, Port =< 65535,
+    !.
+require_callback_endpoint(_, _) :-
+    throw(zara_runtime_fault(invalid_host_callback_endpoint)).
+
+require_read_schema(Schema) :-
+    is_dict(Schema),
+    get_dict(effect, Schema, read),
+    get_dict(name, Schema, Name),
+    atom(Name),
+    !.
+require_read_schema(_) :-
+    throw(zara_runtime_fault(invalid_host_callback_schema)).
 
 host_token_code(Code) :-
     ( between(0'a, 0'z, Code)
@@ -182,6 +273,7 @@ replace_host_registry(Registry, Token) :-
     ;  true
     ),
     retractall(zara_host_token(_)),
+    retractall(zara_host_callback(_, _, _, _)),
     ( Registry == none
     -> true
     ;  assertz(zara_host_registry(Registry)),
@@ -189,6 +281,9 @@ replace_host_registry(Registry, Token) :-
     ).
 
 request_host_tools(Request, Registry, Capabilities) :-
+    request_host_tools("direct", Request, Registry, Capabilities).
+
+request_host_tools(RequestId, Request, Registry, Capabilities) :-
     ( get_dict(host_tools, Request, Requested)
     -> true
     ;  Requested = []
@@ -197,15 +292,20 @@ request_host_tools(Request, Registry, Capabilities) :-
     -> true
     ;  throw(zara_runtime_fault(invalid_host_tools))
     ),
-    ( zara_host_registry(Registry)
-    -> rlm_tool:tool_discover(Registry, Schemas)
-    ;  Registry = none, Schemas = []
+    ( zara_host_callback(Token, Endpoint, Generation, Schemas)
+    -> callback_registry(RequestId, Requested, Schemas,
+                         Token, Endpoint, Generation,
+                         Registry, Capabilities)
+    ;  ( zara_host_registry(Registry)
+       -> rlm_tool:tool_discover(Registry, Schemas)
+       ;  Registry = none, Schemas = []
+       ),
+       maplist(granted_host_tool(Schemas), Requested, Capabilities0),
+       sort(Capabilities0, Capabilities),
+       length(Capabilities, Count)
     ),
-    maplist(granted_host_tool(Schemas), Requested, Capabilities0),
-    sort(Capabilities0, Capabilities),
-    length(Capabilities, Count),
     !.
-request_host_tools(_, _, _) :-
+request_host_tools(_, _, _, _) :-
     throw(zara_runtime_fault(invalid_host_tools)).
 
 granted_host_tool(Schemas, Name0, tool(Name)) :-
@@ -215,6 +315,91 @@ granted_host_tool(Schemas, Name0, tool(Name)) :-
     !.
 granted_host_tool(_, _, _) :-
     throw(zara_runtime_fault(unknown_host_tool)).
+
+callback_registry(_, [], _, _, _, _, none, []) :- !.
+callback_registry(RequestId, Requested, Schemas,
+                  Token, Endpoint, Generation, Registry, Capabilities) :-
+    maplist(callback_grant(Schemas), Requested, Names),
+    sort(Names, UniqueNames),
+    length(UniqueNames, Count),
+    length(Names, Count),
+    !,
+    rlm_tool:tool_registry_create(Registry),
+    catch(( maplist(register_callback_tool(Registry, RequestId,
+                                           Token, Endpoint, Generation,
+                                           Schemas),
+                    UniqueNames),
+            maplist(wrap_tool_capability, UniqueNames, Capabilities)
+          ),
+          Error,
+          ( rlm_tool:tool_registry_destroy(Registry), throw(Error) )).
+callback_registry(_, _, _, _, _, _, _, _) :-
+    throw(zara_runtime_fault(invalid_host_tools)).
+
+callback_grant(Schemas, Name0, Name) :-
+    normalize_atom(host_tool, Name0, Name),
+    member(Schema, Schemas),
+    Schema.name == Name,
+    !.
+callback_grant(_, _, _) :-
+    throw(zara_runtime_fault(unknown_host_tool)).
+
+register_callback_tool(Registry, RequestId, Token, Endpoint,
+                       Generation, Schemas, Name) :-
+    member(Schema, Schemas),
+    Schema.name == Name,
+    rlm_tool:tool_register(
+        Registry, Schema,
+        rlm_zara_runtime:callback_read(Endpoint, Token, Generation,
+                                       RequestId, Name),
+        ok(_)).
+
+wrap_tool_capability(Name, tool(Name)).
+
+release_host_registry(none) :- !.
+release_host_registry(Registry) :-
+    zara_host_callback(_, _, _, _),
+    !,
+    rlm_tool:tool_registry_destroy(Registry).
+release_host_registry(_).
+
+callback_read(Endpoint, Token, Generation, RequestId, Name, Args, Value) :-
+    uuid(CallIdAtom, [version(4)]),
+    atom_string(CallIdAtom, CallId),
+    atom_string(Name, NameText),
+    Body = _{protocol:"ZARA-HOST-TOOL/1",
+             request_id:RequestId,
+             tool_call_id:CallId,
+             generation:Generation,
+             name:NameText,
+             args:Args},
+    atom_json_dict(BodyAtom, Body, []),
+    format(string(Authorization), 'Bearer ~s', [Token]),
+    setup_call_cleanup(
+        http_open(Endpoint, Stream,
+                  [method(post), post(atom(BodyAtom)),
+                   request_header('Content-Type'='application/json'),
+                   request_header('Authorization'=Authorization),
+                   bypass_proxy(true), redirect(false), timeout(2)]),
+        ( read_string(Stream, 65537, ResponseText),
+          string_length(ResponseText, ResponseLength),
+          ResponseLength =< 65536,
+          atom_string(ResponseAtom, ResponseText),
+          atom_json_dict(ResponseAtom, Response, [])
+        ),
+        close(Stream)),
+    ( Response.protocol == "ZARA-HOST-TOOL/1",
+      Response.request_id == RequestId,
+      Response.tool_call_id == CallId,
+      Response.generation == Generation
+    -> true
+    ;  throw(zara_runtime_fault(host_callback_mismatch))
+    ),
+    ( Response.status == "ok",
+      get_dict(value, Response, Value)
+    -> true
+    ;  throw(zara_runtime_fault(host_callback_denied))
+    ).
 
 zara_runtime_set_profiles(Profiles0) :-
     (   is_list(Profiles0),
@@ -370,6 +555,102 @@ zara_cancel_handler(HttpRequest) :-
               error:_{kind:Kind, message:Message}
           })),
     reply_json_dict(Reply).
+
+zara_host_config_handler(HttpRequest) :-
+    catch(( require_bootstrap_authorization(HttpRequest, Token),
+            bounded_config_body(HttpRequest, Body),
+            get_dict(protocol, Body, "ZARA-RUNTIME/1"),
+            get_dict(endpoint, Body, Endpoint),
+            get_dict(generation, Body, Generation),
+            get_dict(tools, Body, WireTools),
+            is_list(WireTools),
+            maplist(host_tool_from_wire, WireTools, Schemas),
+            zara_runtime_set_host_callback(Token, Endpoint,
+                                           Generation, Schemas),
+            Reply = _{protocol:"ZARA-RUNTIME/1", status:"configured",
+                      generation:Generation}
+          ),
+          Error,
+          ( error_kind(Error, Kind, Message),
+            Reply = _{protocol:"ZARA-RUNTIME/1", status:"failed",
+                      error:_{kind:Kind, message:Message}}
+          )),
+    reply_json_dict(Reply).
+
+require_bootstrap_authorization(HttpRequest, Token) :-
+    zara_bootstrap_token(Token),
+    format(string(Expected), 'Bearer ~s', [Token]),
+    member(authorization(Header), HttpRequest),
+    text_string(Header, Expected),
+    !.
+require_bootstrap_authorization(_, _) :-
+    throw(zara_runtime_fault(unauthorized)).
+
+bounded_config_body(HttpRequest, Body) :-
+    memberchk(content_length(Length), HttpRequest),
+    integer(Length), Length =< 32768,
+    !,
+    http_read_json_dict(HttpRequest, Body,
+                        [value_string_as(string)]).
+bounded_config_body(_, _) :-
+    throw(zara_runtime_fault(invalid_host_callback)).
+
+host_tool_from_wire(Wire, Schema) :-
+    is_dict(Wire),
+    \+ get_dict(handler, Wire, _),
+    \+ get_dict(effect, Wire, _),
+    \+ get_dict(capability, Wire, _),
+    get_dict(name, Wire, NameText),
+    normalize_atom(host_tool, NameText, Name),
+    atom_length(Name, NameLength),
+    NameLength =< 64,
+    valid_runtime_name(NameText),
+    get_dict(arguments, Wire, ArgumentsWire),
+    get_dict(result, Wire, ResultWire),
+    schema_from_wire(ArgumentsWire, Arguments),
+    schema_from_wire(ResultWire, Result),
+    ( get_dict(description, Wire, Description0)
+    -> bounded_text(description, Description0, 512, Description)
+    ;  Description = ""
+    ),
+    Schema = tool_schema{name:Name,
+                         description:Description,
+                         capability:tool(Name), effect:read,
+                         arguments:Arguments, result:Result},
+    !.
+host_tool_from_wire(_, _) :-
+    throw(zara_runtime_fault(invalid_host_callback_schema)).
+
+schema_from_wire(Wire, Schema) :-
+    is_dict(Wire),
+    get_dict(type, Wire, TypeText),
+    normalize_atom(schema_type, TypeText, Type),
+    memberchk(Type, [any,string,integer,number,boolean,list,array,object]),
+    put_dict(type, Wire, Type, Typed),
+    ( get_dict(required, Typed, RequiredWire)
+    -> maplist(normalize_atom(required), RequiredWire, Required),
+       put_dict(required, Typed, Required, WithRequired)
+    ;  WithRequired = Typed
+    ),
+    ( get_dict(properties, WithRequired, PropertiesWire)
+    -> is_dict(PropertiesWire),
+       dict_pairs(PropertiesWire, Tag, PropertyPairs),
+       maplist(schema_property_from_wire, PropertyPairs, ConvertedPairs),
+       dict_pairs(Properties, Tag, ConvertedPairs),
+       put_dict(properties, WithRequired, Properties, WithProperties)
+    ;  WithProperties = WithRequired
+    ),
+    ( get_dict(items, WithProperties, ItemsWire)
+    -> schema_from_wire(ItemsWire, Items),
+       put_dict(items, WithProperties, Items, Schema)
+    ;  Schema = WithProperties
+    ),
+    !.
+schema_from_wire(_, _) :-
+    throw(zara_runtime_fault(invalid_host_callback_schema)).
+
+schema_property_from_wire(Name-Wire, Name-Schema) :-
+    schema_from_wire(Wire, Schema).
 
 require_host_authorization(_) :-
     \+ zara_host_token(_),

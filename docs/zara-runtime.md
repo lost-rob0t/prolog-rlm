@@ -90,9 +90,29 @@ Once registered, discovery reports `supports_host_tools=true`. An authenticated 
 
 The token is private launch configuration, at least 16 characters, and must not appear in source, logs, or a model prompt. While a registry is installed, HTTP generation and cancellation require `Authorization: Bearer <token>`; discovery and health remain observations. Reconfiguration is denied while a generation is active. The trusted in-process `zara_runtime_execute/2` entrypoint does not use HTTP authentication; only code already executing inside the Prolog process may call it.
 
-This is a **native registered-tool slice**, not a Zara Python plugin callback. The packaged CLI does not yet accept a tool manifest, and no remote callback or approval-resume protocol is implemented. A stock Zara desktop sidecar therefore continues to discover `supports_host_tools=false` and cannot run Zara file/code tools through Prolog-RLM.
+The packaged sidecar can also configure **read-only Zara callbacks** after startup. Set the same private `ZARA_RUNTIME_HOST_TOKEN` environment variable in the sidecar and Zara host. Zara sends `POST /zara-runtime/v1/host-config` with `Authorization: Bearer <token>` and a bounded JSON body:
 
-### Proposed Zara host callback contract
+```json
+{
+  "protocol": "ZARA-RUNTIME/1",
+  "endpoint": "http://127.0.0.1:19001/zara-host-tool/v1/read",
+  "generation": 7,
+  "tools": [{
+    "name": "file_read",
+    "description": "Read a bounded file from the selected repository",
+    "arguments": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+    "result": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}
+  }]
+}
+```
+
+The sidecar accepts only literal IPv4 loopback at the fixed `/zara-host-tool/v1/read` path. It converts the JSON descriptors into canonical read-effect `rlm_tool` schemas. No capability, effect class, handler, Prolog source, or shell command may be supplied on this wire. Generate requests still grant existing names explicitly through `host_tools`, and all generation/cancel calls require the bearer token while callback tools are configured.
+
+For each admitted read tool invocation, Prolog-RLM sends a bounded authenticated POST to Zara's configured endpoint with `protocol:"ZARA-HOST-TOOL/1"`, `request_id`, a fresh `tool_call_id`, `generation`, `name`, and schema-validated `args`. Zara must return HTTP 200 with the same protocol and exact identity fields plus either `status:"ok", value:<schema-valid result>` or `status:"denied"`. The sidecar disables proxies and redirects, limits response bytes and time, and rejects mismatched identities. Zara remains responsible for principal/project/repository lease checks and its canonical plugin authorization before reading. A denied or invalid callback returns a tool failure to the planner.
+
+This callback is limited to reads. Write/process tools, approval resume, durable effect reconciliation, and cancellation of a callback already in flight remain future work. A stock sidecar without a configured token and read descriptors still advertises `supports_host_tools=false`.
+
+### Proposed effectful Zara host callback contract
 
 The next slice should configure the callback endpoint, secret, tool descriptors, and generation from trusted launch state. A model-visible plan may select only a registered name and schema-valid arguments. After Prolog capability, pure preflight, and `rlm_authority` admission, the adapter sends a bounded request to the literal loopback Zara endpoint:
 

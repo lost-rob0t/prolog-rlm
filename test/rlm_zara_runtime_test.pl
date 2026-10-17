@@ -3,7 +3,30 @@
 :- use_module('../prolog/rlm_zara_runtime').
 :- use_module(library(http/http_open)).
 :- use_module(library(http/json)).
+:- use_module(library(http/http_dispatch)).
+:- use_module(library(http/http_json)).
 :- use_module('../prolog/rlm_tool').
+
+:- http_handler(root('zara-host-tool/v1/read'), host_read_fixture,
+                [method(post)]).
+
+host_read_fixture(Request) :-
+    member(authorization('Bearer test-secret-123456'), Request),
+    http_read_json_dict(Request, Body, [value_string_as(string)]),
+    ( Body.args.value =:= 99
+    -> ResponseGeneration is Body.generation+1,
+       Status = "ok"
+    ; Body.args.value =:= 98
+    -> ResponseGeneration = Body.generation,
+       Status = "denied"
+    ;  ResponseGeneration = Body.generation,
+       Status = "ok"
+    ),
+    reply_json_dict(_{protocol:"ZARA-HOST-TOOL/1",
+                      request_id:Body.request_id,
+                      tool_call_id:Body.tool_call_id,
+                      generation:ResponseGeneration,
+                      status:Status, value:_{seen:Body.args.value}}).
 
 host_echo(Args, json{seen:Args.value}).
 
@@ -24,9 +47,112 @@ host_schema(tool_schema{name:host_echo,
                                     properties:json{seen:json{type:integer}},
                                     required:[seen]}}).
 
+host_wire_schema(_{name:"host_echo", description:"Bounded test echo",
+                   arguments:_{type:"object",
+                               properties:_{value:_{type:"integer"}},
+                               required:["value"]},
+                   result:_{type:"object",
+                            properties:_{seen:_{type:"integer"}},
+                            required:["seen"]}}).
+
+test(bootstrap_configures_read_callback_from_authenticated_wire) :-
+    host_wire_schema(WireSchema),
+    setup_call_cleanup(
+        zara_runtime_set_bootstrap_token("test-secret-123456"),
+        setup_call_cleanup(
+            zara_runtime_server_start(Port),
+            ( format(string(ConfigURL),
+                     'http://127.0.0.1:~d/zara-runtime/v1/host-config', [Port]),
+              format(string(CallbackURL),
+                     'http://127.0.0.1:~d/zara-host-tool/v1/read', [Port]),
+              Body = _{protocol:"ZARA-RUNTIME/1", endpoint:CallbackURL,
+                       generation:7, tools:[WireSchema]},
+              atom_json_dict(BodyAtom, Body, []),
+              setup_call_cleanup(
+                  http_open(ConfigURL, DeniedStream,
+                            [method(post), post(atom(BodyAtom)),
+                             request_header('Content-Type'='application/json')]),
+                  json_read_dict(DeniedStream, Denied),
+                  close(DeniedStream)),
+              assertion(Denied.error.kind == "unauthorized"),
+              setup_call_cleanup(
+                  http_open(ConfigURL, AllowedStream,
+                            [method(post), post(atom(BodyAtom)),
+                             request_header('Content-Type'='application/json'),
+                             request_header('Authorization'='Bearer test-secret-123456')]),
+                  json_read_dict(AllowedStream, Allowed),
+                  close(AllowedStream)),
+              assertion(Allowed.status == "configured"),
+              zara_runtime_descriptor(Descriptor),
+              assertion(Descriptor.supports_host_tools == true)
+            ),
+            zara_runtime_server_stop),
+        ( zara_runtime_set_host_tools("", []),
+          zara_runtime_set_bootstrap_token("") )
+    ).
+
 test(host_tools_are_absent_until_trusted_registration) :-
     zara_runtime_descriptor(Descriptor),
     assertion(Descriptor.supports_host_tools == false).
+
+test(authenticated_read_callback_reaches_registered_rlm_tool) :-
+    host_schema(Schema),
+    setup_call_cleanup(
+        zara_runtime_server_start(Port),
+        ( format(string(URL), 'http://127.0.0.1:~d/zara-host-tool/v1/read', [Port]),
+          setup_call_cleanup(
+              zara_runtime_set_host_callback("test-secret-123456", URL,
+                                             7, [Schema]),
+              ( zara_runtime_descriptor(Descriptor),
+                assertion(Descriptor.supports_host_tools == true),
+                rlm_zara_runtime:request_host_tools("request-7",
+                    _{host_tools:["host_echo"]}, Registry, Capabilities),
+                setup_call_cleanup(
+                    true,
+                    ( tool_invoke(Registry, Capabilities, host_echo,
+                                  json{value:11}, [], ok(Execution), _),
+                      assertion(Execution.value.seen =:= 11)
+                    ),
+                    rlm_zara_runtime:release_host_registry(Registry))
+              ),
+              zara_runtime_set_host_tools("", []))
+        ),
+        zara_runtime_server_stop
+    ).
+
+test(callback_rejects_mismatched_generation_and_host_denial) :-
+    host_schema(Schema),
+    setup_call_cleanup(
+        zara_runtime_server_start(Port),
+        ( format(string(URL), 'http://127.0.0.1:~d/zara-host-tool/v1/read', [Port]),
+          setup_call_cleanup(
+              zara_runtime_set_host_callback("test-secret-123456", URL,
+                                             7, [Schema]),
+              ( rlm_zara_runtime:request_host_tools("request-7",
+                    _{host_tools:["host_echo"]}, Registry, Capabilities),
+                setup_call_cleanup(
+                    true,
+                    ( tool_invoke(Registry, Capabilities, host_echo,
+                                  json{value:99}, [], error(_), MismatchTrace),
+                      assertion(MismatchTrace.status == handler_exception),
+                      tool_invoke(Registry, Capabilities, host_echo,
+                                  json{value:98}, [], error(_), DenialTrace),
+                      assertion(DenialTrace.status == handler_exception)
+                    ),
+                    rlm_zara_runtime:release_host_registry(Registry))
+              ),
+              zara_runtime_set_host_tools("", []))
+        ),
+        zara_runtime_server_stop
+    ).
+
+test(callback_endpoint_rejects_nonliteral_loopback) :-
+    host_schema(Schema),
+    catch(zara_runtime_set_host_callback("test-secret-123456",
+                                         "http://localhost:1234/zara-host-tool/v1/read",
+                                         7, [Schema]),
+          Error, true),
+    assertion(Error == zara_runtime_fault(invalid_host_callback_endpoint)).
 
 test(host_token_rejects_whitespace) :-
     host_schema(Schema),
