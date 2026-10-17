@@ -171,6 +171,11 @@ write_host_wire_schema(_{name:"host_write", effect:"write",
                                   properties:_{seen:_{type:"integer"}},
                                   required:["seen"]}}).
 
+test(callback_wire_schema_is_ground_with_anonymous_dict_tags) :-
+    write_host_wire_schema(Wire),
+    rlm_zara_runtime:host_tool_from_wire(Wire, Schema),
+    assertion(ground(Schema)).
+
 test(authenticated_host_config_requires_effect_store_for_write) :-
     write_host_wire_schema(Wire),
     setup_call_cleanup(
