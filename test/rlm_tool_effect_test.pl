@@ -35,6 +35,79 @@ setup_write_registry(Registry) :-
     tool_register(Registry, Schema,
                   tool_effect_test_support:counting_write_tool, ok(_)).
 
+setup_uncertain_write_registry(Registry) :-
+    tool_registry_create(Registry),
+    write_schema(Schema),
+    tool_register(Registry, Schema,
+                  tool_effect_handler(rlm_tool:identity_preflight,
+                                      plunit_rlm_tool_effect:uncertain_write),
+                  ok(_)).
+
+uncertain_write(Attempt, Request, indeterminate(reply_lost)) :-
+    assertion(Attempt.attempt_id \== ''),
+    tool_effect_test_support:counting_write_tool(Request.args, _).
+
+observed_write(Attempt, Request, observed(Observation)) :-
+    assertion(Attempt.attempt_id \== ''),
+    tool_effect_test_support:counting_write_tool(Request.args, Value),
+    Observation = observation{status:succeeded, value:Value,
+                              usage:usage{units:1, output_bytes:32},
+                              provenance:rlm_tool}.
+
+setup_observed_write_registry(Registry) :-
+    tool_registry_create(Registry),
+    write_schema(Schema),
+    tool_register(Registry, Schema,
+                  tool_effect_handler(rlm_tool:identity_preflight,
+                                      plunit_rlm_tool_effect:observed_write),
+                  ok(_)).
+
+test(uncertain_effect_callback_is_not_resubmitted) :-
+    with_effect_store(
+        setup_call_cleanup(
+            ( dangerous_context(Context),
+              setup_uncertain_write_registry(Registry) ),
+            ( invoke_write(Registry, Context, 123, error(First), _),
+              assertion(First.kind == effect_indeterminate),
+              invoke_write(Registry, Context, 123, error(Second), _),
+              assertion(Second.kind == effect_reconciliation_required),
+              tool_effect_test_support:tool_mutation_count(Count),
+              assertion(Count =:= 1) ),
+            ( cleanup_context(Context),
+              tool_registry_destroy(Registry) ))).
+
+test(effect_callback_approval_resumes_exact_attempt_once) :-
+    with_effect_store(
+        setup_call_cleanup(
+            ( Context = session(tool_effect_callback_approval),
+              setup_observed_write_registry(Registry) ),
+            ( invoke_write(Registry, Context, 124,
+                           approval_required(Pending), _),
+              tool_effect_test_support:tool_mutation_count(Before),
+              assertion(Before =:= 0),
+              rlm_pending_resolution_async(Pending.id, Future),
+              rlm_approve(Pending.id, ok(_)),
+              rlm_future_await(Future, 2.0, Resolution),
+              assertion(Resolution.outcome = ok(_)),
+              tool_effect_test_support:tool_mutation_count(After),
+              assertion(After =:= 1),
+              rlm_approve(Pending.id, error(Stale)),
+              assertion(Stale.kind == approval_not_pending),
+              rlm_future_destroy(Future) ),
+            ( cleanup_context(Context),
+              tool_registry_destroy(Registry) ))).
+
+test(effect_handler_rejected_for_read_schema) :-
+    setup_call_cleanup(
+        tool_registry_create(Registry),
+        ( fresh_read_schema(Schema),
+          tool_register(Registry, Schema,
+                        tool_effect_handler(rlm_tool:identity_preflight,
+                                            plunit_rlm_tool_effect:observed_write),
+                        error(Error)),
+          assertion(Error.phase == register) ),
+        tool_registry_destroy(Registry)).
+
 setup_gated_write_registry(Registry) :-
     tool_registry_create(Registry),
     write_schema(Schema),

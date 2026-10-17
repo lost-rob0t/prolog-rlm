@@ -31,6 +31,19 @@ The capability vocabulary also reserves explicit terms for context, model, graph
 
 Discovery returns normalized schemas only. Trusted handler closures are never returned through discovery.
 
+An effectful host adapter may register `tool_effect_handler(Preflight, Submit)`.
+`Preflight(+Args,-NormalizedArgs,-Details)` remains pure. After approval and
+durable dispatch, `Submit(+Attempt,+NormalizedRequest,-Outcome)` receives the
+same attempt and request held by `rlm_effect_executor`. Its outcome is
+`observed(Observation)`, `in_progress(Detail)`, or `indeterminate(Reason)`.
+An exception or timeout after dispatch is indeterminate. The adapter must use
+`Attempt.idempotency_key` when the remote operation supports idempotency and
+must not treat a missing HTTP response as a failed write. This binding is
+accepted only for schemas whose effect is not `read`; ordinary read handlers
+keep the direct fresh-read path. The callable entrypoints participate in the
+trusted executable identity, while normalized preflight details participate
+in the attempt fingerprint.
+
 A canonical schema contains:
 
 ```prolog

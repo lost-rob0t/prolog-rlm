@@ -1,10 +1,15 @@
 :- initialization(main, main).
 
 :- use_module('../prolog/rlm_zara_runtime').
+:- use_module('../prolog/rlm_effect').
 
 main(Argv) :-
     (   parse_args(Argv, 18765, [], Port, Profiles)
     ->  rlm_zara_runtime:zara_runtime_set_profiles(Profiles),
+        ( getenv('ZARA_RUNTIME_EFFECT_STORE', Store)
+        -> rlm_effect:rlm_effect_store_open(Store)
+        ;  true
+        ),
         ( getenv('ZARA_RUNTIME_HOST_TOKEN', HostToken)
         -> rlm_zara_runtime:zara_runtime_set_bootstrap_token(HostToken)
         ;  true

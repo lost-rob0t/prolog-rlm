@@ -4,9 +4,13 @@
             zara_runtime_health/1,
             zara_runtime_execute/2,
             zara_runtime_cancel/2,
+            zara_runtime_pending/3,
+            zara_runtime_approval/5,
+            zara_runtime_approval_status/4,
             zara_runtime_set_profiles/1,
             zara_runtime_set_host_tools/2,
             zara_runtime_set_host_callback/4,
+            zara_runtime_set_host_callback/5,
             zara_runtime_set_bootstrap_token/1,
             zara_runtime_server_start/1,
             zara_runtime_server_stop/0
@@ -34,6 +38,9 @@ surface is implemented and tested.
 :- use_module(library(uuid)).
 :- use_module(rlm).
 :- use_module(rlm_tool, []).
+:- use_module(rlm_effect, []).
+:- use_module(rlm_authority, []).
+:- use_module(rlm_async, []).
 :- use_module(rlm_chain,
               [ openrouter_provider/2,
                 openai_compatible_provider/4,
@@ -45,8 +52,9 @@ surface is implemented and tested.
 :- dynamic zara_runtime_profile/1.
 :- dynamic zara_host_registry/1.
 :- dynamic zara_host_token/1.
-:- dynamic zara_host_callback/4.
+:- dynamic zara_host_callback/5.
 :- dynamic zara_bootstrap_token/1.
+:- dynamic zara_retained_registry/3.
 
 :- http_handler(root('zara-runtime/v1/discover'),
                 zara_discover_handler,
@@ -62,6 +70,15 @@ surface is implemented and tested.
                 [method(post)]).
 :- http_handler(root('zara-runtime/v1/host-config'),
                 zara_host_config_handler,
+                [method(post)]).
+:- http_handler(root('zara-runtime/v1/host-pending'),
+                zara_host_pending_handler,
+                [method(post)]).
+:- http_handler(root('zara-runtime/v1/host-approval'),
+                zara_host_approval_handler,
+                [method(post)]).
+:- http_handler(root('zara-runtime/v1/host-approval-status'),
+                zara_host_approval_status_handler,
                 [method(post)]).
 
 zara_runtime_protocol("ZARA-RUNTIME/1").
@@ -92,7 +109,7 @@ zara_runtime_descriptor(Descriptor) :-
         supports_host_tools:HostTools,
         provenance:"prolog-rlm:local"
     },
-    ( (zara_host_registry(_) ; zara_host_callback(_, _, _, _))
+    ( (zara_host_registry(_) ; zara_host_callback(_, _, _, _, _))
     -> HostTools = true
     ;  HostTools = false
     ).
@@ -139,7 +156,7 @@ zara_runtime_execute_(Request, Reply) :-
                      ToolCapabilities,
                      Token,
                      Reply),
-              release_host_registry(ToolRegistry)) ),
+              release_host_registry(RequestId, ToolRegistry)) ),
         unregister_request(RequestId, Token)).
 
 zara_runtime_set_host_tools("", []) :-
@@ -162,8 +179,14 @@ zara_runtime_set_host_tools(Token0, Specs) :-
           ( rlm_tool:tool_registry_destroy(Registry), throw(Error) )).
 
 zara_runtime_set_host_callback(Token0, Endpoint0, Generation, Schemas) :-
+    zara_runtime_set_host_callback(Token0, Endpoint0, none,
+                                   Generation, Schemas).
+
+zara_runtime_set_host_callback(Token0, Endpoint0, EffectEndpoint0,
+                               Generation, Schemas) :-
     require_host_token(Token0, Token),
     require_callback_endpoint(Endpoint0, Endpoint),
+    require_effect_endpoint(EffectEndpoint0, EffectEndpoint),
     ( integer(Generation), Generation >= 0,
       is_list(Schemas), Schemas \== [],
       length(Schemas, Count), Count =< 16
@@ -171,9 +194,10 @@ zara_runtime_set_host_callback(Token0, Endpoint0, Generation, Schemas) :-
     ;  throw(zara_runtime_fault(invalid_host_callback))
     ),
     validate_callback_schemas(Schemas),
+    require_effect_store(Schemas, EffectEndpoint),
     with_mutex(zara_runtime_host_tools,
                ( replace_host_registry(none, none),
-                 assertz(zara_host_callback(Token, Endpoint,
+                 assertz(zara_host_callback(Token, Endpoint, EffectEndpoint,
                                             Generation, Schemas)),
                  assertz(zara_host_token(Token))
                )).
@@ -189,12 +213,22 @@ zara_runtime_set_bootstrap_token(Token0) :-
                )).
 
 validate_callback_schemas(Schemas) :-
-    maplist(require_read_schema, Schemas),
     rlm_tool:tool_registry_create(Registry),
     setup_call_cleanup(
         true,
         maplist(validate_callback_schema(Registry), Schemas),
         rlm_tool:tool_registry_destroy(Registry)).
+
+require_effect_store(Schemas, EffectEndpoint) :-
+    ( member(Schema, Schemas), Schema.effect \== read
+    -> ( EffectEndpoint == none
+       -> throw(zara_runtime_fault(invalid_host_effect_endpoint))
+       ;  rlm_effect:rlm_effect_store_attached(_)
+       -> true
+       ;  throw(zara_runtime_fault(effect_store_required))
+       )
+    ; true
+    ).
 
 validate_callback_schema(Registry, Schema) :-
     rlm_tool:tool_register(Registry, Schema,
@@ -232,14 +266,21 @@ require_callback_endpoint(Endpoint0, Endpoint) :-
 require_callback_endpoint(_, _) :-
     throw(zara_runtime_fault(invalid_host_callback_endpoint)).
 
-require_read_schema(Schema) :-
-    is_dict(Schema),
-    get_dict(effect, Schema, read),
-    get_dict(name, Schema, Name),
-    atom(Name),
+require_effect_endpoint(none, none) :- !.
+require_effect_endpoint(Endpoint0, Endpoint) :-
+    text_string(Endpoint0, Endpoint),
+    uri_components(Endpoint,
+                   uri_components(http, Authority,
+                                  '/zara-host-tool/v1/effect', Search, Fragment)),
+    var(Search), var(Fragment),
+    uri_authority_components(Authority,
+                             uri_authority(User, Password,
+                                           '127.0.0.1', Port)),
+    var(User), var(Password),
+    integer(Port), Port >= 1, Port =< 65535,
     !.
-require_read_schema(_) :-
-    throw(zara_runtime_fault(invalid_host_callback_schema)).
+require_effect_endpoint(_, _) :-
+    throw(zara_runtime_fault(invalid_host_effect_endpoint)).
 
 host_token_code(Code) :-
     ( between(0'a, 0'z, Code)
@@ -268,12 +309,16 @@ replace_host_registry(Registry, Token) :-
                -> throw(zara_runtime_fault(host_tools_busy))
                ;  true
                )),
+    ( zara_retained_registry(_, _, _)
+    -> throw(zara_runtime_fault(host_tools_busy))
+    ;  true
+    ),
     ( retract(zara_host_registry(Old))
     -> rlm_tool:tool_registry_destroy(Old)
     ;  true
     ),
     retractall(zara_host_token(_)),
-    retractall(zara_host_callback(_, _, _, _)),
+    retractall(zara_host_callback(_, _, _, _, _)),
     ( Registry == none
     -> true
     ;  assertz(zara_host_registry(Registry)),
@@ -284,6 +329,14 @@ request_host_tools(Request, Registry, Capabilities) :-
     request_host_tools("direct", Request, Registry, Capabilities).
 
 request_host_tools(RequestId, Request, Registry, Capabilities) :-
+    with_mutex(zara_runtime_host_tools,
+               request_host_tools_locked(RequestId, Request,
+                                         Registry, Capabilities)),
+    !.
+request_host_tools(_, _, _, _) :-
+    throw(zara_runtime_fault(invalid_host_tools)).
+
+request_host_tools_locked(RequestId, Request, Registry, Capabilities) :-
     ( get_dict(host_tools, Request, Requested)
     -> true
     ;  Requested = []
@@ -292,9 +345,10 @@ request_host_tools(RequestId, Request, Registry, Capabilities) :-
     -> true
     ;  throw(zara_runtime_fault(invalid_host_tools))
     ),
-    ( zara_host_callback(Token, Endpoint, Generation, Schemas)
+    ( zara_host_callback(Token, Endpoint, EffectEndpoint,
+                         Generation, Schemas)
     -> callback_registry(RequestId, Requested, Schemas,
-                         Token, Endpoint, Generation,
+                         Token, Endpoint, EffectEndpoint, Generation,
                          Registry, Capabilities)
     ;  ( zara_host_registry(Registry)
        -> rlm_tool:tool_discover(Registry, Schemas)
@@ -305,8 +359,6 @@ request_host_tools(RequestId, Request, Registry, Capabilities) :-
        length(Capabilities, Count)
     ),
     !.
-request_host_tools(_, _, _, _) :-
-    throw(zara_runtime_fault(invalid_host_tools)).
 
 granted_host_tool(Schemas, Name0, tool(Name)) :-
     normalize_atom(host_tool, Name0, Name),
@@ -316,9 +368,10 @@ granted_host_tool(Schemas, Name0, tool(Name)) :-
 granted_host_tool(_, _, _) :-
     throw(zara_runtime_fault(unknown_host_tool)).
 
-callback_registry(_, [], _, _, _, _, none, []) :- !.
+callback_registry(_, [], _, _, _, _, _, none, []) :- !.
 callback_registry(RequestId, Requested, Schemas,
-                  Token, Endpoint, Generation, Registry, Capabilities) :-
+                  Token, Endpoint, EffectEndpoint, Generation,
+                  Registry, Capabilities) :-
     maplist(callback_grant(Schemas), Requested, Names),
     sort(Names, UniqueNames),
     length(UniqueNames, Count),
@@ -326,14 +379,15 @@ callback_registry(RequestId, Requested, Schemas,
     !,
     rlm_tool:tool_registry_create(Registry),
     catch(( maplist(register_callback_tool(Registry, RequestId,
-                                           Token, Endpoint, Generation,
+                                           Token, Endpoint, EffectEndpoint,
+                                           Generation,
                                            Schemas),
                     UniqueNames),
             maplist(wrap_tool_capability, UniqueNames, Capabilities)
           ),
           Error,
           ( rlm_tool:tool_registry_destroy(Registry), throw(Error) )).
-callback_registry(_, _, _, _, _, _, _, _) :-
+callback_registry(_, _, _, _, _, _, _, _, _) :-
     throw(zara_runtime_fault(invalid_host_tools)).
 
 callback_grant(Schemas, Name0, Name) :-
@@ -344,8 +398,22 @@ callback_grant(Schemas, Name0, Name) :-
 callback_grant(_, _, _) :-
     throw(zara_runtime_fault(unknown_host_tool)).
 
+register_callback_tool(Registry, RequestId, Token, _Endpoint,
+                       EffectEndpoint, Generation, Schemas, Name) :-
+    member(Schema, Schemas),
+    Schema.name == Name,
+    Schema.effect \== read,
+    !,
+    EffectEndpoint \== none,
+    rlm_tool:tool_register(
+        Registry, Schema,
+        tool_effect_handler(
+            rlm_zara_runtime:callback_effect_preflight(RequestId, Generation),
+            rlm_zara_runtime:callback_effect(EffectEndpoint, Token,
+                                             Generation, RequestId, Schema)),
+        ok(_)).
 register_callback_tool(Registry, RequestId, Token, Endpoint,
-                       Generation, Schemas, Name) :-
+                       _EffectEndpoint, Generation, Schemas, Name) :-
     member(Schema, Schemas),
     Schema.name == Name,
     rlm_tool:tool_register(
@@ -358,10 +426,186 @@ wrap_tool_capability(Name, tool(Name)).
 
 release_host_registry(none) :- !.
 release_host_registry(Registry) :-
-    zara_host_callback(_, _, _, _),
+    zara_host_callback(_, _, _, _, _),
     !,
     rlm_tool:tool_registry_destroy(Registry).
 release_host_registry(_).
+
+release_host_registry(_, none) :- !.
+release_host_registry(RequestId, Registry) :-
+    zara_host_callback(_, _, _, Generation, _),
+    host_authority_context(RequestId, Generation, Context),
+    rlm_authority:rlm_pending_approvals(Context, Approvals),
+    Approvals \== [],
+    !,
+    assertz(zara_retained_registry(RequestId, Generation, Registry)).
+release_host_registry(_, Registry) :-
+    release_host_registry(Registry).
+
+host_authority_context(RequestId, Generation,
+                       session(zara_host(RequestId, Generation))).
+
+zara_runtime_pending(RequestId, Generation, Reply) :-
+    ( zara_retained_registry(RequestId, Generation, _)
+    -> host_authority_context(RequestId, Generation, Context),
+       rlm_authority:rlm_pending_approvals(Context, Native),
+       maplist(project_host_approval, Native, Approvals),
+       Reply = _{protocol:"ZARA-RUNTIME/1",request_id:RequestId,
+                 generation:Generation,status:"approval_required",
+                 approvals:Approvals}
+    ; Reply = _{protocol:"ZARA-RUNTIME/1",request_id:RequestId,
+                generation:Generation,status:"not_found"}
+    ).
+
+project_host_approval(Native, Public) :-
+    get_dict(id, Native, Id),
+    get_dict(name, Native, Name),
+    get_dict(effect, Native, Effect),
+    get_dict(fingerprint, Native, Fingerprint),
+    get_dict(state, Native, State),
+    get_dict(operation, Native, Operation),
+    get_dict(args, Operation, Args),
+    get_dict(effect_identity, Operation, EffectIdentity),
+    get_dict(attempt_id, EffectIdentity, AttemptId),
+    get_dict(fingerprint, EffectIdentity, EffectFingerprint),
+    rlm_effect:rlm_effect_idempotency_key(AttemptId, IdempotencyKey),
+    Public = _{id:Id,name:Name,effect:Effect,
+               fingerprint:Fingerprint,state:State,args:Args,
+               attempt_id:AttemptId,
+               effect_fingerprint:EffectFingerprint,
+               idempotency_key:IdempotencyKey}.
+
+zara_runtime_approval(RequestId, Generation, ApprovalId,
+                      Decision, Reply) :-
+    ( zara_retained_registry(RequestId, Generation, _)
+    -> host_authority_context(RequestId, Generation, Context),
+       ( rlm_authority:rlm_pending_approval(Context, ApprovalId, Approval),
+         Approval.state == pending
+       -> apply_host_approval(Decision, ApprovalId, Outcome),
+          ( Outcome = ok(_)
+          -> Status = "accepted"
+          ;  Status = "failed"
+          )
+       ;  Status = "not_found"
+       )
+    ;  Status = "not_found"
+    ),
+    Reply = _{protocol:"ZARA-RUNTIME/1",request_id:RequestId,
+              generation:Generation,approval_id:ApprovalId,status:Status}.
+
+apply_host_approval("approve", ApprovalId, Outcome) :-
+    rlm_authority:rlm_approve(ApprovalId, Outcome).
+apply_host_approval("deny", ApprovalId, Outcome) :-
+    rlm_authority:rlm_deny(ApprovalId, zara_host_denied, Outcome).
+
+zara_runtime_approval_status(RequestId, Generation, ApprovalId, Reply) :-
+    ( zara_retained_registry(RequestId, Generation, Registry),
+      host_authority_context(RequestId, Generation, Context),
+      rlm_authority:rlm_pending_approval(Context, ApprovalId, _),
+      rlm_authority:rlm_pending_resolution_async(ApprovalId, Future)
+    -> rlm_async:rlm_future_status(Future, FutureStatus),
+       project_host_resolution(FutureStatus, Status, Value),
+       Reply = _{protocol:"ZARA-RUNTIME/1",request_id:RequestId,
+                 generation:Generation,approval_id:ApprovalId,
+                 status:Status,value:Value},
+       maybe_release_resolved_host_registry(RequestId, Generation,
+                                            Registry, Context, Status)
+    ;  Reply = _{protocol:"ZARA-RUNTIME/1",request_id:RequestId,
+                 generation:Generation,approval_id:ApprovalId,
+                 status:"not_found"}
+    ).
+
+project_host_resolution(FutureStatus, "completed", Value) :-
+    FutureStatus.state == completed,
+    get_dict(outcome, FutureStatus, Resolution),
+    get_dict(outcome, Resolution, ok(Value)),
+    !.
+project_host_resolution(FutureStatus, "indeterminate", _{}) :-
+    FutureStatus.state == completed,
+    get_dict(outcome, FutureStatus, Resolution),
+    get_dict(status, Resolution, indeterminate),
+    !.
+project_host_resolution(FutureStatus, "failed", _{}) :-
+    FutureStatus.state == completed,
+    !.
+project_host_resolution(_, "running", _{}).
+
+maybe_release_resolved_host_registry(RequestId, Generation, Registry,
+                                     Context, Status) :-
+    memberchk(Status, ["completed","failed","indeterminate"]),
+    rlm_authority:rlm_pending_approvals(Context, Approvals),
+    \+ (member(Approval, Approvals),
+        memberchk(Approval.state, [pending,approved,scheduled,executing])),
+    !,
+    retractall(zara_retained_registry(RequestId, Generation, Registry)),
+    rlm_tool:tool_registry_destroy(Registry),
+    rlm_authority:rlm_authority_clear(Context).
+maybe_release_resolved_host_registry(_, _, _, _, _).
+
+callback_effect_preflight(RequestId, Generation, Args, Args,
+                          callback_identity{request_id:RequestId,
+                                            generation:Generation}).
+
+callback_effect(Endpoint, Token, Generation, RequestId, Schema,
+                Attempt, Request, Outcome) :-
+    atom_string(Attempt.attempt_id, AttemptId),
+    atom_string(Attempt.fingerprint, Fingerprint),
+    atom_string(Attempt.idempotency_key, IdempotencyKey),
+    atom_string(Schema.name, Name),
+    Body = _{protocol:"ZARA-HOST-EFFECT/1",
+             request_id:RequestId,
+             tool_call_id:AttemptId,
+             generation:Generation,
+             attempt_id:AttemptId,
+             idempotency_key:IdempotencyKey,
+             effect_fingerprint:Fingerprint,
+             name:Name,
+             args:Request.args},
+    atom_json_dict(BodyAtom, Body, []),
+    format(string(Authorization), 'Bearer ~s', [Token]),
+    setup_call_cleanup(
+        http_open(Endpoint, Stream,
+                  [method(post), post(atom(BodyAtom)),
+                   request_header('Content-Type'='application/json'),
+                   request_header('Authorization'=Authorization),
+                   bypass_proxy(true), redirect(false), timeout(2)]),
+        ( read_string(Stream, 65537, ResponseText),
+          string_length(ResponseText, ResponseLength),
+          ResponseLength =< 65536,
+          atom_string(ResponseAtom, ResponseText),
+          atom_json_dict(ResponseAtom, Response, [])
+        ),
+        close(Stream)),
+    Response.protocol == "ZARA-HOST-EFFECT/1",
+    Response.request_id == RequestId,
+    Response.tool_call_id == AttemptId,
+    Response.generation == Generation,
+    Response.attempt_id == AttemptId,
+    Response.effect_fingerprint == Fingerprint,
+    callback_effect_response(Response, Schema, Attempt, Outcome).
+
+callback_effect_response(Response, Schema, Attempt,
+                         observed(Observation)) :-
+    Response.status == "observed",
+    get_dict(value, Response, Value),
+    get_dict(metadata, Attempt, Metadata),
+    get_dict(limits, Metadata, Limits),
+    rlm_tool:invoke_after_call(ok(Value), Schema, Limits,
+                               ok(Value), _, Bytes),
+    !,
+    Observation = observation{status:succeeded, value:Value,
+                              usage:usage{units:1,output_bytes:Bytes},
+                              provenance:zara_host_effect,
+                              tool:Schema.name}.
+callback_effect_response(Response, _, _,
+                         indeterminate(host_in_progress_without_reconcile)) :-
+    Response.status == "in_progress",
+    !.
+callback_effect_response(Response, _, _, indeterminate(host_reported)) :-
+    Response.status == "indeterminate",
+    !.
+callback_effect_response(_, _, _,
+                         indeterminate(invalid_host_effect_response)).
 
 callback_read(Endpoint, Token, Generation, RequestId, Name, Args, Value) :-
     uuid(CallIdAtom, [version(4)]),
@@ -561,12 +805,14 @@ zara_host_config_handler(HttpRequest) :-
             bounded_config_body(HttpRequest, Body),
             get_dict(protocol, Body, "ZARA-RUNTIME/1"),
             get_dict(endpoint, Body, Endpoint),
+            ( get_dict(effect_endpoint, Body, EffectEndpoint)
+            -> true ; EffectEndpoint = none ),
             get_dict(generation, Body, Generation),
             get_dict(tools, Body, WireTools),
             is_list(WireTools),
             maplist(host_tool_from_wire, WireTools, Schemas),
             zara_runtime_set_host_callback(Token, Endpoint,
-                                           Generation, Schemas),
+                                           EffectEndpoint, Generation, Schemas),
             Reply = _{protocol:"ZARA-RUNTIME/1", status:"configured",
                       generation:Generation}
           ),
@@ -576,6 +822,59 @@ zara_host_config_handler(HttpRequest) :-
                       error:_{kind:Kind, message:Message}}
           )),
     reply_json_dict(Reply).
+
+zara_host_pending_handler(HttpRequest) :-
+    host_approval_http(HttpRequest, pending, Reply),
+    reply_json_dict(Reply).
+
+zara_host_approval_handler(HttpRequest) :-
+    host_approval_http(HttpRequest, approve, Reply),
+    reply_json_dict(Reply).
+
+zara_host_approval_status_handler(HttpRequest) :-
+    host_approval_http(HttpRequest, status, Reply),
+    reply_json_dict(Reply).
+
+host_approval_http(HttpRequest, Action, Reply) :-
+    catch(( ( require_effect_authorization(HttpRequest),
+            bounded_config_body(HttpRequest, Body),
+            get_dict(protocol, Body, "ZARA-RUNTIME/1"),
+            get_dict(request_id, Body, RequestId0),
+            normalize_identifier(request_id, RequestId0, RequestId),
+            get_dict(generation, Body, Generation),
+            integer(Generation), Generation >= 0,
+            host_approval_action(Action, Body, RequestId,
+                                 Generation, Reply)
+          ) -> true
+          ; throw(zara_runtime_fault(invalid_host_approval))
+          ),
+          Error,
+          ( error_kind(Error, Kind, Message),
+            Reply = _{protocol:"ZARA-RUNTIME/1",status:"failed",
+                      error:_{kind:Kind,message:Message}} )).
+
+require_effect_authorization(HttpRequest) :-
+    zara_host_callback(_, _, EffectEndpoint, _, _),
+    EffectEndpoint \== none,
+    require_host_authorization(HttpRequest),
+    !.
+require_effect_authorization(_) :-
+    throw(zara_runtime_fault(unauthorized)).
+
+host_approval_action(pending, _, RequestId, Generation, Reply) :-
+    zara_runtime_pending(RequestId, Generation, Reply).
+host_approval_action(approve, Body, RequestId, Generation, Reply) :-
+    get_dict(approval_id, Body, ApprovalId0),
+    normalize_atom(approval_id, ApprovalId0, ApprovalId),
+    get_dict(decision, Body, Decision),
+    memberchk(Decision, ["approve","deny"]),
+    zara_runtime_approval(RequestId, Generation,
+                          ApprovalId, Decision, Reply).
+host_approval_action(status, Body, RequestId, Generation, Reply) :-
+    get_dict(approval_id, Body, ApprovalId0),
+    normalize_atom(approval_id, ApprovalId0, ApprovalId),
+    zara_runtime_approval_status(RequestId, Generation,
+                                 ApprovalId, Reply).
 
 require_bootstrap_authorization(HttpRequest, Token) :-
     zara_bootstrap_token(Token),
@@ -598,8 +897,12 @@ bounded_config_body(_, _) :-
 host_tool_from_wire(Wire, Schema) :-
     is_dict(Wire),
     \+ get_dict(handler, Wire, _),
-    \+ get_dict(effect, Wire, _),
     \+ get_dict(capability, Wire, _),
+    ( get_dict(effect, Wire, EffectText)
+    -> memberchk(EffectText, ["write","process"]),
+       atom_string(Effect, EffectText)
+    ;  Effect = read
+    ),
     get_dict(name, Wire, NameText),
     normalize_atom(host_tool, NameText, Name),
     atom_length(Name, NameLength),
@@ -615,7 +918,7 @@ host_tool_from_wire(Wire, Schema) :-
     ),
     Schema = tool_schema{name:Name,
                          description:Description,
-                         capability:tool(Name), effect:read,
+                         capability:tool(Name), effect:Effect,
                          arguments:Arguments, result:Result},
     !.
 host_tool_from_wire(_, _) :-
@@ -634,17 +937,19 @@ schema_from_wire(Wire, Schema) :-
     ),
     ( get_dict(properties, WithRequired, PropertiesWire)
     -> is_dict(PropertiesWire),
-       dict_pairs(PropertiesWire, Tag, PropertyPairs),
+       dict_pairs(PropertiesWire, _, PropertyPairs),
        maplist(schema_property_from_wire, PropertyPairs, ConvertedPairs),
-       dict_pairs(Properties, Tag, ConvertedPairs),
+       dict_pairs(Properties, json, ConvertedPairs),
        put_dict(properties, WithRequired, Properties, WithProperties)
     ;  WithProperties = WithRequired
     ),
     ( get_dict(items, WithProperties, ItemsWire)
     -> schema_from_wire(ItemsWire, Items),
-       put_dict(items, WithProperties, Items, Schema)
-    ;  Schema = WithProperties
+       put_dict(items, WithProperties, Items, Schema0)
+    ;  Schema0 = WithProperties
     ),
+    dict_pairs(Schema0, _, SchemaPairs),
+    dict_pairs(Schema, json, SchemaPairs),
     !.
 schema_from_wire(_, _) :-
     throw(zara_runtime_fault(invalid_host_callback_schema)).
@@ -724,8 +1029,26 @@ runtime_options(RequestId,
                 ],
     ( ToolRegistry == none
     -> Options = Base
-    ;  Options = [tool_registry(ToolRegistry)|Base]
+    ;  ( zara_host_callback(_, _, _, Generation, _)
+       -> host_authority_context(RequestId, Generation, Context),
+          Options = [tool_registry(ToolRegistry),
+                     authority_context(Context)|Base]
+       ;  Options = [tool_registry(ToolRegistry)|Base]
+       )
     ).
+
+project_outcome(RequestId, _Mode, _Outcome, Reply) :-
+    zara_host_callback(_, _, EffectEndpoint, Generation, _),
+    EffectEndpoint \== none,
+    host_authority_context(RequestId, Generation, Context),
+    rlm_authority:rlm_pending_approvals(Context, Native),
+    include(unresolved_host_approval, Native, Unresolved),
+    Unresolved \== [],
+    maplist(project_host_approval, Unresolved, Approvals),
+    !,
+    Reply = _{protocol:"ZARA-RUNTIME/1",runtime_id:"prolog-rlm",
+              request_id:RequestId,generation:Generation,
+              status:"approval_required",approvals:Approvals}.
 
 project_outcome(RequestId, Mode, ok(Result), Reply) :-
     !,
@@ -756,6 +1079,9 @@ project_outcome(RequestId, _Mode, _Other, Reply) :-
         error:_{kind:"runtime_error",
                 message:"Prolog-RLM returned an invalid outcome"}
     }.
+
+unresolved_host_approval(Approval) :-
+    memberchk(Approval.state, [pending,approved,scheduled,executing]).
 
 outcome_text(direct, Result, Text) :-
     is_dict(Result),
@@ -1059,6 +1385,9 @@ error_kind(zara_runtime_fault(literal_credentials_forbidden),
 error_kind(zara_runtime_fault(unauthorized),
            "unauthorized",
            "host authorization is required") :- !.
+error_kind(zara_runtime_fault(effect_store_required),
+           "effect_store_required",
+           "durable effect store is required for host writes") :- !.
 error_kind(zara_runtime_fault(unsupported_mode(_)),
            "invalid_request",
            "runtime mode is unsupported") :- !.
