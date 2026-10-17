@@ -1,6 +1,25 @@
 :- begin_tests(rlm_zara_runtime).
 
 :- use_module('../prolog/rlm_zara_runtime').
+:- use_module(library(http/http_open)).
+:- use_module(library(http/json)).
+
+test(server_binds_ipv4_loopback_and_serves_discovery) :-
+    setup_call_cleanup(
+        zara_runtime_server_start(Port),
+        ( integer(Port),
+          Port > 0,
+          format(string(URL), 'http://127.0.0.1:~d/zara-runtime/v1/discover', [Port]),
+          setup_call_cleanup(
+              http_open(URL, Stream, []),
+              json_read_dict(Stream, Discovery),
+              close(Stream)
+          ),
+          Discovery.runtimes = [Descriptor],
+          assertion(Descriptor.id == "prolog-rlm")
+        ),
+        zara_runtime_server_stop
+    ).
 
 test(descriptor_is_backend_neutral_machine_contract) :-
     zara_runtime_descriptor(Descriptor),

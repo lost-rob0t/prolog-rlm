@@ -207,7 +207,7 @@ zara_runtime_server_start(Port) :-
 start_server_locked(Port) :-
     (   zara_server_port(Current)
     ->  Port = Current
-    ;   Address = localhost:Port,
+    ;   Address = '127.0.0.1':Port,
         http_server(http_dispatch,
                     [ port(Address),
                       workers(4),
