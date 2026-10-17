@@ -189,6 +189,7 @@ tool_register_(Registry, Schema0, Handler0, Outcome) :-
     registry_id(Registry, Id),
     normalize_tool_schema(Schema0, Schema),
     normalize_tool_handler(Handler0, Binding),
+    validate_tool_binding(Schema, Binding),
     Name = Schema.name,
     with_mutex(rlm_tool_registry,
                register_unique(Id, Name, Schema, Binding, Outcome)).
@@ -198,9 +199,21 @@ normalize_tool_handler(tool_handler(Preflight, Handler),
     !,
     require_callable_handler(Preflight),
     require_callable_handler(Handler).
+normalize_tool_handler(tool_effect_handler(Preflight, Submit),
+                       tool_effect_binding(Preflight, Submit)) :-
+    !,
+    require_callable_handler(Preflight),
+    require_callable_handler(Submit).
 normalize_tool_handler(Handler,
                        tool_binding(rlm_tool:identity_preflight, Handler)) :-
     require_callable_handler(Handler).
+
+validate_tool_binding(Schema, tool_effect_binding(_, _)) :-
+    Schema.effect \== read,
+    !.
+validate_tool_binding(Schema, tool_effect_binding(_, _)) :-
+    throw(tool_fault(effect_handler_requires_effectful_schema(Schema.name))).
+validate_tool_binding(_, _).
 
 require_callable_handler(Handler) :-
     callable(Handler),
@@ -591,6 +604,11 @@ invoke_after_capability(ok,
                            ApprovalId).
 
 preflight_tool(tool_binding(Preflight, _), Args, TimeLimit, Outcome) :-
+    preflight_tool_call(Preflight, Args, TimeLimit, Outcome).
+preflight_tool(tool_effect_binding(Preflight, _), Args, TimeLimit, Outcome) :-
+    preflight_tool_call(Preflight, Args, TimeLimit, Outcome).
+
+preflight_tool_call(Preflight, Args, TimeLimit, Outcome) :-
     catch(call_with_time_limit(TimeLimit,
                                call_preflight(Preflight,
                                               Args,
@@ -1192,6 +1210,13 @@ tool_binding_entrypoints(tool_binding(Preflight, Handler),
                          }) :-
     trusted_callable_entrypoint(Preflight, 3, PreflightIdentity),
     trusted_callable_entrypoint(Handler, 2, HandlerIdentity).
+tool_binding_entrypoints(tool_effect_binding(Preflight, Submit),
+                         tool_executor_descriptor{
+                             preflight:PreflightIdentity,
+                             handler:SubmitIdentity
+                         }) :-
+    trusted_callable_entrypoint(Preflight, 3, PreflightIdentity),
+    trusted_callable_entrypoint(Submit, 3, SubmitIdentity).
 
 trusted_callable_entrypoint(Callable, AddedArity,
                             predicate_identity{module:Module,
@@ -1293,6 +1318,17 @@ tool_observation_from_outcome(error(Error), _Status, Bytes, Schema,
    persisted; the registry identity is metadata only and the stable executor
    digest lives in executable semantics. */
 
+rlm_effect_executor:effect_adapter_submit(rlm_tool, Attempt, Request,
+                                          Outcome) :-
+    get_dict(tool, Request, Name),
+    get_dict(metadata, Attempt, Metadata),
+    get_dict(registry, Metadata, RegistryId),
+    tool_registry_entry(RegistryId, Name, _,
+                        tool_effect_binding(_, Submit)),
+    !,
+    get_dict(limits, Metadata, Limits),
+    call_with_time_limit(Limits.time_limit,
+                         call(Submit, Attempt, Request, Outcome)).
 rlm_effect_executor:effect_adapter_submit(rlm_tool, Attempt, Request,
                                           observed(Observation)) :-
     get_dict(tool, Request, Name),
