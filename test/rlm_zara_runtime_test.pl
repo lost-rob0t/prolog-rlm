@@ -24,13 +24,17 @@ host_effect_fixture(Request) :-
                ( ( retract(effect_callback_count(N0)) -> true ; N0 = 0 ),
                  N is N0+1,
                  assertz(effect_callback_count(N)) )),
+    ( Body.args.value =:= 98
+    -> Status = "in_progress"
+    ;  Status = "observed"
+    ),
     reply_json_dict(_{protocol:"ZARA-HOST-EFFECT/1",
                       request_id:Body.request_id,
                       tool_call_id:Body.tool_call_id,
                       generation:Body.generation,
                       attempt_id:Body.attempt_id,
                       effect_fingerprint:Body.effect_fingerprint,
-                      status:"observed", value:_{seen:Body.args.value}}).
+                      status:Status, value:_{seen:Body.args.value}}).
 
 test(effect_callback_requires_approval_and_dispatches_once) :-
     write_host_wire_schema(Wire),
@@ -112,6 +116,28 @@ test(effect_callback_requires_approval_and_dispatches_once) :-
           host_post(ConfigURL, Config, true, Reconfigured),
           assertion(Reconfigured.status == "configured"),
           effect_callback_count(After), assertion(After =:= 1),
+          rlm_zara_runtime:request_host_tools("uncertain-request",
+                    _{host_tools:["host_write"]}, UncertainRegistry,
+                    UncertainCaps),
+          UncertainContext = session(zara_host("uncertain-request", 7)),
+          tool_invoke(UncertainRegistry, UncertainCaps, host_write,
+                      json{value:98},
+                      [authority_context(UncertainContext)],
+                      approval_required(UncertainPending), _),
+          rlm_pending_resolution_async(UncertainPending.id, UncertainFuture),
+          rlm_approve(UncertainPending.id, ok(_)),
+          rlm_future_await(UncertainFuture, 2.0, UncertainResolution),
+          assertion(UncertainResolution.status == indeterminate),
+          tool_invoke(UncertainRegistry, UncertainCaps, host_write,
+                      json{value:98},
+                      [authority_context(UncertainContext)],
+                      error(UncertainReplay), _),
+          assertion(UncertainReplay.kind == effect_reconciliation_required),
+          effect_callback_count(UncertainCount),
+          assertion(UncertainCount =:= 2),
+          rlm_future_destroy(UncertainFuture),
+          rlm_authority_clear(UncertainContext),
+          tool_registry_destroy(UncertainRegistry),
           rlm_future_destroy(Future),
           rlm_authority_clear(Context),
           tool_registry_destroy(Registry) ),

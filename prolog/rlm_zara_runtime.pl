@@ -597,7 +597,8 @@ callback_effect_response(Response, Schema, Attempt,
                               usage:usage{units:1,output_bytes:Bytes},
                               provenance:zara_host_effect,
                               tool:Schema.name}.
-callback_effect_response(Response, _, _, in_progress(host_reported)) :-
+callback_effect_response(Response, _, _,
+                         indeterminate(host_in_progress_without_reconcile)) :-
     Response.status == "in_progress",
     !.
 callback_effect_response(Response, _, _, indeterminate(host_reported)) :-
