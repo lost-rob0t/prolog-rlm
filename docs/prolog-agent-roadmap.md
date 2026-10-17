@@ -32,6 +32,7 @@ Already available in core and the downstream application boundary:
 - the #95 declarative Project/File/Language and Tree-sitter grammar registry, with explicit language evidence, parser selection, versioned grammar identity/provenance, and separate trusted native activation over #94;
 - `prolog_agent_ui_v1`, a renderer-independent application boundary with bounded snapshots, ordered semantic events, explicit correlated commands, capability negotiation, deterministic replay, reconnect semantics, NDJSON framing, a child-process fixture server, and polyglot golden fixtures;
 - on the #176/#216 candidate path, root-planner tool-schema visibility is compiled by the canonical `rlm_prompt_compiler` while trusted executable bindings remain separate for capability, authority, and effect enforcement.
+- the optional Zara sidecar can project trusted in-process registered tools into Prolog-RLM with authenticated per-request capability grants; it does not yet call Zara-hosted plugins.
 
 Still missing for a useful coding agent:
 
@@ -42,6 +43,7 @@ Still missing for a useful coding agent:
 - TaskIR/context/result-acceptance integration around the Frozen Spec substrate from #56 and #68-#71;
 - a headless coding loop that wires project inspection, edits, re-indexing, verification, and repair to those shared runtime concepts;
 - nonblocking approval/diff handling wired from the real coding workflow into the UI facade;
+- a fenced Zara callback/result and approval-resume protocol for Python-hosted tools, including durable effect reconciliation for writes;
 - remaining provider-bound prompt-compiler adoption beyond the #216 root-planner local-tool slice, especially MCP metadata, project instructions, managed-context composition, and projection observability tracked by #176/#183;
 - project instructions/context discovery for coding work;
 - downstream product clients and editor integrations over the stable frontend boundary.

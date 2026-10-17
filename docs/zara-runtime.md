@@ -70,7 +70,7 @@ Provider/model selection is runtime-owned. Zara may pass operator preferences us
 
 **Literal credentials are rejected.** The wire accepts only the name of an environment variable. The sidecar resolves that variable inside its own process.
 
-The response is a stable Zara envelope with normalized assistant text and a JSON-safe encoded Prolog-RLM result/trace payload.
+The response is a stable Zara envelope with normalized assistant text. Raw provider result and trace payloads stay inside the sidecar.
 
 ## Cancel
 
@@ -81,6 +81,37 @@ POST a JSON object containing the same `request_id`. Cancellation maps to the ca
 The adapter starts from `default_completion_budget/1`. A client may narrow limits but may not expand past the runtime defaults through this bridge. Inline context and message text are also size-bounded.
 
 Future opaque Zara context handles and host-plugin calls must remain typed capability requests; they must not grant ambient Python, shell, filesystem, plugin-registry or arbitrary Prolog execution.
+
+## Trusted host tool registration
+
+An embedding Prolog host can call `zara_runtime_set_host_tools(Token, Specs)` before serving requests. Each spec is `host_tool(Schema, Handler)`, where `Schema` is an existing `rlm_tool` schema and `Handler` is a trusted Prolog callable. Registration uses the canonical `rlm_tool` registry and its schema, capability, preflight, and read authority rules. This slice admits **read-effect tools only**; write/process/effectful registration fails until approval-resume and durable callback semantics exist. A model or HTTP client cannot register a handler.
+
+Once registered, discovery reports `supports_host_tools=true`. An authenticated generation request may contain `"host_tools": ["tool_name"]`, limited to 16 distinct names already registered by the host. These names grant only the corresponding `tool(name)` capabilities for that request. The runtime passes the server-owned registry into Prolog-RLM completion and does not grant tools to child completions. An unknown, duplicate, or structured grant fails before model execution; an omitted list grants none. When no registry is installed, host tools are unavailable.
+
+The token is private launch configuration, at least 16 characters, and must not appear in source, logs, or a model prompt. While a registry is installed, HTTP generation and cancellation require `Authorization: Bearer <token>`; discovery and health remain observations. Reconfiguration is denied while a generation is active. The trusted in-process `zara_runtime_execute/2` entrypoint does not use HTTP authentication; only code already executing inside the Prolog process may call it.
+
+This is a **native registered-tool slice**, not a Zara Python plugin callback. The packaged CLI does not yet accept a tool manifest, and no remote callback or approval-resume protocol is implemented. A stock Zara desktop sidecar therefore continues to discover `supports_host_tools=false` and cannot run Zara file/code tools through Prolog-RLM.
+
+### Proposed Zara host callback contract
+
+The next slice should configure the callback endpoint, secret, tool descriptors, and generation from trusted launch state. A model-visible plan may select only a registered name and schema-valid arguments. After Prolog capability, pure preflight, and `rlm_authority` admission, the adapter sends a bounded request to the literal loopback Zara endpoint:
+
+```json
+{
+  "protocol": "ZARA-HOST-TOOL/1",
+  "request_id": "runtime-generated request id",
+  "tool_call_id": "runtime-generated call id",
+  "generation": 7,
+  "name": "file_read",
+  "args": {"path": "src/main.py"},
+  "effect": "read",
+  "fingerprint": "normalized operation fingerprint"
+}
+```
+
+Zara authenticates the sidecar, checks the request/session/generation/principal, resolves the Prolog-configured repository alias, and applies its canonical plugin capability and approval policy. The response echoes `protocol`, `request_id`, `tool_call_id`, `generation`, and `fingerprint`, with exactly one bounded `ok`, `denied`, `approval_required`, or `indeterminate` outcome. Mismatches and stale generations fail closed. The callback has no redirect/proxy path and no executable source fields.
+
+For effectful operations, approval must resume the **same** admitted normalized operation via the existing `rlm_authority` pending continuation and durable effect attempt. A transport failure after dispatch is indeterminate unless Zara can reconcile the effect by idempotency identity. Approval, cancellation, restart, and retry must not resubmit an uncertain write. This callback contract is proposed for the next implementation; the current sidecar does not send these messages.
 
 ## Android deployment
 

@@ -5,6 +5,7 @@
             zara_runtime_execute/2,
             zara_runtime_cancel/2,
             zara_runtime_set_profiles/1,
+            zara_runtime_set_host_tools/2,
             zara_runtime_server_start/1,
             zara_runtime_server_stop/0
           ]).
@@ -26,6 +27,7 @@ surface is implemented and tested.
 :- use_module(library(http/thread_httpd)).
 :- use_module(library(lists)).
 :- use_module(rlm).
+:- use_module(rlm_tool, []).
 :- use_module(rlm_chain,
               [ openrouter_provider/2,
                 openai_compatible_provider/4,
@@ -35,6 +37,8 @@ surface is implemented and tested.
 :- dynamic zara_server_port/1.
 :- dynamic zara_request_token/2.
 :- dynamic zara_runtime_profile/1.
+:- dynamic zara_host_registry/1.
+:- dynamic zara_host_token/1.
 
 :- http_handler(root('zara-runtime/v1/discover'),
                 zara_discover_handler,
@@ -74,9 +78,10 @@ zara_runtime_descriptor(Descriptor) :-
         supports_streaming:false,
         supports_cancel:true,
         supports_context_handles:false,
-        supports_host_tools:false,
+        supports_host_tools:HostTools,
         provenance:"prolog-rlm:local"
-    }.
+    },
+    ( zara_host_registry(_) -> HostTools = true ; HostTools = false ).
 
 zara_runtime_health(Health) :-
     zara_runtime_descriptor(Descriptor),
@@ -104,7 +109,8 @@ zara_runtime_execute_(Request, Reply) :-
     rlm:rlm_cancellation_token(Token),
     setup_call_cleanup(
         register_request(RequestId, Token),
-        execute_mode(Mode,
+        ( request_host_tools(Request, ToolRegistry, ToolCapabilities),
+          execute_mode(Mode,
                      RequestId,
                      Prompt,
                      Context,
@@ -112,9 +118,103 @@ zara_runtime_execute_(Request, Reply) :-
                      Provider,
                      Budget,
                      MaxTokens,
+                     ToolRegistry,
+                     ToolCapabilities,
                      Token,
-                     Reply),
+                     Reply) ),
         unregister_request(RequestId, Token)).
+
+zara_runtime_set_host_tools("", []) :-
+    !,
+    with_mutex(zara_runtime_host_tools,
+               replace_host_registry(none, none)).
+zara_runtime_set_host_tools(Token0, Specs) :-
+    normalize_identifier(host_token, Token0, Token),
+    string_length(Token, Length),
+    ( Length >= 16,
+      string_codes(Token, Codes),
+      maplist(host_token_code, Codes)
+    -> true
+    ;  throw(zara_runtime_fault(invalid_host_token))
+    ),
+    ( is_list(Specs), Specs \== [],
+      length(Specs, Count), Count =< 16
+    -> true
+    ;  throw(zara_runtime_fault(invalid_host_tools))
+    ),
+    rlm_tool:tool_registry_create(Registry),
+    catch(( maplist(register_host_spec(Registry), Specs),
+            with_mutex(zara_runtime_host_tools,
+                       replace_host_registry(Registry, Token))
+          ),
+          Error,
+          ( rlm_tool:tool_registry_destroy(Registry), throw(Error) )).
+
+host_token_code(Code) :-
+    ( between(0'a, 0'z, Code)
+    ; between(0'A, 0'Z, Code)
+    ; between(0'0, 0'9, Code)
+    ),
+    !.
+host_token_code(0'-).
+host_token_code(0'_).
+
+register_host_spec(_, host_tool(Schema, _)) :-
+    is_dict(Schema),
+    get_dict(effect, Schema, Effect),
+    Effect \== read,
+    !,
+    throw(zara_runtime_fault(effectful_host_tool_unsupported)).
+register_host_spec(Registry, host_tool(Schema, Handler)) :-
+    rlm_tool:tool_register(Registry, Schema, Handler, ok(_)),
+    !.
+register_host_spec(_, _) :-
+    throw(zara_runtime_fault(invalid_host_tool_spec)).
+
+replace_host_registry(Registry, Token) :-
+    with_mutex(zara_runtime_requests,
+               ( zara_request_token(_, _)
+               -> throw(zara_runtime_fault(host_tools_busy))
+               ;  true
+               )),
+    ( retract(zara_host_registry(Old))
+    -> rlm_tool:tool_registry_destroy(Old)
+    ;  true
+    ),
+    retractall(zara_host_token(_)),
+    ( Registry == none
+    -> true
+    ;  assertz(zara_host_registry(Registry)),
+       assertz(zara_host_token(Token))
+    ).
+
+request_host_tools(Request, Registry, Capabilities) :-
+    ( get_dict(host_tools, Request, Requested)
+    -> true
+    ;  Requested = []
+    ),
+    ( is_list(Requested), length(Requested, Count), Count =< 16
+    -> true
+    ;  throw(zara_runtime_fault(invalid_host_tools))
+    ),
+    ( zara_host_registry(Registry)
+    -> rlm_tool:tool_discover(Registry, Schemas)
+    ;  Registry = none, Schemas = []
+    ),
+    maplist(granted_host_tool(Schemas), Requested, Capabilities0),
+    sort(Capabilities0, Capabilities),
+    length(Capabilities, Count),
+    !.
+request_host_tools(_, _, _) :-
+    throw(zara_runtime_fault(invalid_host_tools)).
+
+granted_host_tool(Schemas, Name0, tool(Name)) :-
+    normalize_atom(host_tool, Name0, Name),
+    member(Schema, Schemas),
+    Schema.name == Name,
+    !.
+granted_host_tool(_, _, _) :-
+    throw(zara_runtime_fault(unknown_host_tool)).
 
 zara_runtime_set_profiles(Profiles0) :-
     (   is_list(Profiles0),
@@ -239,35 +339,50 @@ zara_health_handler(_Request) :-
     reply_json_dict(Health).
 
 zara_generate_handler(HttpRequest) :-
-    catch(( http_read_json_dict(HttpRequest, Body,
+    catch(( require_host_authorization(HttpRequest),
+            http_read_json_dict(HttpRequest, Body,
                                 [value_string_as(string)]),
             zara_runtime_execute(Body, Reply)
           ),
-          _,
-          Reply = _{
+          Error,
+          ( error_kind(Error, Kind, Message),
+            Reply = _{
               protocol:"ZARA-RUNTIME/1",
               runtime_id:"prolog-rlm",
               status:"failed",
-              error:_{kind:"invalid_request",
-                      message:"request body is invalid"}
-          }),
+              error:_{kind:Kind, message:Message}
+          })),
     reply_json_dict(Reply).
 
 zara_cancel_handler(HttpRequest) :-
-    catch(( http_read_json_dict(HttpRequest, Body,
+    catch(( require_host_authorization(HttpRequest),
+            http_read_json_dict(HttpRequest, Body,
                                 [value_string_as(string)]),
             get_dict(request_id, Body, RequestId),
             zara_runtime_cancel(RequestId, Reply)
           ),
-          _,
-          Reply = _{
+          Error,
+          ( error_kind(Error, Kind, Message),
+            Reply = _{
               protocol:"ZARA-RUNTIME/1",
               runtime_id:"prolog-rlm",
               status:"failed",
-              error:_{kind:"invalid_request",
-                      message:"cancel request is invalid"}
-          }),
+              error:_{kind:Kind, message:Message}
+          })),
     reply_json_dict(Reply).
+
+require_host_authorization(_) :-
+    \+ zara_host_token(_),
+    !.
+require_host_authorization(HttpRequest) :-
+    zara_host_token(Token),
+    format(string(Expected), 'Bearer ~s', [Token]),
+    member(authorization(Header), HttpRequest),
+    text_string(Header, Provided),
+    Provided == Expected,
+    !.
+require_host_authorization(_) :-
+    throw(zara_runtime_fault(unauthorized)).
 
 /* Execution ----------------------------------------------------------- */
 
@@ -279,6 +394,8 @@ execute_mode(Mode,
              Provider,
              Budget,
              MaxTokens,
+             ToolRegistry,
+             ToolCapabilities,
              Token,
              Reply) :-
     runtime_options(RequestId,
@@ -286,6 +403,8 @@ execute_mode(Mode,
                     Provider,
                     Budget,
                     MaxTokens,
+                    ToolRegistry,
+                    ToolCapabilities,
                     Token,
                     Options),
     execute_mode_outcome(Mode, Prompt, Context, Options, Outcome),
@@ -305,20 +424,27 @@ runtime_options(RequestId,
                 Provider,
                 Budget,
                 MaxTokens,
+                ToolRegistry,
+                ToolCapabilities,
                 Token,
-                [ provider(Provider),
+                Options) :-
+    append(ToolCapabilities,
+           [rlm, context(peek), context(search), context(slice),
+            model(ProviderName)],
+           Capabilities),
+    Base = [ provider(Provider),
                   provider_name(ProviderName),
                   planner_max_tokens(MaxTokens),
                   cancel_token(Token),
                   trace_id(RequestId),
-                  capabilities([rlm,
-                                context(peek),
-                                context(search),
-                                context(slice),
-                                model(ProviderName)]),
+                  capabilities(Capabilities),
                   child_capabilities([model(ProviderName)]),
                   budget(Budget)
-                ]).
+                ],
+    ( ToolRegistry == none
+    -> Options = Base
+    ;  Options = [tool_registry(ToolRegistry)|Base]
+    ).
 
 project_outcome(RequestId, Mode, ok(Result), Reply) :-
     !,
@@ -649,6 +775,9 @@ error_kind(zara_runtime_fault(incompatible_protocol(_)),
 error_kind(zara_runtime_fault(literal_credentials_forbidden),
            "invalid_request",
            "literal provider credentials are forbidden") :- !.
+error_kind(zara_runtime_fault(unauthorized),
+           "unauthorized",
+           "host authorization is required") :- !.
 error_kind(zara_runtime_fault(unsupported_mode(_)),
            "invalid_request",
            "runtime mode is unsupported") :- !.
