@@ -81,6 +81,9 @@ jobs:
           set -euo pipefail
           swipl -q -s test/run_runner_integrity_tests.pl
 
+      - name: Test paid integration admission offline
+        run: python3 test/openrouter_ci_preflight_test.py
+
       - name: Run deterministic PlUnit suite
         shell: bash
         env:
@@ -210,11 +213,16 @@ jobs:
 
   live-openrouter:
     name: REAL OpenRouter integration
+    concurrency:
+      group: paid-openrouter-integration
+      cancel-in-progress: false
+    timeout-minutes: 30
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_TEST_MODEL: ${{ vars.OPENROUTER_TEST_MODEL }}
+      OPENROUTER_TEST_BUDGET_USD: ${{ vars.OPENROUTER_TEST_BUDGET_USD }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -224,13 +232,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes swi-prolog-nox
 
-      - name: Require live OpenRouter credential
-        shell: bash
-        run: |
-          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-            echo "OPENROUTER_API_KEY is not configured for live integration CI" >&2
-            exit 1
-          fi
+      - name: Verify configured paid integration allowance
+        run: python3 scripts/openrouter_ci_preflight.py
 
       - name: Run REAL OpenRouter core suite
         shell: bash
