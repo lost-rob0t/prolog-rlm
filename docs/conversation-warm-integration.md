@@ -78,9 +78,10 @@ context_options([
 ])
 ```
 
-Before persisting the next user message, the runtime scans the **latest**
-published warm ranges, finds the next unprocessed sequence, and, once enough
-old source messages are eligible, calls the existing `conversation_warm_publish/5`
+Before persisting the next user message, the runtime checks estimated context
+pressure, scans the latest published warm ranges, and fills the earliest
+uncovered interval (including gaps before a partial summary). Once enough
+old source messages are eligible, it calls the existing `conversation_warm_publish/5`
 API. Existing generation options `generator/1`, `completion_options/1` and
 `token_options/1` can be included inside `auto_warm/1` for bounded custom
 generators or runtime model generation.
@@ -92,7 +93,14 @@ republished on normal subsequent turns. The turn's
 the threshold was not reached. Missing stores, invalid limits or failed
 publication return structured errors **before** the next user turn is appended.
 
-This is a message-count pressure threshold, not a token-count trigger.
+The default trigger is token pressure in the current context projection.
+`trigger(message_count)` explicitly selects the former message-count behavior.
+Batch sizes bound one publication, never the lifetime transcript. A context
+projection that fits retains all unsummarized messages, including beyond the
+normal 256 cold-candidate solver window. When it does not fit, the bounded
+solver window and opaque cold-history retrieval remain available.
+Generation usage is returned separately in `context.auto_warm.generation`;
+it is not charged again to the user completion.
 Multi-writer concurrent publication coordination and project semantic KB
 indexing are separate follow-up work. Do not interpret these warm summaries
 as trusted executable Prolog clauses.
@@ -119,3 +127,27 @@ Should the runtime create new warm state?
 ```
 
 The complete transcript remains authoritative and cold-addressable regardless of whether warm context exists.
+
+## Managed native turns and execution accounting
+
+`strategy(native)` on `conversation_turn/4` runs the canonical `rlm_direct/4`
+provider-native tool loop over the same managed query, cold handle, immutable
+user/assistant records and context ledger. The default `strategy(symbolic)`
+uses the existing supervisor. Invalid strategies fail before appending a user
+message. Callers remain responsible for granting narrowed capabilities.
+
+The execution-token budget counts cumulative provider-reported prompt plus
+completion usage across model calls. It is independent of the 131072-token
+context policy. Known usage cannot be hidden by a later response with missing
+usage; inconsistent totals cannot undercut their known components. Output
+limits constrain generated tokens, not prompt costs. A provider can therefore
+report an overrun on its last response; the runtime rejects the result and
+admits no further work. No exact pre-dispatch token guarantee is claimed for
+providers lacking an authoritative tokenizer/reservation API.
+
+Compaction defaults to the runtime completion budget unless a caller supplies
+separate bounded `completion_options`. Its usage remains attributable to the
+warm generation, separate from the user turn. Context-pressure estimates do
+not include the pending user message; an unusually large new message can
+still fail the context gate. Live provider and concurrent publication tests
+are required before broader guarantees.

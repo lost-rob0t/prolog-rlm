@@ -109,6 +109,9 @@ maybe_publish_auto_warm(_Conversation, Options,
 maybe_publish_auto_warm(Conversation, Options, Status) :-
     option(auto_warm(Policy), Options),
     require_options(Policy),
+    option(trigger(Trigger), Policy, token_pressure),
+    ( memberchk(Trigger, [token_pressure, message_count]) -> true
+    ; throw(conversation_runtime_fault(invalid_auto_warm_trigger(Trigger))) ),
     option(warm_store(Store), Options, none),
     ( Store == none
     -> throw(conversation_runtime_fault(auto_warm_requires_store))
@@ -124,13 +127,27 @@ maybe_publish_auto_warm(Conversation, Options, Status) :-
     -> true
     ;  throw(conversation_runtime_fault(invalid_auto_warm_batch(MinBatch, MaxBatch)))
     ),
+    ( Trigger == token_pressure,
+      auto_warm_context_fits(Conversation, Options)
+    -> Status = auto_warm_status{enabled:true, published:false, reason:context_fits}
+    ; publish_auto_warm_range(Conversation, Policy, Store,
+                              MinBatch, MaxBatch, KeepRecent, Status)
+    ).
+
+auto_warm_context_fits(Conversation, Options) :-
+    conversation_context_pack(Conversation, Options, Outcome),
+    ( Outcome = ok(Pack) -> Pack.context_pressure == false
+    ; throw(conversation_runtime_fault(auto_warm_context_failed(Outcome))) ).
+
+publish_auto_warm_range(Conversation, Policy, Store,
+                        MinBatch, MaxBatch, KeepRecent, Status) :-
     conversation_message_count(Conversation, Count),
     EligibleThrough is max(0, Count-KeepRecent),
-    auto_warm_last_covered(Conversation, Store, LastCovered),
-    Start is LastCovered+1,
-    Available is EligibleThrough-Start+1,
-    ( Available >= MinBatch
-    -> End is min(EligibleThrough, Start+MaxBatch-1),
+    auto_warm_next_gap(Conversation, Store, EligibleThrough, Start, GapEnd),
+    LastCovered is Start-1,
+    Available is GapEnd-Start+1,
+    ( Available > 0, ( Available >= MinBatch ; GapEnd < EligibleThrough )
+    -> End is min(GapEnd, Start+MaxBatch-1),
        include(auto_warm_generator_option, Policy, WarmOptions),
        rlm_conversation_warm:conversation_warm_publish(
            Conversation, Store, range(Start, End), WarmOptions, Publication),
@@ -138,7 +155,8 @@ maybe_publish_auto_warm(Conversation, Options, Status) :-
        -> Status = auto_warm_status{enabled:true,
                                     published:true,
                                     source_range:range(Start, End),
-                                    artifact_ref:Published.artifact.ref}
+                                    artifact_ref:Published.artifact.ref,
+                                    generation:Published.warm.generation}
        ; Publication = error(Error)
        -> throw(conversation_runtime_fault(auto_warm_publish_failed(Error)))
        ;  throw(conversation_runtime_fault(invalid_auto_warm_outcome(Publication)))
@@ -152,20 +170,28 @@ auto_warm_generator_option(generator(_)).
 auto_warm_generator_option(completion_options(_)).
 auto_warm_generator_option(token_options(_)).
 
-auto_warm_last_covered(Conversation, Store, Last) :-
+auto_warm_next_gap(Conversation, Store, Eligible, Start, End) :-
     rlm_conversation_warm:conversation_warm_list(
         Conversation, Store, [history(false)], Outcome),
     ( Outcome = ok(Artifacts)
-    -> findall(End,
+    -> findall(A-B,
                ( member(Artifact, Artifacts),
                  get_dict(value, Artifact, Warm),
-                 get_dict(source_range, Warm, range(_, End)),
-                 integer(End)
-               ), Ends),
-       ( Ends == [] -> Last = 0 ; max_list(Ends, Last) )
+                 get_dict(source_range, Warm, range(A, B)) ), Ranges0),
+       sort(Ranges0, Ranges),
+       uncovered_range(Ranges, 1, Eligible, Start, End)
     ; Outcome = error(Error)
     -> throw(conversation_runtime_fault(auto_warm_list_failed(Error)))
     ;  throw(conversation_runtime_fault(invalid_auto_warm_list(Outcome)))
+    ).
+
+% Walk the covered prefix, never skip a hole or republish an existing range.
+uncovered_range([], Start, Eligible, Start, Eligible).
+uncovered_range([A-B|Ranges], Cursor, Eligible, Start, End) :-
+    ( A > Cursor
+    -> Start = Cursor, End is min(Eligible, A-1)
+    ; Next is max(Cursor, B+1),
+      uncovered_range(Ranges, Next, Eligible, Start, End)
     ).
 
 annotate_auto_warm_outcome(ok(Turn0), Status, ok(Turn)) :-
