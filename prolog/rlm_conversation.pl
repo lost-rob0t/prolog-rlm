@@ -274,6 +274,25 @@ conversation_context_pack(Conversation, Options, Outcome) :-
                          Outcome).
 
 conversation_context_pack_(Conversation, Options, Pack) :-
+    conversation_messages_(Conversation, all, [], Messages),
+    conversation_context_pack_messages(Conversation, Options, Messages, Pack).
+
+% Read-only projection for managed admission: the pending message is never
+% appended here, and has the same sequence/rendering as the eventual append.
+conversation_context_pack_pending(Conversation, Pending, Options, Outcome) :-
+    conversation_outcome(context_pack,
+        conversation_context_pack_pending_(Conversation, Pending, Options), Outcome).
+
+conversation_context_pack_pending_(Conversation, Pending, Options, Pack) :-
+    conversation_messages_(Conversation, all, [], Existing),
+    length(Existing, Count), Sequence is Count+1,
+    Ref = conversation_message_ref{conversation_id:Conversation.id, sequence:Sequence},
+    Record = conversation_message{role:Pending.role, content:Pending.content,
+                                  sequence:Sequence, ref:Ref},
+    append(Existing, [Record], Messages),
+    conversation_context_pack_messages(Conversation, Options, Messages, Pack).
+
+conversation_context_pack_messages(Conversation, Options, Messages, Pack) :-
     require_options(Options),
     option(policy(PolicyInput), Options, []),
     context_policy(PolicyInput, PolicyOutcome),
@@ -288,7 +307,6 @@ conversation_context_pack_(Conversation, Options, Pack) :-
      option(context_units(ExtraUnits), Options, []),
     require_list(ExtraUnits, context_units),
     covered_source_refs(ExtraUnits, CoveredRefs),
-    conversation_messages_(Conversation, all, [], Messages),
     length(Messages, Count),
     messages_context_units(Messages, Policy.min_recent_turns, CoveredRefs,
                            Count, TokenOptions, AllMessageUnits),
@@ -355,7 +373,7 @@ compile_section(Spec, _, _) :-
     throw(conversation_fault(invalid_visible_section(Spec))).
 
 covered_source_refs(Units, Refs) :-
-    findall(Ref,
+    findall(message_ref(Id, Sequence),
             ( member(Unit, Units),
               is_dict(Unit),
               get_dict(variants, Unit, Variants),
@@ -364,7 +382,10 @@ covered_source_refs(Units, Refs) :-
               get_dict(value, Variant, Value),
               is_dict(Value),
               get_dict(source_refs, Value, SourceRefs),
-              member(Ref, SourceRefs) ),
+              member(Ref, SourceRefs),
+              is_dict(Ref),
+              get_dict(conversation_id, Ref, Id),
+              get_dict(sequence, Ref, Sequence) ),
             Refs0),
     sort(Refs0, Refs).
 
@@ -394,7 +415,7 @@ messages_context_units([Message|Messages],
                        TokenOptions,
                        Units) :-
     (   Position < MandatoryStart,
-        memberchk(Message.ref, CoveredRefs)
+        memberchk(message_ref(Message.ref.conversation_id, Message.ref.sequence), CoveredRefs)
     ->  Units = Rest
     ;   Position < ColdCandidateStart
     ->  Units = Rest
@@ -714,7 +735,7 @@ conversation_turn(Conversation, UserMessage0, Options, Outcome) :-
                                             Options),
                          Outcome).
 
-conversation_turn_(Conversation, UserMessage0, Options, TurnResult) :-
+conversation_turn_validate(UserMessage0, Options, UserMessage) :-
     require_options(Options),
     message_normalize(UserMessage0, UserOutcome),
     require_normalized_message(UserOutcome, UserMessage),
@@ -723,7 +744,11 @@ conversation_turn_(Conversation, UserMessage0, Options, TurnResult) :-
     ;   throw(conversation_fault(turn_requires_user_message(UserMessage.role)))
     ),
     option(strategy(Strategy), Options, symbolic),
-    require_turn_strategy(Strategy),
+    require_turn_strategy(Strategy).
+
+conversation_turn_(Conversation, UserMessage0, Options, TurnResult) :-
+    conversation_turn_validate(UserMessage0, Options, UserMessage),
+    option(strategy(Strategy), Options, symbolic),
     conversation_append_(Conversation, UserMessage, UserRecord),
     option(context_options(ContextOptions), Options, []),
     conversation_context_pack_(Conversation, ContextOptions, ContextPack),

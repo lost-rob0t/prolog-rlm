@@ -2233,21 +2233,7 @@ response_usage(Response, Usage) :-
     ).
 
 output_usage(Output, Usage) :-
-    (   get_dict(usage, Output, Raw), is_dict(Raw)
-    ->  dict_default(prompt_tokens, Raw, 0, Prompt),
-        dict_default(completion_tokens, Raw, 0, Completion),
-        dict_default(total_tokens, Raw, 0, Total),
-        dict_default(cost, Raw, 0.0, Cost),
-        Usage = usage_summary{model_calls:1,
-                              prompt_tokens:Prompt,
-                              completion_tokens:Completion,
-                              total_tokens:Total,
-                              cost_usd:Cost,
-                              cost_known:true,
-                              tokens_known:true}
-    ;   zero_usage(Zero),
-        put_dict(model_calls, Zero, 1, Usage)
-    ).
+    response_usage(Output, Usage).
 
 zero_usage(usage_summary{model_calls:0,
                          prompt_tokens:0,
