@@ -97,7 +97,28 @@ conversation_turn(Conversation, UserMessage, Options0, Outcome) :-
             annotate_auto_warm_outcome(AnnotatedOutcome, AutoWarmStatus, Outcome)
           ),
           Exception,
-          runtime_exception(turn, Exception, Outcome)).
+          runtime_turn_exception(Conversation, UserMessage, Options0, Exception, Outcome)).
+
+% A validated incoming message belongs to durable history even when the optional
+% summary provider fails. Configuration errors remain pre-admission failures.
+% Do not retry the provider or start the user completion on this error path.
+runtime_turn_exception(Conversation, UserMessage, Options,
+        conversation_runtime_fault(auto_warm_publish_failed(WarmError)), error(Error)) :-
+    !,
+    rlm_conversation:conversation_turn_validate(UserMessage, Options, Pending),
+    rlm_conversation:conversation_append(Conversation, Pending, AppendOutcome),
+    runtime_exception(turn,
+        conversation_runtime_fault(auto_warm_publish_failed(WarmError)), error(Base)),
+    Status0 = auto_warm_status{enabled:true, published:false, reason:failed, error:WarmError},
+    ( get_dict(generation, WarmError, Generation)
+    -> put_dict(generation, Status0, Generation, Status)
+    ; Status = Status0 ),
+    ( AppendOutcome = ok(Record)
+    -> put_dict(_{auto_warm:Status, user_ref:Record.ref}, Base, Error)
+    ; put_dict(_{auto_warm:Status, persistence_error:AppendOutcome}, Base, Error)
+    ).
+runtime_turn_exception(_, _, _, Exception, Outcome) :-
+    runtime_exception(turn, Exception, Outcome).
 
 /* -------------------------------------------------------------------------
  * Optional bounded automatic warm publication (source transcript immutable)

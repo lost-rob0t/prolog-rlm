@@ -162,3 +162,10 @@ inside that lock. This does not coordinate explicit publication calls or
 multiple OS processes sharing a persistency journal; those writers need external
 coordination. Queue-barrier concurrent tests use deterministic callback generators,
 not paid providers. Provider token counts remain estimates before dispatch.
+
+If automatic summary generation or publication fails, the normalized incoming
+user message is appended once and the turn returns an error without retrying
+or starting the user completion. The error carries `user_ref` and
+`auto_warm.reason:failed`; any known generation usage is retained. Configuration
+validation failures remain pre-admission errors. Unknown provider usage is not
+reported as zero. Hosts can recover the durable incoming message by its reference.

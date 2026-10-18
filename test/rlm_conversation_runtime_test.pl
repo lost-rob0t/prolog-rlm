@@ -66,6 +66,34 @@ pending_pressure_case(C, Store) :-
 plain_planner(_, ok(planner_output{plan:plan([final(literal("ok"))]),
                                   usage:json{total_tokens:2}})).
 
+test(failed_compaction_preserves_incoming_message_and_known_usage) :-
+    with_runtime(failed_generation_case).
+failed_generation_case(C, Store) :-
+    rlm:conversation_append(C, message(user,"old"), ok(_)),
+    rlm:conversation_turn(C, message(user,"preserve incoming"),
+       [context_options([warm_store(Store),auto_warm([trigger(message_count),
+          min_batch_messages(1),max_batch_messages(1),keep_recent_messages(0),
+          completion_options([planner_handler(plunit_rlm_conversation_runtime:over_budget_planner),
+                              planner_attempts(1),budget(_{max_total_tokens:8192})])])])],
+       error(Error)),
+    rlm:conversation_messages(C, all, [], ok(Messages)),
+    assertion(length(Messages,2)),
+    last(Messages, Last), assertion(Last.content == "preserve incoming"),
+    assertion(Error.auto_warm.reason == failed),
+    assertion(Error.auto_warm.generation.usage.total_tokens =:= 9000),
+    assertion(Error.user_ref == Last.ref).
+over_budget_planner(_, ok(planner_output{plan:plan([final(literal("invalid summary"))]),
+                                        usage:_{total_tokens:9000}})).
+
+test(invalid_generated_summary_retains_paid_usage) :-
+    with_runtime(invalid_summary_case).
+invalid_summary_case(C, Store) :-
+    rlm:conversation_append(C,message(user,"old"),ok(_)),
+    rlm:conversation_warm_publish(C,Store,range(1,1),
+        [completion_options([planner_handler(plunit_rlm_conversation_runtime:plain_planner)])],
+        error(Error)),
+    assertion(Error.generation.usage.total_tokens =:= 2).
+
 test(failed_turn_retains_compaction_provenance) :-
     with_runtime(failed_compaction_case).
 failed_compaction_case(C, Store) :-
