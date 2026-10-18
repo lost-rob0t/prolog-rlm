@@ -100,7 +100,7 @@ conversation_turn(Conversation, UserMessage, Options0, Outcome) :-
           runtime_turn_exception(Conversation, UserMessage, Options0, Exception, Outcome)).
 
 % A validated incoming message belongs to durable history even when the optional
-% summary provider fails. Configuration errors remain pre-admission failures.
+% summary provider fails. Auto-warm policy validation errors remain pre-admission failures.
 % Do not retry the provider or start the user completion on this error path.
 runtime_turn_exception(Conversation, UserMessage, Options,
         conversation_runtime_fault(auto_warm_publish_failed(WarmError)), error(Error)) :-
