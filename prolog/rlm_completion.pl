@@ -2206,13 +2206,13 @@ response_usage(Response, Usage) :-
                      CompletionKnown),
         usage_number(Raw, total_tokens, Total0, TotalKnown0),
         (   TotalKnown0 == true
-        ->  Total = Total0,
+        ->  Total is max(Total0, Prompt+Completion),
             TokensKnown = true
         ;   PromptKnown == true,
             CompletionKnown == true
         ->  Total is Prompt+Completion,
             TokensKnown = true
-        ;   Total = 0,
+        ;   Total is Prompt+Completion,
             TokensKnown = false
         ),
         usage_cost(Raw, Cost, CostKnown),
@@ -2233,21 +2233,7 @@ response_usage(Response, Usage) :-
     ).
 
 output_usage(Output, Usage) :-
-    (   get_dict(usage, Output, Raw), is_dict(Raw)
-    ->  dict_default(prompt_tokens, Raw, 0, Prompt),
-        dict_default(completion_tokens, Raw, 0, Completion),
-        dict_default(total_tokens, Raw, 0, Total),
-        dict_default(cost, Raw, 0.0, Cost),
-        Usage = usage_summary{model_calls:1,
-                              prompt_tokens:Prompt,
-                              completion_tokens:Completion,
-                              total_tokens:Total,
-                              cost_usd:Cost,
-                              cost_known:true,
-                              tokens_known:true}
-    ;   zero_usage(Zero),
-        put_dict(model_calls, Zero, 1, Usage)
-    ).
+    response_usage(Output, Usage).
 
 zero_usage(usage_summary{model_calls:0,
                          prompt_tokens:0,
@@ -2298,16 +2284,14 @@ budget_usage_check(Budget, Usage, Outcome) :-
                                          limit:Budget.max_model_calls,
                                          usage:Usage,
                                          message:"model-call budget exceeded"})
-    ;   Usage.tokens_known == true,
-        Usage.total_tokens > Budget.max_total_tokens
+    ;   Usage.total_tokens > Budget.max_total_tokens
     ->  Outcome = error(completion_error{phase:budget,
                                          kind:token_budget_exceeded,
                                          used:Usage.total_tokens,
                                          limit:Budget.max_total_tokens,
                                          usage:Usage,
                                          message:"token budget exceeded"})
-    ;   Usage.cost_known == true,
-        Usage.cost_usd > Budget.max_cost_usd
+    ;   Usage.cost_usd > Budget.max_cost_usd
     ->  Outcome = error(completion_error{phase:budget,
                                          kind:cost_budget_exceeded,
                                          used:Usage.cost_usd,

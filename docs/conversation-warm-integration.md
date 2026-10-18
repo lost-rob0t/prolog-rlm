@@ -60,6 +60,51 @@ No `context_units/1` plumbing is required for published warm artifacts. The mana
 
 Explicit caller `context_units/1` still work. If an explicit unit has the same id as an automatically loaded warm unit, the explicit unit wins so it is not duplicated.
 
+## Opt-in bounded auto-production in managed turns
+
+The default remains unchanged: no warm artifacts are created automatically.
+
+A managed turn can opt in by supplying `auto_warm/1` and a compatible
+`warm_store/1` inside its `context_options`:
+
+```prolog
+context_options([
+    warm_store(ArtifactStore),
+    auto_warm([
+        min_batch_messages(24),
+        max_batch_messages(48),
+        keep_recent_messages(12)
+    ])
+])
+```
+
+Before persisting the next user message, the runtime checks estimated context
+pressure, scans the latest published warm ranges, and fills the earliest
+uncovered interval (including gaps before a partial summary). Once enough
+old source messages are eligible, it calls the existing `conversation_warm_publish/5`
+API. Existing generation options `generator/1`, `completion_options/1` and
+`token_options/1` can be included inside `auto_warm/1` for bounded custom
+generators or runtime model generation.
+
+Source history is immutable. A newly published artifact participates in the
+**same turn's** managed context pack; already-covered ranges are not
+republished on normal subsequent turns. The turn's
+`context.auto_warm` field reports whether a range was published or why
+the threshold was not reached. Missing stores, invalid limits or failed
+publication return structured errors **before** the next user turn is appended.
+
+The default trigger is token pressure in the current context projection.
+`trigger(message_count)` explicitly selects the former message-count behavior.
+Batch sizes bound one publication, never the lifetime transcript. A context
+projection that fits retains all unsummarized messages, including beyond the
+normal 256 cold-candidate solver window. When it does not fit, the bounded
+solver window and opaque cold-history retrieval remain available.
+Generation usage is returned separately in `context.auto_warm.generation`;
+it is not charged again to the user completion.
+Multi-writer concurrent publication coordination and project semantic KB
+indexing are separate follow-up work. Do not interpret these warm summaries
+as trusted executable Prolog clauses.
+
 ## What is deliberately not automatic
 
 A managed turn does **not**:
@@ -69,7 +114,7 @@ A managed turn does **not**:
 - publish or version a new warm artifact;
 - react to token pressure by silently summarizing history.
 
-Warm production remains an explicit feature/API. Warm consumption is wired into the normal managed runtime once `warm_store/1` is configured.
+Warm production remains explicit **unless** the caller opts in using `auto_warm/1` as described above. Warm consumption is always wired into the managed runtime once `warm_store/1` is configured.
 
 This separates two independent decisions:
 
@@ -78,7 +123,49 @@ Should existing warm state participate in attention?
     -> yes, automatically when configured
 
 Should the runtime create new warm state?
-    -> no, not automatically
+    -> only with an explicit auto_warm policy
 ```
 
 The complete transcript remains authoritative and cold-addressable regardless of whether warm context exists.
+
+## Managed native turns and execution accounting
+
+`strategy(native)` on `conversation_turn/4` runs the canonical `rlm_direct/4`
+provider-native tool loop over the same managed query, cold handle, immutable
+user/assistant records and context ledger. The default `strategy(symbolic)`
+uses the existing supervisor. Invalid strategies fail before appending a user
+message. Callers remain responsible for granting narrowed capabilities.
+
+The execution-token budget counts cumulative provider-reported prompt plus
+completion usage across model calls. It is independent of the 131072-token
+context policy. Known usage cannot be hidden by a later response with missing
+usage; inconsistent totals cannot undercut their known components. Output
+limits constrain generated tokens, not prompt costs. A provider can therefore
+report an overrun on its last response; the runtime rejects the result and
+admits no further work. No exact pre-dispatch token guarantee is claimed for
+providers lacking an authoritative tokenizer/reservation API.
+
+Compaction defaults to the runtime completion budget unless a caller supplies
+separate bounded `completion_options`. Its usage remains attributable to the
+warm generation, separate from the user turn. Successful publication metadata
+is retained as `error.auto_warm` if subsequent turn preparation or execution
+fails, so hosts can still report the compaction spending.
+
+Pressure admission includes a read-only projection of the normalized pending
+user message and its cold-history boundary. It does not append or delete any
+transcript records. Warm source identities compare conversation ID and sequence,
+independent of artifact serialization dict tags.
+
+Automatic gap selection, generation and publication are serialized per
+conversation and warm store within one runtime process. Coverage is re-read
+inside that lock. This does not coordinate explicit publication calls or
+multiple OS processes sharing a persistency journal; those writers need external
+coordination. Queue-barrier concurrent tests use deterministic callback generators,
+not paid providers. Provider token counts remain estimates before dispatch.
+
+If automatic summary generation or publication fails, the normalized incoming
+user message is appended once and the turn returns an error without retrying
+or starting the user completion. The error carries `user_ref` and
+`auto_warm.reason:failed`; any known generation usage is retained. Auto-warm policy
+validation failures remain pre-admission errors. Unknown provider usage is not
+reported as zero. Hosts can recover the durable incoming message by its reference.

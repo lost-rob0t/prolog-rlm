@@ -14,11 +14,11 @@ same context pack when a warm artifact store is configured and injects a small
 provider-visible cold-history boundary when history falls outside the guaranteed
 hot tail.
 
-Warm *consumption* is integrated; warm *production* is not automatic.
-`conversation_turn/4` never derives, publishes or compacts warm context.  A
-caller may publish warm artifacts explicitly with `rlm_conversation_warm` and
-then configure `warm_store(Store)` so subsequent managed turns automatically
-reuse those artifacts.
+Warm consumption is integrated; warm production is opt-in through the
+`auto_warm/1` managed turn context option.  By default no automatic artifacts
+are produced. When enabled, bounded old ranges are published by the canonical
+warm generator and reused in the same context pack. Source transcript messages
+are never edited or removed.
 
 The cold-history boundary is synthetic projection state.  It never edits or
 replaces a durable user/assistant/tool message.  Its only job is to tell the
@@ -27,6 +27,7 @@ context and to show the bounded retrieval operations available to recover it.
 */
 
 :- use_module(library(option)).
+:- use_module(library(lists)).
 :- use_module(rlm_context_budget, []).
 :- use_module(rlm_conversation, []).
 :- use_module(rlm_conversation_warm, []).
@@ -68,8 +69,10 @@ conversation_token_ledger(Conversation, Options, Outcome) :-
     ).
 
 conversation_turn(Conversation, UserMessage, Options0, Outcome) :-
-    catch(( require_options(Options0),
+    catch(( rlm_conversation:conversation_turn_validate(UserMessage, Options0, Pending),
             option(context_options(ContextOptions0), Options0, []),
+            maybe_publish_auto_warm(Conversation, Pending, ContextOptions0, AutoWarmStatus),
+            catch((
             % The lower conversation layer persists the user message before
             % compiling context, so account for that pending sequence here.
             prepare_context_options(Conversation,
@@ -85,14 +88,166 @@ conversation_turn(Conversation, UserMessage, Options0, Outcome) :-
             rlm_conversation:conversation_turn(Conversation,
                                                UserMessage,
                                                Options,
-                                               BaseOutcome),
+                                               BaseOutcome)), ExceptionAfterWarm,
+                runtime_exception(turn, ExceptionAfterWarm, BaseOutcome)),
             annotate_turn_outcome(BaseOutcome,
                                   WarmStatus,
                                   BoundaryStatus,
-                                  Outcome)
+                                  AnnotatedOutcome),
+            annotate_auto_warm_outcome(AnnotatedOutcome, AutoWarmStatus, Outcome)
           ),
           Exception,
-          runtime_exception(turn, Exception, Outcome)).
+          runtime_turn_exception(Conversation, UserMessage, Options0, Exception, Outcome)).
+
+% A validated incoming message belongs to durable history even when the optional
+% summary provider fails. Auto-warm policy validation errors remain pre-admission failures.
+% Do not retry the provider or start the user completion on this error path.
+runtime_turn_exception(Conversation, UserMessage, Options,
+        conversation_runtime_fault(auto_warm_publish_failed(WarmError)), error(Error)) :-
+    !,
+    rlm_conversation:conversation_turn_validate(UserMessage, Options, Pending),
+    rlm_conversation:conversation_append(Conversation, Pending, AppendOutcome),
+    runtime_exception(turn,
+        conversation_runtime_fault(auto_warm_publish_failed(WarmError)), error(Base)),
+    Status0 = auto_warm_status{enabled:true, published:false, reason:failed, error:WarmError},
+    ( get_dict(generation, WarmError, Generation)
+    -> put_dict(generation, Status0, Generation, Status)
+    ; Status = Status0 ),
+    ( AppendOutcome = ok(Record)
+    -> put_dict(_{auto_warm:Status, user_ref:Record.ref}, Base, Error)
+    ; put_dict(_{auto_warm:Status, persistence_error:AppendOutcome}, Base, Error)
+    ).
+runtime_turn_exception(_, _, _, Exception, Outcome) :-
+    runtime_exception(turn, Exception, Outcome).
+
+/* -------------------------------------------------------------------------
+ * Optional bounded automatic warm publication (source transcript immutable)
+ * ---------------------------------------------------------------------- */
+
+maybe_publish_auto_warm(Conversation, Options, Status) :-
+    maybe_publish_auto_warm(Conversation, none, Options, Status).
+
+maybe_publish_auto_warm(Conversation, Pending, Options, Status) :-
+    require_options(Options),
+    option(warm_store(Store), Options, none),
+    % Process-local serialization, scoped to the conversation and warm store.
+    % Re-read coverage under the lock before admitting any generator work.
+    term_to_atom(auto_warm(Conversation.store, Conversation.id, Store), Mutex),
+    with_mutex(Mutex, auto_warm_locked(Conversation, Pending, Options, Status)).
+
+auto_warm_locked(_Conversation, _Pending, Options,
+                        auto_warm_status{enabled:false, reason:disabled}) :-
+    option(auto_warm(Policy), Options, disabled),
+    ( Policy == disabled ; Policy == false ),
+    !.
+auto_warm_locked(Conversation, Pending, Options, Status) :-
+    option(auto_warm(Policy), Options),
+    require_options(Policy),
+    option(trigger(Trigger), Policy, token_pressure),
+    ( memberchk(Trigger, [token_pressure, message_count]) -> true
+    ; throw(conversation_runtime_fault(invalid_auto_warm_trigger(Trigger))) ),
+    option(warm_store(Store), Options, none),
+    ( Store == none
+    -> throw(conversation_runtime_fault(auto_warm_requires_store))
+    ;  true
+    ),
+    option(min_batch_messages(MinBatch), Policy, 24),
+    option(max_batch_messages(MaxBatch), Policy, 48),
+    option(keep_recent_messages(KeepRecent), Policy, 12),
+    require_positive_integer(MinBatch, min_batch_messages),
+    require_positive_integer(MaxBatch, max_batch_messages),
+    require_nonnegative_integer(KeepRecent, keep_recent_messages),
+    ( MaxBatch >= MinBatch
+    -> true
+    ;  throw(conversation_runtime_fault(invalid_auto_warm_batch(MinBatch, MaxBatch)))
+    ),
+    ( Trigger == token_pressure,
+      auto_warm_context_fits(Conversation, Pending, Options)
+    -> Status = auto_warm_status{enabled:true, published:false, reason:context_fits}
+    ; publish_auto_warm_range(Conversation, Policy, Store,
+                              MinBatch, MaxBatch, KeepRecent, Status)
+    ).
+
+auto_warm_context_fits(Conversation, Pending, Options) :-
+    ( Pending == none
+    -> conversation_context_pack(Conversation, Options, Outcome)
+    ; prepare_context_options(Conversation, 1, Options, Prepared, _, _),
+      rlm_conversation:conversation_context_pack_pending(Conversation, Pending, Prepared, Outcome)
+    ),
+    ( Outcome = ok(Pack) -> Pack.context_pressure == false
+    ; throw(conversation_runtime_fault(auto_warm_context_failed(Outcome))) ).
+
+publish_auto_warm_range(Conversation, Policy, Store,
+                        MinBatch, MaxBatch, KeepRecent, Status) :-
+    conversation_message_count(Conversation, Count),
+    EligibleThrough is max(0, Count-KeepRecent),
+    auto_warm_next_gap(Conversation, Store, EligibleThrough, Start, GapEnd),
+    LastCovered is Start-1,
+    Available is GapEnd-Start+1,
+    ( Available > 0, ( Available >= MinBatch ; GapEnd < EligibleThrough )
+    -> End is min(GapEnd, Start+MaxBatch-1),
+       include(auto_warm_generator_option, Policy, WarmOptions),
+       rlm_conversation_warm:conversation_warm_publish(
+           Conversation, Store, range(Start, End), WarmOptions, Publication),
+       ( Publication = ok(Published)
+       -> Status = auto_warm_status{enabled:true,
+                                    published:true,
+                                    source_range:range(Start, End),
+                                    artifact_ref:Published.artifact.ref,
+                                    generation:Published.warm.generation}
+       ; Publication = error(Error)
+       -> throw(conversation_runtime_fault(auto_warm_publish_failed(Error)))
+       ;  throw(conversation_runtime_fault(invalid_auto_warm_outcome(Publication)))
+       )
+    ; Status = auto_warm_status{enabled:true, published:false,
+                                reason:below_threshold, eligible_through:EligibleThrough,
+                                last_covered:LastCovered}
+    ).
+
+auto_warm_generator_option(generator(_)).
+auto_warm_generator_option(completion_options(_)).
+auto_warm_generator_option(token_options(_)).
+
+auto_warm_next_gap(Conversation, Store, Eligible, Start, End) :-
+    rlm_conversation_warm:conversation_warm_list(
+        Conversation, Store, [history(false)], Outcome),
+    ( Outcome = ok(Artifacts)
+    -> findall(A-B,
+               ( member(Artifact, Artifacts),
+                 get_dict(value, Artifact, Warm),
+                 get_dict(source_range, Warm, range(A, B)) ), Ranges0),
+       sort(Ranges0, Ranges),
+       uncovered_range(Ranges, 1, Eligible, Start, End)
+    ; Outcome = error(Error)
+    -> throw(conversation_runtime_fault(auto_warm_list_failed(Error)))
+    ;  throw(conversation_runtime_fault(invalid_auto_warm_list(Outcome)))
+    ).
+
+% Walk the covered prefix, never skip a hole or republish an existing range.
+uncovered_range([], Start, Eligible, Start, Eligible).
+uncovered_range([A-B|Ranges], Cursor, Eligible, Start, End) :-
+    ( A > Cursor
+    -> Start = Cursor, End is min(Eligible, A-1)
+    ; Next is max(Cursor, B+1),
+      uncovered_range(Ranges, Next, Eligible, Start, End)
+    ).
+
+annotate_auto_warm_outcome(ok(Turn0), Status, ok(Turn)) :-
+    !,
+    ( get_dict(context, Turn0, Context0), is_dict(Context0)
+    -> put_dict(auto_warm, Context0, Status, Context),
+       put_dict(context, Turn0, Context, Turn)
+    ;  Turn = Turn0
+    ).
+annotate_auto_warm_outcome(error(Error0), Status, error(Error)) :-
+    !,
+    put_dict(auto_warm, Error0, Status, Error).
+annotate_auto_warm_outcome(Other, _, Other).
+
+require_positive_integer(Value, _) :-
+    integer(Value), Value > 0, !.
+require_positive_integer(Value, Field) :-
+    throw(conversation_runtime_fault(expected_positive_integer(Field, Value))).
 
 /* -------------------------------------------------------------------------
  * Managed context integration
@@ -275,6 +430,7 @@ context_unit_id(Unit, Id) :-
 strip_managed_context_options(Options, Stripped) :-
     exclude(managed_context_option, Options, Stripped).
 
+managed_context_option(auto_warm(_)).
 managed_context_option(context_units(_)).
 managed_context_option(warm_store(_)).
 managed_context_option(warm_signals(_)).

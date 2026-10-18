@@ -33,6 +33,7 @@ usable independently. Cold history is exposed through a trusted lazy
 :- use_module(library(uuid)).
 :- use_module(rlm_chain_schema,
               [ message_normalize/2 ]).
+:- use_module(rlm_direct, []).
 :- use_module(rlm_completion, []).
 :- use_module(rlm_closed_data, []).
 :- use_module(rlm_context,
@@ -273,6 +274,25 @@ conversation_context_pack(Conversation, Options, Outcome) :-
                          Outcome).
 
 conversation_context_pack_(Conversation, Options, Pack) :-
+    conversation_messages_(Conversation, all, [], Messages),
+    conversation_context_pack_messages(Conversation, Options, Messages, Pack).
+
+% Read-only projection for managed admission: the pending message is never
+% appended here, and has the same sequence/rendering as the eventual append.
+conversation_context_pack_pending(Conversation, Pending, Options, Outcome) :-
+    conversation_outcome(context_pack,
+        conversation_context_pack_pending_(Conversation, Pending, Options), Outcome).
+
+conversation_context_pack_pending_(Conversation, Pending, Options, Pack) :-
+    conversation_messages_(Conversation, all, [], Existing),
+    length(Existing, Count), Sequence is Count+1,
+    Ref = conversation_message_ref{conversation_id:Conversation.id, sequence:Sequence},
+    Record = conversation_message{role:Pending.role, content:Pending.content,
+                                  sequence:Sequence, ref:Ref},
+    append(Existing, [Record], Messages),
+    conversation_context_pack_messages(Conversation, Options, Messages, Pack).
+
+conversation_context_pack_messages(Conversation, Options, Messages, Pack) :-
     require_options(Options),
     option(policy(PolicyInput), Options, []),
     context_policy(PolicyInput, PolicyOutcome),
@@ -287,22 +307,42 @@ conversation_context_pack_(Conversation, Options, Pack) :-
      option(context_units(ExtraUnits), Options, []),
     require_list(ExtraUnits, context_units),
     covered_source_refs(ExtraUnits, CoveredRefs),
-    conversation_messages_(Conversation, all, [], Messages),
-     messages_context_units(Messages,
-                            Policy.min_recent_turns,
-                            CoveredRefs,
-                            MaxColdCandidates,
-                            TokenOptions,
-                            MessageUnits),
+    length(Messages, Count),
+    messages_context_units(Messages, Policy.min_recent_turns, CoveredRefs,
+                           Count, TokenOptions, AllMessageUnits),
+    append(AllMessageUnits, ExtraUnits, AllUnits),
+    maplist(minimum_unit_tokens, AllUnits, MinimumCosts),
+    sum_list(MinimumCosts, MinimumTokens),
+    findall(T, (member(Section, Sections), Section.visibility == model,
+                T = Section.tokens), SectionCosts),
+    sum_list(SectionCosts, FixedTokens),
+    Required is MinimumTokens+FixedTokens+Policy.reserve_output_tokens+
+                Policy.safety_margin_tokens,
+    ( Required =< Policy.effective_context_tokens
+    -> Pressure = false,
+       % Preserve every unsummarized message when the full projection fits.
+       MessageUnits = AllMessageUnits
+    ; Pressure = true,
+      messages_context_units(Messages, Policy.min_recent_turns, CoveredRefs,
+                             MaxColdCandidates, TokenOptions, MessageUnits)
+    ),
     append(MessageUnits, ExtraUnits, Units),
     context_pack(Units, Sections, Policy, PackOutcome),
     require_budget_outcome(PackOutcome, BudgetPack),
-    Pack = conversation_context_pack{conversation_id:Conversation.id,
+    length(Units, CandidateCount),
+    length(BudgetPack.selected, SelectedCount),
+    Omitted is CandidateCount-SelectedCount,
+    Pack = conversation_context_pack{context_pressure:Pressure,
+                                     omitted_units:Omitted, conversation_id:Conversation.id,
                                      selected:BudgetPack.selected,
                                       policy:BudgetPack.policy,
                                       ledger:BudgetPack.ledger,
                                       utility:BudgetPack.utility,
                                       max_cold_candidates:MaxColdCandidates}.
+
+minimum_unit_tokens(Unit, Tokens) :-
+    findall(Cost, (member(Variant, Unit.variants), Cost = Variant.tokens), Costs),
+    min_list(Costs, Tokens).
 
 conversation_token_ledger(Conversation, Options, Outcome) :-
     conversation_outcome(token_ledger,
@@ -333,7 +373,7 @@ compile_section(Spec, _, _) :-
     throw(conversation_fault(invalid_visible_section(Spec))).
 
 covered_source_refs(Units, Refs) :-
-    findall(Ref,
+    findall(message_ref(Id, Sequence),
             ( member(Unit, Units),
               is_dict(Unit),
               get_dict(variants, Unit, Variants),
@@ -342,7 +382,10 @@ covered_source_refs(Units, Refs) :-
               get_dict(value, Variant, Value),
               is_dict(Value),
               get_dict(source_refs, Value, SourceRefs),
-              member(Ref, SourceRefs) ),
+              member(Ref, SourceRefs),
+              is_dict(Ref),
+              get_dict(conversation_id, Ref, Id),
+              get_dict(sequence, Ref, Sequence) ),
             Refs0),
     sort(Refs0, Refs).
 
@@ -372,7 +415,7 @@ messages_context_units([Message|Messages],
                        TokenOptions,
                        Units) :-
     (   Position < MandatoryStart,
-        memberchk(Message.ref, CoveredRefs)
+        memberchk(message_ref(Message.ref.conversation_id, Message.ref.sequence), CoveredRefs)
     ->  Units = Rest
     ;   Position < ColdCandidateStart
     ->  Units = Rest
@@ -692,7 +735,7 @@ conversation_turn(Conversation, UserMessage0, Options, Outcome) :-
                                             Options),
                          Outcome).
 
-conversation_turn_(Conversation, UserMessage0, Options, TurnResult) :-
+conversation_turn_validate(UserMessage0, Options, UserMessage) :-
     require_options(Options),
     message_normalize(UserMessage0, UserOutcome),
     require_normalized_message(UserOutcome, UserMessage),
@@ -700,6 +743,12 @@ conversation_turn_(Conversation, UserMessage0, Options, TurnResult) :-
     ->  true
     ;   throw(conversation_fault(turn_requires_user_message(UserMessage.role)))
     ),
+    option(strategy(Strategy), Options, symbolic),
+    require_turn_strategy(Strategy).
+
+conversation_turn_(Conversation, UserMessage0, Options, TurnResult) :-
+    conversation_turn_validate(UserMessage0, Options, UserMessage),
+    option(strategy(Strategy), Options, symbolic),
     conversation_append_(Conversation, UserMessage, UserRecord),
     option(context_options(ContextOptions), Options, []),
     conversation_context_pack_(Conversation, ContextOptions, ContextPack),
@@ -718,7 +767,7 @@ conversation_turn_(Conversation, UserMessage0, Options, TurnResult) :-
     conversation_cold_context_(Conversation, ColdOptions, ColdRef),
     setup_call_cleanup(
         true,
-        rlm_completion:rlm_completion(Query,
+        managed_completion(Strategy, Query,
                                       ColdRef,
                                       CompletionOptions,
                                       CompletionOutcome),
@@ -728,6 +777,16 @@ conversation_turn_(Conversation, UserMessage0, Options, TurnResult) :-
                               UserRecord,
                               ContextPack,
                               TurnResult).
+
+require_turn_strategy(symbolic) :- !.
+require_turn_strategy(native) :- !.
+require_turn_strategy(Strategy) :-
+    throw(conversation_fault(invalid_strategy(Strategy))).
+
+managed_completion(symbolic, Query, Context, Options, Outcome) :-
+    rlm_completion:rlm_completion(Query, Context, Options, Outcome).
+managed_completion(native, Query, Context, Options, Outcome) :-
+    rlm_direct:rlm_direct(Query, Context, Options, Outcome).
 
 managed_completion_options(SessionId, Options0, Options) :-
     (   member(Option, Options0),

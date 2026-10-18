@@ -1,11 +1,7 @@
 name: Paid OpenRouter
 
+# Paid generation is an explicit operator action, never a PR/push side effect.
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -14,16 +10,15 @@ permissions:
 jobs:
   paid-openrouter:
     name: Pinned paid OpenRouter integration
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.draft == false &&
-       github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'push' && github.repository == 'lost-rob0t/prolog-rlm')
+    concurrency:
+      group: paid-openrouter-integration
+      cancel-in-progress: false
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_TEST_MODEL: ${{ vars.OPENROUTER_TEST_MODEL }}
+      OPENROUTER_TEST_BUDGET_USD: ${{ vars.OPENROUTER_TEST_BUDGET_USD }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -33,25 +28,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes swi-prolog-nox
 
-      - name: Require explicit paid OpenRouter model
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "${OPENROUTER_API_KEY:-}" || {
-            echo "OPENROUTER_API_KEY is required" >&2
-            exit 1
-          }
-          test -n "${OPENROUTER_TEST_MODEL:-}" || {
-            echo "OPENROUTER_TEST_MODEL must be explicitly pinned; refusing openrouter/free fallback" >&2
-            exit 1
-          }
-          case "$OPENROUTER_TEST_MODEL" in
-            openrouter/free|*:free)
-              echo "OPENROUTER_TEST_MODEL must be a paid model, got: $OPENROUTER_TEST_MODEL" >&2
-              exit 1
-              ;;
-          esac
-          printf 'paid_openrouter_model=%s\n' "$OPENROUTER_TEST_MODEL"
+      - name: Verify configured paid integration allowance
+        run: python3 scripts/openrouter_ci_preflight.py
 
       - name: Run REAL OpenRouter core suite
         run: swipl -q -s test/run_live_openrouter.pl

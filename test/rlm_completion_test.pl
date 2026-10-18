@@ -6,6 +6,48 @@
 :- use_module('support/completion_test_support').
 :- use_module(library(filesex)).
 
+test(explicit_planner_usage_enforces_known_lower_bound) :-
+    rlm_completion("test", terms([]),
+       [planner_handler(plunit_rlm_completion:partial_usage_planner),
+        planner_attempts(1), budget(_{max_total_tokens:8192})], error(Error)),
+    assertion(Error.kind == token_budget_exceeded),
+    assertion(Error.used =:= 9000).
+partial_usage_planner(_, ok(planner_output{plan:plan([final(literal("ok"))]),
+                                         usage:_{prompt_tokens:9000}})).
+
+test(token_usage_never_undercounts_known_components) :-
+    rlm_completion:response_usage(_{usage:_{prompt_tokens:8000,
+        completion_tokens:797, total_tokens:797}}, Usage),
+    assertion(Usage.total_tokens =:= 8797).
+
+test(unknown_later_usage_does_not_hide_known_budget_exhaustion) :-
+    rlm_completion:response_usage(_{usage:_{total_tokens:8797}}, Known),
+    rlm_completion:response_usage(_{}, Unknown),
+    rlm_completion:usage_add(Known, Unknown, Usage),
+    default_completion_budget(Budget),
+    rlm_completion:budget_usage_check(Budget, Usage, error(Error)),
+    assertion(Error.kind == token_budget_exceeded),
+    assertion(Error.used =:= 8797),
+    assertion(Error.limit =:= 8192),
+    assertion(Error.usage.model_calls =:= 2).
+
+test(two_calls_charge_prompt_and_completion_once) :-
+    rlm_completion:response_usage(_{usage:_{prompt_tokens:3500, completion_tokens:500}}, A),
+    rlm_completion:response_usage(_{usage:_{prompt_tokens:4000, completion_tokens:797}}, B),
+    rlm_completion:usage_add(A, B, Usage),
+    default_completion_budget(Budget),
+    rlm_completion:budget_usage_check(Budget, Usage, error(Error)),
+    assertion(Error.used =:= 8797),
+    assertion(Usage.model_calls =:= 2).
+
+test(unknown_later_cost_does_not_hide_known_cost_overrun) :-
+    rlm_completion:response_usage(_{usage:_{cost:0.5}}, Known),
+    rlm_completion:response_usage(_{}, Unknown),
+    rlm_completion:usage_add(Known, Unknown, Usage),
+    default_completion_budget(Budget),
+    rlm_completion:budget_usage_check(Budget, Usage, error(Error)),
+    assertion(Error.kind == cost_budget_exceeded).
+
 base_caps([rlm, model(openrouter)]).
 base_child_caps([rlm, model(openrouter)]).
 
