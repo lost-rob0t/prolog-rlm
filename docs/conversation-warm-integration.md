@@ -166,6 +166,6 @@ not paid providers. Provider token counts remain estimates before dispatch.
 If automatic summary generation or publication fails, the normalized incoming
 user message is appended once and the turn returns an error without retrying
 or starting the user completion. The error carries `user_ref` and
-`auto_warm.reason:failed`; any known generation usage is retained. Configuration
+`auto_warm.reason:failed`; any known generation usage is retained. Auto-warm policy
 validation failures remain pre-admission errors. Unknown provider usage is not
 reported as zero. Hosts can recover the durable incoming message by its reference.
