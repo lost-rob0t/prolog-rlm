@@ -69,7 +69,7 @@
           installPhase = ''
             runHook preInstall
             mkdir -p ${packRoot}/prolog_rlm
-            cp -R pack.pl prolog bin ${packRoot}/prolog_rlm/
+            cp -R pack.pl prolog bin skills ${packRoot}/prolog_rlm/
             mkdir -p "$out/share/common-lisp/source/prolog-rlm-cl"
             cp -R lisp/* "$out/share/common-lisp/source/prolog-rlm-cl/"
             mkdir -p "$out/nix-support" "$out/bin"
@@ -155,7 +155,7 @@
             export HOME="$TMPDIR/home"
             mkdir -p "$HOME" "$TMPDIR/outside-source"
             cd "$TMPDIR/outside-source"
-            swipl -q -g "use_module(library(rlm)),rlm:rlm_ready,rlm:rlm_agent_zero_adapter_ready,halt"
+            swipl -q -g "use_module(library(rlm)),rlm:rlm_ready,rlm:rlm_agent_zero_adapter_ready,rlm_skill:skill_default_catalog(ok(C)),rlm_skill:skill_catalog_skills(C,[_|_]),halt"
             touch "$out"
           '';
 
@@ -165,7 +165,7 @@
             export HOME="$TMPDIR/home"
             mkdir -p "$HOME" "$TMPDIR/outside-source"
             cd "$TMPDIR/outside-source"
-            prolog-rlm-swipl -q -g "use_module(library(rlm)),rlm:rlm_ready,rlm:rlm_agent_zero_adapter_ready,halt"
+            prolog-rlm-swipl -q -g "use_module(library(rlm)),rlm:rlm_ready,rlm:rlm_agent_zero_adapter_ready,rlm_skill:skill_default_catalog(ok(C)),rlm_skill:skill_catalog_skills(C,[_|_]),halt"
             touch "$out"
           '';
 
