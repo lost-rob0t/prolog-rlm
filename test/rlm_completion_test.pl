@@ -6,6 +6,15 @@
 :- use_module('support/completion_test_support').
 :- use_module(library(filesex)).
 
+test(explicit_planner_usage_enforces_known_lower_bound) :-
+    rlm_completion("test", terms([]),
+       [planner_handler(plunit_rlm_completion:partial_usage_planner),
+        planner_attempts(1), budget(_{max_total_tokens:8192})], error(Error)),
+    assertion(Error.kind == token_budget_exceeded),
+    assertion(Error.used =:= 9000).
+partial_usage_planner(_, ok(planner_output{plan:plan([final(literal("ok"))]),
+                                         usage:_{prompt_tokens:9000}})).
+
 test(token_usage_never_undercounts_known_components) :-
     rlm_completion:response_usage(_{usage:_{prompt_tokens:8000,
         completion_tokens:797, total_tokens:797}}, Usage),

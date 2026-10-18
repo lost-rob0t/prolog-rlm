@@ -69,9 +69,10 @@ conversation_token_ledger(Conversation, Options, Outcome) :-
     ).
 
 conversation_turn(Conversation, UserMessage, Options0, Outcome) :-
-    catch(( require_options(Options0),
+    catch(( rlm_conversation:conversation_turn_validate(UserMessage, Options0, Pending),
             option(context_options(ContextOptions0), Options0, []),
-            maybe_publish_auto_warm(Conversation, ContextOptions0, AutoWarmStatus),
+            maybe_publish_auto_warm(Conversation, Pending, ContextOptions0, AutoWarmStatus),
+            catch((
             % The lower conversation layer persists the user message before
             % compiling context, so account for that pending sequence here.
             prepare_context_options(Conversation,
@@ -87,7 +88,8 @@ conversation_turn(Conversation, UserMessage, Options0, Outcome) :-
             rlm_conversation:conversation_turn(Conversation,
                                                UserMessage,
                                                Options,
-                                               BaseOutcome),
+                                               BaseOutcome)), ExceptionAfterWarm,
+                runtime_exception(turn, ExceptionAfterWarm, BaseOutcome)),
             annotate_turn_outcome(BaseOutcome,
                                   WarmStatus,
                                   BoundaryStatus,
@@ -101,12 +103,23 @@ conversation_turn(Conversation, UserMessage, Options0, Outcome) :-
  * Optional bounded automatic warm publication (source transcript immutable)
  * ---------------------------------------------------------------------- */
 
-maybe_publish_auto_warm(_Conversation, Options,
+maybe_publish_auto_warm(Conversation, Options, Status) :-
+    maybe_publish_auto_warm(Conversation, none, Options, Status).
+
+maybe_publish_auto_warm(Conversation, Pending, Options, Status) :-
+    require_options(Options),
+    option(warm_store(Store), Options, none),
+    % Process-local serialization, scoped to the conversation and warm store.
+    % Re-read coverage under the lock before admitting any generator work.
+    term_to_atom(auto_warm(Conversation.store, Conversation.id, Store), Mutex),
+    with_mutex(Mutex, auto_warm_locked(Conversation, Pending, Options, Status)).
+
+auto_warm_locked(_Conversation, _Pending, Options,
                         auto_warm_status{enabled:false, reason:disabled}) :-
     option(auto_warm(Policy), Options, disabled),
     ( Policy == disabled ; Policy == false ),
     !.
-maybe_publish_auto_warm(Conversation, Options, Status) :-
+auto_warm_locked(Conversation, Pending, Options, Status) :-
     option(auto_warm(Policy), Options),
     require_options(Policy),
     option(trigger(Trigger), Policy, token_pressure),
@@ -128,14 +141,18 @@ maybe_publish_auto_warm(Conversation, Options, Status) :-
     ;  throw(conversation_runtime_fault(invalid_auto_warm_batch(MinBatch, MaxBatch)))
     ),
     ( Trigger == token_pressure,
-      auto_warm_context_fits(Conversation, Options)
+      auto_warm_context_fits(Conversation, Pending, Options)
     -> Status = auto_warm_status{enabled:true, published:false, reason:context_fits}
     ; publish_auto_warm_range(Conversation, Policy, Store,
                               MinBatch, MaxBatch, KeepRecent, Status)
     ).
 
-auto_warm_context_fits(Conversation, Options) :-
-    conversation_context_pack(Conversation, Options, Outcome),
+auto_warm_context_fits(Conversation, Pending, Options) :-
+    ( Pending == none
+    -> conversation_context_pack(Conversation, Options, Outcome)
+    ; prepare_context_options(Conversation, 1, Options, Prepared, _, _),
+      rlm_conversation:conversation_context_pack_pending(Conversation, Pending, Prepared, Outcome)
+    ),
     ( Outcome = ok(Pack) -> Pack.context_pressure == false
     ; throw(conversation_runtime_fault(auto_warm_context_failed(Outcome))) ).
 
@@ -201,7 +218,9 @@ annotate_auto_warm_outcome(ok(Turn0), Status, ok(Turn)) :-
        put_dict(context, Turn0, Context, Turn)
     ;  Turn = Turn0
     ).
-annotate_auto_warm_outcome(error(Error), _, error(Error)) :- !.
+annotate_auto_warm_outcome(error(Error0), Status, error(Error)) :-
+    !,
+    put_dict(auto_warm, Error0, Status, Error).
 annotate_auto_warm_outcome(Other, _, Other).
 
 require_positive_integer(Value, _) :-

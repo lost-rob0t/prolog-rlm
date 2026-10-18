@@ -21,6 +21,65 @@ with_runtime(Goal) :-
           rlm:conversation_store_close(ConversationStore, _)
         )).
 
+test(concurrent_auto_warm_rechecks_coverage) :-
+    with_runtime(concurrent_warm_case).
+concurrent_warm_case(C, Store) :-
+    forall(between(1,8,_), rlm:conversation_append(C, message(user,"old"), ok(_))),
+    setup_call_cleanup(message_queue_create(Q),
+        concurrent_warm_workers(C, Store, Q), message_queue_destroy(Q)).
+concurrent_warm_workers(C, Store, Q) :-
+    Options = [warm_store(Store),auto_warm([trigger(message_count),
+       min_batch_messages(1),max_batch_messages(1),keep_recent_messages(0),
+       generator(plunit_rlm_conversation_runtime:warm_generator)])],
+    findall(T, (between(1,8,_), thread_create(
+       (thread_send_message(Q,ready), thread_get_message(start),
+        rlm_conversation_runtime:maybe_publish_auto_warm(C, Options, Status),
+        thread_send_message(Q,result(Status))), T, [])), Threads),
+    forall(between(1,8,_), thread_get_message(Q,ready)),
+    maplist(start_warm_worker, Threads),
+    findall(R, (between(1,8,_), thread_get_message(Q,result(S)), R=S.source_range), Ranges),
+    maplist(join_warm_worker, Threads),
+    sort(Ranges, Unique), assertion(length(Unique,8)),
+    rlm:conversation_warm_list(C, Store, [history(true)], ok(Artifacts)),
+    assertion(length(Artifacts,8)),
+    rlm:conversation_stats(C, ok(Stats)), assertion(Stats.messages =:= 8).
+start_warm_worker(T) :- thread_send_message(T,start).
+join_warm_worker(T) :- thread_join(T,true).
+
+test(auto_warm_accounts_pending_message) :-
+    with_runtime(pending_pressure_case).
+pending_pressure_case(C, Store) :-
+    long_text(a, 180, Old),
+    forall(between(1,4,_), rlm:conversation_append(C, message(user,Old), ok(_))),
+    long_text(b, 400, Pending),
+    rlm:conversation_turn(C, message(user,Pending),
+        [context_options([warm_store(Store), cold_history_boundary(false),
+          policy([max_context_tokens(1000),reserve_output_tokens(0),
+                  safety_margin_tokens(0),min_recent_turns(1)]),
+          token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)]),
+          auto_warm([min_batch_messages(1),max_batch_messages(3),keep_recent_messages(1),
+                     generator(plunit_rlm_conversation_runtime:warm_generator)])]),
+         completion_options([planner_handler(plunit_rlm_conversation_runtime:plain_planner)])], ok(Turn)),
+    assertion(Turn.context.auto_warm.published == true),
+    assertion(Turn.context.omitted_units =:= 0),
+    rlm:conversation_stats(C, ok(Stats)), assertion(Stats.messages =:= 6).
+plain_planner(_, ok(planner_output{plan:plan([final(literal("ok"))]),
+                                  usage:json{total_tokens:2}})).
+
+test(failed_turn_retains_compaction_provenance) :-
+    with_runtime(failed_compaction_case).
+failed_compaction_case(C, Store) :-
+    rlm:conversation_append(C, message(user,"old"), ok(_)),
+    rlm:conversation_turn(C, message(user,"new"),
+       [context_options([warm_store(Store),auto_warm([trigger(message_count),
+          min_batch_messages(1),max_batch_messages(1),keep_recent_messages(0),
+          generator(plunit_rlm_conversation_runtime:warm_generator)])]),
+        completion_options([planner_handler(plunit_rlm_conversation_runtime:failed_planner),
+                            planner_attempts(1)])], error(Error)),
+    assertion(Error.auto_warm.published == true),
+    assertion(Error.auto_warm.source_range == range(1,1)).
+failed_planner(_, error(fixture_failure)).
+
 test(managed_native_strategy_calls_native_model_and_retains_history) :-
     with_runtime(native_turn_case).
 

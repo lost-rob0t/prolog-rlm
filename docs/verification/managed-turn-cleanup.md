@@ -19,10 +19,14 @@ Nix build or a live-provider result.
 - Existing 40000-message cold retrieval fixture passes. Complete durable source
   history remains available independently of the bounded solver projection.
 
-Live OpenRouter, Nix packaging, and concurrent warm-publication races were not
-verified here. Context counts are estimates unless a trusted counter is supplied;
-output caps are not exact input-plus-output token reservations. The pending new
-user message is not included in the pre-turn compaction pressure check.
+Live OpenRouter was not run. Context counts are estimates unless a trusted
+counter is supplied; output caps are not exact input-plus-output reservations.
+The subsequent adversarial review reproduced duplicate concurrent auto-warm
+publication with queue barriers, pending-message pressure omissions, lost
+compaction provenance on turn failure, and explicit-plan adapter usage
+undercounting. Regressions now cover these cases and warm source identity after
+artifact serialization. Concurrency coverage is within one runtime process;
+shared multi-process journal writers remain externally coordinated.
 
 A downstream Nix CI regression subsequently exposed that the bare upstream pack
 omitted `skills/`. The pack now includes it, and both packaged-library and CLI

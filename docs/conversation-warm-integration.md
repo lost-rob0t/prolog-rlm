@@ -123,7 +123,7 @@ Should existing warm state participate in attention?
     -> yes, automatically when configured
 
 Should the runtime create new warm state?
-    -> no, not automatically
+    -> only with an explicit auto_warm policy
 ```
 
 The complete transcript remains authoritative and cold-addressable regardless of whether warm context exists.
@@ -147,7 +147,18 @@ providers lacking an authoritative tokenizer/reservation API.
 
 Compaction defaults to the runtime completion budget unless a caller supplies
 separate bounded `completion_options`. Its usage remains attributable to the
-warm generation, separate from the user turn. Context-pressure estimates do
-not include the pending user message; an unusually large new message can
-still fail the context gate. Live provider and concurrent publication tests
-are required before broader guarantees.
+warm generation, separate from the user turn. Successful publication metadata
+is retained as `error.auto_warm` if subsequent turn preparation or execution
+fails, so hosts can still report the compaction spending.
+
+Pressure admission includes a read-only projection of the normalized pending
+user message and its cold-history boundary. It does not append or delete any
+transcript records. Warm source identities compare conversation ID and sequence,
+independent of artifact serialization dict tags.
+
+Automatic gap selection, generation and publication are serialized per
+conversation and warm store within one runtime process. Coverage is re-read
+inside that lock. This does not coordinate explicit publication calls or
+multiple OS processes sharing a persistency journal; those writers need external
+coordination. Queue-barrier concurrent tests use deterministic callback generators,
+not paid providers. Provider token counts remain estimates before dispatch.
