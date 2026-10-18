@@ -21,6 +21,58 @@ with_runtime(Goal) :-
           rlm:conversation_store_close(ConversationStore, _)
         )).
 
+test(opt_in_auto_warm_publishes_once_and_preserves_exact_history) :-
+    with_runtime(auto_warm_publish_case).
+
+auto_warm_publish_case(Conversation, ArtifactStore) :-
+    rlm:conversation_append(Conversation, message(user, "old one"), ok(First)),
+    rlm:conversation_append(Conversation, message(assistant, "old two"), ok(_)),
+    rlm:conversation_append(Conversation, message(user, "old three"), ok(_)),
+    rlm:conversation_append(Conversation, message(assistant, "old four"), ok(_)),
+    boundary_policy(Policy),
+    Auto = [min_batch_messages(3),
+            max_batch_messages(3),
+            keep_recent_messages(1),
+            generator(plunit_rlm_conversation_runtime:warm_generator),
+            token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)])],
+    Options = [context_options([
+                 policy(Policy),
+                 warm_store(ArtifactStore),
+                 auto_warm(Auto),
+                 token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)]),
+                 cold_history_boundary(false)
+              ]),
+              completion_options([
+                 planner_handler(plunit_rlm_conversation_runtime:warm_loaded_planner),
+                 planner_attempts(1)
+              ])],
+    rlm:conversation_turn(Conversation, message(user, "continue"), Options, ok(Turn1)),
+    assertion(Turn1.context.auto_warm.published == true),
+    assertion(Turn1.context.auto_warm.source_range == range(1,3)),
+    assertion(Turn1.context.warm.loaded_units =:= 1),
+    rlm:conversation_warm_list(Conversation, ArtifactStore, [history(true)], ok(Artifacts1)),
+    assertion(length(Artifacts1, 1)),
+    rlm:conversation_turn(Conversation, message(user, "continue again"), Options, ok(Turn2)),
+    assertion(Turn2.context.auto_warm.published == false),
+    rlm:conversation_warm_list(Conversation, ArtifactStore, [history(true)], ok(Artifacts2)),
+    assertion(length(Artifacts2, 1)),
+    rlm:conversation_message(Conversation, 1, ok(Restored)),
+    assertion(Restored.ref == First.ref),
+    assertion(Restored.content == "old one").
+
+test(auto_warm_without_store_fails_before_turn_append) :-
+    with_runtime(auto_warm_missing_store_case).
+
+auto_warm_missing_store_case(Conversation, _ArtifactStore) :-
+    rlm:conversation_turn(
+        Conversation, message(user, "cannot compact"),
+        [context_options([auto_warm([min_batch_messages(1)])])],
+        error(Error)),
+    assertion(Error.kind == conversation_runtime_fault),
+    assertion(Error.detail == auto_warm_requires_store),
+    rlm:conversation_stats(Conversation, ok(Stats)),
+    assertion(Stats.messages =:= 0).
+
 test(public_context_pack_loads_existing_warm_without_manual_context_units) :-
     with_runtime(warm_pack_case).
 
