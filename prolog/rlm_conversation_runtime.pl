@@ -97,7 +97,7 @@ conversation_turn(Conversation, UserMessage, Options0, Outcome) :-
           Exception,
           runtime_exception(turn, Exception, Outcome)).
 
-/* ------------------------------------------------------------------------- 
+/* -------------------------------------------------------------------------
  * Optional bounded automatic warm publication (source transcript immutable)
  * ---------------------------------------------------------------------- */
 
