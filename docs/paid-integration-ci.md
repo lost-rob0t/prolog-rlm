@@ -29,7 +29,9 @@ Run the preflight regression tests without credentials or network:
 python3 test/openrouter_ci_preflight_test.py
 ```
 
-An undispatched or unconfigured live lane is **unrun**, not passing. Applicable
-live merge gates in AGENTS.md still require successful live evidence for the
-reviewed head. Changing the trigger does not waive that gate. Record the exact
-head and workflow run when live validation is available.
+An undispatched or unconfigured live lane is **unrun**, not passing. Live-provider
+testing is a release gate, not a PR merge prerequisite; lack of configured paid
+credentials or budget alone does not block PR merge. Required GitHub PR checks
+and reviews still apply without bypass. Before release, record successful live
+validation with its exact head and workflow run. Changing the trigger does not
+waive the release gate.

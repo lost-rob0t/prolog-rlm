@@ -157,7 +157,7 @@ git diff --check
 
 Also run any focused fixtures introduced or touched by the change, including fresh-process restart/crash fixtures where relevant.
 
-GitHub Actions is the canonical full gate. It also runs static loading, deterministic conformance, CLI/trace smoke, persistent graph/artifact restart checks, and the credentialed REAL OpenRouter lane. Fake providers never count as live-provider evidence.
+GitHub Actions is the canonical PR verification gate for static loading, deterministic conformance, CLI/trace smoke, and persistent graph/artifact restart checks. Credentialed REAL OpenRouter testing is a release gate, not a PR merge prerequisite. Run it only by explicit manual dispatch with configured credentials and a verified spending allowance. Fake providers never count as live-provider evidence; an unrun live lane must remain reported as unrun.
 
 Do not edit CI to hide a product failure, remove a required gate, or convert a failing required check into an informational success unless the issue explicitly requires a justified CI-contract change.
 
@@ -171,10 +171,10 @@ Do not edit CI to hide a product failure, remove a required gate, or convert a f
 - Update docs when public behavior, guarantees, migration requirements, operator workflow, or AgentProlog roadmap status changes.
 - PR descriptions must state the runtime invariant implemented, important non-goals, tests/evidence, and remaining follow-up scope.
 - Do not close a parent issue merely because a substrate landed if canonical adoption remains unfinished.
-- If the task explicitly says to merge on green, merge only the exact reviewed head after all required deterministic and live gates are green and review blockers are resolved. Otherwise stop at the requested branch/PR boundary.
+- If the task explicitly says to merge on green, merge only the exact reviewed head after required PR checks are green and review blockers are resolved. Respect GitHub branch protections without bypassing required checks or reviews. An unrun manual live-provider release gate alone does not block PR merge. Otherwise stop at the requested branch/PR boundary.
 
 ## Completion standard
 
 A plan, partial implementation, local-only happy path, or worker self-report is not completion when an observable gate exists.
 
-Completion means the requested behavior exists in the canonical architecture, adversarial/edge cases are covered, required deterministic checks pass, required live/provider checks pass when applicable, docs accurately state the guarantee boundary, and no known failing review/CI blocker is being hand-waved into tomorrow.
+Completion means the requested behavior exists in the canonical architecture, adversarial/edge cases are covered, required deterministic checks pass, required live/provider checks pass before release, docs accurately state the guarantee boundary, and no known failing review/CI blocker is being hand-waved into tomorrow.
