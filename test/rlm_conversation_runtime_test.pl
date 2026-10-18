@@ -43,16 +43,18 @@ auto_warm_publish_case(Conversation, ArtifactStore) :-
                  cold_history_boundary(false)
               ]),
               completion_options([
-                 planner_handler(plunit_rlm_conversation_runtime:warm_loaded_planner),
+                 planner_handler(plunit_rlm_conversation_runtime:auto_warm_planner),
                  planner_attempts(1)
               ])],
     rlm:conversation_turn(Conversation, message(user, "continue"), Options, ok(Turn1)),
+    assertion(Turn1.assistant.content == "AUTO_WARM_OK"),
     assertion(Turn1.context.auto_warm.published == true),
     assertion(Turn1.context.auto_warm.source_range == range(1,3)),
     assertion(Turn1.context.warm.loaded_units =:= 1),
     rlm:conversation_warm_list(Conversation, ArtifactStore, [history(true)], ok(Artifacts1)),
     assertion(length(Artifacts1, 1)),
     rlm:conversation_turn(Conversation, message(user, "continue again"), Options, ok(Turn2)),
+    assertion(Turn2.assistant.content == "AUTO_WARM_OK"),
     assertion(Turn2.context.auto_warm.published == false),
     rlm:conversation_warm_list(Conversation, ArtifactStore, [history(true)], ok(Artifacts2)),
     assertion(length(Artifacts2, 1)),
@@ -259,6 +261,20 @@ publish_old_warm_context(Conversation, ArtifactStore) :-
           token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)])
         ],
         ok(_)).
+
+auto_warm_planner(Request, ok(Output)) :-
+    Request.messages = [_, System, Message],
+    assertion(System.role == system),
+    assertion(Message.role == user),
+    assertion(sub_string(Message.content, _, _, _, "continue")),
+    Plan = plan([final(literal("AUTO_WARM_OK"))]),
+    Output = planner_output{
+                 plan:Plan,
+                 usage:json{prompt_tokens:1,
+                         completion_tokens:1,
+                         total_tokens:2,
+                         cost:0.0}
+             }.
 
 warm_loaded_planner(Request, ok(Output)) :-
     Request.messages = [_, System, Message],
