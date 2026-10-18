@@ -85,7 +85,7 @@ conversation_warm_derive_(Conversation, Range0, Options, Warm) :-
                          messages:Messages,
                          text:SourceText},
     generate_warm(Source, Options, Generated, Generation),
-    validate_generated(Generated, Data),
+    catch((validate_generated(Generated, Data),
     option(token_options(TokenOptions), Options, []),
     require_options(TokenOptions),
     build_variants(SourceText,
@@ -99,7 +99,8 @@ conversation_warm_derive_(Conversation, Range0, Options, Warm) :-
                         generated:Data,
                         variants:Variants,
                         generation:Generation,
-                        created_at:CreatedAt}.
+                        created_at:CreatedAt}),
+          Exception, throw(warm_generation_fault(Generation, Exception))).
 
 conversation_warm_publish(Conversation,
                           ArtifactStore,
@@ -119,7 +120,8 @@ conversation_warm_publish_(Conversation,
                            Options,
                            Published) :-
     conversation_warm_derive_(Conversation, Range, Options, Warm),
-    warm_namespace(Conversation, Namespace),
+    Generation = Warm.generation,
+    catch((warm_namespace(Conversation, Namespace),
     get_dict(source_range, Warm, SourceRange),
     get_dict(source_refs, Warm, SourceRefs),
     get_dict(generation, Warm, Generation),
@@ -140,7 +142,8 @@ conversation_warm_publish_(Conversation,
                  ArtifactOutcome),
     require_artifact_outcome(ArtifactOutcome, Artifact),
     Published = warm_publication{artifact:Artifact,
-                                 warm:Warm}.
+                                 warm:Warm}),
+          Exception, throw(warm_generation_fault(Generation, Exception))).
 
 conversation_warm_list(Conversation,
                        ArtifactStore,
@@ -365,12 +368,16 @@ rlm_generate(Source, Options, Data, Generation) :-
     ->  get_dict(value, Completion, CompletionValue),
         get_dict(usage, Completion, Usage),
         get_dict(recursion, Completion, Recursion),
-        completion_structured_value(CompletionValue, Data),
-        Generation = warm_generation{kind:rlm,
-                                     usage:Usage,
-                                     recursion:Recursion}
+        Generation = warm_generation{kind:rlm, usage:Usage, recursion:Recursion},
+        catch(completion_structured_value(CompletionValue, Data), Exception,
+              throw(warm_generation_fault(Generation, Exception)))
     ;   CompletionOutcome = error(Error)
-    ->  throw(warm_fault(rlm_generation_failed(Error)))
+    ->  ( is_dict(Error), get_dict(usage, Error, Usage)
+        -> FailedGeneration = warm_generation{kind:rlm, usage:Usage}
+        ; FailedGeneration = warm_generation{kind:rlm}
+        ),
+        throw(warm_generation_fault(FailedGeneration,
+                                    warm_fault(rlm_generation_failed(Error))))
     ;   throw(warm_fault(invalid_completion_outcome(CompletionOutcome)))
     ).
 
@@ -590,6 +597,10 @@ warm_outcome(Phase, Goal, Outcome) :-
           Exception,
           warm_exception(Phase, Exception, Outcome)).
 
+warm_exception(Phase, warm_generation_fault(Generation, Exception), error(Error)) :-
+    !,
+    warm_exception(Phase, Exception, error(Base)),
+    put_dict(generation, Base, Generation, Error).
 warm_exception(Phase, warm_fault(Detail), error(Error)) :-
     !,
     Error = warm_context_error{phase:Phase,
