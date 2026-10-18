@@ -2206,13 +2206,13 @@ response_usage(Response, Usage) :-
                      CompletionKnown),
         usage_number(Raw, total_tokens, Total0, TotalKnown0),
         (   TotalKnown0 == true
-        ->  Total = Total0,
+        ->  Total is max(Total0, Prompt+Completion),
             TokensKnown = true
         ;   PromptKnown == true,
             CompletionKnown == true
         ->  Total is Prompt+Completion,
             TokensKnown = true
-        ;   Total = 0,
+        ;   Total is Prompt+Completion,
             TokensKnown = false
         ),
         usage_cost(Raw, Cost, CostKnown),
@@ -2298,16 +2298,14 @@ budget_usage_check(Budget, Usage, Outcome) :-
                                          limit:Budget.max_model_calls,
                                          usage:Usage,
                                          message:"model-call budget exceeded"})
-    ;   Usage.tokens_known == true,
-        Usage.total_tokens > Budget.max_total_tokens
+    ;   Usage.total_tokens > Budget.max_total_tokens
     ->  Outcome = error(completion_error{phase:budget,
                                          kind:token_budget_exceeded,
                                          used:Usage.total_tokens,
                                          limit:Budget.max_total_tokens,
                                          usage:Usage,
                                          message:"token budget exceeded"})
-    ;   Usage.cost_known == true,
-        Usage.cost_usd > Budget.max_cost_usd
+    ;   Usage.cost_usd > Budget.max_cost_usd
     ->  Outcome = error(completion_error{phase:budget,
                                          kind:cost_budget_exceeded,
                                          used:Usage.cost_usd,

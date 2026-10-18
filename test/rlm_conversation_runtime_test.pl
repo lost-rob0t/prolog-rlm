@@ -21,6 +21,76 @@ with_runtime(Goal) :-
           rlm:conversation_store_close(ConversationStore, _)
         )).
 
+test(managed_native_strategy_calls_native_model_and_retains_history) :-
+    with_runtime(native_turn_case).
+
+native_turn_case(Conversation, _) :-
+    rlm:conversation_append(Conversation, message(user, "remember original"), ok(Original)),
+    rlm:conversation_turn(Conversation, message(user, "continue"),
+        [strategy(native), completion_options([
+            model_handler(plunit_rlm_conversation_runtime:native_model),
+            capabilities([model(openrouter)]), skill_mode(off)])], ok(Turn)),
+    assertion(Turn.assistant.content == "native reply"),
+    assertion(Turn.completion.turns =:= 1),
+    rlm:conversation_message(Conversation, 1, ok(Restored)),
+    assertion(Restored == Original).
+
+native_model(Request, ok(Response)) :-
+    last(Request.messages, Message),
+    assertion(sub_string(Message.content, _, _, _, "remember original")),
+    Response = model_response{text:"native reply", tool_calls:[],
+        usage:json{prompt_tokens:10, completion_tokens:2, total_tokens:12}}.
+
+test(auto_warm_fills_gap_before_existing_partial_summary) :-
+    with_runtime(warm_gap_case).
+
+warm_gap_case(Conversation, Store) :-
+    forall(between(1, 6, N),
+           (format(string(Text), "message ~d", [N]),
+            rlm:conversation_append(Conversation, message(user, Text), ok(_)))),
+    Generator = generator(plunit_rlm_conversation_runtime:warm_generator),
+    rlm:conversation_warm_publish(Conversation, Store, range(3,4), [Generator], ok(_)),
+    rlm_conversation_runtime:maybe_publish_auto_warm(Conversation,
+        [warm_store(Store), auto_warm([trigger(message_count), min_batch_messages(1), max_batch_messages(6),
+                                     keep_recent_messages(0), Generator])], Status),
+    assertion(Status.source_range == range(1,2)),
+    rlm_conversation_runtime:maybe_publish_auto_warm(Conversation,
+        [warm_store(Store), auto_warm([trigger(message_count), min_batch_messages(1), max_batch_messages(6),
+                                     keep_recent_messages(0), Generator])], Next),
+    assertion(Next.source_range == range(5,6)),
+    rlm:conversation_stats(Conversation, ok(Stats)),
+    assertion(Stats.messages =:= 6).
+
+test(auto_warm_does_not_spend_when_history_fits) :-
+    with_runtime(warm_no_pressure_case).
+warm_no_pressure_case(Conversation, Store) :-
+    forall(between(1, 300, _),
+           rlm:conversation_append(Conversation, message(user, "short"), ok(_))),
+    rlm_conversation_runtime:maybe_publish_auto_warm(Conversation,
+        [warm_store(Store), auto_warm([])], Status),
+    assertion(Status.reason == context_fits),
+    rlm:conversation_stats(Conversation, ok(Stats)),
+    assertion(Stats.messages =:= 300),
+    rlm:conversation_context_pack(Conversation, [cold_history_boundary(false)], ok(Pack)),
+    assertion(length(Pack.selected, 300)).
+
+test(auto_warm_publishes_only_under_context_pressure) :-
+    with_runtime(warm_pressure_case).
+warm_pressure_case(Conversation, Store) :-
+    long_text(a, 800, Text),
+    forall(between(1, 4, _),
+           rlm:conversation_append(Conversation, message(user, Text), ok(_))),
+    rlm_conversation_runtime:maybe_publish_auto_warm(Conversation,
+        [warm_store(Store), cold_history_boundary(false),
+         policy([max_context_tokens(1000), reserve_output_tokens(0),
+                 safety_margin_tokens(0), min_recent_turns(1)]),
+         token_options([token_counter(plunit_rlm_conversation_runtime:char_counter)]),
+         auto_warm([min_batch_messages(1), max_batch_messages(2), keep_recent_messages(1),
+                    generator(plunit_rlm_conversation_runtime:warm_generator)])], Status),
+    assertion(Status.source_range == range(1,2)),
+    rlm:conversation_message(Conversation, 1, ok(Original)),
+    assertion(Original.content == Text).
+
 test(opt_in_auto_warm_publishes_once_and_preserves_exact_history) :-
     with_runtime(auto_warm_publish_case).
 
@@ -30,7 +100,7 @@ auto_warm_publish_case(Conversation, ArtifactStore) :-
     rlm:conversation_append(Conversation, message(user, "old three"), ok(_)),
     rlm:conversation_append(Conversation, message(assistant, "old four"), ok(_)),
     boundary_policy(Policy),
-    Auto = [min_batch_messages(3),
+    Auto = [trigger(message_count), min_batch_messages(3),
             max_batch_messages(3),
             keep_recent_messages(1),
             generator(plunit_rlm_conversation_runtime:warm_generator),
@@ -68,7 +138,7 @@ test(auto_warm_without_store_fails_before_turn_append) :-
 auto_warm_missing_store_case(Conversation, _ArtifactStore) :-
     rlm:conversation_turn(
         Conversation, message(user, "cannot compact"),
-        [context_options([auto_warm([min_batch_messages(1)])])],
+        [context_options([auto_warm([trigger(message_count), min_batch_messages(1)])])],
         error(Error)),
     assertion(Error.kind == conversation_runtime_fault),
     assertion(Error.detail == auto_warm_requires_store),

@@ -309,3 +309,14 @@ Current core and product issues that materially affect the roadmap:
 - #186: removes legacy nested harnesses and restores the runtime-only repository boundary before #184 implementation.
 
 Do not wait for every P1 research idea before advancing the standalone `lost-rob0t/agentProlog` product. Build downstream against stable public contracts, keep optional integrations optional, and let the first usable coding loop drive the remaining abstractions.
+
+
+### Draft managed-turn cleanup (PR #519 / AgentProlog #49)
+
+Managed turns now offer an explicit native-loop strategy, retain complete
+source history, and expose separate warm-generation usage. Automatic warm
+publication defaults to token pressure and fills uncovered ranges rather than
+skipping holes after partial summaries. Execution accounting preserves known
+usage even when another response lacks usage. These draft changes require the
+downstream exact pin and live-provider gates; they do not establish full
+semantic project-KB materialization or concurrent publication safety.
