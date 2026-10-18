@@ -23,3 +23,8 @@ Live OpenRouter, Nix packaging, and concurrent warm-publication races were not
 verified here. Context counts are estimates unless a trusted counter is supplied;
 output caps are not exact input-plus-output token reservations. The pending new
 user message is not included in the pre-turn compaction pressure check.
+
+A downstream Nix CI regression subsequently exposed that the bare upstream pack
+omitted `skills/`. The pack now includes it, and both packaged-library and CLI
+wrapper Nix checks require a nonempty default catalog outside the source tree.
+The runtime code and 1290-test corpus are unchanged by this packaging repair.
