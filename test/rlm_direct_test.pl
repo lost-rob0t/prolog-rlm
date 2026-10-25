@@ -2,6 +2,7 @@
 
 :- use_module(library(http/json)).
 :- use_module(library(filesex)).
+:- use_module(library(time)).
 :- use_module('../prolog/rlm_async').
 :- use_module('../prolog/rlm_authority').
 :- use_module('../prolog/rlm_completion').
@@ -1131,5 +1132,219 @@ test(native_context_peek_head_omitted_count_executes_with_default) :-
     direct_request(2, SecondRequest),
     request_tool_message(SecondRequest, "peek_head_d1", context_peek, Content),
     assertion(sub_string(Content, _, _, _, "HEAD_DEFAULT_NEEDLE payload")).
+
+
+/* Opt-in approval suspension retains the original direct continuation. */
+
+scenario_response(approval_finish, 1, _, "", [Call], "") :-
+    native_call("effect_1", "counting_write", _{value:7}, Call).
+scenario_response(approval_finish, 2, Request, "APPROVED_DONE", [], "") :-
+    request_tool_message(Request, "effect_1", counting_write, Content),
+    assertion(sub_string(Content, _, _, _, "result_effect_1")).
+
+scenario_response(approval_twice, 1, _, "", [Call], "") :-
+    native_call("effect_1", "counting_write", _{value:7}, Call).
+scenario_response(approval_twice, 2, Request, "", [Call], "") :-
+    request_tool_message(Request, "effect_1", counting_write, _),
+    native_call("effect_2", "counting_write", _{value:8}, Call).
+scenario_response(approval_twice, 3, Request, "", [Call], "") :-
+    request_tool_message(Request, "effect_2", counting_write, _),
+    native_call("earlier_result", "context_peek",
+                _{context:"result_effect_1",selector:_{type:"item",index:0}}, Call).
+scenario_response(approval_twice, 4, Request, "TWO_APPROVALS_DONE", [], "") :-
+    request_tool_message(Request, "earlier_result", context_peek, Content),
+    assertion(sub_string(Content, _, _, _, "7")),
+    assertion(sub_string(Content, _, _, _, "seen")).
+
+:- meta_predicate with_direct_approval(+, +, 3).
+
+with_direct_approval(Scenario, Extra, Goal) :-
+    setup_call_cleanup(
+        setup_direct_effect_store(Store),
+        ( reset_direct(Scenario),
+          Context = session(direct_suspend_fixture),
+          setup_call_cleanup(
+              tool_registry_create(Registry),
+              ( register_counting_write(Registry),
+                direct_provider_options([tool(counting_write),context(peek)],
+                    [suspend_on_approval(true),tool_registry(Registry),
+                     authority_context(Context)|Extra], Options),
+                call(Goal, Options, Registry, Context)
+              ),
+              ( tool_registry_destroy(Registry), rlm_authority_clear(Context) ))
+        ),
+        cleanup_direct_effect_store(Store)).
+
+start_direct_approval(Options, Pending) :-
+    rlm_direct("Write only with approval", text("retained input"), Options,
+               approval_required(Pending)),
+    assertion(Pending.cursor = direct_cursor(_)),
+    assertion(tool_effect_test_support:tool_mutation_count(0)).
+
+approve_direct_pending(Pending) :-
+    rlm_approve(Pending.approval.id, ok(_)),
+    rlm_pending_resolution(Pending.approval.id, Resolution),
+    assertion(is_dict(Resolution, tool_pending_resolution)),
+    assertion(Resolution.outcome = ok(_)).
+
+approval_finishes_once(Options, _, _) :-
+    start_direct_approval(Options, Pending),
+    rlm_direct:rlm_direct_resume_execute(Pending.cursor, approval_required(Early)),
+    assertion(Early.cursor == Pending.cursor),
+    assertion(Early.approval.id == Pending.approval.id),
+    assertion(direct_call_count(1)),
+    approve_direct_pending(Pending),
+    setup_call_cleanup(
+        rlm_direct:rlm_direct_resume_async(Pending.cursor, Future),
+        ( rlm_future_await(Future, 5.0, ok(Result)),
+          rlm_future_await(Future, 5.0, ok(Repeated)),
+          assertion(Repeated =@= Result)
+        ),
+        rlm_future_destroy(Future)),
+    assertion(Result.value == "APPROVED_DONE"),
+    assertion(Result.turns =:= 2),
+    assertion(Result.tool_calls =:= 1),
+    assertion(Result.usage.total_tokens =:= 6),
+    assertion(tool_effect_test_support:tool_mutation_count(1)),
+    rlm_direct:rlm_direct_resume(Pending.cursor, error(Stale)),
+    assertion(Stale.kind == stale_cursor),
+    assertion(direct_call_count(2)),
+    assertion(tool_effect_test_support:tool_mutation_count(1)).
+
+test(approval_resume_once_preserves_exact_model_and_tool_budgets) :-
+    with_direct_approval(approval_finish,
+                         [budget(_{max_model_calls:2,max_tool_calls:1})],
+                         approval_finishes_once).
+
+approval_denies_without_effect(Options, _, _) :-
+    start_direct_approval(Options, Pending),
+    rlm_deny(Pending.approval.id, test_denial, ok(_)),
+    rlm_pending_resolution(Pending.approval.id, denied(Denial)),
+    assertion(is_dict(Denial, authority_denial)),
+    rlm_direct:rlm_direct_resume(Pending.cursor, error(Error)),
+    assertion(Error.kind == approval_denied),
+    assertion(tool_effect_test_support:tool_mutation_count(0)),
+    assertion(direct_call_count(1)),
+    rlm_direct:rlm_direct_resume(Pending.cursor, error(Stale)),
+    assertion(Stale.kind == stale_cursor).
+
+test(approval_denial_never_dispatches_or_calls_model_again) :-
+    with_direct_approval(approval_finish, [], approval_denies_without_effect).
+
+approval_cancel_is_scoped(Options, Registry, Context) :-
+    start_direct_approval(Options, Pending),
+    tool_invoke(Registry, [tool(counting_write)], counting_write,
+                _{value:99}, [authority_context(Context)],
+                approval_required(Other), _),
+    assertion(Other.id \== Pending.approval.id),
+    rlm_direct:rlm_direct_cancel(Pending.cursor, ok(cancelled)),
+    rlm_pending_approval(Context, Other.id, StillPending),
+    assertion(StillPending.state == pending),
+    assertion(tool_effect_test_support:tool_mutation_count(0)),
+    rlm_direct:rlm_direct_resume(Pending.cursor, error(Stale)),
+    assertion(Stale.kind == stale_cursor),
+    rlm_approve(Pending.approval.id, Rejected),
+    assertion(Rejected = error(_)),
+    assertion(tool_effect_test_support:tool_mutation_count(0)),
+    rlm_deny(Other.id, cleanup, _).
+
+test(approval_cancel_leaves_shared_owner_pending_untouched) :-
+    with_direct_approval(approval_finish, [], approval_cancel_is_scoped).
+
+approval_retains_prior_context(Options, _, _) :-
+    start_direct_approval(Options, First),
+    approve_direct_pending(First),
+    rlm_direct:rlm_direct_resume(First.cursor, approval_required(Second)),
+    assertion(Second.approval.id \== First.approval.id),
+    assertion(tool_effect_test_support:tool_mutation_count(1)),
+    approve_direct_pending(Second),
+    rlm_direct:rlm_direct_resume(Second.cursor, ok(Result)),
+    assertion(Result.value == "TWO_APPROVALS_DONE"),
+    assertion(Result.turns =:= 4),
+    assertion(Result.tool_calls =:= 2),
+    assertion(Result.context_calls =:= 1),
+    assertion(tool_effect_test_support:tool_mutation_count(2)).
+
+test(multiple_approvals_retain_prior_tool_context_and_budgets) :-
+    with_direct_approval(approval_twice,
+        [budget(_{max_model_calls:4,max_tool_calls:2,max_context_ops:1})],
+        approval_retains_prior_context).
+
+approval_budget_stays_spent(Options, _, _) :-
+    start_direct_approval(Options, Pending),
+    approve_direct_pending(Pending),
+    rlm_direct:rlm_direct_resume(Pending.cursor, error(Error)),
+    assertion(Error.kind == model_call_budget_exhausted),
+    assertion(direct_call_count(1)),
+    assertion(tool_effect_test_support:tool_mutation_count(1)).
+
+test(approval_resume_does_not_reset_spent_model_budget) :-
+    with_direct_approval(approval_finish, [budget(_{max_model_calls:1})],
+                         approval_budget_stays_spent).
+
+approval_expired_deadline(Deadline, Options, _, Context) :-
+    start_direct_approval(Options, Pending),
+    setup_call_cleanup(
+        message_queue_create(Queue),
+        setup_call_cleanup(
+            alarm_at(Deadline, thread_send_message(Queue, deadline_reached),
+                     Alarm, []),
+            thread_get_message(Queue, deadline_reached),
+            remove_alarm(Alarm)),
+        message_queue_destroy(Queue)),
+    rlm_direct:rlm_direct_resume(Pending.cursor, error(Error)),
+    assertion(Error.phase == deadline),
+    assertion(tool_effect_test_support:tool_mutation_count(0)),
+    assertion(direct_call_count(1)),
+    rlm_pending_approval(Context, Pending.approval.id, Record),
+    assertion(Record.state \== pending),
+    rlm_direct:rlm_direct_resume(Pending.cursor, error(Stale)),
+    assertion(Stale.kind == stale_cursor).
+
+test(approval_resume_preserves_original_absolute_deadline) :-
+    get_time(Now), Deadline is Now+2.0,
+    with_direct_approval(approval_finish,
+        [wall_clock_deadline(Deadline),synthesis_reservation(0)],
+        approval_expired_deadline(Deadline)).
+
+test(approval_resume_unknown_cursor_is_structured_error) :-
+    rlm_direct:rlm_direct_resume(direct_cursor(never_created), error(Error)),
+    assertion(Error.kind == stale_cursor).
+
+
+scenario_response(approval_block_resume(_, _, _), 1, _, "", [Call], "") :-
+    native_call("effect_1", "counting_write", _{value:7}, Call).
+scenario_response(approval_block_resume(Entered, Release, Cleaned),
+                  2, _, "UNREACHABLE_AFTER_CANCEL", [], "") :-
+    setup_call_cleanup(
+        thread_send_message(Entered, resumed_model_entered),
+        thread_get_message(Release, continue),
+        thread_send_message(Cleaned, resumed_model_cleaned)).
+
+approval_cancel_active_resume(Entered, Cleaned, Options, _, _) :-
+    start_direct_approval(Options, Pending),
+    approve_direct_pending(Pending),
+    setup_call_cleanup(
+        rlm_direct:rlm_direct_resume_async(Pending.cursor, Future),
+        ( thread_get_message(Entered, resumed_model_entered, [timeout(5)]),
+          rlm_direct:rlm_direct_resume_execute(Pending.cursor, error(Stale)),
+          assertion(Stale.kind == stale_cursor),
+          rlm_future_cancel(Future, ok(cancelled)),
+          rlm_future_await(Future, 5.0, error(Error)),
+          assertion(Error.kind == cancelled),
+          thread_get_message(Cleaned, resumed_model_cleaned, [timeout(5)]),
+          assertion(tool_effect_test_support:tool_mutation_count(1)),
+          assertion(direct_call_count(2))
+        ),
+        ( rlm_future_cancel(Future, _), rlm_future_destroy(Future) )).
+
+test(active_resumed_model_cancels_via_its_future_without_repeating_effect) :-
+    setup_call_cleanup(
+        ( message_queue_create(Entered), message_queue_create(Release),
+          message_queue_create(Cleaned) ),
+        with_direct_approval(approval_block_resume(Entered, Release, Cleaned), [],
+            approval_cancel_active_resume(Entered, Cleaned)),
+        ( message_queue_destroy(Entered), message_queue_destroy(Release),
+          message_queue_destroy(Cleaned) )).
 
 :- end_tests(rlm_direct).

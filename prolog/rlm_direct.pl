@@ -2,6 +2,10 @@
           [ rlm_direct/4,
             rlm_direct_async/4,
             rlm_direct_execute/4,
+            rlm_direct_resume/2,
+            rlm_direct_resume_async/2,
+            rlm_direct_resume_execute/2,
+            rlm_direct_cancel/2,
             rlm_direct_model_step/10,
             request_deadline_provider/3
           ]).
@@ -9,6 +13,8 @@
 /** <module> Bounded provider-native direct agent loop */
 
 :- use_module(library(lists)).
+:- use_module(library(uuid)).
+:- use_module(rlm_authority, []).
 :- use_module(rlm_async).
 :- use_module(rlm_chain).
 :- use_module(rlm_text, [text_string/2]).
@@ -46,6 +52,8 @@
 :- use_module(rlm_verify, []).
 :- use_module(rlm_tool).
 
+:- dynamic direct_pending_cursor/2.
+
 rlm_direct_async(Query, Context, Options, Future) :-
     completion_task_metadata(direct, Options, Metadata),
     rlm_async_submit(rlm_direct:rlm_direct_execute(Query, Context, Options),
@@ -62,6 +70,155 @@ rlm_direct_execute(Query, Context, Options, Outcome) :-
     catch(direct_guarded(Query, Context, Options, Outcome),
           Exception,
           direct_exception(Exception, Outcome)).
+
+% A cursor owns only transient continuation resources. Authority remains in
+% rlm_authority; neither a decision nor a tool result can be supplied to resume.
+rlm_direct_resume_async(Cursor, Future) :-
+    rlm_async_submit(rlm_direct:rlm_direct_resume_execute(Cursor),
+                     async_metadata{operation:direct_resume}, Future).
+
+rlm_direct_resume(Cursor, Outcome) :-
+    rlm_direct_resume_async(Cursor, Future),
+    setup_call_cleanup(true, rlm_future_await(Future, Outcome),
+                       rlm_future_destroy(Future)).
+
+rlm_direct_resume_execute(Cursor, Outcome) :-
+    catch(( with_mutex(rlm_direct_cursors, claim_direct_cursor(Cursor, Claim)),
+            resume_direct_claim(Claim, Outcome) ),
+          Exception, direct_exception(Exception, Outcome)).
+
+rlm_direct_cancel(Cursor, Outcome) :-
+    catch(( with_mutex(rlm_direct_cursors, take_direct_cursor(Cursor, Saved)),
+            release_direct_cursor(Saved),
+            Outcome = ok(cancelled) ),
+          Exception, direct_exception(Exception, Outcome)).
+
+suspend_direct(Pending, ToolResult, Resolved, Calls, Runtime, State, Outcome) :-
+    uuid(Id),
+    Public = direct_pending{cursor:direct_cursor(Id), approval:Pending},
+    Saved = direct_continuation{pending:Public, runtime:Runtime, state:State,
+                                resolved:Resolved, calls:Calls,
+                                tool_result:ToolResult},
+    catch(with_mutex(rlm_direct_cursors,
+                     publish_direct_cursor(Id, Saved)),
+          Exception,
+          (rlm_authority:rlm_pending_cancel(Pending.id, suspension_failed),
+           throw(Exception))),
+    Outcome = approval_required(Public).
+
+publish_direct_cursor(Id, Saved) :-
+    aggregate_all(count, direct_pending_cursor(_, _), Count),
+    ( Count < 64
+    -> assertz(direct_pending_cursor(Id, Saved))
+    ; throw(direct_fault(direct_error{phase:authority,kind:cursor_limit,
+                                     message:"direct approval cursor limit reached"}))
+    ).
+
+cursor_identity(direct_cursor(Id), Id) :- atom(Id), !.
+cursor_identity(_, _) :- stale_direct_cursor.
+
+stale_direct_cursor :-
+    throw(direct_fault(direct_error{phase:authority,kind:stale_cursor,
+                                    message:"direct approval cursor is unavailable"})).
+
+take_direct_cursor(Cursor, Saved) :-
+    cursor_identity(Cursor, Id),
+    ( retract(direct_pending_cursor(Id, Saved)) -> true ; stale_direct_cursor ).
+
+claim_direct_cursor(Cursor, Claim) :-
+    cursor_identity(Cursor, Id),
+    ( direct_pending_cursor(Id, Saved) -> true ; stale_direct_cursor ),
+    get_time(Now),
+    ( \+ catch(check_cancelled(Saved.runtime.token), _, fail)
+    -> Resolution = cancelled
+    ; Now >= Saved.runtime.deadline
+    -> Resolution = expired
+    ; catch(direct_resolution(Saved.pending.approval.id, Resolution),
+            Exception, Resolution = resolution_exception(Exception))
+    ),
+    ( Resolution == waiting
+    -> Claim = waiting(Saved.pending)
+    ; retract(direct_pending_cursor(Id, Saved)),
+      Claim = claimed(Saved, Resolution)
+    ).
+
+direct_resolution(ApprovalId, Resolution) :-
+    rlm_authority:rlm_pending_resolution_async(ApprovalId, Future),
+    rlm_future_status(Future, Status),
+    ( Status.state == completed -> Resolution = resolved(Status.outcome)
+    ; Status.state == cancelled -> Resolution = cancelled
+    ; Resolution = waiting
+    ).
+
+resume_direct_claim(waiting(Public), approval_required(Public)).
+resume_direct_claim(claimed(Saved, Resolution), Outcome) :-
+    setup_call_cleanup(
+        true,
+        catch((resume_saved_direct(Saved, Resolution, Outcome) -> true
+              ; throw(direct_fault(direct_error{phase:authority,
+                         kind:invalid_resolution,
+                         message:"direct approval resolution was invalid"}))),
+              Exception, direct_exception(Exception, Outcome)),
+        ( direct_suspended(Outcome)
+        -> cleanup_cancellation(Saved.runtime.token, false)
+        ; release_direct_cursor(Saved)
+        )).
+
+resume_saved_direct(Saved, expired, error(Error)) :- !,
+    state_error(Saved.state, deadline, run_deadline_exceeded, _{},
+                "direct run exceeded its original deadline", Error).
+resume_saved_direct(Saved, cancelled, error(Error)) :- !,
+    state_error(Saved.state, runtime, cancelled, _{},
+                "direct loop was cancelled", Error).
+resume_saved_direct(_, resolution_exception(Exception), _) :- !,
+    throw(Exception).
+resume_saved_direct(Saved, resolved(denied(Reason)), error(Error)) :- !,
+    state_error(Saved.state, authority, approval_denied, _{reason:Reason},
+                "native tool approval was denied", Error).
+resume_saved_direct(Saved, resolved(Resolution), Outcome) :-
+    Runtime = Saved.runtime,
+    register_current_thread(Runtime.token),
+    get_time(Now), Remaining is Runtime.deadline-Now,
+    ( Remaining > 0 -> true ; throw(time_limit_exceeded) ),
+    resumed_tool_result(Resolution, Saved.tool_result, ToolResult),
+    call_with_time_limit(Remaining,
+        after_tool(ToolResult, Saved.resolved, Saved.calls,
+                   Runtime, Saved.state, Outcome)).
+
+resumed_tool_result(Resolution, Original, Result) :-
+    is_dict(Resolution, tool_pending_resolution),
+    !,
+    put_dict(_{authorization:allowed, status:Resolution.status,
+               output_bytes:Resolution.output_bytes,
+               elapsed_ms:Resolution.elapsed_ms}, Original.trace, Trace),
+    ( Resolution.outcome = ok(Value)
+    -> Outcome = ok(tool_execution{value:Value,trace:Trace})
+    ; Outcome = Resolution.outcome
+    ),
+    Result = tool_async_result{outcome:Outcome,trace:Trace}.
+resumed_tool_result(error(Error), Original,
+                    tool_async_result{outcome:error(Error),trace:Original.trace}).
+
+direct_suspended(Outcome) :-
+    nonvar(Outcome), Outcome = approval_required(Public),
+    is_dict(Public, direct_pending),
+    Public.cursor = direct_cursor(Id),
+    direct_pending_cursor(Id, _).
+
+direct_cleanup_token(Token, OwnToken, Outcome) :-
+    ( direct_suspended(Outcome) -> cleanup_cancellation(Token, false)
+    ; cleanup_cancellation(Token, OwnToken)
+    ).
+
+direct_cleanup_context(ContextRef, Owned, Outcome) :-
+    ( direct_suspended(Outcome) -> true ; cleanup_context(ContextRef, Owned) ).
+
+release_direct_cursor(Saved) :-
+    rlm_authority:rlm_pending_cancel(Saved.pending.approval.id, direct_cursor_closed),
+    forall((member(Context, Saved.state.contexts), Context.source \== input),
+           catch(context_delete(Context.handle, _), _, true)),
+    cleanup_context(Saved.runtime.root_context, Saved.runtime.root_context_owned),
+    cleanup_cancellation(Saved.runtime.token, Saved.runtime.own_token).
 
 rlm_direct_model_step(Context,
                       Capabilities,
@@ -108,7 +265,8 @@ direct_model_step_(Context,
     ),
     direct_model_step_budget(BaseBudget, NativeBudget, ChildBudget),
     direct_model_step_token_limit(RequestOptions, BaseOptions, TokenLimit),
-    ChildOptions = [ budget(ChildBudget),
+    ChildOptions = [ suspend_on_approval(false),
+                     budget(ChildBudget),
                      capabilities(Capabilities),
                      cancel_token(Token),
                      native_request_options(RequestOptions),
@@ -189,18 +347,21 @@ direct_guarded(Query0, Context, Options, Outcome) :-
                                                  Options,
                                                  Budget,
                                                  Token,
+                                                 OwnToken,
                                                  Outcome)),
-        cleanup_cancellation(Token, OwnToken)).
+        direct_cleanup_token(Token, OwnToken, Outcome)).
 
-direct_with_context(Query, Context, Options, Budget, Token, Outcome) :-
+direct_with_context(Query, Context, Options, Budget, Token, OwnToken, Outcome) :-
     check_cancelled(Token),
     acquire_context(Context, ContextRef, Owned),
     setup_call_cleanup(
         true,
-        direct_with_handle(Query, ContextRef, Options, Budget, Token, Outcome),
-        cleanup_context(ContextRef, Owned)).
+        direct_with_handle(Query, ContextRef, Owned, Options, Budget, Token,
+                           OwnToken, Outcome),
+        direct_cleanup_context(ContextRef, Owned, Outcome)).
 
-direct_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
+direct_with_handle(Query, ContextRef, Owned, Options, Budget, Token,
+                   OwnToken, Outcome) :-
     context_metadata(ContextRef.handle, MetadataOutcome),
     require_context_metadata(MetadataOutcome, MetadataRef),
     provider_options(Options, ProviderName, Provider),
@@ -249,6 +410,9 @@ direct_with_handle(Query, ContextRef, Options, Budget, Token, Outcome) :-
                              options:Options,
                              budget:Budget,
                              token:Token,
+                             own_token:OwnToken,
+                             root_context:ContextRef,
+                             root_context_owned:Owned,
                              deadline:Deadline,
                              reservation:Reservation,
                              synthesis:false},
@@ -1220,6 +1384,11 @@ after_execution(runtime(ok(Execution)), Resolved, Calls, Runtime, State0,
                         Runtime,
                         Outcome).
 
+after_tool(ToolResult, Resolved, Calls, Runtime, State, Outcome) :-
+    ToolResult.outcome = approval_required(Pending),
+    option(suspend_on_approval, Runtime.options, false, true),
+    !,
+    suspend_direct(Pending, ToolResult, Resolved, Calls, Runtime, State, Outcome).
 after_tool(ToolResult, Resolved, _, _, State, error(Error)) :-
     ToolResult.outcome = error(Cause),
     !,
@@ -1319,7 +1488,7 @@ after_retained(ok(Context, ContextRef), ToolResult, Resolved, Calls,
         true,
         with_retained(Context, ContextRef, ToolResult, Resolved, Calls,
                       Runtime, State0, Outcome),
-        context_delete(ContextRef.handle, _)).
+        direct_cleanup_context(ContextRef, true, Outcome)).
 
 with_retained(Context, ContextRef, ToolResult, Resolved, Calls,
               Runtime, State0, Outcome) :-
