@@ -1,5 +1,7 @@
 :- module(rlm_mcp_tool,
           [ mcp_import_tools/5,
+            mcp_import_tools_async/5,
+            mcp_import_tools_execute/5,
             mcp_import_state_destroy/1
           ]).
 
@@ -22,6 +24,7 @@ Future and waiting on it would recreate the nested-wait bug prevented by PR #60.
 */
 
 :- use_module(library(gensym)).
+:- use_module(rlm_async, []).
 :- use_module(rlm_authority, []).
 :- use_module(rlm_mcp, []).
 :- use_module(rlm_tool, []).
@@ -29,16 +32,27 @@ Future and waiting on it would recreate the nested-wait bug prevented by PR #60.
 :- dynamic imported_client_state/3.
 
 mcp_import_tools(Registry, Server, Client0, Options, Outcome) :-
+    mcp_import_tools_async(Registry, Server, Client0, Options, Future),
+    setup_call_cleanup(true,
+                       rlm_async:rlm_future_await(Future, Outcome),
+                       rlm_async:rlm_future_destroy(Future)).
+
+mcp_import_tools_async(Registry, Server, Client0, Options, Future) :-
+    rlm_async:rlm_async_submit(
+        rlm_mcp_tool:mcp_import_tools_execute(Registry, Server, Client0, Options),
+        async_metadata{operation:mcp_import},
+        Future).
+
+mcp_import_tools_execute(Registry, Server, Client0, Options, Outcome) :-
     catch(mcp_import_tools_(Registry, Server, Client0, Options, Outcome),
           Exception,
           import_exception(Exception, Outcome)).
 
 mcp_import_tools_(Registry, Server, Client0, Options, Outcome) :-
     require_server_name(Server),
-    rlm_mcp:mcp_client_command(Client0,
-                               list_tools,
-                               Client,
-                               ListOutcome),
+    rlm_mcp:mcp_client_command_execute(Client0, list_tools, Result),
+    Client = Result.client,
+    ListOutcome = Result.outcome,
     import_after_list(ListOutcome,
                       Registry,
                       Server,

@@ -271,6 +271,28 @@ command, client close, and canonical server request handling. Trusted code
 already executing inside canonical async work uses execute ABIs directly rather
 than submitting a nested Future and waiting on it.
 
+The supported trusted-host worker APIs are exported by their owning modules:
+
+| Module | Execute predicate |
+| --- | --- |
+| `rlm_mcp_server` | `rlm_install_mcp_server_execute/3`, `rlm_run_mcp_server_execute/3`, `rlm_restart_mcp_server_execute/3` |
+| `rlm_mcp_server` | `rlm_connect_mcp_server_execute/5`, `rlm_stop_mcp_server_execute/2` |
+| `rlm_mcp` | `mcp_client_connect_execute/5`, `mcp_client_command_execute/3`, `mcp_client_close_execute/2` |
+| `rlm_mcp_tool` | `mcp_import_tools_execute/5` |
+
+Execute calls retain the current worker's cancellation and task context and do
+not submit another Future. Client command execute returns
+`mcp_command_async_result{client:UpdatedClient, outcome:Outcome}`; callers must
+retain that updated client. Other listed execute calls preserve their ordinary
+operation outcome. These are trusted host APIs, not model-callable tools, and
+retain the existing validation and authority checks.
+
+A profile already running in a canonical worker uses execute APIs for the whole
+open/connect/import/invoke/close/stop lifetime, including error and cancellation
+cleanup. Calling synchronous facades from all occupied workers can otherwise
+exhaust the pool while each waits for another queued task. Outside a worker,
+continue using the synchronous or asynchronous surfaces.
+
 ## Tool import
 
 Remote tool import is a separate explicit step and requires an already connected
@@ -287,6 +309,11 @@ mcp_import_tools(Registry,
 Imported remote tools are ordinary namespaced `rlm_tool` entries and execute
 through the same canonical tool contract. Import does not grant their
 `tool(Name)` capability.
+
+`mcp_import_tools_async/5` returns a Future resolving to the same import outcome.
+The synchronous `mcp_import_tools/5` submits that operation and awaits it;
+`mcp_import_tools_execute/5` lists tools directly in the current worker and
+consumes the updated client from the command result envelope.
 
 ## Malformed or untrusted declarations
 

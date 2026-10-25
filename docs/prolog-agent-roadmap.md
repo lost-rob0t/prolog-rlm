@@ -8,6 +8,12 @@ This roadmap tracks the shortest path from the current runtime to a useful codin
 
 ## How far are we?
 
+Async host profiles can use the exported MCP lifecycle/client execute APIs and
+`mcp_import_tools_execute/5` for their entire setup and cleanup lifetime without
+waiting for nested scheduler work. Import has canonical synchronous/asynchronous
+facades for callers outside workers. Hosts must adopt these APIs; this substrate
+alone does not prove downstream product or live-provider acceptance.
+
 The hard runtime substrate is mostly here. The product layer is not.
 
 Already available in core and the downstream application boundary:
