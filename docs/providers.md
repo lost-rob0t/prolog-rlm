@@ -107,7 +107,72 @@ rlm_chain:openai_compatible_provider(
 ```
 
 For a local endpoint that requires no credential, pass `none`. Resolved/raw
-credentials are intentionally rejected as configuration.
+credentials are intentionally rejected as configuration. Model-provider HTTP
+requests use `User-Agent: prolog-rlm/0.1` by default. A host can identify its
+own integration by adding `user_agent(Name)` to the provider configuration:
+
+```prolog
+Provider = provider(openai_compatible,
+                    [endpoint(Endpoint),
+                     credential(env('EXAMPLE_API_KEY')),
+                     model(Model),
+                     user_agent('agentProlog/1.0')]).
+```
+
+`user_agent/1` applies to non-streaming and streaming Chat Completions and to
+the Z.AI Responses and Anthropic Messages adapters. It must be a nonempty atom
+or string without control characters; invalid values fail before network I/O.
+This descriptive identity grants no capability or authority.
+
+## Z.AI Coding Plan
+
+`zai_coding_provider/3` selects the dedicated Coding Plan endpoint for each
+supported wire protocol while retaining the same provider-neutral
+`model_complete/3` result contract:
+
+```prolog
+zai_coding_provider(chat_completions, 'glm-5.3', ChatProvider),
+zai_coding_provider(responses, 'glm-5.3', CodexProvider),
+zai_coding_provider(anthropic_messages, 'glm-5.3', ClaudeProvider).
+```
+
+The named conveniences select the protocol used by the corresponding coding
+tool:
+
+```prolog
+zai_codex_provider('glm-5.3', CodexProvider),
+zai_claude_provider('glm-5.3', ClaudeProvider).
+```
+
+All constructors retain `credential(env('ZAI_API_KEY'))`; the secret is
+resolved only when an HTTP request executes. They use Z.AI's documented Coding
+Plan endpoints:
+
+| Constructor protocol | Wire protocol | Request endpoint |
+| --- | --- | --- |
+| `chat_completions` | OpenAI Chat Completions | `https://api.z.ai/api/coding/paas/v4/chat/completions` |
+| `responses` | OpenAI Responses (Codex) | `https://api.z.ai/api/v1/responses` |
+| `anthropic_messages` | Anthropic Messages (Claude) | `https://api.z.ai/api/anthropic/v1/messages` |
+
+Chat Completions reuses the existing completion and SSE implementation.
+Responses and Anthropic Messages currently support non-streaming completion,
+including canonical function tools, correlated tool results, usage, errors,
+reasoning controls, and provider-native reasoning/thinking block replay.
+Calling `model_stream/4` with `zai_codex` or `zai_claude` fails explicitly with
+`capability_denied`; their distinct streaming event protocols are not emulated
+from a completed response.
+
+Anthropic requires `max_tokens`; `zai_claude_provider/2` supplies a host-owned
+default of 4096 when neither canonical max-token option is present. A manually
+constructed provider can change it with `default_max_tokens/1`. The adapter
+rejects interspersed system messages, malformed tool history, unsupported
+protocol options, and non-object Anthropic tool arguments before network I/O.
+
+Z.AI controls Coding Plan entitlement, supported models, and quota. Use a key
+issued for the applicable Individual or Team Coding Plan and confirm that the
+intended client/integration is permitted by the current Z.AI plan terms. The
+deterministic suite validates wire behavior against loopback HTTP fixtures; it
+does not claim live account or quota conformance.
 
 ## CI test classes
 

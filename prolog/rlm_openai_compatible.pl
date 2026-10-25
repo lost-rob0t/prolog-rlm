@@ -38,29 +38,30 @@ openai_compatible_complete(Provider, Config, Request, Outcome) :-
 complete_from_config(error(Error), _, _, error(Error)) :-
     !.
 complete_from_config(ok(Endpoint, Credential, RequestedModel, Timeout,
-                        AddressFamily, Attribution),
+                        AddressFamily, UserAgent, Attribution),
                      Provider, Request, Outcome) :-
-    request_payload(Request, RequestedModel, PayloadOutcome),
+    request_payload(Provider, Request, RequestedModel, PayloadOutcome),
     complete_payload(PayloadOutcome, Provider, Endpoint, Credential,
-                     RequestedModel, Timeout, AddressFamily, Attribution,
+                     RequestedModel, Timeout, AddressFamily, UserAgent,
+                     Attribution,
                      Outcome).
 
-complete_payload(error(Error), _, _, _, _, _, _, _, error(Error)) :-
+complete_payload(error(Error), _, _, _, _, _, _, _, _, error(Error)) :-
     !.
 complete_payload(ok(Payload), Provider, Endpoint, Credential,
-                 RequestedModel, Timeout, AddressFamily, Attribution,
+                 RequestedModel, Timeout, AddressFamily, UserAgent, Attribution,
                  Outcome) :-
     resolve_credential(Provider, Credential, CredentialOutcome),
     execute_credentialed(CredentialOutcome, Provider, Endpoint,
-                         RequestedModel, Timeout, AddressFamily,
+                         RequestedModel, Timeout, AddressFamily, UserAgent,
                          Attribution, Payload,
                          Outcome).
 
-execute_credentialed(error(Error), _, _, _, _, _, _, _, error(Error)) :-
+execute_credentialed(error(Error), _, _, _, _, _, _, _, _, error(Error)) :-
     !.
 execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
-                     AddressFamily, Attribution, Payload, Outcome) :-
-    http_options(Key, Timeout, AddressFamily, Status, Attribution,
+                     AddressFamily, UserAgent, Attribution, Payload, Outcome) :-
+    http_options(Key, Timeout, AddressFamily, UserAgent, Status, Attribution,
                  HttpOptions),
     catch(http_post(Endpoint, json(Payload), Reply, HttpOptions),
           Exception,
@@ -76,7 +77,8 @@ execute_credentialed(ok(Key), Provider, Endpoint, RequestedModel, Timeout,
                                        response_received:false})
     ).
 
-http_options(Key, Timeout, AddressFamily, Status, Attribution, Options) :-
+http_options(Key, Timeout, AddressFamily, UserAgent, Status, Attribution,
+             Options) :-
     credential_http_options(Key, CredentialOptions),
     address_family_http_options(AddressFamily, AddressOptions),
     append([CredentialOptions,
@@ -85,7 +87,7 @@ http_options(Key, Timeout, AddressFamily, Status, Attribution, Options) :-
               status_code(Status),
               json_object(dict),
               request_header('Accept'='application/json'),
-              user_agent('prolog-rlm/0.1')
+              user_agent(UserAgent)
             ],
             Attribution],
            Options).
@@ -120,9 +122,9 @@ openai_compatible_stream(Provider, Config, Request, EventHandler, Outcome) :-
 stream_from_config(error(Error), _, _, _, error(Error)) :-
     !.
 stream_from_config(ok(Endpoint, Credential, RequestedModel, Timeout,
-                      AddressFamily, Attribution),
+                      AddressFamily, UserAgent, Attribution),
                    Provider, Request, EventHandler, Outcome) :-
-    request_payload(Request, RequestedModel, PayloadOutcome),
+    request_payload(Provider, Request, RequestedModel, PayloadOutcome),
     stream_payload(PayloadOutcome,
                    Provider,
                    Endpoint,
@@ -130,14 +132,15 @@ stream_from_config(ok(Endpoint, Credential, RequestedModel, Timeout,
                    RequestedModel,
                    Timeout,
                    AddressFamily,
+                   UserAgent,
                    Attribution,
                    EventHandler,
                    Outcome).
 
-stream_payload(error(Error), _, _, _, _, _, _, _, _, error(Error)) :-
+stream_payload(error(Error), _, _, _, _, _, _, _, _, _, error(Error)) :-
     !.
 stream_payload(ok(Payload0), Provider, Endpoint, Credential,
-               RequestedModel, Timeout, AddressFamily, Attribution,
+               RequestedModel, Timeout, AddressFamily, UserAgent, Attribution,
                EventHandler,
                Outcome) :-
     put_dict(stream_request{stream:true,
@@ -151,19 +154,21 @@ stream_payload(ok(Payload0), Provider, Endpoint, Credential,
                                 RequestedModel,
                                 Timeout,
                                 AddressFamily,
+                                UserAgent,
                                 Attribution,
                                 Payload,
                                 EventHandler,
                                 Outcome).
 
-execute_stream_credentialed(error(Error), _, _, _, _, _, _, _, _,
+execute_stream_credentialed(error(Error), _, _, _, _, _, _, _, _, _,
                             error(Error)) :-
     !.
 execute_stream_credentialed(ok(Key), Provider, Endpoint, RequestedModel,
-                            Timeout, AddressFamily, Attribution, Payload,
+                            Timeout, AddressFamily, UserAgent, Attribution,
+                            Payload,
                             EventHandler,
                             Outcome) :-
-    stream_http_options(Key, Timeout, AddressFamily, Status, Payload,
+    stream_http_options(Key, Timeout, AddressFamily, UserAgent, Status, Payload,
                         Attribution, HttpOptions),
     catch(setup_call_cleanup(
               http_open(Endpoint, In, HttpOptions),
@@ -186,7 +191,7 @@ execute_stream_credentialed(ok(Key), Provider, Endpoint, RequestedModel,
                                        response_received:false})
     ).
 
-stream_http_options(Key, Timeout, AddressFamily, Status, Payload,
+stream_http_options(Key, Timeout, AddressFamily, UserAgent, Status, Payload,
                     Attribution, Options) :-
     credential_http_options(Key, CredentialOptions),
     address_family_http_options(AddressFamily, AddressOptions),
@@ -196,7 +201,7 @@ stream_http_options(Key, Timeout, AddressFamily, Status, Payload,
               timeout(Timeout),
               status_code(Status),
               request_header('Accept'='text/event-stream'),
-              user_agent('prolog-rlm/0.1')
+              user_agent(UserAgent)
             ],
             Attribution],
            Options).
@@ -464,7 +469,7 @@ process_stream_text(ChoiceIndex, Delta, EventHandler, State0, State) :-
     ).
 
 process_stream_reasoning(ChoiceIndex, Delta, EventHandler, State0, State) :-
-    (   get_dict(reasoning, Delta, Reasoning0),
+    (   stream_reasoning_value(Delta, Reasoning0),
         Reasoning0 \== null
     ->  stream_text(Reasoning0, Reasoning),
         (   Reasoning == ""
@@ -477,6 +482,12 @@ process_stream_reasoning(ChoiceIndex, Delta, EventHandler, State0, State) :-
             emit_stream_event(EventHandler, Event, State1, State)
         )
     ;   State = State0
+    ).
+
+stream_reasoning_value(Delta, Reasoning) :-
+    (   get_dict(reasoning, Delta, Value), Value \== null
+    ->  Reasoning = Value
+    ;   get_dict(reasoning_content, Delta, Reasoning)
     ).
 
 process_stream_reasoning_details(ChoiceIndex,
@@ -704,10 +715,11 @@ provider_config(Provider, Config, Outcome) :-
         config_value(credential, Config, none, Credential),
         config_value(timeout, Config, 30, Timeout),
         config_value(address_family, Config, auto, AddressFamily),
+        config_value(user_agent, Config, 'prolog-rlm/0.1', UserAgent),
         config_value(app_title, Config, none, AppTitle),
         config_value(app_referer, Config, none, AppReferer),
         validate_provider_config(Provider, Endpoint, Model, Credential,
-                                 Timeout, AddressFamily, AppTitle,
+                                 Timeout, AddressFamily, UserAgent, AppTitle,
                                  AppReferer, Outcome)
     ;   Outcome = error(provider_error{provider:Provider,
                                        kind:configuration_error,
@@ -716,21 +728,21 @@ provider_config(Provider, Config, Outcome) :-
                                        response_received:false})
     ).
 
-validate_provider_config(Provider, none, _, _, _, _, error(Error)) :-
+validate_provider_config(Provider, none, _, _, _, _, _, _, _, error(Error)) :-
     !,
     Error = provider_error{provider:Provider,
                            kind:configuration_error,
                            field:endpoint,
                            message:"provider endpoint is not configured",
                            response_received:false}.
-validate_provider_config(Provider, _, none, _, _, _, error(Error)) :-
+validate_provider_config(Provider, _, none, _, _, _, _, _, _, error(Error)) :-
     !,
     Error = provider_error{provider:Provider,
                            kind:configuration_error,
                            field:model,
                            message:"provider model is not configured",
                            response_received:false}.
-validate_provider_config(Provider, _, _, Credential, _, _, error(Error)) :-
+validate_provider_config(Provider, _, _, Credential, _, _, _, _, _, error(Error)) :-
     \+ valid_credential_spec(Credential),
     !,
     Error = provider_error{provider:Provider,
@@ -738,7 +750,7 @@ validate_provider_config(Provider, _, _, Credential, _, _, error(Error)) :-
                            field:credential,
                            message:"credentials must use env(Name) or none",
                            response_received:false}.
-validate_provider_config(Provider, _, _, _, Timeout, _, error(Error)) :-
+validate_provider_config(Provider, _, _, _, Timeout, _, _, _, _, error(Error)) :-
     (   \+ number(Timeout)
     ;   Timeout =< 0
     ),
@@ -748,7 +760,8 @@ validate_provider_config(Provider, _, _, _, Timeout, _, error(Error)) :-
                            field:timeout,
                            message:"timeout must be a positive number",
                            response_received:false}.
-validate_provider_config(Provider, _, _, _, _, AddressFamily, _, _, error(Error)) :-
+validate_provider_config(Provider, _, _, _, _, AddressFamily, _, _, _,
+                         error(Error)) :-
     \+ memberchk(AddressFamily, [auto, inet, inet6]),
     !,
     Error = provider_error{provider:Provider,
@@ -756,7 +769,15 @@ validate_provider_config(Provider, _, _, _, _, AddressFamily, _, _, error(Error)
                            field:address_family,
                            message:"address_family must be auto, inet, or inet6",
                            response_received:false}.
-validate_provider_config(Provider, _, _, _, _, _, AppTitle, _, error(Error)) :-
+validate_provider_config(Provider, _, _, _, _, _, UserAgent, _, _, error(Error)) :-
+    \+ valid_header_text(UserAgent),
+    !,
+    Error = provider_error{provider:Provider,
+                           kind:configuration_error,
+                           field:user_agent,
+                           message:"user_agent must be a nonempty atom or string without control characters",
+                           response_received:false}.
+validate_provider_config(Provider, _, _, _, _, _, _, AppTitle, _, error(Error)) :-
     \+ valid_attribution_spec(AppTitle),
     !,
     Error = provider_error{provider:Provider,
@@ -764,7 +785,8 @@ validate_provider_config(Provider, _, _, _, _, _, AppTitle, _, error(Error)) :-
                            field:app_title,
                            message:"app_title must be a nonempty atom or string",
                            response_received:false}.
-validate_provider_config(Provider, _, _, _, _, _, _, AppReferer, error(Error)) :-
+validate_provider_config(Provider, _, _, _, _, _, _, _, AppReferer,
+                         error(Error)) :-
     \+ valid_attribution_spec(AppReferer),
     !,
     Error = provider_error{provider:Provider,
@@ -773,9 +795,9 @@ validate_provider_config(Provider, _, _, _, _, _, _, AppReferer, error(Error)) :
                            message:"app_referer must be a nonempty atom or string",
                            response_received:false}.
 validate_provider_config(_, Endpoint, Model, Credential, Timeout,
-                         AddressFamily, AppTitle, AppReferer,
+                         AddressFamily, UserAgent, AppTitle, AppReferer,
                          ok(Endpoint, Credential, Model, Timeout,
-                            AddressFamily, Attribution)) :-
+                            AddressFamily, UserAgent, Attribution)) :-
     attribution_http_options(app_title, AppTitle, TitleOptions),
     attribution_http_options(app_referer, AppReferer, RefererOptions),
     append(TitleOptions, RefererOptions, Attribution).
@@ -786,15 +808,23 @@ validate_provider_config(_, Endpoint, Model, Credential, Timeout,
 % endpoints are unchanged unless a host opts in.
 valid_attribution_spec(none).
 valid_attribution_spec(Value) :-
-    nonempty_header_text(Value).
+    valid_header_text(Value).
 
-nonempty_header_text(Value) :-
+valid_header_text(Value) :-
     atom(Value),
     !,
-    Value \== ''.
-nonempty_header_text(Value) :-
+    Value \== '',
+    atom_codes(Value, Codes),
+    maplist(valid_header_code, Codes).
+valid_header_text(Value) :-
     string(Value),
-    Value \== "".
+    Value \== "",
+    string_codes(Value, Codes),
+    maplist(valid_header_code, Codes).
+
+valid_header_code(Code) :-
+    Code >= 32,
+    Code =\= 127.
 
 attribution_http_options(_, none, []) :-
     !.
@@ -898,13 +928,19 @@ normalize_choice(Provider, RequestedModel, Status, Raw, Choice, Message,
         normalize_content(Content0, Text),
         dict_default(tool_calls, Message, [], ToolCalls0),
         normalize_list(ToolCalls0, ToolCalls),
-        dict_default(reasoning, Message, null, Reasoning0),
+        response_reasoning(Message, Reasoning0),
         normalize_content(Reasoning0, Reasoning),
         dict_default(reasoning_details, Message, [], ReasoningDetails0),
         normalize_list(ReasoningDetails0, ReasoningDetails),
         normalize_assistant_result(Provider, RequestedModel, Status, Raw,
                                    Choice, Message, Text, ToolCalls,
                                    Reasoning, ReasoningDetails, Outcome)
+    ).
+
+response_reasoning(Message, Reasoning) :-
+    (   get_dict(reasoning, Message, Value), Value \== null
+    ->  Reasoning = Value
+    ;   dict_default(reasoning_content, Message, null, Reasoning)
     ).
 
 normalize_assistant_result(Provider, _, Status, _, _, _, Text, ToolCalls,
@@ -1038,17 +1074,102 @@ normalize_content(Content, String) :-
  * ---------------------------------------------------------------------- */
 
 request_payload(Request, RequestedModel, Outcome) :-
+    request_payload(openai_compatible, Request, RequestedModel, Outcome).
+
+request_payload(zai_coding, Request0, RequestedModel, Outcome) :-
+    !,
+    catch(( canonical_zai_value(Request0, Request),
+            validate_zai_chat_request(Request, RequestedModel),
+            request_payload_validated(zai_coding, Request, RequestedModel,
+                                      Result)
+          ),
+          zai_chat_fault(Field, Detail),
+          zai_chat_validation_error(Field, Detail, Result)),
+    Outcome = Result.
+request_payload(Provider, Request, RequestedModel, Outcome) :-
+    request_payload_validated(Provider, Request, RequestedModel, Outcome).
+
+request_payload_validated(Provider, Request, RequestedModel, Outcome) :-
     validate_request(Request, Validation),
     (   Validation = error(Error)
     ->  Outcome = error(Error)
     ;   get_dict(messages, Request, Messages0),
-        maplist(message_payload, Messages0, Messages),
+        maplist(message_payload_for(Provider), Messages0, Messages),
         request_options(Request, RequestOptions),
-        allowed_generation_options(RequestOptions, GenerationOptions),
+        allowed_generation_options_for(Provider, RequestOptions,
+                                       GenerationOptions),
         put_dict(request_payload{model:RequestedModel, messages:Messages},
                  GenerationOptions, Payload),
         Outcome = ok(Payload)
     ).
+
+validate_zai_chat_request(Request, Model) :-
+    (   ground(Request), ground(Model)
+    ->  true
+    ;   throw(zai_chat_fault(request, non_ground_request))
+    ),
+    (   get_dict(options, Request, Options0)
+    ->  (   is_dict(Options0)
+        ->  validate_zai_chat_options(Options0)
+        ;   throw(zai_chat_fault(options, expected_dict))
+        )
+    ;   true
+    ).
+
+validate_zai_chat_options(Options) :-
+    Allowed = [max_tokens,max_completion_tokens,temperature,top_p,seed,stop,
+               tools,tool_choice,response_format,reasoning],
+    dict_pairs(Options, _, Pairs),
+    forall(member(Key-_, Pairs),
+           (memberchk(Key, Allowed)
+           -> true
+           ;  throw(zai_chat_fault(Key, unsupported_option)))),
+    (   get_dict(reasoning, Options, Reasoning)
+    ->  (is_dict(Reasoning), get_dict(effort, Reasoning, Effort), ground(Effort)
+        -> true
+        ;  throw(zai_chat_fault(reasoning, missing_effort)))
+    ;   true
+    ).
+
+zai_chat_validation_error(Field, Detail,
+                          error(provider_error{provider:client,
+                                               kind:validation_error,
+                                               field:Field,
+                                               detail:Detail,
+                                               message:"request cannot be represented by Z.AI Chat Completions",
+                                               response_received:false})).
+
+canonical_zai_value(Value0, Value) :-
+    is_dict(Value0), !,
+    dict_pairs(Value0, Tag0, Pairs0),
+    canonical_zai_tag(Tag0, Tag),
+    maplist(canonical_zai_pair, Pairs0, Pairs),
+    dict_pairs(Value, Tag, Pairs).
+canonical_zai_value(Values0, Values) :-
+    is_list(Values0), !,
+    maplist(canonical_zai_value, Values0, Values).
+canonical_zai_value(Value, Value).
+
+canonical_zai_tag(Tag0, zai_data) :- var(Tag0), !.
+canonical_zai_tag(Tag, Tag).
+
+canonical_zai_pair(Key-Value0, Key-Value) :-
+    canonical_zai_value(Value0, Value).
+
+message_payload_for(zai_coding, Message, Payload) :-
+    !,
+    get_dict(role, Message, Role),
+    get_dict(content, Message, Content),
+    Base = message_payload{role:Role, content:Content},
+    copy_optional_message_fields([name,tool_call_id,tool_calls],
+                                 Message, Base, Payload0),
+    (   get_dict(reasoning, Message, Reasoning),
+        Reasoning \== null, Reasoning \== "", Reasoning \== ''
+    ->  put_dict(reasoning_content, Payload0, Reasoning, Payload)
+    ;   Payload = Payload0
+    ).
+message_payload_for(_, Message, Payload) :-
+    message_payload(Message, Payload).
 
 validate_request(Request, error(Error)) :-
     \+ is_dict(Request, model_request),
@@ -1135,6 +1256,31 @@ allowed_generation_options(Options, Allowed) :-
             response_format,
             reasoning],
     include_present_keys(Keys, Options, generation_options{}, Allowed).
+
+allowed_generation_options_for(zai_coding, Options, Allowed) :-
+    !,
+    Keys = [max_tokens,
+            max_completion_tokens,
+            temperature,
+            top_p,
+            seed,
+            stop,
+            tools,
+            tool_choice,
+            response_format],
+    include_present_keys(Keys, Options, generation_options{}, Base),
+    zai_reasoning_options(Options, Base, Allowed).
+allowed_generation_options_for(_, Options, Allowed) :-
+    allowed_generation_options(Options, Allowed).
+
+zai_reasoning_options(Options, Base, Allowed) :-
+    (   get_dict(reasoning, Options, Reasoning), is_dict(Reasoning),
+        get_dict(effort, Reasoning, Effort)
+    ->  put_dict(zai_options{thinking:zai_thinking{type:"enabled"},
+                            reasoning_effort:Effort},
+                 Base, Allowed)
+    ;   Allowed = Base
+    ).
 
 include_present_keys([], _, Allowed, Allowed).
 include_present_keys([Key|Keys], Source, Allowed0, Allowed) :-
