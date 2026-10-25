@@ -8,6 +8,12 @@ This roadmap tracks the shortest path from the current runtime to a useful codin
 
 ## How far are we?
 
+Generic external tool packs enforce closed object schemas even when their
+`properties` map is omitted: undeclared arguments fail before dispatch and
+undeclared result fields fail result validation. This does not change tool
+availability, capability grants, or project-code trust requirements; product
+end-to-end and live-provider acceptance remain separate gates.
+
 The hard runtime substrate is mostly here. The product layer is not.
 
 Already available in core and the downstream application boundary:

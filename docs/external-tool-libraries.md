@@ -19,6 +19,11 @@ host authority mediation for the normalized effect
 
 Loading controls **availability**. Capabilities control **invocation permission**. Authority controls **human mediation** of an already-valid operation. None of them substitutes for schema validation, confinement or hard execution policy.
 
+Closed object schemas (`type:object, additional_properties:false`) reject
+undeclared fields in both tool arguments and results. Omitting `properties`
+declares no fields, so only an empty object is accepted. Omitting
+`additional_properties` retains the default open-object behavior.
+
 ## Declaring a library and category
 
 The original trusted loader ABI remains valid:

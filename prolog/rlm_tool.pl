@@ -2006,10 +2006,10 @@ validate_object(Schema, Value, Path) :-
     ;   true
     ),
     (   get_dict(properties, Schema, Properties)
-    ->  validate_object_properties(Properties, Value, Path),
-        validate_additional_properties(Schema, Properties, Value, Path)
-    ;   true
-    ).
+    ->  validate_object_properties(Properties, Value, Path)
+    ;   Properties = _{}
+    ),
+    validate_additional_properties(Schema, Properties, Value, Path).
 
 require_object_key(Value, Path, Key) :-
     (   get_dict(Key, Value, _)

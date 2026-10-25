@@ -341,6 +341,69 @@ test(result_schema_enforces_numeric_bounds) :-
         ),
         cleanup_registry(Registry)).
 
+test(closed_object_without_properties_rejects_arguments_before_handler) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( tool_test_support:reset_invocations,
+          counting_schema(Base),
+          put_dict(arguments, Base,
+                   _{type:object, additional_properties:false}, Schema),
+          tool_register(Registry, Schema,
+                        tool_test_support:counting_tool, ok(_)),
+          tool_invoke(Registry, [tool(counting)], counting,
+                      json{value:1}, [], error(Error), Trace),
+          assertion(Error.kind == schema_validation_failed),
+          assertion(Error.detail == unexpected_fields(args, [value])),
+          assertion(Trace.status == malformed_args),
+          tool_test_support:invocation_count(Count),
+          assertion(Count == 0)
+        ),
+        cleanup_registry(Registry)).
+
+test(closed_object_without_properties_rejects_result) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( counting_schema(Base),
+          put_dict(result, Base,
+                   _{type:object, additional_properties:false}, Schema),
+          tool_register(Registry, Schema,
+                        tool_test_support:counting_tool, ok(_)),
+          tool_invoke(Registry, [tool(counting)], counting,
+                      json{value:1}, [], error(Error), Trace),
+          assertion(Error.kind == schema_validation_failed),
+          assertion(Error.detail == unexpected_fields(result, [seen])),
+          assertion(Trace.status == invalid_result)
+        ),
+        cleanup_registry(Registry)).
+
+test(closed_object_without_properties_accepts_empty_object) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( counting_schema(Base),
+          Closed = _{type:object, additional_properties:false},
+          put_dict(_{arguments:Closed, result:Closed}, Base, Schema),
+          tool_register(Registry, Schema,
+                        tool_test_support:echo_tool, ok(_)),
+          tool_invoke(Registry, [tool(counting)], counting,
+                      json{}, [], ok(Execution), _),
+          assertion(Execution.value == json{})
+        ),
+        cleanup_registry(Registry)).
+
+test(object_without_properties_remains_open_by_default) :-
+    setup_call_cleanup(
+        setup_registry(Registry),
+        ( counting_schema(Base),
+          put_dict(_{arguments:_{type:object}, result:_{type:object}},
+                   Base, Schema),
+          tool_register(Registry, Schema,
+                        tool_test_support:echo_tool, ok(_)),
+          tool_invoke(Registry, [tool(counting)], counting,
+                      json{extra:1}, [], ok(Execution), _),
+          assertion(Execution.value == json{extra:1})
+        ),
+        cleanup_registry(Registry)).
+
 test(tool_timeout_is_structured) :-
     setup_call_cleanup(
         setup_registry(Registry),
