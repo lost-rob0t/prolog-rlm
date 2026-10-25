@@ -8,6 +8,23 @@ This roadmap tracks the shortest path from the current runtime to a useful codin
 
 ## How far are we?
 
+Generic external tool packs enforce closed object schemas even when their
+`properties` map is omitted: undeclared arguments fail before dispatch and
+undeclared result fields fail result validation. This does not change tool
+availability, capability grants, or project-code trust requirements; product
+end-to-end and live-provider acceptance remain separate gates.
+
+The UI v1 snapshot admission boundary rejects non-list collection fields with
+structured errors before reconnect/replay can consume them. This preserves the
+existing wire contract; durable session recovery and actual cancellation remain
+host integration responsibilities, with separate end-to-end acceptance.
+
+Async host profiles can use the exported MCP lifecycle/client execute APIs and
+`mcp_import_tools_execute/5` for their entire setup and cleanup lifetime without
+waiting for nested scheduler work. Import has canonical synchronous/asynchronous
+facades for callers outside workers. Hosts must adopt these APIs; this substrate
+alone does not prove downstream product or live-provider acceptance.
+
 The hard runtime substrate is mostly here. The product layer is not.
 
 Already available in core and the downstream application boundary:

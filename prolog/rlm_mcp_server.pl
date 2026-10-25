@@ -5,18 +5,23 @@
             rlm_install_mcp_server/3,
             rlm_install_mcp_server_async/2,
             rlm_install_mcp_server_async/3,
+            rlm_install_mcp_server_execute/3,
             rlm_run_mcp_server/2,
             rlm_run_mcp_server/3,
             rlm_run_mcp_server_async/2,
             rlm_run_mcp_server_async/3,
+            rlm_run_mcp_server_execute/3,
             rlm_stop_mcp_server/2,
             rlm_stop_mcp_server_async/2,
+            rlm_stop_mcp_server_execute/2,
             rlm_restart_mcp_server/2,
             rlm_restart_mcp_server/3,
             rlm_restart_mcp_server_async/2,
             rlm_restart_mcp_server_async/3,
+            rlm_restart_mcp_server_execute/3,
             rlm_connect_mcp_server/5,
-            rlm_connect_mcp_server_async/5
+            rlm_connect_mcp_server_async/5,
+            rlm_connect_mcp_server_execute/5
           ]).
 
 /** <module> Declarative MCP server lifecycle
