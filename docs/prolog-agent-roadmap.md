@@ -8,6 +8,11 @@ This roadmap tracks the shortest path from the current runtime to a useful codin
 
 ## How far are we?
 
+The UI v1 snapshot admission boundary rejects non-list collection fields with
+structured errors before reconnect/replay can consume them. This preserves the
+existing wire contract; durable session recovery and actual cancellation remain
+host integration responsibilities, with separate end-to-end acceptance.
+
 The hard runtime substrate is mostly here. The product layer is not.
 
 Already available in core and the downstream application boundary:

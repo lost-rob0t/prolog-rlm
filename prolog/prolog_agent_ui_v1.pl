@@ -194,7 +194,10 @@ validate_kind("snapshot", Frame) :- !,
     require_id(Frame, snapshot_id, _),
     require_nonnegative_integer(Frame, at_seq, _),
     require_dict(Frame, state, State),
-    validate_snapshot_bound(State).
+    validate_snapshot_bound(State),
+    maplist(snapshot_collection(State),
+            [messages, tools, approvals, questions, subagents,
+             verification, traces, indeterminate_effects, extensions]).
 validate_kind("event", Frame) :- !,
     require_id(Frame, session_id, _),
     require_positive_integer(Frame, seq, _),
@@ -254,6 +257,9 @@ ensure_required_capabilities(Required) :-
     ;   throw(ui_fault(unsupported_required_capability,
                        _{missing:Missing}))
     ).
+
+snapshot_collection(State, Key) :-
+    require_list(State, Key, _).
 
 validate_snapshot_bound(State) :-
     bounded_lists(State),
