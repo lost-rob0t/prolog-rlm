@@ -121,6 +121,12 @@ A snapshot is bounded canonical state at one event cursor:
 
 The v1 reference validator caps a snapshot at 1 MiB and caps nested collections at 256 entries. Streaming text is reduced into message state instead of retaining one snapshot item per token/delta.
 
+The `messages`, `tools`, `approvals`, `questions`, `subagents`, `verification`,
+`traces`, `indeterminate_effects`, and `extensions` fields must be arrays,
+including when empty. Snapshot validation, application, and replay reject a
+non-array collection with `invalid_list_field` before accepting its cursor or
+applying subsequent events.
+
 The exact bounds may be revised only with a protocol-compatible rule or a later protocol version. Frontends must not assume a snapshot contains the entire historical transcript.
 
 ## Events

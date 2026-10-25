@@ -33,6 +33,24 @@ test(malformed_replay_snapshot_is_structured_error) :-
     assertion(Error.code == "invalid_string_field").
 
 
+test(snapshot_collection_types_fail_closed,
+     [forall(member(Key, [messages, tools, approvals, questions, subagents,
+                         verification, traces, indeterminate_effects,
+                         extensions]))]) :-
+    ui_v1_initial_view("s1", View),
+    ui_facade_snapshot("s1", "snap0", View, Base),
+    put_dict(Key, Base.state, "invalid_collection", State),
+    put_dict(state, Base, State, Snapshot),
+    ui_v1_validate_frame(Snapshot, error(ValidationError)),
+    assertion(ValidationError.code == "invalid_list_field"),
+    assertion(ValidationError.details.field == Key),
+    ui_v1_apply_snapshot(View, Snapshot, error(ApplyError)),
+    assertion(ApplyError.code == "invalid_list_field"),
+    ui_facade_event("s1", 1,
+                    agent_event(message_started, "m1", "assistant"), Event),
+    ui_v1_replay(Snapshot, [Event], error(ReplayError)),
+    assertion(ReplayError.code == "invalid_list_field").
+
 test(snapshot_limit_counts_utf8_wire_bytes) :-
     length(Codes, 270000),
     maplist(=(0x1f600), Codes),
