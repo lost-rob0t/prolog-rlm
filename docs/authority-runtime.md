@@ -137,7 +137,20 @@ cancelled
 
 When a record becomes terminal, core immediately drops its trusted continuation, validator, execution-Future reference, and gate. The sanitized public record and its already-resolved deferred resolution Future may remain queryable for bounded inspection.
 
-The current retention limit is **64 terminal records per authority context**. Active operations do not count against this limit and are never pruned merely to make room for history.
+The ordinary retention limit is **64 unowned terminal records per authority context**. Active operations do not count against this limit and are never pruned merely to make room for history.
+
+Trusted transient consumers can call
+`rlm_pending_resolution_retain(ApprovalId, Owner, Future)` to keep an exact
+authoritative resolution while it is still needed, and
+`rlm_pending_resolution_release(ApprovalId, Owner)` when done. Both identifiers
+must be ground. Repeating the same retain/release is idempotent. The global
+limit is 64 retained owner pairs; adding another owner at the limit raises
+`authority_fault(resolution_owner_limit)`. Owned records are excluded from
+ordinary history pruning. Release immediately reapplies the ordinary bound.
+Retention preserves the resolution, not executable control state. Context
+teardown removes all its ownership records and destroys the Futures as before.
+Direct approval cursors use these APIs for their transient lifetime; this is
+not durable session storage or permission persistence.
 
 When terminal history exceeds the limit, the oldest terminal record is removed and its retained resolution Future is destroyed. After pruning:
 
@@ -145,7 +158,10 @@ When terminal history exceeds the limit, the oldest terminal record is removed a
 - `rlm_pending_resolution_async/2` raises `existence_error(rlm_pending_operation, Id)`;
 - stale approve/deny/edit attempts cannot revive the operation.
 
-`rlm_pending_approvals/2` therefore returns all active operations plus at most the bounded retained terminal history for that context. It is not an unbounded audit log. `rlm_authority_events/2` remains the policy/event stream; downstream durable audit storage, if desired, belongs outside executable pending control state.
+`rlm_pending_approvals/2` therefore returns active operations, owned resolutions,
+and at most 64 ordinary terminal records for that context. It is not an unbounded
+audit log. `rlm_authority_events/2` remains the policy/event stream; downstream
+durable audit storage belongs outside executable pending control state.
 
 Context/runtime teardown destroys all remaining active and retained resolution Futures and removes the context authority registries deterministically.
 

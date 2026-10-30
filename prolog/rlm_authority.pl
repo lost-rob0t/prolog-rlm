@@ -14,10 +14,13 @@
             rlm_pending_approvals/2,
             rlm_pending_resolution_async/2,
             rlm_pending_resolution/2,
+            rlm_pending_resolution_retain/3,
+            rlm_pending_resolution_release/2,
             rlm_authority_events/2,
             rlm_approve/2,
             rlm_deny/3,
             rlm_edit/3,
+            rlm_pending_cancel/2,
             rlm_pending_cancel_owner/2
           ]).
 
@@ -60,6 +63,7 @@ resolution Future remains queryable until that history entry is pruned.
 :- dynamic authority_pending_control/5.
 :- dynamic authority_pending_gate/2.
 :- dynamic authority_terminal_resolution/3.
+:- dynamic authority_resolution_owner/2.
 :- dynamic authority_sequence/2.
 :- dynamic authority_event/3.
 
@@ -413,6 +417,9 @@ rlm_pending_approvals(Context, Approvals) :-
     pairs_values(Pairs, Approvals).
 
 rlm_pending_resolution_async(ApprovalId, Future) :-
+    with_mutex(rlm_authority, resolution_future_locked(ApprovalId, Future)).
+
+resolution_future_locked(ApprovalId, Future) :-
     (   authority_pending_control(ApprovalId, _, _, Future, _)
     ->  true
     ;   authority_terminal_resolution(ApprovalId, _, Future)
@@ -423,6 +430,34 @@ rlm_pending_resolution_async(ApprovalId, Future) :-
 rlm_pending_resolution(ApprovalId, Outcome) :-
     rlm_pending_resolution_async(ApprovalId, Future),
     rlm_async:rlm_future_await(Future, Outcome).
+
+% Trusted transient owners may keep an authoritative resolution beyond ordinary
+% history pruning. The global owner bound matches the direct cursor bound;
+% retaining a resolution never retains its executable continuation.
+rlm_pending_resolution_retain(ApprovalId, Owner, Future) :-
+    require_ground(ApprovalId, approval_id),
+    require_ground(Owner, resolution_owner),
+    with_mutex(rlm_authority,
+               retain_resolution_locked(ApprovalId, Owner, Future)).
+
+retain_resolution_locked(ApprovalId, Owner, Future) :-
+    resolution_future_locked(ApprovalId, Future),
+    ( authority_resolution_owner(ApprovalId, Owner) -> true
+    ; aggregate_all(count, authority_resolution_owner(_, _), Count),
+      ( Count < 64
+      -> assertz(authority_resolution_owner(ApprovalId, Owner))
+      ; throw(authority_fault(resolution_owner_limit)) )
+    ).
+
+rlm_pending_resolution_release(ApprovalId, Owner) :-
+    require_ground(ApprovalId, approval_id),
+    require_ground(Owner, resolution_owner),
+    with_mutex(rlm_authority,
+               ( retractall(authority_resolution_owner(ApprovalId, Owner)),
+                 ( authority_pending(ApprovalId, Context, _)
+                 -> prune_terminal_locked(Context, Futures)
+                 ; Futures = [] ) )),
+    destroy_futures(Futures).
 
 rlm_authority_events(Context, Events) :-
     require_context(Context),
@@ -906,6 +941,39 @@ edit_transition_locked(ApprovalId, _, _, _, _, _, _, _, _, _, _) :-
 
 /* Ownership, cancellation and teardown -------------------------------- */
 
+%! rlm_pending_cancel(+ApprovalId, +Reason) is det.
+%
+%  Cancel only this approval, including an already scheduled execution.
+%  The transition shares the approval mutex with execution admission. Terminal
+%  and unknown ground IDs are idempotent no-ops. Other approvals in the same
+%  authority context are unaffected. Executing effects retain best-effort
+%  cancellation and conservative effect accounting.
+rlm_pending_cancel(ApprovalId, Reason) :-
+    require_ground(ApprovalId, approval_id),
+    require_ground(Reason, cancellation_reason),
+    with_mutex(rlm_authority,
+               cancel_single_transition_locked(ApprovalId, Reason, Transition)),
+    apply_cancel_single_transition(Transition, ApprovalId, Reason).
+
+cancel_single_transition_locked(ApprovalId, Reason,
+                                pending(Record, ResolutionFuture, Pruned)) :-
+    authority_pending(ApprovalId, _, Existing),
+    Existing.state == pending,
+    !,
+    deny_transition_locked(ApprovalId, cancelled(Reason), deny, Record,
+                           ResolutionFuture, Pruned).
+cancel_single_transition_locked(ApprovalId, Reason, Transition) :-
+    cancel_transition_locked(ApprovalId, Reason, Transition).
+
+apply_cancel_single_transition(pending(Record, ResolutionFuture, Pruned),
+                               ApprovalId, Reason) :-
+    !,
+    apply_deny_transition(deny, ApprovalId, cancelled(Reason), Record,
+                          ResolutionFuture, _),
+    destroy_futures(Pruned).
+apply_cancel_single_transition(Transition, ApprovalId, Reason) :-
+    apply_cancel_owned_transition(Transition, ApprovalId, Reason).
+
 rlm_pending_cancel_owner(Context, Reason) :-
     require_context(Context),
     with_mutex(rlm_authority,
@@ -1034,6 +1102,7 @@ clear_context_locked(Context,
              retractall(authority_pending_control(Id, _, _, _, _)),
              retractall(authority_pending_gate(Id, _)),
              retractall(authority_terminal_resolution(Id, Context, _)) )),
+    forall(member(Id, Ids), retractall(authority_resolution_owner(Id, _))),
     retractall(authority_sequence(Context, _)),
     retractall(authority_event(Context, _, _)).
 
@@ -1082,6 +1151,7 @@ prune_terminal_locked(Context, Futures) :-
     findall(CreatedAt-Id,
             ( authority_pending(Id, Context, Record),
               terminal_state(Record.state),
+              \+ authority_resolution_owner(Id, _),
               CreatedAt = Record.created_at ),
             TerminalPairs0),
     keysort(TerminalPairs0, TerminalPairs),

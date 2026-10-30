@@ -8,6 +8,28 @@ This roadmap tracks the shortest path from the current runtime to a useful codin
 
 ## How far are we?
 
+Top-level direct hosts can opt into worker-free native approval suspension with
+`suspend_on_approval(true)`, retain the registry, and resume the original direct
+cursor after canonical authority resolution. Single-ID approval cancellation
+preserves sibling operations. Hosts must adopt cursor/Future cleanup; this does
+not itself complete AgentProlog's end-to-end or real-model acceptance gate.
+Suspended approvals now retain the original token/deadline and run lifetime at
+execution admission, including edited and queued approvals. Outstanding cursor
+resolutions survive ordinary history pruning through bounded transient ownership,
+released on completion/cancellation/error or successor suspension. Downstream
+hosts still own registry/effect-store lifetime and cursor/Future teardown.
+
+Generic external tool packs enforce closed object schemas even when their
+`properties` map is omitted: undeclared arguments fail before dispatch and
+undeclared result fields fail result validation. This does not change tool
+availability, capability grants, or project-code trust requirements; product
+end-to-end and live-provider acceptance remain separate gates.
+
+The UI v1 snapshot admission boundary rejects non-list collection fields with
+structured errors before reconnect/replay can consume them. This preserves the
+existing wire contract; durable session recovery and actual cancellation remain
+host integration responsibilities, with separate end-to-end acceptance.
+
 Async host profiles can use the exported MCP lifecycle/client execute APIs and
 `mcp_import_tools_execute/5` for their entire setup and cleanup lifetime without
 waiting for nested scheduler work. Import has canonical synchronous/asynchronous
