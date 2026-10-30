@@ -13,6 +13,11 @@ Top-level direct hosts can opt into worker-free native approval suspension with
 cursor after canonical authority resolution. Single-ID approval cancellation
 preserves sibling operations. Hosts must adopt cursor/Future cleanup; this does
 not itself complete AgentProlog's end-to-end or real-model acceptance gate.
+Suspended approvals now retain the original token/deadline and run lifetime at
+execution admission, including edited and queued approvals. Outstanding cursor
+resolutions survive ordinary history pruning through bounded transient ownership,
+released on completion/cancellation/error or successor suspension. Downstream
+hosts still own registry/effect-store lifetime and cursor/Future teardown.
 
 Generic external tool packs enforce closed object schemas even when their
 `properties` map is omitted: undeclared arguments fail before dispatch and

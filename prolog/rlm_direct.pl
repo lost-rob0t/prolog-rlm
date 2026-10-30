@@ -53,6 +53,7 @@
 :- use_module(rlm_tool).
 
 :- dynamic direct_pending_cursor/2.
+:- dynamic direct_run_live/1.
 
 rlm_direct_async(Query, Context, Options, Future) :-
     completion_task_metadata(direct, Options, Metadata),
@@ -99,10 +100,12 @@ suspend_direct(Pending, ToolResult, Resolved, Calls, Runtime, State, Outcome) :-
     Saved = direct_continuation{pending:Public, runtime:Runtime, state:State,
                                 resolved:Resolved, calls:Calls,
                                 tool_result:ToolResult},
-    catch(with_mutex(rlm_direct_cursors,
-                     publish_direct_cursor(Id, Saved)),
+    catch(( rlm_authority:rlm_pending_resolution_retain(
+                Pending.id, Public.cursor, _),
+            with_mutex(rlm_direct_cursors, publish_direct_cursor(Id, Saved)) ),
           Exception,
           (rlm_authority:rlm_pending_cancel(Pending.id, suspension_failed),
+           rlm_authority:rlm_pending_resolution_release(Pending.id, Public.cursor),
            throw(Exception))),
     Outcome = approval_required(Public).
 
@@ -160,7 +163,8 @@ resume_direct_claim(claimed(Saved, Resolution), Outcome) :-
                          message:"direct approval resolution was invalid"}))),
               Exception, direct_exception(Exception, Outcome)),
         ( direct_suspended(Outcome)
-        -> cleanup_cancellation(Saved.runtime.token, false)
+        -> release_direct_resolution(Saved),
+           cleanup_cancellation(Saved.runtime.token, false)
         ; release_direct_cursor(Saved)
         )).
 
@@ -214,11 +218,17 @@ direct_cleanup_context(ContextRef, Owned, Outcome) :-
     ( direct_suspended(Outcome) -> true ; cleanup_context(ContextRef, Owned) ).
 
 release_direct_cursor(Saved) :-
+    retractall(direct_run_live(Saved.runtime.lifetime)),
     rlm_authority:rlm_pending_cancel(Saved.pending.approval.id, direct_cursor_closed),
+    release_direct_resolution(Saved),
     forall((member(Context, Saved.state.contexts), Context.source \== input),
            catch(context_delete(Context.handle, _), _, true)),
     cleanup_context(Saved.runtime.root_context, Saved.runtime.root_context_owned),
     cleanup_cancellation(Saved.runtime.token, Saved.runtime.own_token).
+
+release_direct_resolution(Saved) :-
+    rlm_authority:rlm_pending_resolution_release(Saved.pending.approval.id,
+                                               Saved.pending.cursor).
 
 rlm_direct_model_step(Context,
                       Capabilities,
@@ -339,29 +349,31 @@ direct_guarded(Query0, Context, Options, Outcome) :-
     text_string(Query0, Query),
     completion_runtime_budget(Options, Budget),
     cancellation_option(Options, Token, OwnToken),
+    uuid(Lifetime),
     setup_call_cleanup(
-        register_current_thread(Token),
-        call_with_time_limit(Budget.time_limit,
-                             direct_with_context(Query,
-                                                 Context,
-                                                 Options,
-                                                 Budget,
-                                                 Token,
-                                                 OwnToken,
-                                                 Outcome)),
-        direct_cleanup_token(Token, OwnToken, Outcome)).
+        assertz(direct_run_live(Lifetime)),
+        setup_call_cleanup(
+            true,
+            ( register_current_thread(Token),
+              call_with_time_limit(Budget.time_limit,
+                  direct_with_context(Query, Context, Options, Budget, Token,
+                                      OwnToken, Lifetime, Outcome)) ),
+            direct_cleanup_token(Token, OwnToken, Outcome)),
+        ( direct_suspended(Outcome) -> true
+        ; retractall(direct_run_live(Lifetime)) )).
 
-direct_with_context(Query, Context, Options, Budget, Token, OwnToken, Outcome) :-
+direct_with_context(Query, Context, Options, Budget, Token, OwnToken,
+                    Lifetime, Outcome) :-
     check_cancelled(Token),
     acquire_context(Context, ContextRef, Owned),
     setup_call_cleanup(
         true,
         direct_with_handle(Query, ContextRef, Owned, Options, Budget, Token,
-                           OwnToken, Outcome),
+                           OwnToken, Lifetime, Outcome),
         direct_cleanup_context(ContextRef, Owned, Outcome)).
 
 direct_with_handle(Query, ContextRef, Owned, Options, Budget, Token,
-                   OwnToken, Outcome) :-
+                   OwnToken, Lifetime, Outcome) :-
     context_metadata(ContextRef.handle, MetadataOutcome),
     require_context_metadata(MetadataOutcome, MetadataRef),
     provider_options(Options, ProviderName, Provider),
@@ -411,6 +423,7 @@ direct_with_handle(Query, ContextRef, Owned, Options, Budget, Token,
                              budget:Budget,
                              token:Token,
                              own_token:OwnToken,
+                             lifetime:Lifetime,
                              root_context:ContextRef,
                              root_context_owned:Owned,
                              deadline:Deadline,
@@ -1336,7 +1349,12 @@ execute_one(Resolved, Runtime, State, context(ContextOutcome)) :-
     call_context(Operation, Handle, Args, ContextOptions, ContextOutcome).
 execute_one(Resolved, Runtime, _, tool(Result)) :-
     Resolved.binding.kind = tool(Name),
-    tool_invocation_options(Runtime.options, InvocationOptions),
+    tool_invocation_options(Runtime.options, MetadataOptions),
+    InvocationOptions = [pending_execution_guard(
+                            rlm_direct:guarded_pending_execute(
+                                Runtime.token, Runtime.deadline,
+                                Runtime.lifetime))
+                         |MetadataOptions],
     tool_invoke_execute(Runtime.registry,
                         Runtime.capabilities,
                         Name,
@@ -1349,6 +1367,33 @@ execute_one(Resolved, Runtime, State, runtime(Result)) :-
                       Runtime,
                       State,
                       Result).
+
+% Approval work runs later, potentially in a different worker. Preserve the
+% original run's authority-narrowing lifetime at admission and while executing.
+guarded_pending_execute(Token, Deadline, Lifetime, Continuation, Resolution) :-
+    catch(guarded_pending_execute_(Token, Deadline, Lifetime,
+                                  Continuation, Resolution),
+          Exception, pending_guard_exception(Exception, Resolution)).
+
+pending_guard_exception(error(rlm_cancelled(Token), Context), Outcome) :- !,
+    direct_exception(error(rlm_cancelled(Token), Context), Outcome).
+pending_guard_exception(time_limit_exceeded, Outcome) :- !,
+    direct_exception(time_limit_exceeded, Outcome).
+pending_guard_exception(time_limit_exceeded(Detail), Outcome) :- !,
+    direct_exception(time_limit_exceeded(Detail), Outcome).
+pending_guard_exception(Exception, _) :- throw(Exception).
+
+guarded_pending_execute_(Token, Deadline, Lifetime, Continuation, Resolution) :-
+    setup_call_cleanup(
+        true,
+        ( ( direct_run_live(Lifetime) -> true
+          ; throw(error(rlm_cancelled(Token), direct_run_closed)) ),
+          register_current_thread(Token),
+          get_time(Now), Remaining is Deadline-Now,
+          ( Remaining > 0 -> true; throw(time_limit_exceeded) ),
+          call_with_time_limit(Remaining, call(Continuation, Resolution))
+        ),
+        cleanup_cancellation(Token, false)).
 
 after_execution(context(error(Cause)), _, _, _, State, error(Error)) :-
     !,
