@@ -124,6 +124,44 @@ test(messages_are_accepted_as_normalized_host_context_until_provider_stage) :-
     assertion(Reply.status == "failed"),
     assertion(Reply.error.kind == "invalid_request").
 
+test(cancelled_execution_projects_cancelled_terminal_not_failure) :-
+    Request = _{
+        protocol:"ZARA-RUNTIME/1",
+        request_id:"cancelled-terminal"
+    },
+    rlm_zara_runtime:zara_exception_reply(
+        Request,
+        error(rlm_cancelled(fixture_token), context(test, cancellation)),
+        Reply
+    ),
+    assertion(Reply.protocol == "ZARA-RUNTIME/1"),
+    assertion(Reply.runtime_id == "prolog-rlm"),
+    assertion(Reply.request_id == "cancelled-terminal"),
+    assertion(Reply.status == "cancelled"),
+    assertion(\+ get_dict(error, Reply, _)).
+
+test(structured_cancelled_outcome_projects_cancelled_terminal_without_payload_leak) :-
+    Secret = "CANCELLED-PROVIDER-SECRET-MUST-NOT-CROSS",
+    Error = direct_error{
+        phase:runtime,
+        kind:cancelled,
+        token:Secret,
+        message:"request cancelled"
+    },
+    rlm_zara_runtime:project_outcome(
+        "cancelled-outcome",
+        direct,
+        error(Error),
+        Reply
+    ),
+    assertion(Reply.protocol == "ZARA-RUNTIME/1"),
+    assertion(Reply.runtime_id == "prolog-rlm"),
+    assertion(Reply.request_id == "cancelled-outcome"),
+    assertion(Reply.status == "cancelled"),
+    assertion(\+ get_dict(error, Reply, _)),
+    term_string(Reply, Rendered),
+    assertion(\+ sub_string(Rendered, _, _, _, Secret)).
+
 test(cancel_unknown_request_is_idempotent_not_found) :-
     zara_runtime_cancel("not-active", Reply),
     assertion(Reply.protocol == "ZARA-RUNTIME/1"),

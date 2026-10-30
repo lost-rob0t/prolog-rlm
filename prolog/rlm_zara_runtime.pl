@@ -330,6 +330,10 @@ project_outcome(RequestId, Mode, ok(Result), Reply) :-
         status:"completed",
         text:Text
     }.
+project_outcome(RequestId, _Mode, error(Error), Reply) :-
+    cancellation_error(Error),
+    !,
+    cancelled_reply(RequestId, Reply).
 project_outcome(RequestId, _Mode, error(_Error), Reply) :-
     !,
     Reply = _{
@@ -623,6 +627,11 @@ unregister_request(RequestId, Token) :-
 /* Safe projection ----------------------------------------------------- */
 
 zara_exception_reply(Request, Error, Reply) :-
+    cancellation_error(Error),
+    !,
+    request_id_or_unknown(Request, RequestId),
+    cancelled_reply(RequestId, Reply).
+zara_exception_reply(Request, Error, Reply) :-
     request_id_or_unknown(Request, RequestId),
     error_kind(Error, Kind, Message),
     Reply = _{
@@ -632,6 +641,24 @@ zara_exception_reply(Request, Error, Reply) :-
         status:"failed",
         error:_{kind:Kind, message:Message}
     }.
+
+cancelled_reply(RequestId, Reply) :-
+    Reply = _{
+        protocol:"ZARA-RUNTIME/1",
+        runtime_id:"prolog-rlm",
+        request_id:RequestId,
+        status:"cancelled"
+    }.
+
+cancellation_error(error(Inner, _Context)) :-
+    !,
+    cancellation_error(Inner).
+cancellation_error(rlm_cancelled(_)) :-
+    !.
+cancellation_error(Error) :-
+    is_dict(Error),
+    get_dict(kind, Error, Kind),
+    memberchk(Kind, [cancelled, "cancelled"]).
 
 request_id_or_unknown(Request, RequestId) :-
     is_dict(Request),
