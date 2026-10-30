@@ -21,6 +21,7 @@
             structured_decode_validate/3,
             default_retry_policy/1,
             openrouter_provider/2,
+            openai_api_provider/2,
             openai_compatible_provider/4,
             default_openrouter_model/1,
             provider_capability/2,
@@ -71,6 +72,11 @@ provider_capability(openrouter, tool_calls).
 provider_capability(openrouter, streaming).
 provider_capability(openrouter, multimodal_input).
 provider_capability(openrouter, structured_output).
+provider_capability(openai_api, chat_completions).
+provider_capability(openai_api, tool_calls).
+provider_capability(openai_api, streaming).
+provider_capability(openai_api, multimodal_input).
+provider_capability(openai_api, structured_output).
 provider_capability(openai_compatible, chat_completions).
 provider_capability(openai_compatible, tool_calls).
 provider_capability(openai_compatible, streaming).
@@ -107,6 +113,19 @@ openrouter_provider(Model0,
     ->  default_openrouter_model(Model)
     ;   Model = Model0
     ).
+
+%!  openai_api_provider(+Model, -Provider) is det.
+%
+%   Construct the official OpenAI Chat Completions provider without resolving
+%   its API key. Model validity is checked by the shared request path.
+
+openai_api_provider(Model,
+                    provider(openai_api,
+                             [ endpoint('https://api.openai.com/v1/chat/completions'),
+                               credential(env('OPENAI_API_KEY')),
+                               model(Model),
+                               timeout(30)
+                             ])).
 
 %!  openai_compatible_provider(+Endpoint, +Credential, +Model, -Provider) is det.
 %
@@ -252,6 +271,9 @@ provider_context_system_message(Message) :-
 dispatch_provider(openrouter, Config, Request, Outcome) :-
     !,
     dispatch_openai_compatible_complete(openrouter, Config, Request, Outcome).
+dispatch_provider(openai_api, Config, Request, Outcome) :-
+    !,
+    dispatch_openai_compatible_complete(openai_api, Config, Request, Outcome).
 dispatch_provider(openai_compatible, Config, Request, Outcome) :-
     !,
     dispatch_openai_compatible_complete(openai_compatible,
@@ -293,6 +315,13 @@ model_stream_execute(Provider, _, _,
 dispatch_stream_provider(openrouter, Config, Request, EventHandler, Outcome) :-
     !,
     dispatch_openai_compatible_stream(openrouter,
+                                      Config,
+                                      Request,
+                                      EventHandler,
+                                      Outcome).
+dispatch_stream_provider(openai_api, Config, Request, EventHandler, Outcome) :-
+    !,
+    dispatch_openai_compatible_stream(openai_api,
                                       Config,
                                       Request,
                                       EventHandler,

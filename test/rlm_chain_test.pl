@@ -14,6 +14,30 @@ test(openrouter_provider_keeps_credential_unresolved) :-
     term_string(Provider, Text),
     assertion(\+ sub_string(Text, _, _, _, "Bearer ")).
 
+test(openai_api_provider_has_official_endpoint_and_unresolved_key) :-
+    openai_api_provider('gpt-test', Provider),
+    Provider = provider(openai_api, Config),
+    assertion(memberchk(endpoint('https://api.openai.com/v1/chat/completions'), Config)),
+    assertion(memberchk(credential(env('OPENAI_API_KEY')), Config)),
+    assertion(memberchk(model('gpt-test'), Config)),
+    assertion(provider_capability(openai_api, chat_completions)),
+    assertion(provider_capability(openai_api, streaming)),
+    assertion(provider_capability(openai_api, tool_calls)),
+    assertion(\+ provider_capability(openai_api, responses)).
+
+test(openai_api_missing_key_is_classified_without_http) :-
+    openai_api_provider('gpt-test', Provider),
+    Request = model_request{messages:[message{role:user, content:"ping"}]},
+    setup_call_cleanup(
+        ( getenv('OPENAI_API_KEY', Old) -> HadKey = true ; HadKey = false ),
+        ( unsetenv('OPENAI_API_KEY'),
+          model_complete_execute(Provider, Request, error(Error)),
+          assertion(Error.provider == openai_api),
+          assertion(Error.kind == missing_credential),
+          assertion(Error.response_received == false)
+        ),
+        ( HadKey == true -> setenv('OPENAI_API_KEY', Old) ; unsetenv('OPENAI_API_KEY') )).
+
 test(address_family_is_applied_to_completion_and_stream_connections) :-
     rlm_openai_compatible:http_options(none,
                                        30,

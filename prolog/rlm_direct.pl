@@ -341,7 +341,7 @@ direct_registry(Options, Registry) :-
 provider_format(Options, ProviderName, Format) :-
     option(native_tool_format, Options, default, Requested),
     (   Requested == default,
-        memberchk(ProviderName, [openrouter,openai_compatible])
+        memberchk(ProviderName, [openrouter,openai_api,openai_compatible])
     ->  Format = openai_compatible
     ;   Requested == openai_compatible
     ->  Format = openai_compatible

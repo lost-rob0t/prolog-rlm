@@ -254,6 +254,26 @@ test(text_delta_handler_conflicts_with_planner_handler) :-
 
 /* End-to-end streaming over the local fixture server -------------------- */
 
+test(openai_api_provider_streams_over_chat_completions,
+     [setup(reset_stream)]) :-
+    streaming_text_body(Body),
+    with_sse_server(Body, openai_api_stream_hello(Outcome)),
+    Outcome = ok(Result),
+    assertion(Result.response.provider == openai_api),
+    assertion(Result.response.text == "Hello"),
+    delivered(Events),
+    assertion(Events \== []).
+
+openai_api_stream_hello(Outcome, Port) :-
+    stream_provider(Port, provider(_, Config)),
+    Provider = provider(openai_api, Config),
+    rlm_chain:model_stream_execute(
+        Provider,
+        model_request{messages:[message{role:user, content:"hello"}],
+                      options:_{}},
+        plunit_rlm_completion_stream:collect_stream,
+        Outcome).
+
 test(llm_query_streams_deltas_with_lifecycle_and_usage_once,
      [setup(reset_stream)]) :-
     streaming_text_body(Body),
