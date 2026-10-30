@@ -50,8 +50,8 @@ destroy_binding_gates :-
     ;   true ).
 
 tool_mutation_count(Count) :-
-    (   mutation_counter(Count)
-    ->  true
+    (   mutation_counter(Recorded)
+    ->  Count = Recorded
     ;   Count = 0
     ).
 

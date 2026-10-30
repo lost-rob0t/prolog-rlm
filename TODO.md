@@ -2,6 +2,16 @@
 
 This backlog is intentionally broader than the first runnable RLM. Work should land in small, testable slices.
 
+## Scripted production HTTP conformance (#510)
+
+- [x] First bounded slice: production HTTP text/write/result loop, typed fixture
+  execution, independent mutation counter, authority/capability/schema/budget and
+  replay rejection, correlated wire observations, bounded HTTP errors and cleanup.
+  See `docs/scripted-http-conformance.md` for evidence and limits.
+- [ ] Full #510 acceptance: socket SSE adversarial coverage, disconnect/cancellation
+  scenarios, multi-call/interleaved requests and generated/stress transcripts.
+  #510 stays open; offline fixtures do not establish live-provider acceptance.
+
 ## Status convention
 
 Status reconciled against canonical `main` commit `04d90b608d11196c5a8fd3bdeb235566ef9352fd` on 2026-08-21. #42, #44, #46, and #67 are merged/closed; this slice resolves the remaining #45 nested-trajectory correctness defect while leaving the broader feature and architecture tracks open.
