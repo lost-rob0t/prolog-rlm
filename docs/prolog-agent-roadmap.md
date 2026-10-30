@@ -18,7 +18,12 @@ The hard runtime substrate is mostly here. The product layer is not.
 
 Already available in core and the downstream application boundary:
 
-- real OpenAI-compatible providers and streaming;
+- real OpenAI-compatible providers and streaming, plus Z.AI Coding Plan
+  constructors for Chat Completions, Codex/Responses, and Claude/Anthropic
+  Messages (Responses and Anthropic streaming remain future work);
+- Z.AI Chat Completions direct-loop tool recognition, with deterministic
+  synthetic read/create/modify/write coverage; downstream AgentProlog owns
+  final manual real-model acceptance, which this runtime slice does not claim;
 - typed model-selected plans;
 - capability-gated tools and a confined `project_read` tool;
 - confined Prolog-owned `SKILL.md` package discovery, inert resource indexing, and canonical skill prompt-unit normalization;
