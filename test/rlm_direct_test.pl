@@ -1537,8 +1537,17 @@ edit_after_cursor_closed(Options, _, _) :-
     tool_effect_test_support:tool_mutation_count(Count),
     assertion(Count =:= 0).
 
-test(edited_approval_cannot_outlive_its_cancelled_direct_cursor) :-
-    with_direct_approval(approval_finish, [], edit_after_cursor_closed).
+test(edited_approval_cannot_outlive_its_cancelled_direct_cursor,
+     [forall(member(TokenOwner, [runtime,host]))]) :-
+    ( TokenOwner == runtime
+    -> with_direct_approval(approval_finish, [], edit_after_cursor_closed)
+    ; setup_call_cleanup(rlm_completion:rlm_cancellation_token(Token),
+          ( with_direct_approval(approval_finish, [cancel_token(Token)],
+                                 edit_after_cursor_closed),
+            % Closing one cursor must not cancel a host's shared token.
+            rlm_completion:check_cancelled(Token) ),
+          rlm_completion:cleanup_cancellation(Token,true))
+    ).
 
 
 :- end_tests(rlm_direct).
