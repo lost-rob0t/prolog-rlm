@@ -718,4 +718,247 @@ test(imported_mcp_tool_capability_denial_precedes_remote_call,
         ),
         tool_registry_destroy(Registry)).
 
+
+/* Profile lifecycle: execution inside an already occupied scheduler worker. */
+
+:- dynamic profile_barrier/3.
+:- thread_local profile_expected_metadata/1.
+
+rlm_mcp_server:mcp_server(
+    profile_fixture,
+    mcp_server_spec{
+        transport:fixture(streamable_http,
+                          plunit_rlm_tool_mcp_async:profile_fixture),
+        install:none, version:"fixture-1", capabilities:[tools]
+    }).
+
+profile_fixture(Wire, Meta, Response) :-
+    ( Wire.method == "tools/list"
+    -> rlm_async_current_metadata(Actual),
+       ( profile_expected_metadata(Expected), Expected == Actual
+       -> true
+       ; throw(error(profile_import_execution_identity_changed, _))
+       )
+    ; true
+    ),
+    ( Wire.method == "tools/call", Wire.params.arguments.query == "barrier"
+    -> profile_barrier(Entered, Release, Cleaned),
+       setup_call_cleanup(
+           thread_send_message(Entered, adapter_entered),
+           thread_get_message(Release, continue),
+           thread_send_message(Cleaned, adapter_cleaned)),
+       tool_response(Wire, "barrier", Response)
+    ; mcp_fixture(Wire, Meta, Response)
+    ).
+
+profile_queues(queues(Ready, Release, Cleaned)) :-
+    message_queue_create(Ready),
+    message_queue_create(Release),
+    message_queue_create(Cleaned).
+
+profile_destroy_queues(queues(Ready, Release, Cleaned)) :-
+    message_queue_destroy(Ready),
+    message_queue_destroy(Release),
+    message_queue_destroy(Cleaned).
+
+profile_cleanup_future(Future) :-
+    rlm_future_cancel(Future, _),
+    rlm_future_destroy(Future).
+
+profile_lifecycle(Query, ImportOptions, Cleaned, Outcome) :-
+    rlm_async_current_metadata(Expected),
+    setup_call_cleanup(
+        asserta(profile_expected_metadata(Expected), Ref),
+        profile_lifecycle_(Query, ImportOptions, Cleaned, Outcome),
+        erase(Ref)).
+
+profile_lifecycle_(Query, ImportOptions, Cleaned, Outcome) :-
+    setup_call_cleanup(
+        rlm_mcp_server:rlm_run_mcp_server_execute(profile_fixture, [], ok(Handle)),
+        ( client_info(Info), client_caps(Caps),
+          setup_call_cleanup(
+              rlm_mcp_server:rlm_connect_mcp_server_execute(
+                  Handle, Info, Caps, [], ok(Client)),
+              setup_call_cleanup(
+                  tool_registry_create(Registry),
+                  profile_import_invoke(Registry, Client, Query,
+                                        ImportOptions, Outcome),
+                  tool_registry_destroy(Registry)),
+              ( rlm_mcp:mcp_client_close_execute(Client, CloseOutcome),
+                thread_send_message(Cleaned, client_closed(CloseOutcome))
+              ))
+        ),
+        ( rlm_mcp_server:rlm_stop_mcp_server_execute(Handle, StopOutcome),
+          thread_send_message(Cleaned, server_stopped(StopOutcome))
+        )).
+
+profile_import_invoke(Registry, Client, Query, Options, Outcome) :-
+    rlm_mcp_tool:mcp_import_tools_execute(
+        Registry, profile_fixture, Client, Options, Imported),
+    ( Imported = ok(Import)
+    -> setup_call_cleanup(
+           true,
+           ( Import.tools = [Tool], Name = Tool.local_name,
+             tool_invoke_execute(Registry, [tool(Name)], Name,
+                                 _{query:Query}, [], Result),
+             Outcome = Result.outcome
+           ),
+           mcp_import_state_destroy(Import.state))
+    ; Outcome = Imported
+    ).
+
+profile_worker(Ready, Release, Cleaned, Id, Outcome) :-
+    thread_send_message(Ready, ready(Id)),
+    thread_get_message(Release, go),
+    profile_lifecycle("profile", [effect(read)], Cleaned, Outcome).
+
+profile_submit(Ready, Release, Cleaned, Id, Future) :-
+    rlm_async_submit(
+        plunit_rlm_tool_mcp_async:profile_worker(Ready, Release, Cleaned, Id),
+        async_metadata{operation:profile_lifecycle, profile_id:Id}, Future).
+
+profile_await_success(Future) :-
+    rlm_future_await(Future, 5.0, Outcome),
+    assertion(Outcome = ok(_)),
+    Outcome = ok(Execution),
+    assertion(Execution.value.structured.answer == "profile").
+
+profile_assert_closed(Cleaned) :-
+    thread_get_message(Cleaned, client_closed(Close), [timeout(5)]),
+    assertion(Close == ok(closed)),
+    thread_get_message(Cleaned, server_stopped(Stop), [timeout(5)]),
+    Stop = ok(Stopped),
+    assertion(Stopped.status == stopped).
+
+test(profile_execute_lifecycle_apis_are_public) :-
+    forall(member(Module:PI,
+                  [rlm_mcp_server:rlm_install_mcp_server_execute/3,
+                   rlm_mcp_server:rlm_run_mcp_server_execute/3,
+                   rlm_mcp_server:rlm_restart_mcp_server_execute/3,
+                   rlm_mcp_server:rlm_connect_mcp_server_execute/5,
+                   rlm_mcp_server:rlm_stop_mcp_server_execute/2,
+                   rlm_mcp:mcp_client_connect_execute/5,
+                   rlm_mcp:mcp_client_command_execute/3,
+                   rlm_mcp:mcp_client_close_execute/2,
+                   rlm_mcp_tool:mcp_import_tools_execute/5,
+                   rlm_mcp_tool:mcp_import_tools_async/5]),
+           ( PI = Name/Arity, functor(Head, Name, Arity),
+             assertion(predicate_property(Module:Head, exported)) )).
+
+test(import_async_submits_execute_and_sync_awaits_it) :-
+    assertion(canonical_submit(rlm_mcp_tool,
+                               mcp_import_tools_async/5,
+                               mcp_import_tools_execute/5)),
+    assertion(sync_calls_async(rlm_mcp_tool,
+                               mcp_import_tools/5,
+                               mcp_import_tools_async/5)).
+
+test(import_unbound_server_returns_structured_error) :-
+    mcp_import_tools(unused_registry, _Server, unused_client, [], error(Error)),
+    assertion(Error.kind == import_exception).
+
+test(import_async_invalid_server_returns_structured_error) :-
+    setup_call_cleanup(
+        mcp_import_tools_async(unused_registry, invalid(server), unused_client,
+                               [], Future),
+        ( rlm_future_await(Future, error(Error)),
+          assertion(Error.kind == import_exception)
+        ),
+        rlm_future_destroy(Future)).
+
+test(eight_occupied_workers_complete_full_mcp_profile,
+     [setup(reset_mcp_fixture)]) :-
+    setup_call_cleanup(
+        profile_queues(queues(Ready, Release, Cleaned)),
+        ( rlm_async_runtime_status(Status),
+          assertion(Status.worker_count =:= 8),
+          numlist(1, 8, Ids),
+          maplist(profile_submit(Ready, Release, Cleaned), Ids, Futures),
+          setup_call_cleanup(
+              true,
+              ( forall(member(Id, Ids),
+                       thread_get_message(Ready, ready(Id), [timeout(5)])),
+                forall(member(_, Ids), thread_send_message(Release, go)),
+                maplist(profile_await_success, Futures),
+                forall(member(_, Ids), profile_assert_closed(Cleaned)),
+                mcp_remote_calls(Calls), assertion(Calls =:= 8)
+              ),
+              maplist(profile_cleanup_future, Futures))
+        ),
+        profile_destroy_queues(queues(Ready, Release, Cleaned))).
+
+profile_unknown_server_worker(Ready, Release, Id, Outcome) :-
+    thread_send_message(Ready, ready(Id)),
+    thread_get_message(Release, go),
+    rlm_mcp_server:rlm_run_mcp_server_execute(
+        profile_deliberately_missing_server, [], Outcome).
+
+profile_submit_unknown_server(Ready, Release, Id, Future) :-
+    rlm_async_submit(
+        plunit_rlm_tool_mcp_async:profile_unknown_server_worker(
+            Ready, Release, Id), Future).
+
+profile_await_unknown_server(Future) :-
+    rlm_future_await(Future, 5.0, Outcome),
+    Outcome = error(Error),
+    assertion(Error.kind == unknown_server),
+    assertion(Error.phase == definition),
+    assertion(Error.server == profile_deliberately_missing_server).
+
+test(eight_occupied_workers_reject_unknown_server_without_nested_wait) :-
+    setup_call_cleanup(
+        profile_queues(queues(Ready, Release, Cleaned)),
+        ( rlm_async_runtime_status(Status),
+          assertion(Status.worker_count =:= 8),
+          numlist(1, 8, Ids),
+          maplist(profile_submit_unknown_server(Ready, Release), Ids, Futures),
+          setup_call_cleanup(
+              true,
+              ( forall(member(Id, Ids),
+                       thread_get_message(Ready, ready(Id), [timeout(5)])),
+                forall(member(_, Ids), thread_send_message(Release, go)),
+                maplist(profile_await_unknown_server, Futures)
+              ),
+              maplist(profile_cleanup_future, Futures))
+        ),
+        profile_destroy_queues(queues(Ready, Release, Cleaned))).
+
+test(profile_import_failure_still_closes_client_and_server) :-
+    setup_call_cleanup(
+        message_queue_create(Cleaned),
+        setup_call_cleanup(
+            rlm_async_submit(
+                plunit_rlm_tool_mcp_async:profile_lifecycle(
+                    "unused", [effect(not_an_effect)], Cleaned), Future),
+            ( rlm_future_await(Future, 5.0, Outcome),
+              Outcome = error(Error),
+              assertion(Error.kind == import_exception),
+              profile_assert_closed(Cleaned)
+            ),
+            profile_cleanup_future(Future)),
+        message_queue_destroy(Cleaned)).
+
+test(profile_cancel_unwinds_adapter_import_client_and_server) :-
+    setup_call_cleanup(
+        profile_queues(Queues),
+        ( Queues = queues(Entered, Release, Cleaned),
+          setup_call_cleanup(
+              assertz(profile_barrier(Entered, Release, Cleaned)),
+              setup_call_cleanup(
+                  rlm_async_submit(
+                      plunit_rlm_tool_mcp_async:profile_lifecycle(
+                          "barrier", [effect(read)], Cleaned), Future),
+                  ( thread_get_message(Entered, adapter_entered, [timeout(5)]),
+                    rlm_future_cancel(Future, ok(cancelled)),
+                    rlm_future_await(Future, 5.0, error(Error)),
+                    assertion(Error.kind == cancelled),
+                    thread_get_message(Cleaned, adapter_cleaned, [timeout(5)]),
+                    profile_assert_closed(Cleaned),
+                    assertion(\+ thread_get_message(Cleaned, _, [timeout(0)]))
+                  ),
+                  profile_cleanup_future(Future)),
+              retractall(profile_barrier(_, _, _)))
+        ),
+        profile_destroy_queues(Queues)).
+
 :- end_tests(rlm_tool_mcp_async).
