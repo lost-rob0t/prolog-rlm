@@ -153,7 +153,7 @@ test(unapproved_write_stops_before_effect) :-
           response("",[Call],First),
           with_scripted_http([reply(plunit_rlm_direct_http:declares_write,First)],
               run_direct(R,C,[],error(Error)), _),
-          assertion(Error.kind == approval_required), tool_mutation_count(0)
+          assertion(Error.kind == approval_required), tool_mutation_count(Count), assertion(Count =:= 0)
         ), cleanup_write(R,C,F)).
 
 test(zero_tool_budget_prevents_effect) :-
@@ -162,7 +162,7 @@ test(zero_tool_budget_prevents_effect) :-
           response("",[Call],First),
           with_scripted_http([reply(plunit_rlm_direct_http:declares_write,First)],
               run_direct(R,C,[budget(_{max_tool_calls:0})],error(Error)), _),
-          assertion(Error.kind == tool_call_budget_exhausted), tool_mutation_count(0)
+          assertion(Error.kind == tool_call_budget_exhausted), tool_mutation_count(Count), assertion(Count =:= 0)
         ), cleanup_write(R,C,F)).
 
 test(unknown_tool_returns_correlated_fault_without_effect) :-
@@ -174,7 +174,7 @@ test(unknown_tool_returns_correlated_fault_without_effect) :-
                reply(plunit_rlm_direct_http:rejected_observation(
                          "not_registered","unavailable_tool_schema"),Final)],
               run_direct(R,C,[],ok(Result)), _),
-          assertion(Result.tool_calls =:= 0), tool_mutation_count(0)
+          assertion(Result.tool_calls =:= 0), tool_mutation_count(Count), assertion(Count =:= 0)
         ), cleanup_write(R,C,F)).
 
 test(capability_filters_schema_and_rejects_forged_call) :-
@@ -186,7 +186,7 @@ test(capability_filters_schema_and_rejects_forged_call) :-
                reply(plunit_rlm_direct_http:rejected_observation(
                          "counting_write","unavailable_tool_schema"),Final)],
               run_direct(R,C,[capabilities([context(peek)])],ok(Result)), _),
-          assertion(Result.tool_calls =:= 0), tool_mutation_count(0)
+          assertion(Result.tool_calls =:= 0), tool_mutation_count(Count), assertion(Count =:= 0)
         ), cleanup_write(R,C,F)).
 
 test(malformed_arguments_are_returned_as_correlated_fault) :-
@@ -199,7 +199,7 @@ test(malformed_arguments_are_returned_as_correlated_fault) :-
                reply(plunit_rlm_direct_http:rejected_observation(
                          "counting_write","malformed_arguments"),Final)],
               run_direct(R,C,[],ok(Result)), _),
-          assertion(Result.tool_calls =:= 0), tool_mutation_count(0)
+          assertion(Result.tool_calls =:= 0), tool_mutation_count(Count), assertion(Count =:= 0)
         ), cleanup_write(R,C,F)).
 
 test(invalid_call_id_rejects_text_and_effect) :-
@@ -208,7 +208,7 @@ test(invalid_call_id_rejects_text_and_effect) :-
           response("MUST_NOT_SUCCEED",[Call],First),
           with_scripted_http([reply(plunit_rlm_direct_http:declares_write,First)],
               run_direct(R,C,[],error(Error)), _),
-          assertion(Error.kind == malformed_call_id), tool_mutation_count(0)
+          assertion(Error.kind == malformed_call_id), tool_mutation_count(Count), assertion(Count =:= 0)
         ), cleanup_write(R,C,F)).
 
 test(schema_invalid_value_is_rejected_before_effect) :-
@@ -220,7 +220,7 @@ test(schema_invalid_value_is_rejected_before_effect) :-
                reply(plunit_rlm_direct_http:rejected_observation(
                          "counting_write","malformed_arguments"),Final)],
               run_direct(R,C,[],ok(Result)), _),
-          assertion(Result.tool_calls =:= 0), tool_mutation_count(0)
+          assertion(Result.tool_calls =:= 0), tool_mutation_count(Count), assertion(Count =:= 0)
         ), cleanup_write(R,C,F)).
 
 test(duplicate_call_ids_reject_batch_before_effect) :-
@@ -229,7 +229,7 @@ test(duplicate_call_ids_reject_batch_before_effect) :-
           response("",[Call,Call],First),
           with_scripted_http([reply(plunit_rlm_direct_http:declares_write,First)],
               run_direct(R,C,[],error(Error)), _),
-          assertion(Error.kind == duplicate_call_id), tool_mutation_count(0)
+          assertion(Error.kind == duplicate_call_id), tool_mutation_count(Count), assertion(Count =:= 0)
         ), cleanup_write(R,C,F)).
 
 test(http_errors_are_bounded_without_implicit_retry,
@@ -245,5 +245,12 @@ test(server_expectation_failure_reaches_test_thread,
     response("unused",[],Final),
     with_scripted_http([reply(plunit_rlm_direct_http:reject_request,Final)],
         run_direct(none,session(http_fault),[],error(_)), _).
+
+test(counter_fixture_cannot_report_zero_after_mutation,
+     [setup(reset_tool_mutations),cleanup(reset_tool_mutations)]) :-
+    counting_write_tool(_{value:37}, _),
+    tool_mutation_count(Count),
+    assertion(Count =:= 1),
+    assertion(\+ tool_mutation_count(0)).
 
 :- end_tests(rlm_direct_http).
