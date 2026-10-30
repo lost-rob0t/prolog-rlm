@@ -51,6 +51,7 @@ corpus_entry('rlm_direct_context_peek_contract_test.pl',
              include(rlm_direct_context_peek_contract)).
 corpus_entry('rlm_native_any_schema_test.pl', include(rlm_native_any_schema)).
 corpus_entry('rlm_chain_test.pl', include(rlm_chain)).
+corpus_entry('zai_synthetic_acceptance_test.pl', include(zai_synthetic_acceptance)).
 corpus_entry('rlm_chain_app_attribution_test.pl',
              include(rlm_chain_app_attribution)).
 corpus_entry('rlm_chain_runtime_test.pl', include(rlm_chain_runtime)).

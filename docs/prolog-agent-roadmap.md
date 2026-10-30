@@ -8,11 +8,22 @@ This roadmap tracks the shortest path from the current runtime to a useful codin
 
 ## How far are we?
 
+Async host profiles can use the exported MCP lifecycle/client execute APIs and
+`mcp_import_tools_execute/5` for their entire setup and cleanup lifetime without
+waiting for nested scheduler work. Import has canonical synchronous/asynchronous
+facades for callers outside workers. Hosts must adopt these APIs; this substrate
+alone does not prove downstream product or live-provider acceptance.
+
 The hard runtime substrate is mostly here. The product layer is not.
 
 Already available in core and the downstream application boundary:
 
-- real OpenAI-compatible providers and streaming;
+- real OpenAI-compatible providers and streaming, plus Z.AI Coding Plan
+  constructors for Chat Completions, Codex/Responses, and Claude/Anthropic
+  Messages (Responses and Anthropic streaming remain future work);
+- Z.AI Chat Completions direct-loop tool recognition, with deterministic
+  synthetic read/create/modify/write coverage; downstream AgentProlog owns
+  final manual real-model acceptance, which this runtime slice does not claim;
 - typed model-selected plans;
 - capability-gated tools and a confined `project_read` tool;
 - confined Prolog-owned `SKILL.md` package discovery, inert resource indexing, and canonical skill prompt-unit normalization;
