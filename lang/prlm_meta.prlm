@@ -1,0 +1,160 @@
+:- module(prlm_meta,
+          [ msolve/2,
+            msolve/3
+          ]).
+
+/** <module> prlm_meta — the language interpreting itself (stage2)
+
+msolve/2 re-executes a goal by REINTERPRETING the clause database through
+clause/2 instead of letting the machine dispatch user predicates directly.
+This is the stage2 engine: stage1 sources (prlm_std) executed by the
+language's own interpreter, running on the stage0 machine.
+
+Why this exists: "self-hosted" is only demonstrated if the language can
+carry its own semantics. msolve is that demonstration in miniature: the
+control constructs and user predicates are handled HERE, in-language; only
+builtin leaves are delegated to the stage0 machine (which itself is our
+code, not the host's).
+
+Honest limits (documented, enforced by the equivalence corpus):
+* cut inside msolve-interpreted clauses commits only the current msolve
+  goal (once-semantics over that goal), not the full continuation stack.
+  The equivalence corpus therefore avoids goals whose meaning depends on
+  deep cut placement.
+* builtin leaves are executed by the stage0 machine directly
+  (call(G)); they are part of the declared whitelisted surface, not
+  secretly host code.
+* msolve/3 bounds proof depth (fails cleanly beyond the bound) so runaway
+  recursion in interpreted code cannot hang the gate.
+*/
+
+% msolve(Goal, Module): succeeds once per proof of Goal in Module.
+msolve(Goal, Module) :-
+    msolve_d(Goal, Module, 64).
+
+% Depth-bounded variant: Depth is the remaining user-clause budget.
+msolve(Goal, Module, Depth) :-
+    msolve_d(Goal, Module, Depth).
+
+% One clause, one if-then-else chain: the interpreter itself is cut-free
+% (only machine-level if-then-else commits), so interpreting interpreted
+% code never nests fragile cut bookkeeping.
+msolve_d(G, M, Depth) :-
+    (   G == true
+    ->  true
+    ;   m_conj(G, A, B)
+    ->  msolve_d(A, M, Depth),
+        msolve_d(B, M, Depth)
+    ;   m_disj(G, X, Y)
+    ->  (   msolve_d(X, M, Depth)
+        ;   msolve_d(Y, M, Depth)
+        )
+    ;   m_ifte(G, C, T, E)
+    ->  (   msolve_first(C, M, Depth)
+        ->  msolve_d(T, M, Depth)
+        ;   msolve_d(E, M, Depth)
+        )
+    ;   m_arrow(G, C, T)
+    ->  (   msolve_first(C, M, Depth)
+        ->  msolve_d(T, M, Depth)
+        ;   fail
+        )
+    ;   m_neg(G, X)
+    ->  \+ msolve_d(X, M, Depth)
+    ;   m_once(G, X)
+    ->  msolve_first(X, M, Depth)
+    ;   m_catch(G, A, B, C)
+    ->  catch(msolve_d(A, M, Depth), B, msolve_d(C, M, Depth))
+    ;   m_throw(G, X)
+    ->  throw(X)
+    ;   m_findall(G, T, X, L)
+    ->  findall(T, msolve_d(X, M, Depth), L)
+    ;   m_cut(G)
+    ->  true
+    ;   m_leaf(G)
+    ->  call(G)
+    ;   Depth > 0,
+        D1 is Depth - 1,
+        m_clause(G, M, B),
+        msolve_d(B, M, D1)
+    ).
+
+% once: first proof only, via machine-level commit (findall-free).
+msolve_first(X, M, Depth) :-
+    (   msolve_d(X, M, Depth)
+    ->  true
+    ;   fail
+    ),
+    m_commit.
+
+% m_commit never fails and never leaves alternatives (single clause).
+m_commit.
+
+% cut inside interpreted clauses: commits this msolve goal only
+% (documented limitation).
+m_cut(G) :- G == !.
+
+% Enumerate clauses of the TARGET module (module-qualified clause/2).
+m_clause(G, M, B) :-
+    clause(M:G, B).
+
+% ---- goal classification helpers --------------------------------------
+
+m_conj(G, A, B) :- G = (A, B).
+m_disj(G, X, Y) :- G = (X ; Y).
+m_ifte(G, C, T, E) :- G = (C -> T ; E).
+m_arrow(G, C, T) :- G = (C -> T).
+m_neg(G, X) :- G = \+(X).
+m_once(G, X) :- G = once(X).
+m_catch(G, A, B, C) :- G = catch(A, B, C).
+m_throw(G, X) :- G = throw(X).
+m_findall(G, T, X, L) :- G = findall(T, X, L).
+
+m_leaf(G) :-
+    G =.. [F|_],
+    m_leaf_functor(F).
+
+m_leaf_functor(true).
+m_leaf_functor(fail).
+m_leaf_functor(false).
+m_leaf_functor('=').
+m_leaf_functor(unify_with_occurs_check).
+m_leaf_functor('\\=').
+m_leaf_functor('==').
+m_leaf_functor('\\==').
+m_leaf_functor(var).
+m_leaf_functor(nonvar).
+m_leaf_functor(atom).
+m_leaf_functor(number).
+m_leaf_functor(integer).
+m_leaf_functor(float).
+m_leaf_functor(atomic).
+m_leaf_functor(compound).
+m_leaf_functor(callable).
+m_leaf_functor(ground).
+m_leaf_functor(is).
+m_leaf_functor('<').
+m_leaf_functor('>').
+m_leaf_functor('=<').
+m_leaf_functor('>=').
+m_leaf_functor('=:=').
+m_leaf_functor('=\\=').
+m_leaf_functor(compare).
+m_leaf_functor('@<').
+m_leaf_functor('@>').
+m_leaf_functor('@=<').
+m_leaf_functor('@>=').
+m_leaf_functor(functor).
+m_leaf_functor(arg).
+m_leaf_functor('=..').
+m_leaf_functor(copy_term).
+m_leaf_functor(length).
+m_leaf_functor(clause).
+m_leaf_functor(assertz).
+m_leaf_functor(retract).
+m_leaf_functor(call).
+
+% once: commit to the first proof of X (shallow cut at this clause only).
+msolve_once(X, M) :-
+    msolve_d(X, M, 64),
+    !.

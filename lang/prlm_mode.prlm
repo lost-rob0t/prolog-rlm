@@ -1,0 +1,45 @@
+:- module(prlm_mode, [select_mode/3]).
+
+/** <module> prlm_mode — in-language RLM mode selection (stage1 material)
+
+This is language, not library: ordinary Prolog text executed by the stage0
+kernel machine (prolog/prlm_kernel.pl), loaded into the session engine by
+prolog/prlm_rlm.pl and reached there through module `prlm_rlm_lang`
+(which imports this module's exports).
+
+Contract
+========
+
+    select_mode(SpecMode, Markers, Resolved)
+
+  * SpecMode  : auto | direct | symbolic | symbolic_recursive
+  * Markers   : markers(NeedsTools, NeedsAgents, ModelOnly) — each field the
+                atom true or false.  Markers are derived host-side (registered
+                tools, injected session KVS key rlm_markers); this predicate
+                only owns the RESOLUTION RULES.
+  * Resolved  : direct | symbolic | symbolic_recursive
+
+Rules (first match wins; exactly one solution for ground input):
+
+    auto + ModelOnly=true,  NeedsTools=false, NeedsAgents=false -> direct
+    auto + NeedsAgents=true                                    -> symbolic_recursive
+    auto (otherwise: NeedsTools=true or no markers at all)     -> symbolic
+    SpecMode \= auto                                           -> Resolved = SpecMode
+
+Implementation discipline: stage0 engine surface only — equality on closed
+terms and if-then-else commits; no cuts, no negation, no list or atom
+builtins.  Deterministic by construction.
+*/
+
+select_mode(SpecMode, markers(NeedsTools, NeedsAgents, ModelOnly), Resolved) :-
+    (   SpecMode == auto
+    ->  (   ModelOnly == true,
+            NeedsTools == false,
+            NeedsAgents == false
+        ->  Resolved = direct
+        ;   NeedsAgents == true
+        ->  Resolved = symbolic_recursive
+        ;   Resolved = symbolic
+        )
+    ;   Resolved = SpecMode
+    ).

@@ -1,0 +1,574 @@
+:- module(prlm_ctx,
+          [ ctx_compile/3,
+            ctx_tokens/2,
+            ctx_inspect/2,
+            ctx_search/3,
+            ctx_select/3,
+            ctx_slice/3,
+            ctx_transform/3,
+            ctx_delegate/3,
+            ctx_aggregate/3
+          ]).
+
+/** <module> prlm_ctx — deterministic context operations, written in the language itself
+
+This is stage1 material: ordinary Prolog text loaded into the prlm engine
+(prolog/prlm_kernel.pl) via prlm_consult_source/3,4 and executed by the
+engine's own machine. Every predicate below uses only the engine's builtin
+surface: list recursion, arithmetic, compare/3 and @</2 ordering, length/2,
+functor/arg/=../2, and the control constructs. There is no sort/2 (ordering
+is a hand-written stable merge sort), no atom/string introspection, no
+dicts, and no between/3 anywhere in this file.
+
+No neck cuts (!) are used anywhere: the engine's cut bookkeeping is
+avoided entirely, and every predicate commits through the machine's own
+if-then-else instead. Each exported operation is deterministic and yields
+exactly one solution for ground input.
+
+Representation
+==============
+
+    section(Id, Kind, Content, Tokens, Priority, Provenance)
+
+Id, Kind and Provenance are atoms; Tokens and Priority are integers.
+Content is text in canonical form: a LIST OF CHARACTER CODES (integers).
+The stage0 kernel deliberately exposes no atom_codes/string primitives, so
+opaque atoms and strings cannot be decomposed in-language; the host
+boundary (prolog/prlm_context.pl) converts atom|string content, search
+queries and every other text value to code lists before the engine sees
+them. Atomic content that arrives unconverted is treated as a single
+opaque word. A non-atomic term is counted in its written structure: one
+word for the functor plus the word counts of its arguments (deterministic
+heuristic, no writer needed).
+
+A compiled context is:
+
+    compiled(Sections, TotalTokens, Dropped)
+
+with Sections ordered deterministically: priority DESC, then id ASC.
+Dropped lists keep the order in which sections were considered.
+*/
+
+% ============================================================
+% Ordering (engine has no sort/2: stable merge sort)
+% ============================================================
+
+ctx_msort_by(_, [], []).
+ctx_msort_by(_, [X], [X]).
+ctx_msort_by(P, In, Out) :-
+    In = [_, _|_],
+    ctx_halve(In, L, R),
+    ctx_msort_by(P, L, SL),
+    ctx_msort_by(P, R, SR),
+    ctx_merge_by(P, SL, SR, Out).
+
+% The kernel builtin length/2 fails on lists whose tails pass through
+% engine variables (its empty-list test runs before dereferencing), so
+% every length computation here uses this deref-safe variant.
+ctx_length([], 0).
+ctx_length([_|T], N) :-
+    ctx_length(T, N0),
+    N is N0 + 1.
+
+ctx_halve(In, L, R) :-
+    ctx_length(In, N),
+    H is N // 2,
+    ctx_take(H, In, L, R).
+
+% Single clause on purpose: no clause choicepoints are created, so the
+% machine's post-solution backtracking has nothing to resume. When the
+% guard does not hold (N =:= 0 or the input is exhausted) the remainder
+% is returned untouched.
+ctx_take(N, In, L, R) :-
+    (   N > 0, In = [X|Xs]
+    ->  L = [X|Ls],
+        N1 is N - 1,
+        ctx_take(N1, Xs, Ls, R)
+    ;   L = [],
+        R = In
+    ).
+
+ctx_merge_by(P, L0, R0, Out) :-
+    (   L0 == []
+    ->  Out = R0
+    ;   R0 == []
+    ->  Out = L0
+    ;   L0 = [A|As],
+        R0 = [B|Bs],
+        (   call(P, A, B)
+        ->  ctx_merge_by(P, As, [B|Bs], Out0),
+            Out = [A|Out0]
+        ;   ctx_merge_by(P, [A|As], Bs, Out0),
+            Out = [B|Out0]
+        )
+    ).
+
+% standard order ascending (atoms, K-N pairs, ...)
+ctx_std_le(A, B) :-
+    \+ (B @< A).
+
+% sections: priority DESC, then id ASC (strict: the id tie-break must be
+% independent of input order)
+ctx_sec_precedes(SA, SB) :-
+    SA = section(IA, _, _, _, PA, _),
+    SB = section(IB, _, _, _, PB, _),
+    (   PA > PB
+    ->  true
+    ;   PA == PB,
+        IA @< IB
+    ).
+
+% matches: score DESC, then id ASC
+ctx_match_precedes(match(IA, VA), match(IB, VB)) :-
+    (   VA > VB
+    ->  true
+    ;   VA =:= VB,
+        IA @< IB
+    ).
+
+% dedupe: id ASC, then priority DESC
+ctx_dedupe_precedes(SA, SB) :-
+    SA = section(IA, _, _, _, PA, _),
+    SB = section(IB, _, _, _, PB, _),
+    (   IA @< IB
+    ->  true
+    ;   IA == IB,
+        PA >= PB
+    ).
+
+% ============================================================
+% List helpers (engine has no member/append/reverse)
+% ============================================================
+
+ctx_member(X, [X|_]).
+ctx_member(X, [_|T]) :-
+    ctx_member(X, T).
+
+ctx_append([], L, L).
+ctx_append([X|Xs], L, [X|R]) :-
+    ctx_append(Xs, L, R).
+
+ctx_sum([], 0).
+ctx_sum([X|Xs], S) :-
+    ctx_sum(Xs, S0),
+    S is S0 + X.
+
+ctx_sum_tokens([], A, A).
+ctx_sum_tokens([section(_, _, _, T, _, _)|Ss], A, Tot) :-
+    A1 is A + T,
+    ctx_sum_tokens(Ss, A1, Tot).
+
+ctx_is_list([]).
+ctx_is_list([_|_]).
+
+% ============================================================
+% ctx_tokens — deterministic written-form token estimate
+% ============================================================
+
+% Tokens = max(1, ceil(1.3 * WordCount)), computed in exact integer
+% arithmetic as (13 * W + 9) // 10 so no float rounding can leak in.
+ctx_tokens(Text, Tokens) :-
+    (   var(Text)
+    ->  throw(prlm_error(instantiation_error, ctx_text))
+    ;   ctx_word_count(Text, W)
+    ),
+    Tokens is max(1, (13 * W + 9) // 10).
+
+ctx_word_count(T, W) :-
+    (   ctx_is_list(T)
+    ->  ctx_list_words(T, W)
+    ;   atomic(T)
+    ->  W = 1                          % opaque atom/string/number: one word
+    ;   T =.. [_|As],                  % written form: functor + argument words
+        ctx_arg_words(As, W0),
+        W is 1 + W0
+    ).
+
+ctx_arg_words([], 0).
+ctx_arg_words([A|As], W) :-
+    ctx_word_count(A, W1),
+    ctx_arg_words(As, W0),
+    W is W1 + W0.
+
+% word count over a character list (code integers or single-char atoms)
+ctx_list_words([], 0).
+ctx_list_words([C|Cs], W) :-
+    (   ctx_sep_item(C)
+    ->  ctx_list_words(Cs, W)
+    ;   ctx_skip_word(Cs, Rest),
+        ctx_list_words(Rest, W1),
+        W is W1 + 1
+    ).
+
+ctx_skip_word(L0, Rest) :-
+    (   L0 = [C|Cs],
+        \+ ctx_sep_item(C)
+    ->  ctx_skip_word(Cs, Rest)
+    ;   Rest = L0
+    ).
+
+ctx_sep_item(I) :-
+    integer(I),
+    ctx_sep_code(I).
+ctx_sep_item(A) :-
+    atom(A),
+    ctx_sep_atom(A).
+
+ctx_sep_code(32).
+ctx_sep_code(9).
+ctx_sep_code(10).
+ctx_sep_code(13).
+
+ctx_sep_atom(' ').
+ctx_sep_atom('\t').
+ctx_sep_atom('\n').
+ctx_sep_atom('\r').
+
+% lowercase_atom(+Chars, -LowerChars): chars-code based ASCII case folding
+% over character-code lists. Atoms themselves are opaque in the engine;
+% all case-insensitive matching happens on this canonical form.
+lowercase_atom(Codes, Lower) :-
+    ctx_downcase(Codes, Lower).
+
+ctx_downcase([], []).
+ctx_downcase([C|Cs], [D|Ds]) :-
+    (   integer(C), C >= 65, C =< 90
+    ->  D is C + 32
+    ;   D = C
+    ),
+    ctx_downcase(Cs, Ds).
+
+% ============================================================
+% ctx_compile — order, then greedy budget fit
+% ============================================================
+
+ctx_compile(Sections, Budget, compiled(Kept, Total, Dropped)) :-
+    (   integer(Budget)
+    ->  true
+    ;   throw(prlm_error(type_error, ctx_budget(Budget)))
+    ),
+    ctx_msort_by(ctx_sec_precedes, Sections, Ordered),
+    ctx_compile_scan(Ordered, Budget, 0, Kept, Dropped),
+    ctx_sum_tokens(Kept, 0, Total).
+
+% Greedy scan in compiled order: keep a section when it fits; a section
+% that does not fit is dropped but later (smaller) sections are still
+% considered. Kept/Dropped keep consideration order.
+ctx_compile_scan([], _, _, [], []).
+ctx_compile_scan([S|Ss], Budget, Acc, Kept, Dropped) :-
+    S = section(_, _, _, T, _, _),
+    Acc1 is Acc + T,
+    (   Acc1 =< Budget
+    ->  Kept = [S|Kept1],
+        ctx_compile_scan(Ss, Budget, Acc1, Kept1, Dropped)
+    ;   Dropped = [S|Dropped1],
+        ctx_compile_scan(Ss, Budget, Acc, Kept, Dropped1)
+    ).
+
+% ============================================================
+% ctx_inspect
+% ============================================================
+
+ctx_inspect(compiled(Sections, Total, _), info(N, Total, KindsSorted)) :-
+    ctx_length(Sections, N),
+    ctx_kind_counts(Sections, Pairs),
+    ctx_msort_by(ctx_std_le, Pairs, KindsSorted).
+
+ctx_kind_counts([], []).
+ctx_kind_counts([section(_, K, _, _, _, _)|Ss], Pairs) :-
+    ctx_kind_counts(Ss, P0),
+    ctx_bump(K, P0, Pairs).
+
+ctx_bump(K, Pairs0, Pairs) :-
+    (   Pairs0 = [K-N|Ps]
+    ->  M is N + 1,
+        Pairs = [K-M|Ps]
+    ;   Pairs0 = [P|Ps]
+    ->  ctx_bump(K, Ps, Rest),
+        Pairs = [P|Rest]
+    ;   Pairs = [K-1]
+    ).
+
+% ============================================================
+% ctx_search — case-insensitive substring scoring
+% ============================================================
+
+% Queries is a list of character-code lists (host converts atoms).
+% Score of a section = number of query items occurring (case-insensitive
+% substring) in its content; only sections with Score > 0 are returned.
+ctx_search(compiled(Sections, _, _), Queries, Matches) :-
+    (   ctx_is_list(Queries)
+    ->  true
+    ;   throw(prlm_error(type_error, ctx_queries(Queries)))
+    ),
+    ctx_search_secs(Sections, Queries, Found),
+    ctx_msort_by(ctx_match_precedes, Found, Matches).
+
+ctx_search_secs([], _, []).
+ctx_search_secs([section(Id, _, Content, _, _, _)|Ss], Queries, Ms) :-
+    ctx_query_score(Queries, Content, 0, Score),
+    (   Score > 0
+    ->  Ms = [match(Id, Score)|Rest]
+    ;   Ms = Rest
+    ),
+    ctx_search_secs(Ss, Queries, Rest).
+
+ctx_query_score([], _, S, S).
+ctx_query_score([Q|Qs], Content, Acc, Score) :-
+    (   ctx_query_codes(Q, LQ),
+        ctx_contains_ci(Content, LQ)
+    ->  Acc1 is Acc + 1
+    ;   Acc1 = Acc
+    ),
+    ctx_query_score(Qs, Content, Acc1, Score).
+
+ctx_query_codes(Q, LQ) :-
+    (   ctx_is_list(Q)
+    ->  ctx_downcase(Q, LQ)
+    ;   throw(prlm_error(type_error, ctx_query(Q)))
+    ).
+
+ctx_contains_ci(Content, LQ) :-
+    ctx_is_list(Content),
+    ctx_downcase(Content, LC),
+    once(ctx_shift(LQ, LC)).
+
+ctx_shift(Sub, Sup) :-
+    ctx_prefix(Sub, Sup).
+ctx_shift(Sub, [_|Ss]) :-
+    ctx_shift(Sub, Ss).
+
+ctx_prefix([], _).
+ctx_prefix([X|Xs], [X|Ys]) :-
+    ctx_prefix(Xs, Ys).
+
+% ============================================================
+% ctx_select
+% ============================================================
+
+ctx_select(Compiled, Filter, Sections) :-
+    (   Filter == all
+    ->  Compiled = compiled(Sections, _, _)
+    ;   Filter = kinds(KList)
+    ->  Compiled = compiled(All, _, _),
+        ctx_kind_filter(All, KList, Sections)
+    ;   Filter = min_priority(P)
+    ->  Compiled = compiled(All, _, _),
+        ctx_minp_filter(All, P, Sections)
+    ;   Filter = ids(Ids)
+    ->  Compiled = compiled(All, _, _),
+        ctx_ids_filter(All, Ids, Sections)
+    ;   throw(prlm_error(type_error, ctx_filter(Filter)))
+    ).
+
+ctx_kind_filter([], _, []).
+ctx_kind_filter([S|Ss], KList, Out) :-
+    S = section(_, K, _, _, _, _),
+    (   ctx_member(K, KList)
+    ->  Out = [S|Rest]
+    ;   Out = Rest
+    ),
+    ctx_kind_filter(Ss, KList, Rest).
+
+ctx_minp_filter([], _, []).
+ctx_minp_filter([S|Ss], P, Out) :-
+    S = section(_, _, _, _, P0, _),
+    (   P0 >= P
+    ->  Out = [S|Rest]
+    ;   Out = Rest
+    ),
+    ctx_minp_filter(Ss, P, Rest).
+
+ctx_ids_filter([], _, []).
+ctx_ids_filter([S|Ss], Ids, Out) :-
+    S = section(Id, _, _, _, _, _),
+    (   ctx_member(Id, Ids)
+    ->  Out = [S|Rest]
+    ;   Out = Rest
+    ),
+    ctx_ids_filter(Ss, Ids, Rest).
+
+% ============================================================
+% ctx_slice
+% ============================================================
+
+ctx_slice(compiled(All, _, _), Ids, compiled(Selected, Total, [])) :-
+    (   ctx_is_list(Ids)
+    ->  true
+    ;   throw(prlm_error(type_error, ctx_ids(Ids)))
+    ),
+    ctx_ids_filter(All, Ids, Selected),
+    ctx_sum_tokens(Selected, 0, Total).
+
+% ============================================================
+% ctx_transform
+% ============================================================
+
+ctx_transform(Compiled0, Transform, Compiled) :-
+    (   Transform = truncate_tokens(Budget)
+    ->  Compiled0 = compiled(All, _, _),
+        (   integer(Budget)
+        ->  true
+        ;   throw(prlm_error(type_error, ctx_budget(Budget)))
+        ),
+        ctx_truncate(All, Budget, 0, Kept, Dropped),
+        ctx_sum_tokens(Kept, 0, Total),
+        Compiled = compiled(Kept, Total, Dropped)
+    ;   Transform = redact_kind(Kind)
+    ->  Compiled0 = compiled(All, Total, _),
+        ctx_redact(All, Kind, Red),
+        Compiled = compiled(Red, Total, [])
+    ;   Transform = keep_kinds(KList)
+    ->  Compiled0 = compiled(All, _, _),
+        ctx_kind_partition(All, KList, Kept, Dropped),
+        ctx_sum_tokens(Kept, 0, Total),
+        Compiled = compiled(Kept, Total, Dropped)
+    ;   throw(prlm_error(type_error, ctx_transform(Transform)))
+    ).
+
+% drop from the end: once the budget is exceeded every later section is
+% dropped too, in compiled order
+ctx_truncate([], _, _, [], []).
+ctx_truncate([S|Ss], Budget, Acc, Kept, Dropped) :-
+    S = section(_, _, _, T, _, _),
+    Acc1 is Acc + T,
+    (   Acc1 =< Budget
+    ->  Kept = [S|Kept1],
+        ctx_truncate(Ss, Budget, Acc1, Kept1, Dropped)
+    ;   Dropped = [S|Dropped1],
+        ctx_truncate(Ss, Budget, Acc1, Kept, Dropped1)
+    ).
+
+% content of a redacted section becomes the canonical codes of "redacted";
+% token counts are kept unchanged
+redacted_codes([114,101,100,97,99,116,101,100]).
+
+ctx_redact([], _, []).
+ctx_redact([S|Ss], K, Out) :-
+    S = section(Id, K0, _, T, P, Pr),
+    (   K0 == K
+    ->  redacted_codes(R),
+        Out = [section(Id, K, R, T, P, Pr)|Rest]
+    ;   Out = [S|Rest]
+    ),
+    ctx_redact(Ss, K, Rest).
+
+ctx_kind_partition([], _, [], []).
+ctx_kind_partition([S|Ss], KList, Kept, Dropped) :-
+    S = section(_, K, _, _, _, _),
+    (   ctx_member(K, KList)
+    ->  Kept = [S|Kept1],
+        Dropped = Dropped1
+    ;   Kept = Kept1,
+        Dropped = [S|Dropped1]
+    ),
+    ctx_kind_partition(Ss, KList, Kept1, Dropped1).
+
+% ============================================================
+% ctx_delegate
+% ============================================================
+
+ctx_delegate(compiled(All, _, _), Spec, Partitions) :-
+    (   Spec == by_kinds
+    ->  ctx_kinds_sorted(All, Kinds),
+        ctx_delegate_kinds(All, Kinds, 1, Partitions)
+    ;   Spec = by_count(N)
+    ->  (   integer(N), N >= 1
+        ->  true
+        ;   throw(prlm_error(type_error, ctx_by_count(N)))
+        ),
+        ctx_length(All, L),
+        Base is L // N,
+        Extra is L mod N,
+        ctx_slice_n(All, N, Base, Extra, 1, Partitions)
+    ;   throw(prlm_error(type_error, ctx_delegate_spec(Spec)))
+    ).
+
+% one partition per distinct kind, kinds ascending, 1-based indices
+ctx_delegate_kinds(_, [], _, []).
+ctx_delegate_kinds(All, [K|Ks], I, [partition(I, compiled(Sel, T, []))|Rest]) :-
+    ctx_kind_filter(All, [K], Sel),
+    ctx_sum_tokens(Sel, 0, T),
+    I1 is I + 1,
+    ctx_delegate_kinds(All, Ks, I1, Rest).
+
+% N near-equal contiguous slices in compiled order: the first L mod N
+% slices get one extra section
+ctx_slice_n(All, K, Base, Extra, I, Partitions) :-
+    (   K > 0
+    ->  (   Extra > 0
+        ->  Size is Base + 1,
+            E1 is Extra - 1
+        ;   Size = Base,
+            E1 = Extra
+        ),
+        ctx_take_exact(Size, All, S, All1),
+        ctx_sum_tokens(S, 0, T),
+        K1 is K - 1,
+        I1 is I + 1,
+        Partitions = [partition(I, compiled(S, T, []))|Rest],
+        ctx_slice_n(All1, K1, Base, E1, I1, Rest)
+    ;   Partitions = []
+    ).
+
+ctx_take_exact(0, L, [], L).
+ctx_take_exact(N, [X|Xs], [X|Ys], R) :-
+    N > 0,
+    N1 is N - 1,
+    ctx_take_exact(N1, Xs, Ys, R).
+ctx_take_exact(N, [], [], []) :-
+    N >= 0.
+
+ctx_kinds_sorted(All, Kinds) :-
+    ctx_collect_kinds(All, K0),
+    ctx_msort_by(ctx_std_le, K0, Kinds).
+
+ctx_collect_kinds([], []).
+ctx_collect_kinds([section(_, K, _, _, _, _)|Ss], Ks) :-
+    ctx_collect_kinds(Ss, K0),
+    ctx_add_unique(K, K0, Ks).
+
+ctx_add_unique(K, Ks0, Ks) :-
+    (   ctx_member(K, Ks0)
+    ->  Ks = Ks0
+    ;   Ks = [K|Ks0]
+    ).
+
+% ============================================================
+% ctx_aggregate — merge, dedupe by id, recompile
+% ============================================================
+
+ctx_aggregate(CtxList, Budget, Merged) :-
+    (   integer(Budget)
+    ->  true
+    ;   throw(prlm_error(type_error, ctx_budget(Budget)))
+    ),
+    ctx_all_sections(CtxList, All),
+    ctx_msort_by(ctx_dedupe_precedes, All, Sorted),
+    ctx_first_per_id(Sorted, Deduped),
+    ctx_compile(Deduped, Budget, Merged).
+
+ctx_all_sections([], []).
+ctx_all_sections([C|Cs], Out) :-
+    (   C = compiled(S, _, _)
+    ->  true
+    ;   throw(prlm_error(type_error, ctx_context(C)))
+    ),
+    ctx_all_sections(Cs, Rest),
+    ctx_append(S, Rest, Out).
+
+% input is sorted (id ASC, priority DESC), so the first occurrence of an
+% id is its highest-priority occurrence; ties keep input order
+ctx_first_per_id([], []).
+ctx_first_per_id([S|Ss], [S|Rest]) :-
+    S = section(Id, _, _, _, _, _),
+    ctx_drop_id(Ss, Id, S1),
+    ctx_first_per_id(S1, Rest).
+
+ctx_drop_id([], _, []).
+ctx_drop_id([S|Ss], Id, Out) :-
+    (   S = section(Id, _, _, _, _, _)
+    ->  Out = Rest
+    ;   Out = [S|Rest]
+    ),
+    ctx_drop_id(Ss, Id, Rest).

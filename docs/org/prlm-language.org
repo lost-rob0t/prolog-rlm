@@ -1,0 +1,200 @@
+#+title:     Prolog-RLM: Why the Language Is Designed This Way
+#+subtitle:  Design rationale for the self-hosted language (docs/org/prlm-language.org)
+#+filetags:  :prolog-rlm:language:design:
+
+* Status
+
+This file is the *rationale narrative* for the Prolog-RLM language. It
+explains /why/ the design is what it is. The API-level definition lives in
+=docs/prlm-language.md=; the bootstrap story in =docs/self-hosting.md=; the
+self-improvement protocol in =docs/rsi.md=.
+
+*Tangle convention.* This org file documents; the =.pl= and =.prlm= files are
+canonical. Nothing in this file tangbles into code, and no code fact in this
+file outranks the source: when prose and =prolog/= disagree, the code and its
+tests win, and this document gets updated.
+
+* Why a language and not a library
+
+A library offers capabilities; a language defines what programs /mean/. The
+difference is opt-out. If budgets, authority, verification, or event
+accounting live in a library, every caller chooses whether to use them, and
+the honest answer to "did you verify before completing?" is "usually". If
+they live in the *execution model* — as they do here — there is no
+"usually": there is no way to run a goal that is not charged, no way to
+invoke a tool that does not pass the gate, no way to emit a completion event
+that verification did not authorize.
+
+That is the whole point of building RLM semantics (spec, plan, execute,
+verify, learn) *into* the language. An RLM system is a long-lived recursive
+talker; the failure modes that matter (silent budget escape, unverified
+success claims, authority creep across recursion) are exactly the ones a
+convention-based library cannot prevent, because prevention must be
+structural.
+
+* Why the runtime must own semantics
+
+Language models are competent and unreliable. That combination is fine when
+something else decides what the output /does/. In Prolog-RLM that something
+is the runtime, and ownership is concrete:
+
+- *Execution.* Programs are Prolog text run on the language's own machine
+  (the stage0 kernel), not on =call/1=. Host variables are reified to
+  ='$v'(Name)= at a parse-only boundary, so a program goal is never a
+  callable host goal. The no-escape property is a consequence of term
+  representation, not of reviewer discipline.
+- *Accounting.* Every machine step, tool call, nesting level, and repair is
+  charged to session budgets before it happens, and exhaustion throws. The
+  event stream records the exhaustion even when the goal dies.
+- *Permission.* Canonical authority tiers (=approve_diff < allow_once <
+  allow_session < dangerous=) narrow monotonically; children derive the
+  minimum of parent and request. Recursion cannot launder authority.
+- *Truth.* Verification — not the model's confidence — gates the
+  completion event.
+
+The runtime owning semantics is what makes the model's competence usable:
+the model can be wrong in any direction, and the damage is bounded by
+construction rather than by prompting.
+
+* Why proposals are data
+
+LLM output in this language is an inert term: =proposal{text, term, status,
+usage}= where =term= was produced by the kernel's parse-only reader. It
+becomes an action only after =prlm_validate_proposal/3= matches it against
+a closed whitelist of op shapes (=model_call_step/1=, =tool_call_step/2=,
+=verify_step/1=, =yield_step/1=, …). Rejection is data too:
+=rejected(not_a_term)= or =rejected(not_whitelisted)= — never an exception,
+because "the model said something invalid" is a normal, expected state of
+the world.
+
+The reasons this shape matters:
+
+1. *Idempotence of judgment.* A proposal is a value; validating it twice
+   gives the same answer. Freely mixing text and effects makes review and
+   replay impossible.
+2. *Closed extension.* New op kinds are added by extending the whitelist —
+   a deliberate, reviewable act by trusted host code
+   (=prlm_proposal_op_add/1=) — never by the model inventing new powers.
+3. *Honest failure.* A rejected proposal is observable on the event stream
+   as a first-class fact, so planners can react instead of guessing.
+
+* Why verification gates completion
+
+A completion claim is the one output of an agent system that other systems
+act on. If completion can be emitted hopefully — "the model thinks it
+worked" — then everything downstream inherits hope. So the language makes
+completion an *authorized* event: requirement checks run against the run's
+recorded observations, host rule first, then the in-language checker, with
+fail-closed defaults (a missing checker is a failure, not a pass; =never=
+never passes).
+
+The companion rule is *repair, don't weaken*: on verification failure the
+spec is frozen (it is session state under =rlm_frozen_spec=) and only the
+plan changes, via three deterministic repairs (reorder, add a model step,
+retry) under a bounded repair budget. This closes the cheapest failure mode
+in agentic systems: quietly redefining success until the current output
+qualifies.
+
+* Why context compilation is deterministic
+
+"What did the model see?" must have an exact answer, or verification and
+learning are unfalsifiable. So the context compiler is a pure function:
+notes are =section(Id, Kind, Content, Tokens, Priority, Provenance)= with
+sequential ids and kind-defaulted priorities; compilation orders priority
+descending then id ascending, under a token budget, producing
+=compiled(Sections, TotalTokens, Dropped)=.
+
+Two subtleties are load-bearing:
+
+- The operations live *in the language* (=lang/prlm_ctx.prlm=) and run on
+  the kernel machine, so even the compiler's cost is charged and budgeted —
+  context work is not a free host-side side channel.
+- Text is canonicalized to character-code lists because the engine exposes
+  no atom/string introspection. That constraint is deliberate: it keeps the
+  builtin surface small enough to re-implement in-language (stage1), at the
+  cost of a conversion at the host boundary — a good trade for a language
+  that wants its bootstrap to be checkable.
+
+Determinism also makes delegation reviewable: a child agent's compiled
+context is a value, comparable across attempts, so "the child saw something
+different" becomes a queryable claim rather than a suspicion.
+
+* Why self-host with a stage0 bootstrap
+
+The language's central claim — RLM semantics are language semantics — is
+only honest if the code implementing later stages runs on *our* machine. If
+stage1 ran on SWI's engine, "the language owns execution" would be a
+branding statement. So the kernel is the language's own Prolog machine, and
+the later stages are ordinary =.prlm= sources executed by it.
+
+Every self-hosting system starts from a host; the questions are what the
+host owes and how you check the debt. The answers here:
+
+- *Declare the debt.* =prlm_host_primitive/1= lists the complete whitelist
+  (dynamic state, dict ops, list walking, arithmetic, structural ops, the
+  source reader, path/file ops, sorting). Nothing else may be assumed,
+  which is why in-language code writes its own merge sort and uses code
+  lists for text.
+- *Check the debt.* The self-host gate verifies stage1/stage2 against the
+  kernel machine on a probe corpus, checks the builtin surface is exactly
+  the whitelist, and requires execution provenance through the machine.
+  It fails closed: a missing module yields ={"error":
+  "selfhost_module_absent"}= exit 3, a failing gate prints its report and
+  exits 1 — the repository never reports a stage as reached without the
+  gate saying so.
+
+The stage0→stage1→stage2 ladder is thus a ladder of *decreasing host
+reliance with constant verification*, and each rung is evidence-producing:
+a corpus entry that passes under both machines is a regression test for the
+bootstrap itself, forever.
+
+* Why actors, agents, and recursion share one substrate
+
+Recursive agents are the case that breaks naive designs: nested scopes
+invent their own budgets, authority widens "just for the child", threads
+make scheduling nondeterministic, and cancellation arrives after the work.
+Making actors language primitives fixes this by unification: agents,
+supervisors, MCP connections, and workers are all kinds of actor; mailboxes
+are FIFO; scheduling is deterministic round-robin; child authority and
+capabilities only narrow; depth (500 by default) and every other budget
+live on the shared session. One substrate means one place to audit, one
+event vocabulary, and no drift between "the agent runtime" and "the
+language".
+
+* Why learning and self-improvement are gated the same way
+
+Learning that bypasses trust boundaries is self-deception at machine speed.
+So learned facts split into a trusted KB (verification-backed, provenance
+carrying) and an untrusted store (everything else), and promotion between
+them is explicit. RSI is the same discipline pointed at the runtime itself:
+proposals are data, implementation happens in an isolated workspace, the
+benchmark is a deterministic machine workload, acceptance requires probe
+plus improvement, promotion is a single gated code path, rejection leaves a
+recorded reason and an observable rollback invariant (the live value still
+equals the pre-run snapshot). The system is allowed to improve itself only
+in ways it can *prove* on the same terms it demands of model output.
+
+* Why one event stream
+
+Everything above is made auditable by a single design decision: one
+normalized, closed-vocabulary, monotonic event stream per session. UIs,
+MCP consumers, the usage introspector, and the RSI harness all read the
+same facts. There is no debug side channel to forget, no second logging
+format to drift. If it happened, it is on the stream; if it is not on the
+stream, it did not happen.
+
+* Summary of the WHYs
+
+| Decision | Why |
+|---+---|
+| Language, not library | semantics cannot be opted out of |
+| Runtime owns execution | model competence needs bounded blast radius |
+| ='$v'= representation | structural no-escape, no =call/1= |
+| Proposals are data | reviewable, idempotent, closed extension |
+| Verification gates completion | downstream acts on proof, not hope |
+| Repair, don't weaken | blocks success redefinition |
+| Deterministic context | "what did it see?" has an exact answer |
+| stage0 bootstrap + whitelist + gate | honest self-hosting, checkable debt |
+| Actors as primitives | recursion shares budgets, authority narrows |
+| Trust-bounded learning / gated RSI | improvement requires proof, remembers rejection |
+| One event stream | auditability is a property of the runtime, not a habit |

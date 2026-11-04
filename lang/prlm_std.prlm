@@ -1,0 +1,186 @@
+:- module(std,
+          [ append/3,
+            member/2,
+            select/3,
+            reverse/2,
+            nth0/3,
+            last/2,
+            sum_list/2,
+            max_list/2,
+            min_list/2,
+            maplist/2,
+            maplist/3,
+            include/3,
+            exclude/3,
+            sort_list/2,
+            delete/3,
+            between/3,
+            succ/2,
+            flatten/2,
+            double/2,
+            prefix/2
+          ]).
+
+/** <module> std — the Prolog-RLM standard library, written IN the language
+
+This file is stage1 material: substantial language implementation expressed
+in Prolog-RLM source and executed by the stage0 engine. Everything here is
+built ONLY on the kernel's whitelisted builtin surface (no sort/2, no
+atom/string builtins, no between/succ from the host) — which is exactly the
+point: the language grows on top of its own machine.
+
+Why these exist: every later stage (meta-interpreter, self-host gates,
+tooling in-language) needs list/meta machinery; providing it in-language is
+the first proof that the language can carry its own weight.
+
+Style rules (constraints from the stage0 machine):
+* NO clause-level cuts — if-then-else is the only commit construct used
+  (deep cut bookkeeping in the bootstrap engine is fragile by design;
+  if-then-else maps directly onto the machine's commit item).
+* Deterministic result ORDER matters: the self-host equivalence corpus
+  compares solution order between direct and meta-interpreted execution.
+*/
+
+% ---- list construction ------------------------------------------------
+
+append([], Ys, Ys).
+append([X|Xs], Ys, [X|Zs]) :-
+    append(Xs, Ys, Zs).
+
+member(X, [X|_]).
+member(X, [_|Xs]) :-
+    member(X, Xs).
+
+select(X, [X|Xs], Xs).
+select(X, [Y|Ys], [Y|Zs]) :-
+    select(X, Ys, Zs).
+
+delete([], _, []).
+delete([X|Xs], X, Ys) :-
+    delete(Xs, X, Ys).
+delete([X|Xs], Y, [X|Ys]) :-
+    X \== Y,
+    delete(Xs, Y, Ys).
+
+reverse(Xs, Ys) :-
+    reverse_acc(Xs, [], Ys).
+
+reverse_acc([], Acc, Acc).
+reverse_acc([X|Xs], Acc, Ys) :-
+    reverse_acc(Xs, [X|Acc], Ys).
+
+flatten([], []).
+flatten([X|Xs], Ys) :-
+    (   is_proper_list(X)
+    ->  flatten(X, F),
+        flatten(Xs, Fs),
+        append(F, Fs, Ys)
+    ;   Ys = [X|Rest],
+        flatten(Xs, Rest)
+    ).
+
+is_proper_list(X) :-
+    (   X == []
+    ->  true
+    ;   X = [_|_]
+    ->  true
+    ;   fail
+    ).
+
+% ---- indexing ---------------------------------------------------------
+
+nth0(N, [X|_], X) :-
+    N =:= 0.
+nth0(N, [_|Xs], X) :-
+    N > 0,
+    M is N - 1,
+    nth0(M, Xs, X).
+
+last([X], X).
+last([_|Xs], X) :-
+    last(Xs, X).
+
+prefix([X|Xs], [X|Ys]) :-
+    prefix(Xs, Ys).
+prefix([], _).
+
+% ---- arithmetic over lists -------------------------------------------
+
+sum_list([], 0).
+sum_list([X|Xs], S) :-
+    sum_list(Xs, S0),
+    S is S0 + X.
+
+max_list([X], X).
+max_list([X|Xs], M) :-
+    max_list(Xs, M0),
+    (   X >= M0 -> M = X ; M = M0 ).
+
+min_list([X], X).
+min_list([X|Xs], M) :-
+    min_list(Xs, M0),
+    (   X =< M0 -> M = X ; M = M0 ).
+
+between(Low, High, X) :-
+    Low =< High,
+    (   X = Low
+    ;   Low1 is Low + 1,
+        between(Low1, High, X)
+    ).
+
+succ(X, Y) :-
+    (   var(X)
+    ->  integer(Y),
+        X is Y - 1
+    ;   integer(X),
+        Y is X + 1
+    ).
+
+double(X, Y) :-
+    Y is X * 2.
+
+% ---- higher-order -----------------------------------------------------
+
+maplist(_, []).
+maplist(G, [X|Xs]) :-
+    call(G, X),
+    maplist(G, Xs).
+
+maplist(_, [], []).
+maplist(G, [X|Xs], [Y|Ys]) :-
+    call(G, X, Y),
+    maplist(G, Xs, Ys).
+
+include(_, [], []).
+include(P, [X|Xs], Ys) :-
+    (   call(P, X)
+    ->  Ys = [X|Rest]
+    ;   Ys = Rest
+    ),
+    include(P, Xs, Rest).
+
+exclude(_, [], []).
+exclude(P, [X|Xs], Ys) :-
+    (   call(P, X)
+    ->  Ys = Rest
+    ;   Ys = [X|Rest]
+    ),
+    exclude(P, Xs, Rest).
+
+% ---- sorting (deterministic ascending insertion sort via standard order) --
+% Insertion sort is used instead of merge sort because every derivation of
+% a merge sort splits the same input many ways under backtracking, which
+% makes solution enumeration over a deterministic sort needlessly
+% expensive. Insertion sort has exactly one derivation.
+
+sort_list([], []).
+sort_list([X|Xs], Ys) :-
+    sort_list(Xs, Rest),
+    insert_sorted(X, Rest, Ys).
+
+insert_sorted(X, [], [X]).
+insert_sorted(X, [Y|Ys], [X, Y|Ys]) :-
+    X @< Y.
+insert_sorted(X, [Y|Ys], [Y|Zs]) :-
+    X @>= Y,
+    insert_sorted(X, Ys, Zs).
