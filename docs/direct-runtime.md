@@ -391,6 +391,16 @@ provider turn. Faulted calls are never charged as tool or context
 operations, but observations and turns stay inside the output, model
 call, and iteration budgets.
 
+Read-only native context calls also return a bounded, correlated error
+observation when alias lookup or selector evaluation rejects
+`unknown_context_alias`, `unsupported_selector`, or `out_of_range`. The
+rejected call retains its ID, consumes one context-call slot, and the next
+model turn may repair it. Repeating the mistake remains bounded by the
+context, model-call, iteration, and output budgets. Only these named context
+faults are recoverable; capability, authority, effectful, cancellation, and
+internal failures keep their terminal behavior. No context payload or
+internal exception is copied into the repair observation.
+
 Recoverable does not mean executable, and visible does not mean
 authorized: a malformed effectful call never executes and its handler
 never runs; an unavailable call has no binding at all; repair
