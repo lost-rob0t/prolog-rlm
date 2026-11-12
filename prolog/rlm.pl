@@ -83,6 +83,12 @@
             model_stream_async/4,
             chain_invoke_async/4,
             chain_stream_async/5,
+            browser_bridge_call/3,
+            image_generate/3,
+            image_generate_async/3,
+            image_generate_execute/3,
+            openai_image_provider/4,
+            default_image_provider/1,
             default_recursion_policy/1,
             recursion_route/3,
             recursion_candidates/3,
@@ -198,6 +204,18 @@ latency is represented by a deferred pending-operation Future; no shared
 */
 
 :- use_module(rlm_chain).
+:- use_module(rlm_browser,
+              [ browser_bridge_call/3
+              ]).
+:- use_module(rlm_browser_tool_pack, []).
+:- use_module(rlm_image,
+              [ image_generate/3,
+                image_generate_async/3,
+                image_generate_execute/3,
+                openai_image_provider/4,
+                default_image_provider/1
+              ]).
+:- use_module(rlm_image_tool_pack, []).
 :- use_module(rlm_context).
 :- use_module(rlm_plan).
 :- use_module(rlm_tool).
