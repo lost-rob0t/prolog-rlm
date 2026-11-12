@@ -1,0 +1,33 @@
+{
+  "protocol": "prolog_rlm_native_sdk_v1",
+  "ui_protocol": "prolog_agent_ui_v1",
+  "async_contract": "canonical_async_sync_bridge",
+  "languages": [
+    "common_lisp",
+    "python",
+    "typescript",
+    "nim",
+    "emacs_lisp",
+    "kotlin_jvm_android",
+    "rust",
+    "go"
+  ],
+  "backend_kinds": ["model", "tool", "verifier"],
+  "transports": ["local_ndjson", "a2a_optional"],
+  "required_cases": [
+    "capability_negotiation",
+    "prompt_stream_success",
+    "backend_success",
+    "backend_failure",
+    "authority_pending_resolve",
+    "cancellation",
+    "timeout",
+    "reconnect_snapshot_replay",
+    "stale_event_rejection",
+    "usage_trace_correlation",
+    "indeterminate_external_effect",
+    "subagent_event",
+    "unknown_optional_extension",
+    "unknown_required_extension_rejected"
+  ]
+}
