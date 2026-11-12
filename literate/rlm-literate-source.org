@@ -1,0 +1,709 @@
+#+title: Canonical literate Org source: reader, tangler, and human review contract
+#+author: Prolog-RLM
+#+property: header-args :mkdirp yes
+#+startup: overview
+
+* Why Org owns the source
+
+The program should be readable before it is executable.
+
+A canonical source file therefore combines three things that normally drift
+apart: the reason a subsystem exists, the constraints that make it safe, and
+the exact code that implements it. Generated language files remain useful to
+compilers, packagers, editors, and external tools, but they are derived files.
+
+This first bootstrap unit deliberately supports a small Org subset. A source
+block only enters the build when its header declares an explicit =:tangle=
+target. The reader never executes Babel, evaluates noweb, or treats prose as
+code.
+
+The small surface is intentional. Self-hosting gets easier when the bootstrap
+format has fewer semantics.
+
+* Source reader and tangler
+
+The tangler parses source blocks, groups blocks by target in source order,
+rejects path traversal, writes generated files, and verifies that checked-in
+outputs still match their Org source.
+
+#+begin_src prolog :tangle prolog/rlm_literate_org.pl
+:- module(rlm_literate_org,
+          [ rlm_literate_org_ready/0,
+            org_source_blocks/2,
+            org_tangle_render/2,
+            org_tangle_file/3,
+            org_tangle_check/3
+          ]).
+
+/** <module> Canonical Org source reader and tangler
+
+This module reads the deliberately small Org source subset used for
+Prolog-RLM's canonical literate source. Human-readable Org files own the code.
+Generated language files are build artifacts.
+
+Only explicit `:tangle` targets generate files. Targets must stay below the
+requested output root. The tangler never evaluates Org Babel, expands arbitrary
+noweb references, executes code, or interprets model-authored text.
+*/
+
+:- use_module(library(filesex)).
+:- use_module(library(lists)).
+:- use_module(library(readutil)).
+
+rlm_literate_org_ready.
+
+org_source_blocks(Source0, Outcome) :-
+    catch(( text_string(Source0, Source),
+            split_string(Source, "\n", "", Lines),
+            parse_org_lines(Lines, 1, Blocks),
+            Outcome = ok(Blocks)
+          ),
+          Exception,
+          literate_exception(parse, Exception, Outcome)).
+
+org_tangle_render(Source, Outcome) :-
+    org_source_blocks(Source, BlocksOutcome),
+    render_after_parse(BlocksOutcome, Outcome).
+
+render_after_parse(error(Error), error(Error)) :- !.
+render_after_parse(ok(Blocks), Outcome) :-
+    catch(( include(block_tangles, Blocks, Tangled),
+            maplist(validate_block_target, Tangled),
+            block_targets(Tangled, Targets),
+            maplist(render_target(Tangled), Targets, Outputs),
+            Outcome = ok(Outputs)
+          ),
+          Exception,
+          literate_exception(render, Exception, Outcome)).
+
+org_tangle_file(OrgPath, Root, Outcome) :-
+    catch(( read_file_to_string(OrgPath, Source, [encoding(utf8)]),
+            org_tangle_render(Source, RenderOutcome),
+            require_rendered(RenderOutcome, Outputs),
+            maplist(write_output(Root), Outputs),
+            Outcome = ok(org_tangle_result{source:OrgPath,
+                                           root:Root,
+                                           outputs:Outputs})
+          ),
+          Exception,
+          literate_exception(tangle, Exception, Outcome)).
+
+org_tangle_check(OrgPath, Root, Outcome) :-
+    catch(( read_file_to_string(OrgPath, Source, [encoding(utf8)]),
+            org_tangle_render(Source, RenderOutcome),
+            require_rendered(RenderOutcome, Outputs),
+            maplist(check_output(Root), Outputs, Checks),
+            (   forall(member(Check, Checks), Check.status == current)
+            ->  Status = current
+            ;   Status = stale
+            ),
+            Outcome = ok(org_tangle_check{source:OrgPath,
+                                          root:Root,
+                                          status:Status,
+                                          checks:Checks})
+          ),
+          Exception,
+          literate_exception(check, Exception, Outcome)).
+
+parse_org_lines([], _, []).
+parse_org_lines([Line|Lines], Number, Blocks) :-
+    (   begin_src(Line, Language, Target)
+    ->  Next is Number + 1,
+        collect_src_block(Lines,
+                          Next,
+                          Number,
+                          Language,
+                          Target,
+                          BodyLines,
+                          EndLine,
+                          Rest),
+        body_text(BodyLines, Body),
+        Blocks = [org_source_block{language:Language,
+                                   target:Target,
+                                   begin_line:Number,
+                                   end_line:EndLine,
+                                   body:Body}|Tail],
+        Resume is EndLine + 1,
+        parse_org_lines(Rest, Resume, Tail)
+    ;   end_src(Line)
+    ->  throw(literate_fault(unmatched_end_src(Number)))
+    ;   Next is Number + 1,
+        parse_org_lines(Lines, Next, Blocks)
+    ).
+
+collect_src_block([], _, Begin, _, _, _, _, _) :-
+    throw(literate_fault(unterminated_src_block(Begin))).
+collect_src_block([Line|Lines],
+                  Number,
+                  _,
+                  _,
+                  _,
+                  [],
+                  Number,
+                  Lines) :-
+    end_src(Line),
+    !.
+collect_src_block([Line|Lines],
+                  Number,
+                  Begin,
+                  Language,
+                  Target,
+                  [Line|Body],
+                  EndLine,
+                  Rest) :-
+    Next is Number + 1,
+    collect_src_block(Lines,
+                      Next,
+                      Begin,
+                      Language,
+                      Target,
+                      Body,
+                      EndLine,
+                      Rest).
+
+begin_src(Line, Language, Target) :-
+    split_string(Line, " \t", " \t", Tokens),
+    Tokens = [Marker, Language0|Headers],
+    string_lower(Marker, LowerMarker),
+    LowerMarker == "#+begin_src",
+    Language0 \== "",
+    string_lower(Language0, Language),
+    tangle_header(Headers, Target).
+
+end_src(Line) :-
+    normalize_space(string(Normalized), Line),
+    string_lower(Normalized, Lower),
+    Lower == "#+end_src".
+
+tangle_header(Headers, Target) :-
+    tangle_header_(Headers, none, Target).
+
+tangle_header_([], Target, Target).
+tangle_header_([Key, Value|Rest], _, Target) :-
+    string_lower(Key, Lower),
+    Lower == ":tangle",
+    !,
+    (   Value == "no"
+    ->  Target0 = no
+    ;   Target0 = Value
+    ),
+    tangle_header_(Rest, Target0, Target).
+tangle_header_([_|Rest], Current, Target) :-
+    tangle_header_(Rest, Current, Target).
+
+body_text([], "").
+body_text(Lines, Body) :-
+    atomic_list_concat(Lines, '\n', Atom),
+    atom_string(Atom, Text),
+    string_concat(Text, "\n", Body).
+
+block_tangles(Block) :-
+    Block.target \== none,
+    Block.target \== no.
+
+validate_block_target(Block) :-
+    safe_relative_target(Block.target).
+
+safe_relative_target(Target) :-
+    string(Target),
+    Target \== "",
+    \+ sub_string(Target, _, _, _, "\\"),
+    atom_string(Path, Target),
+    \+ is_absolute_file_name(Path),
+    atomic_list_concat(Segments, '/', Path),
+    \+ memberchk('..', Segments),
+    \+ memberchk('', Segments),
+    !.
+safe_relative_target(Target) :-
+    throw(literate_fault(unsafe_tangle_target(Target))).
+
+block_targets(Blocks, Targets) :-
+    findall(Target,
+            ( member(Block, Blocks),
+              Target = Block.target ),
+            Targets0),
+    list_to_set(Targets0, Targets).
+
+render_target(Blocks, Target, Output) :-
+    findall(Body,
+            ( member(Block, Blocks),
+              Block.target == Target,
+              Body = Block.body ),
+            Bodies),
+    atomics_to_string(Bodies, "", Content),
+    findall(Language,
+            ( member(Block, Blocks),
+              Block.target == Target,
+              Language = Block.language ),
+            Languages0),
+    sort(Languages0, Languages),
+    length(Bodies, Count),
+    Output = org_tangle_output{target:Target,
+                               languages:Languages,
+                               blocks:Count,
+                               content:Content}.
+
+write_output(Root0, Output) :-
+    root_atom(Root0, Root),
+    target_path(Root, Output.target, Path),
+    file_directory_name(Path, Directory),
+    make_directory_path(Directory),
+    setup_call_cleanup(open(Path, write, Stream, [encoding(utf8)]),
+                       format(Stream, '~s', [Output.content]),
+                       close(Stream)).
+
+check_output(Root0, Output, Check) :-
+    root_atom(Root0, Root),
+    target_path(Root, Output.target, Path),
+    (   exists_file(Path)
+    ->  read_file_to_string(Path, Actual, [encoding(utf8)]),
+        (   Actual == Output.content
+        ->  Status = current
+        ;   Status = differs
+        )
+    ;   Status = missing
+    ),
+    Check = org_tangle_target_check{target:Output.target,
+                                    path:Path,
+                                    status:Status}.
+
+target_path(Root, Target, Path) :-
+    safe_relative_target(Target),
+    atom_string(TargetAtom, Target),
+    directory_file_path(Root, TargetAtom, Path).
+
+root_atom(Root, Root) :- atom(Root), !.
+root_atom(Root, Atom) :- string(Root), !, atom_string(Atom, Root).
+root_atom(Root, _) :- throw(literate_fault(invalid_root(Root))).
+
+require_rendered(ok(Outputs), Outputs) :- !.
+require_rendered(error(Error), _) :- throw(literate_fault(render_failed(Error))).
+
+text_string(Value, Value) :- string(Value), !.
+text_string(Value, Text) :- atom(Value), !, atom_string(Value, Text).
+text_string(Value, _) :- throw(literate_fault(invalid_source(Value))).
+
+literate_exception(Phase, literate_fault(Detail), error(Error)) :-
+    !,
+    Error = literate_org_error{phase:Phase,
+                               kind:invalid_literate_source,
+                               detail:Detail,
+                               message:"canonical Org source was rejected"}.
+literate_exception(Phase, error(Type, Context), error(Error)) :-
+    !,
+    Error = literate_org_error{phase:Phase,
+                               kind:runtime_error,
+                               detail:Type,
+                               context:Context,
+                               message:"Org source processing failed"}.
+literate_exception(Phase, Exception, error(Error)) :-
+    term_string(Exception, Safe, [quoted(true), numbervars(true)]),
+    Error = literate_org_error{phase:Phase,
+                               kind:unexpected_error,
+                               exception:Safe,
+                               message:"Org source processing failed"}.
+#+end_src
+
+* Command-line compiler
+
+This script is intentionally thin. The Prolog module owns parsing and safety.
+The script only turns a command line into either a tangle or a reproducibility
+check.
+
+Because the script itself is tangled from this file, the compiler can rebuild
+its own command-line surface after the initial checked-in bootstrap.
+
+#+begin_src prolog :tangle scripts/tangle-org-source.pl
+:- initialization(main, main).
+
+:- use_module('../prolog/rlm_literate_org').
+
+main(Argv) :-
+    (   parse_args(Argv, Mode, OrgPath, Root)
+    ->  run_mode(Mode, OrgPath, Root, Outcome),
+        print_outcome(Outcome),
+        exit_for_outcome(Mode, Outcome)
+    ;   usage,
+        halt(2)
+    ).
+
+parse_args(["--check", OrgPath], check, OrgPath, ".").
+parse_args(["--check", OrgPath, Root], check, OrgPath, Root).
+parse_args([OrgPath], tangle, OrgPath, ".").
+parse_args([OrgPath, Root], tangle, OrgPath, Root).
+
+run_mode(tangle, OrgPath, Root, Outcome) :-
+    org_tangle_file(OrgPath, Root, Outcome).
+run_mode(check, OrgPath, Root, Outcome) :-
+    org_tangle_check(OrgPath, Root, Outcome).
+
+print_outcome(Outcome) :-
+    write_term(Outcome, [quoted(true), portray(true)]),
+    nl.
+
+exit_for_outcome(tangle, ok(_)) :- halt(0).
+exit_for_outcome(check, ok(Check)) :-
+    ( Check.status == current -> halt(0) ; halt(1) ).
+exit_for_outcome(_, error(_)) :- halt(1).
+
+usage :-
+    format(user_error,
+           'usage: swipl -q -s scripts/tangle-org-source.pl -- [--check] SOURCE.org [ROOT]~n',
+           []).
+#+end_src
+
+* Regression tests
+
+These tests prove the bootstrap properties that matter: source order survives,
+documentation-only blocks stay inert, targets cannot escape the root,
+unterminated blocks fail closed, and a generated file round-trips through the
+check gate.
+
+#+begin_src prolog :tangle test/rlm_literate_org_test.pl
+:- begin_tests(rlm_literate_org).
+
+:- use_module('../prolog/rlm_literate_org').
+:- use_module(library(filesex)).
+
+test(render_preserves_block_order_for_one_target) :-
+    Source = "#+title: demo\n#+begin_src prolog :tangle prolog/demo.pl\na(1).\n#+end_src\nText.\n#+begin_src prolog :tangle prolog/demo.pl\nb(2).\n#+end_src\n",
+    org_tangle_render(Source, ok([Output])),
+    assertion(Output.target == "prolog/demo.pl"),
+    assertion(Output.blocks == 2),
+    assertion(Output.content == "a(1).\nb(2).\n").
+
+test(documentation_only_block_does_not_tangle) :-
+    Source = "#+begin_src prolog\nexample_only.\n#+end_src\n",
+    org_tangle_render(Source, ok([])).
+
+test(tangle_no_does_not_tangle) :-
+    Source = "#+begin_src prolog :tangle no\nexample_only.\n#+end_src\n",
+    org_tangle_render(Source, ok([])).
+
+test(rejects_parent_directory_escape) :-
+    Source = "#+begin_src prolog :tangle ../escape.pl\nbad.\n#+end_src\n",
+    org_tangle_render(Source, error(Error)),
+    assertion(Error.phase == render),
+    assertion(Error.detail == unsafe_tangle_target("../escape.pl")).
+
+test(rejects_unterminated_block) :-
+    Source = "#+begin_src prolog :tangle prolog/demo.pl\na(1).\n",
+    org_tangle_render(Source, error(Error)),
+    assertion(Error.phase == parse),
+    assertion(Error.detail == unterminated_src_block(1)).
+
+test(tangle_and_check_round_trip) :-
+    Source = "#+begin_src prolog :tangle generated/demo.pl\ndemo(ok).\n#+end_src\n",
+    tmp_file(rlm_literate_org, Root),
+    make_directory(Root),
+    directory_file_path(Root, 'source.org', OrgPath),
+    setup_call_cleanup(
+        true,
+        ( setup_call_cleanup(open(OrgPath, write, Stream, [encoding(utf8)]),
+                             format(Stream, '~s', [Source]),
+                             close(Stream)),
+          org_tangle_file(OrgPath, Root, ok(_)),
+          org_tangle_check(OrgPath, Root, ok(Check)),
+          assertion(Check.status == current)
+        ),
+        delete_directory_and_contents(Root)
+    ).
+
+:- end_tests(rlm_literate_org).
+#+end_src
+
+* Deterministic test-corpus bridge
+
+The legacy deterministic corpus still owns a hand-maintained inventory. This
+bootstrap adds one stable include seam so new literate tests can register
+themselves from Org without adding another hand-edited clause for every source
+unit. The legacy corpus file itself should later migrate into canonical Org.
+
+#+begin_src prolog :tangle test/generated/literate_corpus_entries.pl
+% Generated from literate/rlm-literate-source.org. Do not edit by hand.
+corpus_entry('rlm_literate_org_test.pl', include(rlm_literate_org)).
+#+end_src
+
+* Human writing and adversarial review skill
+
+The source format only works if the prose is worth reading. This skill defines
+the writing voice and the three-pass canonicalization gate.
+
+#+begin_src markdown :tangle skills/core/rlm-literate-human/SKILL.md
+---
+name: rlm-literate-human
+description: Write, review, and publish canonical Org source in a human technical voice, then tangle it into generated runtime files.
+---
+# rlm-literate-human
+
+Use this skill whenever code or executable configuration is added or materially rewritten in the self-hosting Prolog-RLM / Infermacs language program.
+
+## Canonical source
+
+The human-readable Org file is the source of truth.
+
+Generated `.pl`, `.el`, `.kt`, `.js`, shell, configuration, or other implementation files are tangler outputs. Do not hand-edit a generated file. Change its Org source block and regenerate it.
+
+Every executable source block that belongs in the build has an explicit `:tangle relative/path`. Documentation-only examples either omit `:tangle` or use `:tangle no`.
+
+Keep prose and implementation adjacent. A reader should be able to understand why a block exists before reading the block.
+
+## Writing style: Literate Engineering Voice
+
+Write like one engineer explaining a real system to another engineer.
+
+- Lead with the concrete problem or invariant.
+- Prefer active voice.
+- Use strong verbs and specific nouns.
+- Give one sentence one main idea.
+- Use the shortest accurate term consistently.
+- Explain surprising constraints, boundaries, failure modes, and tradeoffs.
+- Put rationale next to the code it justifies.
+- Show real inputs and outputs instead of abstract filler.
+- Assume the reader understands programming; explain this system, not Programming 101.
+- Remove throat-clearing, generic conclusions, fake enthusiasm, marketing language, and phrases such as “robust”, “seamless”, “powerful”, or “leverages” unless a measurable fact requires them.
+- Never describe behavior the code or tests do not prove.
+
+Public predicates, exported language forms, actor messages, effects, capabilities, profile fields, compiler forms, and generated artifacts need human documentation.
+
+Comments explain intent or non-obvious constraints. They do not narrate obvious syntax.
+
+## Review pipeline
+
+Canonicalization is deliberately adversarial.
+
+### Pass 1 — author
+
+The author tangles the Org source and runs focused tests.
+
+The author records:
+- source Org path;
+- generated targets;
+- exact tests;
+- any intentionally undocumented private implementation detail and why it is private.
+
+### Pass 2 — parent critic
+
+A different parent/supervisor reviews the Org and generated diff. It must check:
+- prose/code agreement;
+- missing invariants;
+- misleading names;
+- accidental authority widening;
+- needless abstraction;
+- undocumented public behavior;
+- stale or hand-edited generated outputs;
+- tests that execute lines without proving behavior.
+
+A parent critic cannot approve its own authored source.
+
+### Pass 3 — harsh nihilist
+
+The final reviewer assumes every abstraction, sentence, generated layer, and dependency is unnecessary until justified.
+
+It tries to delete the design mentally before accepting it.
+
+It rejects when:
+- prose can be removed without losing meaning;
+- code exists without a concrete requirement;
+- two concepts can be one;
+- one concept secretly owns two authorities;
+- the Org source hides behavior in generated files;
+- a generated target cannot be reproduced exactly;
+- an LLM-authored statement is treated as fact without evidence;
+- tests do not exercise the documented failure path;
+- a simpler Prolog rule, fact, actor message, or existing runtime primitive would do;
+- the chapter would teach something the source does not actually implement.
+
+The only terminal votes are:
+
+`ACCEPT_ORG_SOURCE` — the Org file may become canonical.
+
+`REJECT_ORG_SOURCE(<specific reasons>)` — return it to the author and repeat parent + nihilist review after the fix.
+
+No majority vote overrides a nihilist rejection. Fix the source.
+
+## Book handoff
+
+Only after `ACCEPT_ORG_SOURCE` and complete required test coverage should the Zara Book worker consume the file.
+
+The book worker turns each accepted canonical Org unit into a fuller teaching chapter that:
+- starts from the problem the file solves;
+- teaches the Prolog/language concepts through the implementation;
+- preserves the file's real invariants and failure modes;
+- walks through important source blocks in dependency order;
+- includes runnable examples;
+- links the chapter back to the canonical Org source and generated artifacts;
+- never claims planned behavior as implemented.
+
+The chapter is downstream documentation. It never becomes the implementation authority.
+
+## Commands
+
+Tangle:
+
+`swipl -q -s scripts/tangle-org-source.pl -- literate/<file>.org .`
+
+Verify generated files are current:
+
+`swipl -q -s scripts/tangle-org-source.pl -- --check literate/<file>.org .`
+
+A stale or missing generated target is a failed build.
+#+end_src
+
+* Clean-pack contract
+
+The default core skill catalog is part of the installed-pack contract. This
+smoke test belongs beside the skill definitions because adding a canonical
+core skill intentionally changes that exact catalog.
+
+#+begin_src prolog :tangle test/pack_load_smoke.pl
+:- initialization(main, main).
+
+:- use_module(library(prolog_pack)).
+
+main([PackRoot]) :-
+    !,
+    attach_packs(PackRoot, [replace(true)]),
+    use_module(library(rlm)),
+    rlm:rlm_ready,
+    rlm:rlm_version(Version),
+    rlm:skill_default_catalog_reset,
+    rlm:skill_default_catalog(ok(SkillCatalog)),
+    rlm:skill_catalog_skills(SkillCatalog, Skills),
+    findall(Name, (member(Skill, Skills), Name = Skill.name), Names0),
+    sort(Names0,
+         ['rlm-constraints',
+          'rlm-facts',
+          'rlm-literate-human',
+          'rlm-literate-nihilist',
+          'rlm-literate-parent-critic',
+          'rlm-operate',
+          'rlm-recurse']),
+    format('installed_rlm_version=~w~n', [Version]),
+    halt(0).
+main(Args) :-
+    format(user_error,
+           'usage: pack_load_smoke.pl PACK_ROOT; got ~q~n',
+           [Args]),
+    halt(2).
+#+end_src
+
+* Independent reviewer skills
+
+The authoring skill defines the pipeline, but independent roles need their own
+prompts so an author cannot count self-review as external review.
+
+#+begin_src markdown :tangle skills/core/rlm-literate-parent-critic/SKILL.md
+---
+name: rlm-literate-parent-critic
+description: Independently review canonical literate Org source and its tangled outputs before nihilist review.
+---
+# rlm-literate-parent-critic
+
+Review a literate Org source unit written by another author.
+
+Do not rewrite the source during the review. Produce concrete findings first.
+
+## Check the source as one artifact
+
+Read the prose and every executable source block together. Then inspect the tangled diff.
+
+Reject any mismatch between what the prose says and what the generated code does.
+
+Check:
+
+- every public predicate, language form, actor message, effect, capability, profile field, and generated target is documented;
+- names match ownership and authority;
+- the prose explains non-obvious invariants and failure behavior;
+- generated files contain no behavior absent from Org;
+- no generated file was hand-edited;
+- every `:tangle` target is reproducible and confined;
+- tests prove behavior rather than merely execute code;
+- model-generated text is never promoted to fact without evidence;
+- new abstractions reuse existing runtime primitives where possible;
+- security, cancellation, resource bounds, provenance, and authority narrowing remain explicit.
+
+## Review posture
+
+Be skeptical and specific. Prefer deletion and reuse over another layer.
+
+Do not approve because the code is clever or the prose sounds polished.
+
+## Output
+
+Return exactly one terminal result plus findings:
+
+`PARENT_ACCEPT(<findings>)`
+
+or
+
+`PARENT_REJECT(<blocking findings>)`
+
+Only `PARENT_ACCEPT` may proceed to the harsh nihilist skill.
+#+end_src
+
+#+begin_src markdown :tangle skills/core/rlm-literate-nihilist/SKILL.md
+---
+name: rlm-literate-nihilist
+description: Final adversarial veto review for literate Org source; assume every abstraction and sentence is unnecessary until justified.
+---
+# rlm-literate-nihilist
+
+You are the final canonical-source veto.
+
+The source already passed its author and parent critic. That history earns it no trust.
+
+Assume every abstraction, sentence, dependency, generated layer, and model-assisted decision is unnecessary until the source proves otherwise.
+
+## Try to kill the design
+
+Ask, in order:
+
+1. Can this code disappear?
+2. Can an existing Prolog fact, rule, actor message, effect boundary, capability, parser, or runtime primitive replace it?
+3. Can two concepts become one without losing a real invariant?
+4. Does one concept secretly own two authorities?
+5. Does any prose sentence claim behavior that no test proves?
+6. Does generated code contain semantics that the Org source hides?
+7. Can every generated target be reproduced exactly?
+8. Is every public surface documented in plain language?
+9. Is any LLM output being treated as truth instead of a candidate with provenance?
+10. Would a new contributor understand why the weird parts exist without asking the author?
+
+Reject ornamental architecture, speculative generality, duplicate registries, fake compatibility, status-only tests, vague words, and documentation that merely paraphrases syntax.
+
+Be harsh about the work, not the person. Do not add insults or theatrics.
+
+## Terminal vote
+
+Return exactly one of:
+
+`ACCEPT_ORG_SOURCE`
+
+or
+
+`REJECT_ORG_SOURCE(<specific blocking reasons>)`
+
+A rejection is final for that revision. The author must change the source and repeat the parent critic pass before another nihilist review.
+
+Never soften a rejection into “mostly approved.”
+#+end_src
+
+* Bootstrap rule
+
+Until the self-hosted reader is part of the trusted runtime image, keep the
+generated tangler module and command-line script checked in. Never edit them by
+hand.
+
+After changing this file:
+
+1. run the checked-in tangler against this Org file;
+2. run the focused tests;
+3. run =--check= and require an exact match;
+4. send the Org source through parent critic review;
+5. send the surviving version through harsh nihilist review;
+6. only an =ACCEPT_ORG_SOURCE= vote makes the Org unit canonical.
+
+The long-term bootstrap target is stronger: a trusted Prolog image reads this
+Org file, rebuilds the tangler, rebuilds the runtime, and proves the second
+build is identical to the first.
