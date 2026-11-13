@@ -1,0 +1,180 @@
+#+title: RLM-RESEARCH-574 — rlm-swarm core: collaboration surfaces and config/CLI contract
+#+status: RESEARCHED
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
+#+ISSUE: #574
+
+* Research Question
+
+What verified substrate does the existing prolog-rlm runtime provide for the
+requested =rlm_swarm= library and =pswarm= CLI, what is the current competitive
+baseline for multi-agent swarms, and which bounded implementation slices are
+coherent — without creating a second scheduler, agent loop, or runtime that
+duplicates canonical prolog-rlm mechanics?
+
+This record consolidates the research phase of issue #574. It does not propose
+a novel feature; it maps the issue's required base-core collaboration surfaces
+onto existing runtime modules and records the approval-relevant evidence.
+
+* Primary Sources
+
+Pinned commits (retrieved 2026-11-12), local read-only snapshots under
+=/tmp/opencode/rlm-swarm-herdr-{tui,core,app}=; upstream binaries were not
+built or exercised:
+
+- Herdr TUI ee5bfb5041bb3e4a49d591c72308aae3c81ecdde (skills/herdr/SKILL.md,
+  docs/next CLI reference, session-state, plugins, agents, agent-automation,
+  socket-api docs).
+- herdr-core 1b0393f80c35b1dae34f37934d33d0144a8fc8d7 (README, commands,
+  security, schema/hc.openrpc.json).
+- herdr-app 3d7679014e038e783f8e8773f910e0b61c114a70 (README, mods).
+
+Unpinned (current-document retrievals 2026-11-12): SwarmForge Herdr README,
+Pi Herdr swarm README, CrewAI crews, LangGraph interrupts/persistence,
+OpenAI Agents guardrails, KEDA scaled-object spec, OpenHands sandboxes,
+OpenTelemetry GenAI agent spans (development), systemd.service, Redis
+rate-limiter algorithms. Brave discovery recorded through =prolog-verify
+brave=.
+
+Repository-local evidence: issue nsaspy/prolog-rlm#574; related issues #514
+and #411; private Org research supplements
+=llm/research/prolog-rlm-herdr-swarm-parity.org=,
+=llm/research/prolog-rlm-herdr-interface-manifest.org=,
+=llm/research/prolog-rlm-swarm-core-config-coverage.org=.
+
+* Findings
+
+** Verified substrate state (readiness audit, HEAD ea137b61)
+
+Read-only audit of this worktree at HEAD
+ea137b61a91101444323b8f3cd9cd6e7fad0f7a8 (persisted as =swarm_readiness/4=
+in =.prolog/kb/swarm-project.pl=, commit e4c46aa):
+
+| Issue-574 surface | Substrate classification | Closest existing module |
+|-------------------+--------------------------+-------------------------|
+| Config/CLI contract | partial | =prolog/rlm_cli.pl= hand-rolled parser |
+| Shared USD/request/spend-rate admission | partial | =prolog/rlm_completion.pl= budget_usage_check/3 |
+| Scoped identity/discovery | absent | =prolog/rlm_agent.pl= runtime/agent registry |
+| Peer and group messaging | partial | =prolog/rlm_agent.pl= agent_send/5 + bounded mailboxes |
+| Durable searchable board | absent | =rlm_conversation_persist.pl=, =rlm_artifact_persist.pl= |
+| Gated extensible shared KB | absent | =rlm_assertion.pl=, =rlm_strange_loop.pl=, =rlm_tool.pl= |
+| Policy-gated creation | partial | =rlm_agent.pl= spawn_locked/7, =rlm_subagent.pl= |
+| Adaptive recursion | partial | =rlm_recursion_policy.pl=, =rlm_recursion_runtime.pl= |
+| Guardrails / host authority | absent | =rlm_authority.pl= authority tiers |
+| Evidence-backed acceptance | partial | =rlm_evidence.pl=, =rlm_verify.pl=, =rlm_result_accept.pl= |
+| Stop/drain/restart/resume | partial | effect/artifact/graph restart phase fixtures |
+| Conformance fixtures/packaging | absent | deterministic runner/test corpus (substrate only) |
+
+=rlm_swarm= and =pswarm= do not exist anywhere in =prolog/=, =bin/=, =docs/=
+or packaging at the audited commit. The activation gate for post-core novelty
+research is therefore not met, as the issue requires.
+
+** Scheduler invariant (confirmed, not inferred)
+
+=rlm_async.pl= is the only general scheduler. Raw thread primitives occur
+only in: =rlm_async.pl= (worker pool), =rlm_agent.pl= (bounded per-runtime
+supervision pool + agent mailboxes), and =rlm_authority.pl= (one-slot
+approval gate). All higher-level modules route through =rlm_async_submit=;
+compatibility facades delegate only. Swarm work must compose with this, not
+parallel it.
+
+** Competitive baseline (dated, not a uniqueness claim)
+
+Herdr's exposed behavior includes agent swarms with per-agent skills, session
+state restore, plugin/socket APIs, and a core with command/security/schema
+docs. Peer systems reviewed: CrewAI crews, LangGraph durable
+execution/interrupts, OpenAI Agents guardrails, KEDA scaling policies,
+OpenHands sandboxes, OpenTelemetry GenAI spans. Known contradiction: indexed
+Pi-swarm snippets advertise an expiring board, wildcards and broadcast, while
+the fetched README states there is no separate message store, no wildcards,
+no broadcast. Recorded as uncertainty; snippets were rejected as evidence.
+SwarmForge and Pi-Herdr versions are not pinned; their claims are not
+load-bearing for any slice.
+
+** User decisions recorded 2026-11-13 (destination and branch strategy)
+
+- The swarm implementation stays in nsaspy/prolog-rlm itself, reusing the
+  retained issue-574 worktree; no separate fork is created. Encoded as
+  =swarm_destination/3= and =swarm_project_name(574,'rlm-swarm')= in
+  =.prolog/kb/swarm-project.pl= (commit 660e96f).
+- =feat/rlm-swarm= is the long-lived integration branch: slice PRs base onto
+  it; it merges to main once the core is complete. Encoded as
+  =swarm_branch_strategy/2= (commit 660e96f).
+- Research approval was granted with amendments; design covers all 12
+  proposed slices before any implementation.
+
+* Findings Separated From Inference
+
+Verified facts: the substrate table above (each row checked against module
+exports and tests); scheduler invariant; the pinned Herdr revisions; the
+scope/dependency facts in =.prolog/kb/swarm-project.pl= (validated by 10
+scope tests).
+
+Inference: which existing module each swarm slice should extend; open design
+questions per slice (rate-limit algorithm choice, group membership policy,
+KB extension fragment, population semantics). These require the design
+phase; nothing here approves them.
+
+* Implementation Implications
+
+The 12 proposed slices and their dependency graph remain exactly as recorded
+in =.prolog/kb/swarm-project.pl= (=swarm_core_slice/2=,
+=swarm_slice_dependency/2=): (1) configuration and CLI, (2) shared cost,
+request and spend-rate admission, (3) scoped identity and discovery,
+(4) peer and group messaging, (5) durable searchable message board,
+(6) gated domain-extensible shared KB, (7) policy-gated peer and child
+creation, (8) adaptive recursive delegation, (9) guardrails and host
+authority integration, (10) task lifecycle and evidence-backed acceptance,
+(11) durable service stop/drain/restart/resume, (12) conformance, failure
+fixtures and packaging. Generic runtime support stays in prolog-rlm;
+reusable canonical expert definitions remain dotfiles-owned under
+=.zara/experts/=.
+
+* Rejected Alternatives
+
+- Second scheduler or one-thread-per-agent runtime: violates the repository
+  invariant; =rlm_async= is the only scheduler.
+- A separate rlm-swarm repository/fork consuming prolog-rlm: rejected by the
+  user on 2026-11-13 in favor of in-repo development in the main repository.
+- Treating worker claims, board posts and proposed KB assertions as trusted
+  evidence: the issue explicitly forbids collapsing messages, posts,
+  observations, policy and accepted knowledge into one interchangeable
+  authority.
+- Arbitrary =consult/1=-based KB loading for guardrails: executes host
+  directives and breaks the trusted/inert distinction.
+- Inferring novelty from search snippets: rejected because of the observed
+  Pi-swarm snippet/README contradiction.
+
+* Open Questions (approval amendments)
+
+1. Pin SwarmForge and Pi-Herdr versions and re-fetch mutable peer docs
+   (CrewAI, LangGraph) at design time before any comparative claim.
+2. Resolve the Pi-swarm snippet/README contradiction in the competitive
+   matrix with a dated note; keep snippets non-authoritative.
+3. Leaf-expand the configuration/CLI coverage matrix (the current rows are
+   setting families; ACC01 requires leaf-level registry expansion).
+4. Resolve the default-cost mismatch: the requested swarm cap default is
+   =-c 0.10= USD while =rlm_completion= defaults to 0.25; the design must
+   keep these separate.
+5. Integrate the result-acceptance gate into every supervised-child trace
+   before slice 10 can claim evidence-backed acceptance.
+6. A depth-aware recursive =rlm_subagent= binding does not exist and
+   currently fails closed; slice 8 depends on designing it.
+7. Full Herdr parity (desktop/mobile clients, web UI, AgentProlog console)
+   remains required follow-on scope, not silently dropped and not yet sized.
+
+* Acceptance Experiments
+
+- The approval binding itself: =git rev-parse
+  approval_base_commit:research/RLM-RESEARCH-574-swarm-core.org= equals
+  =approval_base_blob=; =make research-approval= passes.
+- Substrate claims: =swipl -q -s .prolog/runs/20c96dbff6794f2d9865822544c0621a/check_scope.pl=
+  (10 scope tests) plus =swarm_readiness/4= consult checks.
+- Per-slice design acceptance criteria are defined in the design phase;
+  per-slice realization requires the separate explicit design approval and
+  the repository's deterministic test suite at the exact head.
