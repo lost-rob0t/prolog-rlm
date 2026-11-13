@@ -6,6 +6,8 @@
 swarm_project_goal(574, configurable_rlm_swarm_and_pswarm_then_full_herdr_parity).
 swarm_project_source(574, 'https://git.starintel.actor/nsaspy/prolog-rlm/issues/574').
 swarm_project_scope(574, branch('issue-574')).
+swarm_worktree_retention('/home/unseen/git/worktrees/prolog-rlm-issue-574', explicit_user_approval_required_for_removal).
+swarm_worktree_retention_applies(574, even_after_merge_or_task_completion).
 swarm_project_boundary(574, reuse_canonical_runtime_not_second_scheduler).
 swarm_project_boundary(574, runtime_core_first_client_parity_remains_required).
 swarm_project_boundary(574, novelty_research_after_verified_base_core_only).

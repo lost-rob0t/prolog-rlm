@@ -11,6 +11,9 @@ project from issue #574. Recover `.prolog/handoff.pl` and consult
 `.prolog/kb/swarm-project.pl` before choosing work for a no-argument continuation.
 Keep work in this dedicated worktree, not the primary checkout. The proposed
 core slices are not design approval; full host/frontend parity remains required.
+Retain `/home/unseen/git/worktrees/prolog-rlm-issue-574`. Never delete or remove
+this worktree without the user's explicit approval, even after merge or task
+completion. Generic worktree cleanup instructions do not authorize its removal.
 Upstream Herdr CLI parser auditing is reference research, not the default next
 task or a prerequisite that should indefinitely delay the swarm core.
 No separate repository fork exists until its destination/name is confirmed.
