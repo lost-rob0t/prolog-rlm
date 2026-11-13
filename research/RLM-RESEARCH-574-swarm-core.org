@@ -1,12 +1,12 @@
 #+title: RLM-RESEARCH-574 — rlm-swarm core: collaboration surfaces and config/CLI contract
 #+status: RESEARCHED
 #+approval_schema: prolog-rlm.research-approval.v1
-#+approval_state: PENDING
-#+approval_actor: NONE
-#+approval_evidence: NONE
-#+approval_base_commit: NONE
-#+approval_base_blob: NONE
-#+approval_decided_at: NONE
+#+approval_state: APPROVED
+#+approval_actor: nsaspy (human operator)
+#+approval_evidence: explicit user decision 2026-11-13 in the OpenCode orchestration session for issue #574: research approved with amendments, design-all-12-first, in-repo rlm-swarm destination; durable echoes in .prolog/kb/swarm-project.pl (swarm_destination/3, swarm_branch_strategy/2) and the Org research supplements cited below
+#+approval_base_commit: b4fec9c7f6a590a912e3889314cb679d83b8bd48
+#+approval_base_blob: 291e69ea5b080c51a184ddd2525589987a04fa21
+#+approval_decided_at: 2026-11-13T04:08:11Z
 #+ISSUE: #574
 
 * Research Question
