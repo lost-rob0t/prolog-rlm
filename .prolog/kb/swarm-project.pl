@@ -53,7 +53,26 @@ swarm_core_slice_count(Count) :-
     findall(Id, swarm_core_slice(Id, _, _), Ids),
     length(Ids, Count).
 
+% Base-core readiness audit at HEAD ea137b61a91101444323b8f3cd9cd6e7fad0f7a8.
+% Source: read-only subagent audit 2026-11-13 (OpenCode session) of the
+% issue-574 worktree. Classifications: absent | partial_substrate | present.
+% rlm_swarm and pswarm do not exist anywhere in prolog/ bin/ docs/.
+swarm_readiness(1, configuration_and_cli, partial_substrate, 'rlm_cli.pl hand-rolled parser; no shared config schema; required swarm flags -c -n --min-agents --max-agents --rate --spend-rate --kb --enable-gaurdrail --web --console --backround --deamon all absent').
+swarm_readiness(2, shared_cost_request_and_spend_rate_admission, partial_substrate, 'rlm_completion.pl budget_usage_check/3 enforces per-run max_cost_usd (default 0.25); no request rate limiter; no time-based spend quota; no cross-agent shared ledger').
+swarm_readiness(3, scoped_identity_and_discovery, absent, 'agent ids are gensym(agent_) scoped to one rlm_agent runtime; no cross-runtime registry, incarnation or peer concept').
+swarm_readiness(4, peer_and_group_messaging, partial_substrate, 'rlm_agent.pl agent_send/5 + bounded mailboxes with mailbox_full backpressure; single runtime only; no groups, broadcast, cross-runtime peers or sender authentication').
+swarm_readiness(5, durable_searchable_message_board, absent, 'no board module; closest durable-searchable stores are rlm_conversation_persist.pl and rlm_artifact_persist.pl (library(persistency) pattern)').
+swarm_readiness(6, gated_domain_extensible_shared_kb, absent, 'no shared mutable fact KB with admission policy; adjacent inert substrates: rlm_assertion.pl closed registry, rlm_strange_loop.pl snapshot discipline, rlm_tool.pl capability gating').
+swarm_readiness(7, policy_gated_peer_and_child_creation, partial_substrate, 'creation gating strong in rlm_agent.pl spawn_locked/7 (max_agents, authority_widening_denied), rlm_subagent.pl and rlm_delegation_runtime.pl; shared cross-agent accounting absent').
+swarm_readiness(8, adaptive_recursive_delegation, partial_substrate, 'rlm_recursion_policy.pl + rlm_recursion_runtime.pl route direct/deterministic/cheap/recursive with depth+cost traces; depth-aware recursive subagent binding explicitly fails closed today').
+swarm_readiness(9, guardrails_and_host_authority_integration, absent, 'no expert-KB guardrail module; authority tiers approve_diff/allow_once/allow_session/dangerous live in rlm_authority.pl').
+swarm_readiness(10, task_lifecycle_and_evidence_backed_acceptance, partial_substrate, 'rlm_evidence.pl policy vocabulary, rlm_verify.pl spec_verify/4, rlm_result_accept.pl acceptance gate (not wired into every supervised-child trace yet)').
+swarm_readiness(11, durable_service_stop_drain_restart_and_resume, partial_substrate, 'restart/resume coverage strong (effect/artifact/graph restart phases, graph_resume/6); drain/quiesce API absent from rlm_async.pl; agent_runtime_destroy/1 is immediate destroy').
+swarm_readiness(12, core_conformance_failure_fixtures_and_packaging, absent, 'no swarm conformance fixtures; existing deterministic runner/test corpus is substrate-only').
+swarm_scheduler_invariant(rlm_async_is_only_scheduler, confirmed, 'raw thread primitives only in rlm_async.pl worker pool, rlm_agent.pl bounded per-runtime pool + mailboxes, rlm_authority.pl one-slot approval gate; all higher modules route through rlm_async_submit').
+
 % Required follow-on scope; not yet honestly sized into implementation slices.
+
 swarm_follow_on_scope(full_herdr_host_pty_and_remote_parity, not_yet_sized).
 swarm_follow_on_scope(web_and_agentprolog_console, not_yet_sized).
 swarm_follow_on_scope(native_desktop_and_mobile_clients, not_yet_sized).
