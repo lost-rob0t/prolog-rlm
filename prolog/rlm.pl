@@ -79,6 +79,9 @@
             rlm_approve/2,
             rlm_deny/3,
             rlm_edit/3,
+            rlm_ask/4,
+            rlm_pending_questions/2,
+            rlm_answer/3,
             model_complete_async/3,
             model_stream_async/4,
             chain_invoke_async/4,
@@ -247,7 +250,10 @@ latency is represented by a deferred pending-operation Future; no shared
                 rlm_authority_events/2,
                 rlm_approve/2,
                 rlm_deny/3,
-                rlm_edit/3
+                rlm_edit/3,
+                rlm_ask/4,
+                rlm_pending_questions/2,
+                rlm_answer/3
               ]).
 :- use_module(rlm_completion,
               [ llm_query/3,

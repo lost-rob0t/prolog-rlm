@@ -18,6 +18,9 @@
             rlm_approve/2,
             rlm_deny/3,
             rlm_edit/3,
+            rlm_ask/4,
+            rlm_pending_questions/2,
+            rlm_answer/3,
             rlm_pending_cancel_owner/2
           ]).
 
@@ -404,13 +407,25 @@ resolution_metadata(Context, Fingerprint,
 
 rlm_pending_approval(Context, ApprovalId, Approval) :-
     require_context(Context),
-    authority_pending(ApprovalId, Context, Approval).
+    authority_pending(ApprovalId, Context, Approval),
+    approval_record(Approval).
 
 rlm_pending_approvals(Context, Approvals) :-
     require_context(Context),
-    findall(Id-Approval, authority_pending(Id, Context, Approval), Pairs0),
+    findall(Id-Approval,
+            ( authority_pending(Id, Context, Approval),
+              approval_record(Approval) ),
+            Pairs0),
     keysort(Pairs0, Pairs),
     pairs_values(Pairs, Approvals).
+
+approval_record(Record) :-
+    \+ dict_field_is(Record, authority, question).
+
+dict_field_is(Record, Key, Value) :-
+    is_dict(Record),
+    get_dict(Key, Record, Found),
+    Found == Value.
 
 rlm_pending_resolution_async(ApprovalId, Future) :-
     (   authority_pending_control(ApprovalId, _, _, Future, _)
@@ -451,6 +466,11 @@ approve_(ApprovalId, Outcome) :-
           ( safe_destroy_gate(Gate),
             throw(Exception) )).
 
+approve_transition_locked(ApprovalId, _, not_approval(Record), Context, Record,
+                           none, none) :-
+    authority_pending(ApprovalId, Context, Record),
+    dict_field_is(Record, authority, question),
+    !.
 approve_transition_locked(ApprovalId, Gate, schedule, Context, Approved,
                           Continuation, ResolutionFuture) :-
     authority_pending(ApprovalId, Context, Record),
@@ -473,6 +493,14 @@ approve_transition_locked(ApprovalId, _, not_pending(State), Context, Record,
 approve_transition_locked(ApprovalId, _, _, _, _, _, _) :-
     throw(authority_fault(unknown_approval(ApprovalId))).
 
+apply_approve_transition(not_approval(Record), QuestionId, _, _, _, _, Gate,
+                         error(authority_error{
+                                   kind:not_an_approval,
+                                   question_id:QuestionId,
+                                   prompt:Record.prompt,
+                                   message:"pending operation is a question; use rlm_answer/3"
+                               })) :- !,
+    safe_destroy_gate(Gate).
 apply_approve_transition(not_pending(State), ApprovalId, _, Record, _, _, Gate,
                          error(authority_error{
                                    kind:approval_not_pending,
@@ -753,6 +781,27 @@ deny_(ApprovalId, Reason, Outcome) :-
                           Record, ResolutionFuture, Outcome),
     destroy_futures(PrunedFutures).
 
+deny_transition_locked(ApprovalId, Reason, deny_question(Question), Record,
+                        ResolutionFuture, PrunedFutures) :-
+    authority_pending(ApprovalId, Context, Record),
+    Record.state == pending,
+    dict_field_is(Record, authority, question),
+    !,
+    Question = Record,
+    retract(authority_pending(ApprovalId, Context, Record)),
+    retract_control_locked(ApprovalId, ResolutionFuture, _),
+    get_time(ResolvedAt),
+    put_dict(_{state:denied,
+               denial_reason:Reason,
+               resolved_at:ResolvedAt},
+             Record, Denied),
+    assertz(authority_pending(ApprovalId, Context, Denied)),
+    assertz(authority_terminal_resolution(ApprovalId, Context,
+                                          ResolutionFuture)),
+    event_locked(Context, question_denied,
+                 _{question_id:ApprovalId,
+                   reason:Reason}),
+    prune_terminal_locked(Context, PrunedFutures).
 deny_transition_locked(ApprovalId, Reason, deny, Denied,
                        ResolutionFuture, PrunedFutures) :-
     authority_pending(ApprovalId, Context, Record),
@@ -781,6 +830,18 @@ deny_transition_locked(ApprovalId, _, not_pending(State), Record, none, []) :-
 deny_transition_locked(ApprovalId, _, _, _, _, _) :-
     throw(authority_fault(unknown_approval(ApprovalId))).
 
+apply_deny_transition(deny_question(Record), QuestionId, Reason, _,
+                      ResolutionFuture,
+                      ok(question_transition{id:QuestionId,
+                                             state:denied,
+                                             reason:Reason})) :-
+    !,
+    catch(rlm_async:rlm_future_resolve(
+              ResolutionFuture,
+              denied(authority_denial{question_id:QuestionId,
+                                      prompt:Record.prompt,
+                                      reason:Reason})),
+          _, true).
 apply_deny_transition(not_pending(State), ApprovalId, _, Record, _,
                       error(authority_error{
                                 kind:approval_not_pending,
@@ -903,6 +964,144 @@ edit_transition_locked(ApprovalId, Context, ExpectedFingerprint,
     prune_terminal_locked(Context, PrunedFutures).
 edit_transition_locked(ApprovalId, _, _, _, _, _, _, _, _, _, _) :-
     throw(authority_fault(stale_edit(ApprovalId))).
+
+/* Questions -------------------------------------------------------------- */
+
+rlm_ask(Context, Prompt, Choices, Outcome) :-
+    catch(ask_(Context, Prompt, Choices, Outcome),
+          Exception,
+          authority_exception(ask, Exception, Outcome)).
+
+ask_(Context, Prompt, Choices, Outcome) :-
+    require_context(Context),
+    (   valid_question(Prompt, Choices)
+    ->  create_question(Context, Prompt, Choices, Outcome)
+    ;   Outcome = error(authority_error{
+                            phase:ask,
+                            kind:invalid_question,
+                            prompt:Prompt,
+                            message:"question prompt must be atomic and choices a ground list"
+                        })
+    ).
+
+valid_question(Prompt, Choices) :-
+    atomic(Prompt),
+    is_list(Choices),
+    maplist(atomic, Choices).
+
+create_question(Context, Prompt, Choices, Outcome) :-
+    Metadata = async_metadata{operation:authority_question_resolution,
+                              authority_context:Context},
+    rlm_async:rlm_future_deferred(Metadata, ResolutionFuture),
+    catch(with_mutex(rlm_authority,
+                     create_question_locked(Context, Prompt, Choices,
+                                            ResolutionFuture, Record)),
+          Exception,
+          ( catch(rlm_async:rlm_future_destroy(ResolutionFuture), _, true),
+            throw(Exception)
+          )),
+    Outcome = ok(Record).
+
+create_question_locked(Context, Prompt, Choices, ResolutionFuture, Record) :-
+    gensym(question_, QuestionId),
+    get_time(CreatedAt),
+    Record = question{id:QuestionId,
+                      prompt:Prompt,
+                      choices:Choices,
+                      context:Context,
+                      authority:question,
+                      created_at:CreatedAt,
+                      state:pending},
+    assertz(authority_pending(QuestionId, Context, Record)),
+    assertz(authority_pending_control(QuestionId, none, none,
+                                      ResolutionFuture, none)),
+    event_locked(Context, question_pending,
+                 _{question_id:QuestionId,
+                   prompt:Prompt,
+                   choices:Choices}).
+
+rlm_pending_questions(Context, Questions) :-
+    require_context(Context),
+    findall(Id-Question,
+            ( authority_pending(Id, Context, Question),
+              Question.state == pending,
+              dict_field_is(Question, authority, question) ),
+            Pairs0),
+    keysort(Pairs0, Pairs),
+    pairs_values(Pairs, Questions).
+
+rlm_answer(QuestionId, Answer, Outcome) :-
+    catch(answer_(QuestionId, Answer, Outcome),
+          Exception,
+          authority_exception(answer, Exception, Outcome)).
+
+answer_(QuestionId, Answer, Outcome) :-
+    (   ground(Answer)
+    ->  with_mutex(rlm_authority,
+                   answer_transition_locked(QuestionId, Answer, Transition,
+                                            _Record, ResolutionFuture,
+                                            PrunedFutures)),
+        apply_answer_transition(Transition, QuestionId, Answer,
+                                ResolutionFuture, Outcome),
+        destroy_futures(PrunedFutures)
+    ;   Outcome = error(authority_error{
+                            phase:answer,
+                            kind:invalid_question,
+                            question_id:QuestionId,
+                            message:"question answer must be ground"
+                        })
+    ).
+
+answer_transition_locked(QuestionId, Answer, answer, Record,
+                         ResolutionFuture, PrunedFutures) :-
+    authority_pending(QuestionId, Context, Record),
+    Record.state == pending,
+    dict_field_is(Record, authority, question),
+    !,
+    retract(authority_pending(QuestionId, Context, Record)),
+    retract_control_locked(QuestionId, ResolutionFuture, _),
+    get_time(ResolvedAt),
+    put_dict(_{state:answered,
+               answer:Answer,
+               resolved_at:ResolvedAt},
+             Record, Answered),
+    assertz(authority_pending(QuestionId, Context, Answered)),
+    assertz(authority_terminal_resolution(QuestionId, Context,
+                                          ResolutionFuture)),
+    event_locked(Context, question_answered,
+                 _{question_id:QuestionId,
+                   answer:Answer}),
+    prune_terminal_locked(Context, PrunedFutures).
+answer_transition_locked(QuestionId, _, not_pending(State), Record, none, []) :-
+    authority_pending(QuestionId, _, Record),
+    !,
+    State = Record.state.
+answer_transition_locked(QuestionId, _, unknown(QuestionId), _, none, []).
+
+apply_answer_transition(answer, QuestionId, Answer,
+                        ResolutionFuture,
+                        ok(question_transition{id:QuestionId,
+                                               state:answered,
+                                               answer:Answer})) :-
+    !,
+    catch(rlm_async:rlm_future_resolve(
+              ResolutionFuture,
+              answered(authority_answer{question_id:QuestionId,
+                                        answer:Answer})),
+          _, true).
+apply_answer_transition(not_pending(State), QuestionId, _, _,
+                        error(authority_error{
+                                  kind:question_not_pending,
+                                  question_id:QuestionId,
+                                  state:State,
+                                  message:"question is no longer pending"
+                              })) :- !.
+apply_answer_transition(unknown(QuestionId), QuestionId, _, _,
+                        error(authority_error{
+                                  kind:unknown_question,
+                                  question_id:QuestionId,
+                                  message:"no such question pending operation"
+                              })).
 
 /* Ownership, cancellation and teardown -------------------------------- */
 
@@ -1076,6 +1275,7 @@ terminal_state(resolved).
 terminal_state(denied).
 terminal_state(superseded).
 terminal_state(cancelled).
+terminal_state(answered).
 
 prune_terminal_locked(Context, Futures) :-
     terminal_history_limit(Limit),
