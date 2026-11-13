@@ -77,3 +77,18 @@ swarm_follow_on_scope(full_herdr_host_pty_and_remote_parity, not_yet_sized).
 swarm_follow_on_scope(web_and_agentprolog_console, not_yet_sized).
 swarm_follow_on_scope(native_desktop_and_mobile_clients, not_yet_sized).
 swarm_follow_on_scope(post_core_differentiated_research, gated_on_verified_core).
+
+% Destination decision, user-decided 2026-11-13 (supersedes the earlier
+% separate-fork idea): the swarm implementation lives in nsaspy/prolog-rlm
+% itself, reusing the retained issue-574 worktree checkout; project name
+% rlm-swarm. A long-lived feat/rlm-swarm branch is the integration branch:
+% slice PRs base onto it, and it merges into main once the core is done.
+% No separate starintel-labs fork is created.
+swarm_destination(574, repo, 'nsaspy/prolog-rlm').
+swarm_destination(574, same_checkout, '/home/unseen/git/worktrees/prolog-rlm-issue-574').
+swarm_destination(574, no_separate_fork, confirmed_by_user_2026_11_13).
+swarm_project_name(574, 'rlm-swarm').
+swarm_branch_strategy(574, integration_branch('feat/rlm-swarm')).
+swarm_branch_strategy(574, slice_pr_base('feat/rlm-swarm')).
+swarm_branch_strategy(574, merge_to_main_only_after_core_complete).
+
