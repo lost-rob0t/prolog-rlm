@@ -12,6 +12,7 @@ context, agent, graph, MCP, or recursion runtimes.
 */
 
 :- use_module(library(readutil)).
+:- use_module(rlm_cli_args).
 :- use_module(rlm_chain).
 :- use_module(rlm_completion).
 :- use_module(rlm_demo).
@@ -146,16 +147,16 @@ parse_migration_cli_options(Args, Options) :-
 
 parse_migration_options([], Options, Options).
 parse_migration_options(['--source',Value|Rest], O0, O) :-
-    !, atom_arg(Value, Path), put_dict(source, O0, Path, O1),
+    !, cli_atom_arg(Value, Path), put_dict(source, O0, Path, O1),
     parse_migration_options(Rest, O1, O).
 parse_migration_options(['--output',Value|Rest], O0, O) :-
-    !, atom_arg(Value, Path), put_dict(output, O0, Path, O1),
+    !, cli_atom_arg(Value, Path), put_dict(output, O0, Path, O1),
     parse_migration_options(Rest, O1, O).
 parse_migration_options(['--manifest',Value|Rest], O0, O) :-
-    !, atom_arg(Value, Path), put_dict(manifest, O0, Path, O1),
+    !, cli_atom_arg(Value, Path), put_dict(manifest, O0, Path, O1),
     parse_migration_options(Rest, O1, O).
 parse_migration_options(['--backup',Value|Rest], O0, O) :-
-    !, atom_arg(Value, Path), put_dict(backup, O0, Path, O1),
+    !, cli_atom_arg(Value, Path), put_dict(backup, O0, Path, O1),
     parse_migration_options(Rest, O1, O).
 parse_migration_options(['--in-place'|Rest], O0, O) :-
     !, put_dict(in_place, O0, true, O1),
@@ -494,49 +495,49 @@ parse_options(['--view'|Rest], O0, O, P0, P) :-
 parse_options(['--no-credential'|Rest], O0, O, P0, P) :-
     !, put_dict(no_credential, O0, true, O1), parse_options(Rest, O1, O, P0, P).
 parse_options(['--trace',Value|Rest], O0, O, P0, P) :-
-    !, text_arg(Value, Text), put_dict(trace, O0, Text, O1),
+    !, cli_text_arg(Value, Text), put_dict(trace, O0, Text, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--trace-format',Value|Rest], O0, O, P0, P) :-
-    !, atom_arg(Value, Format), require_member(Format, [json,jsonl], trace_format),
+    !, cli_atom_arg(Value, Format), cli_require_member(Format, [json,jsonl], trace_format),
     put_dict(trace_format, O0, Format, O1), parse_options(Rest, O1, O, P0, P).
 parse_options(['--model',Value|Rest], O0, O, P0, P) :-
-    !, atom_arg(Value, Model), put_dict(model, O0, Model, O1),
+    !, cli_atom_arg(Value, Model), put_dict(model, O0, Model, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--reasoning-effort',Value|Rest], O0, O, P0, P) :-
     !,
-    atom_arg(Value, Effort),
-    require_member(Effort, [none,minimal,low,medium,high,xhigh,max], reasoning_effort),
+    cli_atom_arg(Value, Effort),
+    cli_require_member(Effort, [none,minimal,low,medium,high,xhigh,max], reasoning_effort),
     put_dict(reasoning_effort, O0, Effort, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--planner-reasoning-effort',Value|Rest], O0, O, P0, P) :-
     !,
-    atom_arg(Value, Effort),
-    require_member(Effort, [none,minimal,low,medium,high,xhigh,max], planner_reasoning_effort),
+    cli_atom_arg(Value, Effort),
+    cli_require_member(Effort, [none,minimal,low,medium,high,xhigh,max], planner_reasoning_effort),
     put_dict(planner_reasoning_effort, O0, Effort, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--endpoint',Value|Rest], O0, O, P0, P) :-
-    !, text_arg(Value, Endpoint), put_dict(endpoint, O0, Endpoint, O1),
+    !, cli_text_arg(Value, Endpoint), put_dict(endpoint, O0, Endpoint, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--credential-env',Value|Rest], O0, O, P0, P) :-
-    !, text_arg(Value, Name), put_dict(credential_env, O0, Name, O1),
+    !, cli_text_arg(Value, Name), put_dict(credential_env, O0, Name, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--context',Value|Rest], O0, O, P0, P) :-
-    !, text_arg(Value, Context), put_dict(context, O0, Context, O1),
+    !, cli_text_arg(Value, Context), put_dict(context, O0, Context, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--context-file',Value|Rest], O0, O, P0, P) :-
-    !, text_arg(Value, Path), put_dict(context_file, O0, Path, O1),
+    !, cli_text_arg(Value, Path), put_dict(context_file, O0, Path, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--context-bytes',Value|Rest], O0, O, P0, P) :-
-    !, positive_integer_arg(Value, Bytes), put_dict(context_bytes, O0, Bytes, O1),
+    !, cli_positive_integer_arg(Value, Bytes), put_dict(context_bytes, O0, Bytes, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--max-tokens',Value|Rest], O0, O, P0, P) :-
-    !, positive_integer_arg(Value, N), put_dict(max_tokens, O0, N, O1),
+    !, cli_positive_integer_arg(Value, N), put_dict(max_tokens, O0, N, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--max-cost',Value|Rest], O0, O, P0, P) :-
-    !, nonnegative_number_arg(Value, Cost), put_dict(max_cost_usd, O0, Cost, O1),
+    !, cli_nonnegative_number_arg(Value, Cost), put_dict(max_cost_usd, O0, Cost, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options(['--time-limit',Value|Rest], O0, O, P0, P) :-
-    !, positive_number_arg(Value, Seconds), put_dict(time_limit, O0, Seconds, O1),
+    !, cli_positive_number_arg(Value, Seconds), put_dict(time_limit, O0, Seconds, O1),
     parse_options(Rest, O1, O, P0, P).
 parse_options([Arg|_], _, _, _, _) :-
     atom(Arg), sub_atom(Arg, 0, 2, _, '--'), !,
@@ -546,41 +547,15 @@ parse_options([Arg|Rest], O0, O, P0, P) :-
 
 normalize_argv([], []).
 normalize_argv([Arg0|Rest0], [Arg|Rest]) :-
-    atom_arg(Arg0, Arg),
+    cli_atom_arg(Arg0, Arg),
     normalize_argv(Rest0, Rest).
-
-atom_arg(Value, Value) :- atom(Value), !.
-atom_arg(Value, Atom) :- string(Value), !, atom_string(Atom, Value).
-atom_arg(Value, _) :- throw(cli_fault(invalid_argument(Value))).
-
-text_arg(Value, Value) :- string(Value), !.
-text_arg(Value, Text) :- atom(Value), !, atom_string(Value, Text).
-text_arg(Value, _) :- throw(cli_fault(invalid_text_argument(Value))).
-
-number_arg(Value, Value) :- number(Value), !.
-number_arg(Value, Number) :- atom(Value), atom_number(Value, Number), !.
-number_arg(Value, Number) :- string(Value), number_string(Number, Value), !.
-number_arg(Value, _) :- throw(cli_fault(invalid_number(Value))).
-
-positive_integer_arg(Value, Number) :-
-    number_arg(Value, Number), integer(Number), Number > 0, !.
-positive_integer_arg(Value, _) :- throw(cli_fault(invalid_positive_integer(Value))).
-
-positive_number_arg(Value, Number) :-
-    number_arg(Value, Number), Number > 0, !.
-positive_number_arg(Value, _) :- throw(cli_fault(invalid_positive_number(Value))).
-
-nonnegative_number_arg(Value, Number) :-
-    number_arg(Value, Number), Number >= 0, !.
-nonnegative_number_arg(Value, _) :-
-    throw(cli_fault(invalid_nonnegative_number(Value))).
 
 positional_text([], Name, _) :- throw(cli_fault(missing_argument(Name))).
 positional_text(Positionals, _, Text) :-
-    maplist(text_arg, Positionals, Parts),
+    maplist(cli_text_arg, Positionals, Parts),
     atomics_to_string(Parts, " ", Text).
 
-single_positional([Value], _, Text) :- !, text_arg(Value, Text).
+single_positional([Value], _, Text) :- !, cli_text_arg(Value, Text).
 single_positional([], Name, _) :- throw(cli_fault(missing_argument(Name))).
 single_positional(Values, Name, _) :-
     throw(cli_fault(too_many_arguments(Name, Values))).
@@ -590,11 +565,8 @@ require_no_positionals(Values, Command) :-
     throw(cli_fault(unexpected_arguments(Command, Values))).
 
 demo_name([], all) :- !.
-demo_name([Value], Name) :- !, atom_arg(Value, Name).
+demo_name([Value], Name) :- !, cli_atom_arg(Value, Name).
 demo_name(Values, _) :- throw(cli_fault(invalid_demo_arguments(Values))).
-
-require_member(Value, Allowed, _) :- memberchk(Value, Allowed), !.
-require_member(Value, _, Name) :- throw(cli_fault(invalid_option(Name, Value))).
 
 /* Help and errors ------------------------------------------------------ */
 
