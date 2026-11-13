@@ -4,6 +4,17 @@ These instructions apply to the entire repository unless a more specific nested 
 
 ## Repository mission
 
+### Continuing swarm project on branch `issue-574`
+
+When working on `issue-574`, the established objective is the `rlm_swarm` / `pswarm`
+project from issue #574. Recover `.prolog/handoff.pl` and consult
+`.prolog/kb/swarm-project.pl` before choosing work for a no-argument continuation.
+Keep work in this dedicated worktree, not the primary checkout. The proposed
+core slices are not design approval; full host/frontend parity remains required.
+Upstream Herdr CLI parser auditing is reference research, not the default next
+task or a prerequisite that should indefinitely delay the swarm core.
+No separate repository fork exists until its destination/name is confirmed.
+
 `prolog-rlm` is a reusable SWI-Prolog RLM/agent runtime. Keep core domain-neutral. The language model may choose semantic strategy; Prolog owns execution semantics, validation, budgets, authority, persistence, cancellation, tracing, and effect accounting.
 
 Do not turn core into a coding-agent product, a concrete tool catalog, or an ambient shell/network/filesystem runtime.
