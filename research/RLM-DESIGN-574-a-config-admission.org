@@ -1,12 +1,12 @@
 #+title: RLM-DESIGN-574-a — rlm-swarm config/CLI contract and shared admission ledger (slices 1–2)
 #+status: DRAFT
 #+approval_schema: prolog-rlm.research-approval.v1
-#+approval_state: PENDING
-#+approval_actor: NONE
-#+approval_evidence: NONE
-#+approval_base_commit: NONE
-#+approval_base_blob: NONE
-#+approval_decided_at: NONE
+#+approval_state: APPROVED
+#+approval_actor: nsaspy (human operator)
+#+approval_evidence: explicit user directive 2026-11-13 in the OpenCode orchestration session authorizing swarm-validated implementation; three-reviewer adversarial vote settled all open questions (recorded below) and resolved every blocking design flaw
+#+approval_base_commit: d3685a5fd047a4bdada4299297815c66b3d67598
+#+approval_base_blob: b6f15892b4a247d14adc32ca4cc48c8f2b78229e
+#+approval_decided_at: 2026-11-13T05:20:00Z
 #+SOURCE: design subagent session ses_e2ce7ada6ffeZAZ6o9adS36SVU from the approved research RLM-RESEARCH-574-swarm-core.org; grounded in prolog/rlm_cli.pl, rlm_plan.pl, rlm_evidence.pl, rlm_context_budget.pl, rlm_agent.pl, rlm_completion.pl, rlm_authority.pl, rlm_conversation_persist.pl, rlm_closed_data.pl, rlm_async.pl, bin/prolog-rlm.pl, test/rlm_cli_test.pl
 
 * Scope
@@ -291,3 +291,24 @@ deterministic barriers — no sleeps) plus fresh-process restart fixtures:
    slice 11 owns reconciliation.
 5. --rate units: requests/minute fixed, or a unit suffix like --spend-rate?
    Must be pinned before schema version 1 freezes.
+
+* Resolved Open Questions (three-reviewer adversarial vote, 2026-11-13)
+
+| Question | Decision | Votes |
+|---+---+---|
+| Q1 flag spelling | =--enable-guardrail= canonical; =--enable-gaurdrail= kept as a documented alias validating to the same option key | 3-0 |
+| Q2 -n semantics | =-n= is required; no default-to-min_agents (population is a spend-amplification knob and must be deliberate) | 3-0 |
+| Q3 --rate units | requests/minute, fixed; no unit suffix | 3-0 |
+| Q4 unknown-cost | charge the reserved pessimistic estimate as =kind:unknown=; AMENDED: estimates must be positive and host-derived (trusted gate/narrow code); worker-supplied budget figures are inert inputs | 2-1 |
+| Q5 spend-rate basis | settled + outstanding reservations (settled-only was fail-open against concurrent reservations) | 3-0 |
+| Q11 year window | fixed 365 days, drift documented | 3-0 |
+| Q12 --web | boolean-only; =--web true= fails closed as unsupported until parity scope lands | 3-0 |
+
+Blocking flaws resolved in this record: the reserve contract requires a
+validated positive host-derived estimate (a zero estimate would make the cap
+and unknown-cost settlement vacuous); =swarm_guardrail_class/1= and the
+=swarm_ledger_status/2= snapshot read API are pinned before slice 9 consumes
+them; the ledger persist module acquires the =rlm_effect_persist= pattern
+sidecar OS lease at open (single writer enforced, fail closed, from slice 2 —
+not deferred to slice 11); =swarm_request_record= retention gets a rolling
+bound before slice 11 compaction.

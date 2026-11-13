@@ -92,3 +92,23 @@ swarm_branch_strategy(574, integration_branch('feat/rlm-swarm')).
 swarm_branch_strategy(574, slice_pr_base('feat/rlm-swarm')).
 swarm_branch_strategy(574, merge_to_main_only_after_core_complete).
 
+% Design-adversarial vote outcomes (three reviewers, 2026-11-13; majority).
+% Recorded with the design records' approval blocks; bind design approval.
+swarm_design_vote(1, guardrail_flag_spelling, corrected_canonical_gaurdrail_alias).
+swarm_design_vote(2, n_flag_required, yes_required).
+swarm_design_vote(3, rate_units, requests_per_minute_fixed).
+swarm_design_vote(4, unknown_cost_policy, charge_reserved_estimate_amended_positive_host_derived).
+swarm_design_vote(5, spend_rate_basis, settled_plus_outstanding).
+swarm_design_vote(6, fingerprint_scope, subject_scoped_plus_durable_epoch_nonce).
+swarm_design_vote(7, rejection_retry, terminal_by_default_host_policy_resubmission).
+swarm_design_vote(8, drain_quiescence, minimal_read_only_async_enumerate_export).
+swarm_design_vote(9, board_notifications, best_effort_with_cursor_polling).
+swarm_design_vote(10, board_concurrency, sidecar_lease_enforced_single_writer).
+swarm_design_vote(11, year_window, fixed_365_days).
+swarm_design_vote(12, web_flag, boolean_only_fails_closed_until_parity).
+swarm_design_vote(13, discovery_metadata, role_and_availability_only).
+swarm_design_blocking_resolution(estimate_must_be_positive_and_host_derived).
+swarm_design_blocking_resolution(single_writer_lease_from_slice_2_not_slice_11).
+swarm_design_blocking_resolution(quiescence_provable_from_rlm_async_table).
+
+

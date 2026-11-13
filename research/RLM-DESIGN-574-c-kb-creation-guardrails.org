@@ -1,12 +1,12 @@
 #+title: RLM-DESIGN-574-c — rlm-swarm gated shared KB, policy-gated creation, guardrails (slices 6, 7, 9)
 #+status: DRAFT
 #+approval_schema: prolog-rlm.research-approval.v1
-#+approval_state: PENDING
-#+approval_actor: NONE
-#+approval_evidence: NONE
-#+approval_base_commit: NONE
-#+approval_base_blob: NONE
-#+approval_decided_at: NONE
+#+approval_state: APPROVED
+#+approval_actor: nsaspy (human operator)
+#+approval_evidence: explicit user directive 2026-11-13 in the OpenCode orchestration session authorizing swarm-validated implementation; three-reviewer adversarial vote settled all open questions (recorded below) and resolved every blocking design flaw
+#+approval_base_commit: d3685a5fd047a4bdada4299297815c66b3d67598
+#+approval_base_blob: 46500d53b785022dfa82be1f923335d3fabe781a
+#+approval_decided_at: 2026-11-13T05:20:00Z
 #+SOURCE: design subagent session ses_e2ce2dde7ffeYg1ftEp9pzrmqv from the approved research RLM-RESEARCH-574-swarm-core.org; grounded in prolog/rlm_strange_loop.pl, rlm_assertion.pl, rlm_evidence.pl, rlm_tool.pl, rlm_closed_data.pl, rlm_agent.pl, rlm_subagent.pl, rlm_delegation_runtime.pl, rlm_authority.pl, rlm_mcp_policy.pl, rlm_tool_loader.pl
 
 * Scope
@@ -393,3 +393,16 @@ where those contracts are unsettled, slice 7 fails closed rather than
 guessing. Slice 9 binds to slice 2's ledger and slice 1's config registry;
 slice 10 will consume slice 7's required_verification profiles and slice 9's
 require_approval trace.
+
+* Resolved Open Questions (three-reviewer adversarial vote, 2026-11-13)
+
+| Question | Decision | Votes |
+|---+---+---|
+| Q1 spelling | =--enable-guardrail= canonical, =--enable-gaurdrail= alias (same option key, same closed class set) | 3-0 |
+| Q2 guardrail condition read API | =swarm_ledger_status/2= (slice 2) is pinned as the snapshot read API for =total_spend/1= / =request_rate/1= conditions before slice 9 lands | 3-0 |
+| Q3 policies vs KB namespace | guardrails stay a separate handle (distinct semantic class) | carried |
+| Q4 require_approval at scale | canonical pending path sufficient for core; slice 11 may add batching/ownership transfer if evidence demands | carried |
+
+Implementation-order amendment: the closed =swarm_guardrail_class/1=
+vocabulary is pinned together with slice 1's config registry, resolving the
+slice-1/slice-9 circularity.

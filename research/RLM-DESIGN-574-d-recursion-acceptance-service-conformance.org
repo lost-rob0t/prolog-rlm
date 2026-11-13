@@ -1,12 +1,12 @@
 #+title: RLM-DESIGN-574-d — rlm-swarm adaptive recursion, evidence-backed acceptance, service lifecycle, conformance (slices 8, 10, 11, 12)
 #+status: DRAFT
 #+approval_schema: prolog-rlm.research-approval.v1
-#+approval_state: PENDING
-#+approval_actor: NONE
-#+approval_evidence: NONE
-#+approval_base_commit: NONE
-#+approval_base_blob: NONE
-#+approval_decided_at: NONE
+#+approval_state: APPROVED
+#+approval_actor: nsaspy (human operator)
+#+approval_evidence: explicit user directive 2026-11-13 in the OpenCode orchestration session authorizing swarm-validated implementation; three-reviewer adversarial vote settled all open questions (recorded below) and resolved every blocking design flaw
+#+approval_base_commit: d3685a5fd047a4bdada4299297815c66b3d67598
+#+approval_base_blob: 9eeaeaba18be1de7380016196e9b417c3d8fcd9a
+#+approval_decided_at: 2026-11-13T05:20:00Z
 #+SOURCE: design subagent session ses_e2ce2dde6ffekhQeG00pOW7sc8 from the approved research RLM-RESEARCH-574-swarm-core.org; grounded in prolog/rlm_recursion_policy.pl, rlm_recursion_runtime.pl, rlm_subagent.pl, rlm_result_accept.pl, rlm_evidence.pl, rlm_verify.pl, rlm_completion.pl, rlm_async.pl, rlm_effect.pl, rlm_graph.pl, rlm_agent.pl, test/effect_restart_* fixtures, test/deterministic_runner.pl, .github/workflows/ci.yml
 
 * Scope
@@ -444,3 +444,17 @@ the existing corpus/runner/CI/Makefile machinery rather than forking it.
 Riskiest open questions: fingerprint scope vs restart (slice 8), rejection
 retry semantics vs spend (slice 10), and whether composition-only drain is
 sufficient without a new rlm_async export (slice 11).
+
+* Resolved Open Questions (three-reviewer adversarial vote, 2026-11-13)
+
+| Question | Decision | Votes |
+|---+---+---|
+| Q6 fingerprint scope | subject-scoped fingerprints PLUS a restart generation nonce derived from the DURABLE epoch primitive (effect_persist precedent), not a volatile counter | 2-1 |
+| Q7 rejection retry | terminal by default; bounded resubmission only by explicit host policy (new task id, new reservation, SUPERSEDES-style link) | 3-0 |
+| Q8 drain quiescence | minimal READ-ONLY rlm_async export enumerating live futures by metadata over the existing async_future_metadata/2 table; composition-only rejected because quiescence must be provable from the scheduler itself; if global live count exceeds the registry, drain reports quiesced:no | 3-0 |
+
+Blocking flaws resolved in this record: false-quiescence (spend against a
+closed journal) is closed by the Q8 decision; the restart nonce source is
+pinned to the durable epoch so recursion-guard, ledger reconciliation and
+task resume share one generation identity; =rlm_task_persist= record shape
+assumes subject-scoped + nonce fingerprints.

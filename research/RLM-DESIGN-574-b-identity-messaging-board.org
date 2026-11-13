@@ -1,12 +1,12 @@
 #+title: RLM-DESIGN-574-b — rlm-swarm scoped identity, peer messaging, durable board (slices 3–5)
 #+status: DRAFT
 #+approval_schema: prolog-rlm.research-approval.v1
-#+approval_state: PENDING
-#+approval_actor: NONE
-#+approval_evidence: NONE
-#+approval_base_commit: NONE
-#+approval_base_blob: NONE
-#+approval_decided_at: NONE
+#+approval_state: APPROVED
+#+approval_actor: nsaspy (human operator)
+#+approval_evidence: explicit user directive 2026-11-13 in the OpenCode orchestration session authorizing swarm-validated implementation; three-reviewer adversarial vote settled all open questions (recorded below) and resolved every blocking design flaw
+#+approval_base_commit: d3685a5fd047a4bdada4299297815c66b3d67598
+#+approval_base_blob: ff255a1d10f47d5bb566864ef041bf31d9eb826a
+#+approval_decided_at: 2026-11-13T05:20:00Z
 #+SOURCE: design subagent session ses_e2ce7ada5ffe4VCW15W9hGbI63 from the approved research RLM-RESEARCH-574-swarm-core.org; grounded in prolog/rlm_agent.pl, rlm_authority.pl, rlm_async.pl, rlm_closed_data.pl, rlm_conversation_persist.pl, rlm_artifact_persist.pl, rlm_subagent.pl
 
 * Scope
@@ -327,3 +327,15 @@ Slice 3's registry is the prerequisite for slice 4 addressing and slice 5
 author validation; slice 4 fanout is slice 5's notification transport. None
 of the three adds a scheduler, a persistency store outside the established
 pattern, or a new authority tier.
+
+* Resolved Open Questions (three-reviewer adversarial vote, 2026-11-13)
+
+| Question | Decision | Votes |
+|---+---+---|
+| Q9 notifications | best-effort + cursor polling; the board is the durable source of truth; at-least-once durable notification records rejected as an amplifiable storage path | 3-0 |
+| Q10 board concurrency | single-writer-process-per-board-file ENFORCED by acquiring the =rlm_effect_persist= pattern sidecar OS lease at =board_persist_open/1= (fail closed, fresh-process second-writer-rejected fixture) — not merely documented | 3-0 |
+| Q13 discovery metadata | role + availability only; coarse capability_classes rejected as recon data that blurs visibility-vs-authority | 3-0 |
+
+Blocking flaw resolved in this record: library-level single-writer is
+enforced at open with the proven sidecar-lease precedent, not left to the
+slice-11 service fence.
