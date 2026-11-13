@@ -1,0 +1,293 @@
+#+title: RLM-DESIGN-574-a — rlm-swarm config/CLI contract and shared admission ledger (slices 1–2)
+#+status: DRAFT
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
+#+SOURCE: design subagent session ses_e2ce7ada6ffeZAZ6o9adS36SVU from the approved research RLM-RESEARCH-574-swarm-core.org; grounded in prolog/rlm_cli.pl, rlm_plan.pl, rlm_evidence.pl, rlm_context_budget.pl, rlm_agent.pl, rlm_completion.pl, rlm_authority.pl, rlm_conversation_persist.pl, rlm_closed_data.pl, rlm_async.pl, bin/prolog-rlm.pl, test/rlm_cli_test.pl
+
+* Scope
+
+Design for issue #574 slices 1 (configuration_and_cli) and 2
+(shared_cost_request_and_spend_rate_admission), per the approved research
+record and the repository invariants: rlm_async is the only scheduler;
+authority tiers exactly approve_diff < allow_once < allow_session < dangerous;
+configuration may narrow authority but never bypass trusted policy; fail
+closed on unknown/invalid options rather than clamping.
+
+* Slice 1 — configuration and CLI
+
+** Modules
+
+- prolog/rlm_cli_args.pl (new): shared typed-argument layer extracted
+  behavior-preserving from rlm_cli.pl (atom_arg/2, text_arg/2, number_arg/2,
+  positive_integer_arg/2, positive_number_arg/2, nonnegative_number_arg/2,
+  require_member/3 → cli_* exports). rlm_cli.pl then use_module's these;
+  test/rlm_cli_test.pl must pass unchanged.
+- prolog/rlm_swarm_config.pl: the one closed, versioned schema + one
+  normalizer/validator + effective-config contract:
+
+#+begin_example
+swarm_config_schema_version/1        % currently 1
+swarm_config_default/1               % swarm_config{...}, cap_usd default 0.10
+swarm_config_field/2                 % closed leaf registry (ACC01 expansion)
+swarm_config_normalize/4             % FileTerm|none, CliOptions, Effective, Provenance
+swarm_config_effective/2             % recompute derived fields
+swarm_config_redact/2                % sanitized output
+swarm_spend_rate_parse/2             % "<usd>/<min|hr|day|week|year>" -> usd + window_minutes
+swarm_guardrail_class/1              % closed vocabulary pinned by slice 9
+#+end_example
+
+- prolog/rlm_swarm_cli.pl: pswarm facade (pswarm_run/2, pswarm_execute/2,
+  pswarm_cli_usage/1); bin/pswarm.pl thin entry like bin/prolog-rlm.pl.
+
+** Config file format (Prolog data, never consult/1)
+
+Exactly one ground term read with read_term/3:
+
+#+begin_example
+swarm_config(1, [ cap_usd(0.10), n(4), min_agents(2), max_agents(8),
+                  rate(12), spend_rate("0.50/day"), kb("kb/"),
+                  enable_guardrail(all), web(false),
+                  console("console/agent.apl"),
+                  background(false), daemon(false) ]).
+#+end_example
+
+Non-ground terms, a second term, or unknown fields fail closed.
+
+** Flag semantics
+
+| Flag | Validator | Default | Notes |
+|---|---|---|---|
+| -c | cli_nonnegative_number_arg/2 | 0.10 | 0 valid: no further spend admitted |
+| -n | positive integer | required | min_agents =< n =< max_agents |
+| --min-agents/--max-agents | positive integers | 1 / 64 | min > max fails |
+| --rate | positive integer | 60 | requests/minute |
+| --spend-rate | swarm_spend_rate_parse/2 | none | windows min 1/60/1440/10080/525600; repeated flags accumulate one quota per window; duplicate window within layer last-wins, across layers strictest (min USD) wins |
+| --kb | text path | none | type-validated only; existence checked by slice 6 |
+| --enable-gaurdrail | bare (= all) or class list | none | validated against swarm_guardrail_class/1 |
+| --enable-guardrail | alias | — | corrected spelling accepted; documented, not hidden |
+| --web | boolean | false | bind/port is follow-on parity scope |
+| --console | text path | none | follow-on parity scope; validated here |
+| --backround/--background | boolean | false | alias pair, one option key |
+| --deamon/--daemon | boolean | false | alias pair, one option key |
+
+Unknown flags fail like rlm_cli.pl cli_fault(unknown_option(Arg)).
+
+** Merge-vs-replace and precedence
+
+- Scalars: last occurrence wins within a layer; CLI replaces file replaces
+  defaults; provenance records cli(occurrence_index) so last-wins is
+  observable.
+- Collections (enable_guardrail): within CLI layer repeated flags merge;
+  across layers the sets union (most restrictive wins) — guardrail
+  enablement is a restriction and must never be silently reduced.
+- Quota windows (spend_rate): across layers strictest wins per window.
+- swarm_config_normalize/4 returns per-field provenance
+  source(default | file(Path,TermPos) | cli(ArgIndex)) and derived
+  effective bounds. Contradictions fail closed:
+  swarm_config_fault(contradictory_bounds(min_agents,Max,Min)),
+  swarm_config_fault(n_outside_bounds(N,Min,Max)),
+  swarm_config_fault(unsupported_schema_version(Got,1)).
+- swarm_config_redact/2 strips provenance detail and credential-bearing
+  values; JSON emission reuses the rlm_trace envelope (trace_envelope/4,
+  trace_json/2) — no second JSON writer.
+- The swarm_config{} dict is the ONLY configuration value consumed by both
+  library and pswarm. rlm_cli's completion_budget_from_options/2 keeps
+  serving direct/rlm commands and is not reused for the swarm cap.
+
+** State ownership
+
+Pure function of (defaults, file term, argv) — no dynamic predicates. Config
+is replayable and hashable so slice 11 restart can recompute it. The config
+file is operator-owned; effective config is not persisted in slice 1.
+
+** Invariants and failure behavior
+
+- Fail on unknown/invalid, never clamp: unknown config field, unknown schema
+  version, unknown guardrail class, unknown spend-rate unit, non-ground or
+  multiple config terms, min > max, -n outside bounds, malformed spend-rate.
+- The -c default 0.10 lives only in swarm_config_default/1 and never reads
+  rlm_cli's default_cli_options/1 (max_cost_usd 0.25) — research amendment
+  #4.
+- One normalizer, one effective-config dict, two consumers.
+
+** Verification gates
+
+test/rlm_swarm_config_test.pl (PlUnit, deterministic_runner.pl style):
+- swarm_config_default_cap_is_0_10_and_matches_schema_version_1
+- swarm_config_rejects_unknown_field (file and CLI layers)
+- swarm_config_rejects_non_ground_or_multiple_file_terms
+- swarm_config_precedence_cli_over_file_over_defaults_with_provenance
+- swarm_config_scalar_last_wins_within_layer_provenance_records_occurrence
+- swarm_config_guardrails_union_across_layers_bare_means_all
+- swarm_config_spend_rate_units_parse_and_reject_unknown_unit
+- swarm_config_contradictory_bounds_fail
+- swarm_config_gaurdrail_and_corrected_spelling_are_one_option
+- swarm_config_backround_deamon_aliases_map_to_canonical_keys
+- swarm_config_redacted_output_is_deterministic_and_stable_tagged
+- pswarm_unknown_flag_fails_exit_2
+- pswarm_fresh_process_config_error_exit_2_and_effective_json_exit_0
+  (fresh swipl processes)
+- regression gate: full existing rlm_cli suite unchanged after the
+  rlm_cli_args.pl extraction.
+
+** Rejected alternatives
+
+- Reusing rlm_cli defaults + completion_budget_from_options/2 for pswarm:
+  hard-codes 0.25 and entangles the swarm default with the per-run budget
+  default (forbidden by amendment #4).
+- JSON/YAML config: second data language; Prolog-data terms are inert,
+  ground-checkable, and match the repo mission.
+- Existence-checking --kb at parse time: couples config validation to
+  filesystem state; type-validate now, open-check later.
+- A swarm command inside rlm_cli instead of pswarm: the issue specifies a
+  distinct CLI; rlm_cli surface stays untouched except the validator
+  extraction.
+
+** Open questions
+
+1. Canonical spelling: is --enable-gaurdrail canonical with the corrected
+   spelling as alias, or the reverse?
+2. Is -n required, or does absence default to min_agents?
+3. --web boolean-only: does it strand the flag before follow-on parity work?
+4. Slice 1 must not implement before slice 9 pins the guardrail class
+   vocabulary.
+5. Year window = 365 fixed days, leap years ignored — acceptable?
+
+* Slice 2 — shared cost, request and spend-rate admission
+
+** Module
+
+prolog/rlm_swarm_ledger.pl — the one atomic shared ledger (pure accounting;
+no execution, no scheduling):
+
+#+begin_example
+swarm_ledger_open/3, swarm_ledger_close/1
+swarm_ledger_reserve/4     % ok(reservation{...}) | error(admission_error{gate,...})
+swarm_ledger_settle/3      % actual usage; never clamps actual to estimate
+swarm_ledger_release/2     % failed/cancelled/never-executed work
+swarm_ledger_extend/3      % retry growth, re-checks all gates
+swarm_ledger_narrow_limits/3  % lower limits mid-flight
+swarm_ledger_status/2      % snapshot incl. over_capacity flag
+#+end_example
+
+Subject is a closed compound
+swarm_subject{kind:supervisor|child|retry|verification|guardrail, id,
+attempt}. Options to swarm_ledger_open/3 include clock(:Goal) so rate-window
+tests are deterministic without sleeps.
+
+prolog/rlm_swarm_ledger_persist.pl — durable journal on the exact
+rlm_conversation_persist.pl pattern (library(persistency), module mutex,
+db_attach(File,[sync(close)])):
+
+#+begin_example
+:- persistent
+    swarm_spend_record(serial, at, subject, kind:settled|unknown|overdrawn, usd),
+    swarm_reservation_record(serial, at, subject, state:open|settled|released|extended, usd),
+    swarm_request_record(at, subject),
+    swarm_limit_record(at, cap_usd, rate_per_minute, spend_rates).
+#+end_example
+
+** Coverage without a second accounting system
+
+Every model-call path already accumulates usage into the single
+usage_summary shape via usage_add/3 (rlm_completion.pl, rlm_chain_runtime.pl,
+rlm_direct.pl) and checks via budget_usage_check/3. The swarm layer composes
+reserve → call the existing public API → settle from Result.usage. The
+per-run budget (default 0.25) stays a separate independent boundary. The
+admission contract: no model request proceeds without a reservation whose
+subject names its kind; children reserve at spawn (slice 7), retries reserve
+a fresh attempt serial, verification/guardrail runs reserve under their own
+kinds.
+
+** Atomic admission
+
+swarm_ledger_reserve/4 does read-spend → all-gate check → reservation assert
+inside one with_mutex critical section:
+
+#+begin_example
+committed   = Σ settled usd (journal)
+outstanding = Σ open-reservation estimates
+admit iff committed + outstanding + Estimate <= cap            (lifetime -c)
+     and requests-in-rolling-minute < rate                     (--rate)
+     and forall quota: Σ settled usd in window < quota usd     (--spend-rate)
+#+end_example
+
+Any gate failure returns a structured
+error(admission_error{gate:lifetime_cap|request_rate|spend_rate, used, limit,
+subject}) — admission denial is a runtime outcome, not a throw.
+
+** Settle semantics
+
+Always records actual usage cost; returns ok or overdrawn{delta} when actual
+exceeds the reservation — actual spend is never clamped down, and settle
+never fails because the cost is already incurred. Unknown cost charges the
+reserved pessimistic estimate as kind:unknown, never 0.0.
+
+** Lower limits must not erase
+
+swarm_ledger_narrow_limits/3 appends a limit record and re-derives ceilings
+only; committed spend, outstanding reservations and existing children/
+evidence requirements are untouched. If the new cap is below
+committed+outstanding, new admission denies until settle/release brings it
+under, and status reports over_capacity:true. Mirrors the capabilities_
+narrow/evidence_policy_narrow/rlm_authority_narrow family.
+
+** Lock ordering and separation
+
+Ledger mutex outer, persistency module mutex inner. The ledger never invokes
+spawn/agent callbacks inside its critical section. All swarm execution
+continues to route through rlm_async_submit — no thread primitives here.
+
+** Verification gates
+
+test/rlm_swarm_ledger_test.pl (in-process, injected deterministic clock,
+deterministic barriers — no sleeps) plus fresh-process restart fixtures:
+
+- ledger_default_cap_is_0_10_independent_of_completion_default
+- ledger_reserve_admits_under_all_gates
+- ledger_reserve_denies_lifetime_cap_atomically (0.06+0.06 vs 0.10)
+- ledger_reserve_denies_request_rate
+- ledger_reserve_denies_spend_rate_window
+- ledger_settle_charges_actual_and_frees_delta
+- ledger_settle_overdraw_records_full_actual_and_flags
+- ledger_release_restores_headroom_exactly
+- ledger_unknown_cost_charges_reserved_estimate_not_zero
+- ledger_retry_takes_new_reservation_and_counts_against_rate
+- ledger_extend_rechecks_all_gates
+- ledger_narrow_limits_preserve_spend_reservations_and_requirements
+- ledger_concurrent_admission_serialized (two threads from a shared barrier;
+  exactly one ok, one structured denial, no serial gaps)
+- ledger_coverage_subjects_charge_all_kinds
+- ledger_separate_from_per_run_budget
+- swarm_ledger_restart_phase1 / phase2 (fresh processes; open reservations
+  still block after restart)
+
+** Rejected alternatives
+
+- Settle-then-charge: concurrent in-flight calls collectively overspend;
+  reserve-then-settle is the race-safe direction.
+- Extending budget_usage_check/3 with cross-agent state: couples the
+  canonical per-run path to swarm existence and risks the 0.25/0.10
+  entanglement.
+- Volatile reservations: crash would silently restore headroom; durable
+  reservations are fail-closed.
+- Per-path rate enforcement in provider call layers: three half-enforcements;
+  one subject-addressed ledger at the swarm boundary is a single choke point.
+
+** Open questions for adversarial review
+
+1. allow_unknown_cost as a config field (deny unknown-price calls outright
+   when cap is strict) vs charging the estimate (proposed)?
+2. Spend-rate accounting basis: settled only (proposed) vs settled +
+   outstanding estimates.
+3. Journal replay cost/compaction: append-only now with slice 11 compaction,
+   or a rolling bound now?
+4. Reservation reconciliation boundary: slice 2 must not presume auto-expiry;
+   slice 11 owns reconciliation.
+5. --rate units: requests/minute fixed, or a unit suffix like --spend-rate?
+   Must be pinned before schema version 1 freezes.

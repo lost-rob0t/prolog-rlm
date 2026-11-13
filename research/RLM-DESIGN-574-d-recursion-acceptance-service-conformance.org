@@ -1,0 +1,446 @@
+#+title: RLM-DESIGN-574-d — rlm-swarm adaptive recursion, evidence-backed acceptance, service lifecycle, conformance (slices 8, 10, 11, 12)
+#+status: DRAFT
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
+#+SOURCE: design subagent session ses_e2ce2dde6ffekhQeG00pOW7sc8 from the approved research RLM-RESEARCH-574-swarm-core.org; grounded in prolog/rlm_recursion_policy.pl, rlm_recursion_runtime.pl, rlm_subagent.pl, rlm_result_accept.pl, rlm_evidence.pl, rlm_verify.pl, rlm_completion.pl, rlm_async.pl, rlm_effect.pl, rlm_graph.pl, rlm_agent.pl, test/effect_restart_* fixtures, test/deterministic_runner.pl, .github/workflows/ci.yml
+
+* Scope
+
+Design for issue #574 slices 8 (adaptive_recursive_delegation), 10
+(task_lifecycle_and_evidence_backed_acceptance), 11
+(durable_service_stop_drain_restart_and_resume), 12
+(core_conformance_failure_fixtures_and_packaging). Invariants: rlm_async
+only scheduler; no second scheduler/planner/subagent runtime/hidden
+meta-agent; canonical async direction; preserve cancellation, narrowing
+evidence policy and typed child acceptance; durable effect order; completion
+distinct from evidence-backed acceptance; fresh-process fixtures; no sleeps
+as synchronization.
+
+* Slice 8 — adaptive recursive delegation
+
+** Modules
+
+- prolog/rlm_subagent_recursive.pl (new): depth-aware recursive rlm_subagent
+  binding — child capability derivation, budget narrowing, route executor
+  binding.
+- prolog/rlm_swarm_delegate.pl (new): swarm-facing delegation entry —
+  computes route signals (complexity / uncertainty / budget remaining /
+  verification needs), binds recursion_execute/4 handlers to swarm
+  primitives.
+- prolog/rlm_subagent.pl (small edit): replace the unconditional fail-closed
+  check at subagent_register_capabilities/8 (kind
+  unbounded_recursive_delegation) with acceptance of ONE closed depth-bounded
+  shape; bare tool(rlm_subagent) still fails closed.
+
+** Key predicates
+
+#+begin_example
+depth_child_capabilities/4   % DepthLeft>1 -> child ceiling carries tool(rlm_subagent)
+                             %   with subagent_recursion{max_depth:DepthLeft-1, max_width:W};
+                             %   DepthLeft=<1 -> NO recursive tool
+recursion_budget_narrow/3    % every ceiling field child <= parent remaining
+rlm_subagent_register_recursive/8   % + depth option; installs the depth policy handler
+child_acceptance_policy_narrow/3    % wraps result_acceptance_policy_narrow/3 at every edge
+swarm_delegation_signals/4, swarm_delegate_async/4, swarm_delegate/4
+delegation_route_handler/4   % binds direct_continuation | deterministic_context |
+                             % cheap_submodel | delegated_subagent | recursive_rlm
+#+end_example
+
+** Design core
+
+rlm_swarm_delegate never re-implements routing: it builds a recursion_request
+(shape fixed by rlm_recursion_runtime.pl normalize_request/2) and calls
+recursion_execute/4. Policy stays in rlm_recursion_policy.pl
+(recursion_route/3, recursion_guard/5, recursion_fingerprint/2); the default
+policy (max_recursion_depth:1, allow_deep_recursion:false, min_progress:0.05)
+is unchanged — deeper recursion requires both allow_deep_recursion:true and
+the deep-recursion capability, granted only by the host at registration,
+never by model or board data.
+
+Depth-aware binding: the child ceiling may contain tool(rlm_subagent) only
+accompanied by a ground subagent_recursion{max_depth:N, max_width:W} with
+N < parent_depth_left, and only when the host supplied allow_deep_recursion(true)
+plus the deep-recursion capability. Depth is capability-carried, not
+runtime-carried: at depth 1 the child has no recursive tool and
+re-registration fails closed exactly as today. No mutable global depth
+counter to forge.
+
+Host ceilings never silently raised: recursion_budget_narrow/3 derives the
+child completion_budget so every ceiling is <= the parent's remaining value;
+any requested widening → tool_error{kind:unbounded_recursive_delegation}.
+Each delegation edge reserves expected child cost against the slice-2 ledger
+before spawn; reservation failure makes delegated_subagent/recursive_rlm
+routes unavailable → the existing redirect_unavailable/4 path redirects to a
+deterministic route or fails with no_available_route.
+
+Termination, four independent fail-closed stoppers: (1) depth budget in
+capabilities; (2) recursion_guard/5 duplicate-fingerprint + min_progress;
+(3) wall-clock deadline in the child budget's time_limit (distinct from
+Future-waiter timeout); (4) spend reservation failure at every edge.
+
+** State ownership, concurrency, crash
+
+Depth/width/capability grant/acceptance policy: host registration state,
+immutable per spawn. Fingerprints/progress threaded through
+recursion_execute/4 options. Spend: slice-2 ledger. Every child is an
+rlm_async task bounded by max_concurrent_subcalls — no per-agent thread.
+Cancellation: control exceptions propagate via control_exception/1; parent
+cleanup must rlm_future_cancel/2 in-flight child Futures so no orphan worker
+burns budget after the parent died logically.
+
+A delegation edge is durable before dispatch: parent records a task row
+(slice 10 rlm_task_persist.pl) with parent_identity, child_identity,
+fingerprint, reserved amount, status dispatching. On restart a dispatching
+delegation with no durable child result is NOT silently re-dispatched
+(subject-scoped fingerprint means a retried route would hit
+duplicate_subcall); the restarted service resumes the task and re-derives
+routes from the board record. Fresh-process fixtures
+test/swarm_recursion_restart_phase{1,2}.pl: reservation still held (no
+reset), child effect observed exactly once, restarted routing does not
+duplicate the committed subcall.
+
+** Verification gates
+
+- test/rlm_recursion_subagent_test.pl: bounded recursive child registers at
+  depth>1 with capability + policy; bare tool(rlm_subagent), depth >= parent,
+  and depth-1 child fail closed; recursion_budget_narrow/3 rejects every
+  widening field-by-field.
+- test/rlm_swarm_delegate_test.pl: budget exhaustion redirects to
+  deterministic_context; all-routes-unavailable → no_available_route; guard
+  faults surface; traces carry recursion_route_executed with parent/child
+  identity and estimated vs actual cost.
+- Cancellation test: cancel parent mid-child; child Future cancelled;
+  rlm_async_runtime_status/1 returns to quiescent; no leaked worker.
+- Two-phase restart fixture wired as a fresh-process CI step.
+
+** Rejected alternatives
+
+- Model-managed recursion (child re-registers rlm_subagent from model data):
+  collapses host authority; unforgeable depth becomes impossible.
+- Swarm-level tree orchestrator with its own queue/worker pool: second
+  scheduler.
+- Runtime-carried depth counter: forgeable, lost on restart, silently
+  resettable.
+
+** Open questions
+
+1. Width placement: completion_budget.max_concurrent_subcalls sufficient, or
+   a shared concurrent-delegation cap in the slice-2 ledger (the two must not
+   silently multiply)?
+2. Fingerprint scope after restart: subject-scoped (stronger loop protection,
+   restart-hostile) vs task-id-scoped (weaker, restart-safe)? Proposal:
+   subject-scoped plus a restart generation nonce in the subject binding.
+3. Does the deep-recursion capability interact with slice-9 authority tiers
+   (depth>1 requiring allow_session-grade authority per swarm run)?
+
+* Slice 10 — task lifecycle and evidence-backed acceptance
+
+** Modules
+
+- prolog/rlm_task.pl (new): closed task lifecycle state machine (completion
+  side): task_normalize/2, task_create/3, task_assign/3, task_claim/3,
+  task_record_result/4, task_status/2, task_terminal/1, task_events/2.
+- prolog/rlm_task_accept.pl (new): evidence-backed acceptance gate, three
+  verification modes, THE INTEGRATION FIX:
+  child_result_gate(+ChildResult, +NarrowedPolicy, +Mode, +Context, -Outcome)
+  → accepted(GateReport) | rejected(Reasons); acceptance_mode/1 closed set:
+  prolog_rlm | deterministic_prolog | hybrid; gate_wired/1 compile-time
+  assertion helper.
+- prolog/rlm_task_persist.pl (new): durable append-only lifecycle events
+  (library(persistency) + sidecar single-writer lock, rlm_effect_persist
+  pattern).
+- rlm_subagent.pl and rlm_delegation_runtime.pl edits: wire the gate into
+  every supervised-child path (research amendment #5).
+- prolog/rlm_swarm_task.pl (thin): swarm service adapter, tasks ↔
+  service/board.
+
+** Design core
+
+Completion ≠ acceptance, mechanically enforced: task_record_result/4 ingests
+a child result only after rlm_result_accept:result_normalize/2 (statuses
+completed|failed|cancelled|error|timeout). Completion records the child's
+claim. child_result_gate/5 then evaluates acceptance against the NARROWED
+policy (result_acceptance_policy_narrow/3 over parent+child) and the
+HOST-SUPPLIED context: verifier outcomes collected by trusted observers via
+rlm_verify:spec_observe/5 (async via rlm_async_submit) and reconciled
+deterministically by spec_verify/4; claim-level evidence checked with
+rlm_evidence:evidence_policy_accepts/3 over the closed observation
+vocabulary (status, source_class, trust_class, provenance, verifier,
+collector, snapshot, freshness, coherence). A child writing
+verification:passed into model data passes nothing.
+
+Three verification modes as a closed parameter of ONE gate:
+- prolog_rlm: rrlm_result + narrowed policy + evidence policy + required
+  verifiers via spec_verify/4.
+- deterministic_prolog: pure Prolog property checked by a host-registered
+  pure evaluator (rlm_assertion registry pattern); no model call; child
+  claims irrelevant to acceptance.
+- hybrid: deterministic verification passes FIRST; only then are model claims
+  evaluated under the narrowed evidence policy. Deterministic failure
+  rejects; model evidence never rescues it.
+
+The amendment fix (integration point): the gate is wired at exactly one
+canonical choke point per path: (1) rlm_subagent_policy_handler post-
+completion step; (2) rlm_delegation_runtime delegation_resume/10
+strengthened from "only a canonical completed child result is resumable" to
+"only a canonical ACCEPTED result is resumable"; (3) rlm_swarm_task results.
+Wiring is enforced by gate_wired/1 plus a conformance test driving all three
+paths with a child returning completed + self-asserted verification:passed
+and asserting the parent carries accepted:no with reasons. Every decision
+appends an acceptance stage to the child's trace (prolog-rlm.trace.v1).
+
+** State ownership, invariants, restart
+
+Task journal: single fenced writer (sidecar OS lock), append-only revisions.
+Acceptance policies: host at spawn; narrowed policy derived, never
+child-owned data. Verifiers behind trusted registries. Board holds searchable
+REFERENCES to task events; never the acceptance authority.
+
+Invariants: acceptance is monotone-narrowing down the hierarchy;
+non-completed results bypass the gate into explicit parent errors; rejected
+records all reasons, no partial acceptance; missing required verifier →
+missing → reject; freshness unknown under require_current_evidence → reject;
+malformed anything → structured errors, never silent defaults.
+
+Crash: crash between completion and acceptance leaves the task completed
+with no acceptance record; the restarted service re-evaluates the gate
+idempotently — deterministic verifiers re-run purely; effectful collectors
+reconcile via rlm_effect_* (never re-dispatch); a journaled acceptance is
+never recomputed differently — the journal is the authority. Fresh-process
+fixtures test/swarm_task_restart_phase{1,2}.pl.
+
+** Verification gates
+
+- test/rlm_task_lifecycle_test.pl: full transition matrix, illegal
+  transitions fail closed, single-winner claim race, terminal states
+  immutable.
+- test/rlm_task_accept_test.pl: each mode; self-asserted verification:passed
+  rejected; narrowing across two hierarchy levels; hybrid deterministic
+  failure rejects even with passing model claims; missing required verifier
+  rejects.
+- test/rlm_result_gate_wiring_test.pl (the amendment gate): all three paths;
+  acceptance stage in every child trace; unaccepted results never reach
+  parent success or continuation.
+- test/rlm_task_restart_test.pl: library(process) spawn/kill driver like
+  rlm_effect_restart_test.pl.
+
+** Rejected alternatives
+
+- Child-side acceptance: collapses completion and acceptance; contradicts
+  rlm_result_accept's proof-carrying design.
+- Three per-mode gate modules: divergent fail-closed behavior; one
+  mode-parameterized gate instead.
+- Storing acceptance in the conversation trajectory: couples acceptance to
+  conversation lifecycle, breaks restart idempotence.
+
+** Open questions
+
+1. Retry after rejection: terminal by default (proposed) with explicit host
+   policy for bounded resubmission (new reservation, new task id,
+   SUPERSEDES-style link)?
+2. Who may register verifiers for deterministic_prolog mode — can the
+   slice-6 gated KB admit a domain verifier, and with what capability shape?
+3. Deterministic freshness:current without wall-clock flakiness — injectable
+   clock via observation state_ref/snapshot; needs sign-off.
+
+* Slice 11 — durable service stop/drain/restart/resume
+
+** Modules
+
+- prolog/rlm_swarm_service.pl (new): single fenced owner —
+  swarm_service_start/2 (acquires fence, fail closed if held),
+  swarm_service_stop/3 (admission close → drain → journal close),
+  swarm_service_status/1, swarm_service_epoch/1 (monotone fencing epoch,
+  durably advanced).
+- prolog/rlm_async_drain.pl (new): async_drain(+Futures, +Options, -Report)
+  composed ONLY on rlm_async_submit/rlm_future_* primitives — event-driven
+  via rlm_future_on_complete/2 counters feeding one SWI message queue;
+  drain waits on message_queue_get/2 with the deadline as timeout. No
+  polling, no sleeps, no rlm_async semantics change.
+  Report shape: {pending, running, cancelled, resolved, deferred_pending,
+  quiesced:yes|no, blocked_reason}.
+- prolog/rlm_swarm_reconcile.pl (new): restart reconciliation — ledger
+  reservations, tasks, board bindings, effect indeterminacy.
+- Reused durable substrates: rlm_task_persist, rlm_artifact_persist,
+  rlm_effect_persist, rlm_graph (graph_resume/6).
+
+** Design core
+
+Single fenced owner: the service process is the single writer for the ledger
+(slice 2), task journal (slice 10), and board store (slice 5). Fencing: (1)
+OS advisory sidecar lock (effect_persist_acquire_lease/2 precedent; second
+process fails closed — proven by rlm_effect_restart_test); (2) durably
+advanced epoch — every durable write carries its epoch; stale-epoch writes
+after restart are rejected (error(stale_service_epoch(...))).
+
+Stop/drain phase machine, all fail-closed:
+1. Admission closed — service submit path rejects new work with
+   error(service_draining); check + registry append are one critical section
+   (drain-vs-late-submit race).
+2. Drain running work — async_drain/3 over the service's Future registry
+   (futures metadata-tagged with the service id via
+   rlm_async_current_metadata/1 at submit; read back via
+   rlm_future_metadata/2 — service-side bookkeeping, not a scheduler change).
+3. Deferred futures (human-approval / external-latency): default
+   block-and-report (quiesced:no, blocked_reason:deferred_pending); cancel
+   force-cancels with conservative effect reconciliation; resolve only with
+   trusted resolution input. No default silently abandons an in-flight
+   external effect.
+4. Mailboxes: pending peer messages journaled to the board (slice 5) before
+   close; mailbox_full during stop → explicit sender error, not loss.
+5. Journal close; epoch advanced at start-of-stop so a crash mid-stop cannot
+   resurrect half-drained state.
+
+Restart without quota reset or effect replay (rlm_swarm_reconcile):
+- Ledger: reservations from the dead generation are committed (task has a
+  durable accepted result), released (never reached durable dispatch), or
+  retained-and-counted (external effect dispatched with unknown outcome) —
+  conservative spend, never refunded, never reset.
+- Effects: dispatching-without-observation → reconciliation_required via
+  rlm_effect_prepare/4; no observation API → rlm_effect_mark_indeterminate/3;
+  only trusted host policy resolves via rlm_effect_resolve_indeterminate/3.
+  No replay, ever.
+- Identity death → board-based resumption: tasks/events keyed by logical
+  task id on the board, not process-local agent ids; swarm_service_resume
+  scans non-terminal tasks, re-binds them to fresh incarnations, and re-enters
+  the canonical order for anything not yet dispatched. Graph-shaped work
+  resumes through graph_resume/6.
+- Artifacts: append-only history; reconcile verifies trace completeness.
+
+** Verification gates (fresh-process fixtures, offline, fake remote)
+
+- test/swarm_service_restart_phase1.pl (SIGKILL after dispatch) +
+  phase2_completed (reservation committed, no re-dispatch, remote count
+  exactly 1), phase2_indeterminate (indeterminate, spend counted once),
+  phase2_reconcile (fake reconciliation source resolves without replay).
+- test/rlm_swarm_drain_test.pl: drain with running task completes it; drain
+  with deferred pending reports blocked; drain with queued backlog task runs
+  it before close; all event-driven, no sleeps.
+- test/rlm_swarm_owner_fence_test.pl: second process fails closed;
+  post-SIGKILL fresh process acquires fence and advances epoch.
+- Ledger balance after restart+reconcile equals pre-crash logical spend
+  (exact numbers); board resumption reaches terminal state with the same
+  logical task id.
+
+** Rejected alternatives
+
+- Immediate destroy on stop service-wide: abandons in-flight effects and
+  accepted messages.
+- Sleep-polling drain loop: banned.
+- Drain built into rlm_async (global queue modes / per-queue owners): mutates
+  the only scheduler and risks regressing every consumer; composition-only
+  instead — noted tension below.
+- Fresh ledger on restart: double-spend; violates reservation survival.
+
+** Open questions
+
+1. Is a service-side Future registry (metadata-tagged at submit) sufficient,
+   or does drain need a minimal new rlm_async export (enumerate live futures
+   by metadata)? Deferred Futures created OUTSIDE the service could strand a
+   drain — reviewer must challenge this.
+2. Epoch granularity: per restart-generation (proposed — advance on every
+   fence acquisition) vs per stop-generation; confirm no consumer depends on
+   epoch stability.
+3. Drain deadline default and expiry behavior: force-cancel + conservative
+   reconciliation (proposed) vs block-forever; interacts with pswarm stop UX.
+
+* Slice 12 — conformance, failure fixtures and packaging
+
+** Modules
+
+- prolog/rlm_swarm_cli.pl: pswarm CLI facade composing public APIs only
+  (rlm_cli rule).
+- bin/pswarm.pl: entrypoint mirroring bin/prolog-rlm.pl.
+- test/rlm_swarm_conformance_test.pl, test/rlm_swarm_negative_test.pl,
+  test/rlm_swarm_race_test.pl (new); test/swarm_restart_* phase fixtures
+  registered into CI.
+- test/deterministic_corpus.pl, test/load_all.pl, test/pack_load_smoke.pl,
+  test/pack_install_smoke.pl (edits); pack.pl, Makefile, ci.yml edits.
+
+** Design core
+
+Config/CLI equivalence is one authority: rlm_swarm_config.pl is the single
+schema+normalizer; the CLI parses argv into the SAME config dict and calls
+the same normalize path as the config file — no second parser. Every setting
+family has a leaf-level mapping (research amendment #3), and the conformance
+test asserts per leaf: cli(argv) ≡ config_file(key) ≡ defaults(key), with
+conflict rules failing closed at exit 2 via the execute_outcome convention.
+
+Deterministic CI: all swarm suites are PlUnit registered in
+test/deterministic_corpus.pl (aggregate-safe; drivers live only in phase
+fixtures); the aggregate runner enforces run_budget(45)/test_timeout(20) and
+the CI jq gate — swarm suites inherit all of it, no new runner.
+
+Failure/race/negative fixtures each asserting a specific fail-closed
+contract, not just non-crash: budget exhausted mid-delegation; acceptance
+rejection in the parent envelope; drain deadline expiry; unknown config key;
+task-claim race; concurrent ledger reservations never exceed headroom;
+mailbox_full backpressure; malformed rrlm_result; forged verification:passed;
+stale-epoch write; CLI flags that would widen a host ceiling.
+
+Packaging: pack.pl gains the swarm modules; pack load/install smoke asserts
+every prolog/rlm_swarm_*.pl + rlm_subagent_recursive.pl loads from an
+installed pack; load_all.pl static-loads all swarm production modules;
+Makefile gains a swarm-restart-fixtures target running the two-phase
+fresh-process fixtures (sibling of the existing graph/artifact restart
+steps); research-approval untouched.
+
+CI gates (extend the existing unit-tests job; no new workflow file):
+1. Deterministic PlUnit suite including swarm suites (unchanged jq gate).
+2. CLI/trace smoke: swipl -q -s bin/pswarm.pl -- swarm demo --json emits
+   "schema":"prolog-rlm.trace.v1" and "status":"pass"; pswarm config --json
+   round-trip.
+3. Swarm restart checks: fresh-process two-phase fixtures (new step).
+4. Cross-surface coherence conformance suite: one normalized config drives
+   CLI, service, admission, and board — e.g. the cap set via -c is the cap
+   the slice-2 ledger enforces; --max-recursion-depth yields the depth-aware
+   binding's depth budget; --spend-rate is visible to swarm_service_status/1
+   and enforced by the ledger; the configured verification mode is the mode
+   the acceptance gate executes (trace shows it).
+
+** Invariants, concurrency, fixtures
+
+Zero network, zero sleeps, zero live-model calls in deterministic tests;
+every fixture asserts a specific failure contract (exit code, error kind,
+count). Races induced with mutex-ordered interleavings or message-queue
+handoffs, not timing; true cross-process races use the
+start-one-assert-rejection-kill pattern of rlm_effect_restart_test.
+Process-spawning restart fixtures live outside the 45s PlUnit budget in
+their own CI step.
+
+** Rejected alternatives
+
+- Separate swarm-ci.yml: duplicates gates; extend ci.yml and the Makefile.
+- A fake demo swarm path bypassing service/admission/acceptance for smoke:
+  the CLI gate must exercise the canonical path
+  (swarm_service_start → delegate → gate → drain).
+- Live-provider or timing-based fixtures: banned by corpus rules.
+
+** Open questions
+
+1. CI budget headroom: do swarm suites keep the aggregate under the
+  45s/50s envelope, or do the heaviest need the separate restart-step
+  treatment? Measure at implementation.
+2. pswarm v1 command surface: core (run, stop, status, config, demo) vs
+  follow-on Herdr parity (--web, --console, daemon)? Pin only core.
+3. Does scripts/design_gate.pl require a machine-readable conformance
+  inventory, or is PlUnit discovery sufficient?
+
+* Shared summary for adversarial review
+
+No new scheduler, planner, or agent runtime is added: slice 8 extends
+rlm_subagent's fail-closed check into one closed depth-bounded shape and
+reuses recursion_route/3 + recursion_guard/5 + recursion_execute/4 verbatim;
+slice 10 wires the existing result_accept/4 gate into the three canonical
+child paths with one mode-parameterized gate; slice 11 builds
+drain/fence/reconcile purely on rlm_async_submit/rlm_future_* plus the
+proven sidecar-lock/epoch/append-only-journal precedents; slice 12 extends
+the existing corpus/runner/CI/Makefile machinery rather than forking it.
+Riskiest open questions: fingerprint scope vs restart (slice 8), rejection
+retry semantics vs spend (slice 10), and whether composition-only drain is
+sufficient without a new rlm_async export (slice 11).

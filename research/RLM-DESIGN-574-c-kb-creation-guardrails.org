@@ -1,0 +1,395 @@
+#+title: RLM-DESIGN-574-c — rlm-swarm gated shared KB, policy-gated creation, guardrails (slices 6, 7, 9)
+#+status: DRAFT
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
+#+SOURCE: design subagent session ses_e2ce2dde7ffeYg1ftEp9pzrmqv from the approved research RLM-RESEARCH-574-swarm-core.org; grounded in prolog/rlm_strange_loop.pl, rlm_assertion.pl, rlm_evidence.pl, rlm_tool.pl, rlm_closed_data.pl, rlm_agent.pl, rlm_subagent.pl, rlm_delegation_runtime.pl, rlm_authority.pl, rlm_mcp_policy.pl, rlm_tool_loader.pl
+
+* Scope
+
+Design for issue #574 slices 6 (gated_domain_extensible_shared_kb),
+7 (policy_gated_peer_and_child_creation), 9
+(guardrails_and_host_authority_integration). Invariants: model output never
+gains unrestricted call/1, consult/1, initialization, I/O, process/network
+access, or host callables; workers cannot self-grant authority; distinct
+semantic classes; expert definitions remain dotfiles-owned (.zara/experts/);
+rlm_async only scheduler.
+
+* Slice 6 — gated domain-extensible shared KB (prolog/rlm_swarm_kb.pl + rlm_swarm_kb_persist.pl)
+
+** Architecture
+
+The shared KB is an inert, revisioned, namespaced snapshot store with a
+three-class lifecycle: worker claims (untrusted proposals) → validated claims
+→ accepted knowledge. Reuses the exact discipline of prolog/rlm_strange_loop.pl:
+state in kb_snapshot{generation, facts, rules, meta}; patches are closed data;
+integrity via sha256 fingerprint (strange_loop_fingerprint/2 pattern); rule
+heads/bodies are safe_data/1-only inert terms — never asserted as Prolog
+clauses, never meta-called; rule evaluation only through trusted host
+evaluator hooks.
+
+Domain growth is open through schema proposals, not a frozen catalog; kinds
+are declared by trusted host code with a closed validator (rlm_assertion.pl
+trusted-registry pattern).
+
+** Exports
+
+#+begin_example
+swarm_kb_create/2, swarm_kb_destroy/1
+swarm_kb_namespace_add/4, swarm_kb_schema_register/4      % trusted only
+swarm_kb_claim/5          % model-facing write path
+swarm_kb_claim_status/3
+swarm_kb_promote/4        % trusted only; authority-mediated
+swarm_kb_retract/5, swarm_kb_query/4
+swarm_kb_snapshot/3, swarm_kb_fingerprint/3, swarm_kb_history/4, swarm_kb_conflicts/3
+#+end_example
+
+Claim shape: claim(op(add_fact(Fact)) | add_rule(kb_rule{...}) |
+put_meta(Key,Value) | schema_propose(SchemaDecl) | retract_supersede(...),
+rationale, refs) — closed_data_normalize/2 output; unknown ops fail closed
+at normalization before any mutation.
+
+** State ownership
+
+- Runtime-local (never durable): worker claims, validation errors, schema
+  proposals in review. Unaccepted claims have no authority to survive a
+  process boundary.
+- Durable: accepted snapshots only, via rlm_swarm_kb_persist.pl
+  (library(persistency), db_attach sync(close)); record
+  kb_generation(Namespace, Generation, Fingerprint, Snapshot, AcceptedAt,
+  ProvenanceRefs). Restart rebuilds from the highest generation after
+  verifying the stored fingerprint — mismatch fails closed (namespace loads
+  empty, error surfaced, no partial promotion).
+- Distinct semantic class: accepted knowledge, not messages (slice 5), not
+  artifacts, not operator policy.
+
+** Validation / promotion path
+
+1. Normalize (closed_data_normalize/2; reject vars, cycles, non-ground,
+   unsupported values).
+2. Syntax/schema validate against the namespace's trusted schema registry;
+   unknown kind/version fails before any state touch.
+3. Provenance/trust tagging: claimant gets provenance_class(model_claim) /
+   trust_class(model_claim) (rlm_evidence.pl); a worker cannot self-label
+   trusted_runtime.
+4. Capability + authority gate: write capability kb(Name) (capability shape
+   extension in rlm_tool.pl, narrowed child-ward); mutating operations route
+   through rlm_authorize_operation/5 with the claim's exact fingerprint;
+   default tier approve_diff — promotion of accepted knowledge is a
+   human-visible pending approval by default.
+5. Promotion (trusted-only): consumes a validated claim with resolved
+   authority permit, optionally the promotion policy's trusted verify hook,
+   applies the patch to a fresh generation and persists it. Injection-shaped
+   updates (call(_) shapes, rule bodies referencing host callables, meta keys
+   like trusted_hooks) are rejected at steps 1–2 before mutation — generation
+   and fingerprint unchanged, rejection recorded as a claim-status record.
+6. Querying: pure read over one committed generation; inert rules evaluated
+   only via the trusted evaluator with a step budget.
+
+** Conflicts, supersession, boundedness
+
+- Concurrent conflicting assertions coexist; swarm_kb_conflicts/2 exposes
+  both with lineage; resolution requires explicit retract_supersede/3
+  (authority-mediated), recorded append-only in swarm_kb_history/4.
+- Per-namespace bounds: max_facts, max_rules, max_term_bytes,
+  max_claims_pending, query_eval_steps; evaluator step budget degrades
+  divergent evaluation to indeterminate, never unbounded search.
+
+** Concurrency
+
+Snapshot transition is compare-and-swap under a per-Handle mutex: promotion
+reads Generation G, applies patch, asserts G+1; a racing stale promotion
+re-reads and retries once, else error(generation_conflict). Claims are
+append-only; query reads one committed generation (immutable snapshots).
+
+** Verification gates
+
+- Injection rejected before mutation (fresh SWI process per fixture):
+  f(call(system(shutdown))) fact, rule body referencing consult, cyclic term,
+  non-ground term, unknown meta key trusted_hooks — each returns error,
+  snapshot unchanged, rejection recorded.
+- Claim ≠ accepted: query does not return a claimed fact until promote with a
+  resolved permit; denying the approval keeps it invisible.
+- Concurrent conflicting assertions preserved (deterministic barrier): both
+  exist, conflicts exposes both, no silent winner.
+- Vocabulary growth: schema proposal → trusted schema_register → new-kind
+  facts validate; unregistered proposals fail closed.
+- Two-phase fresh-process restart fixture: accepted knowledge survives with
+  fingerprint verification; pending claims do not.
+- Boundedness: max_facts rejection with typed storage_limit; step budget
+  turns divergence into indeterminate.
+
+** Rejected alternatives
+
+- Direct assertz of model-supplied facts: grants model data clause authority.
+- Frozen subject catalog: fails broad-domain-growth requirement; frozen open
+  registration breaks the trusted-registry boundary. Middle path — trusted
+  registration, open usage — is the only coherent design.
+- Persisting worker claims: gives untrusted claims process-durable authority
+  across restarts.
+
+** Open questions
+
+1. capability_shape(kb(Name)) in rlm_tool.pl's closed list vs a KB-defined
+   capability namespace (cross-slice blast radius of editing the core shape
+   list).
+2. Per-generation full snapshot persistence vs delta journal with periodic
+   compaction (full snapshots simpler and fingerprint-verifiable).
+3. Conflict predicate interface: per-namespace trusted hook vs closed shared
+   conflict vocabulary (a hook is another trusted callable surface to audit).
+
+* Slice 7 — policy-gated peer and child creation (prolog/rlm_swarm_admission.pl)
+
+** Architecture
+
+Creation gating already exists and stays canonical: rlm_agent.pl
+spawn_locked/7 (max_agents agent_limit_reached, capabilities_narrow
+capability_denied, rlm_authority_child authority_widening_denied),
+rlm_subagent.pl refusal of unbounded recursive delegation,
+rlm_delegation_runtime.pl reading parent capabilities only from authoritative
+agent state. Slice 7 adds the swarm-level admission layer in front of — never
+around — those APIs: it computes and supplies the narrowed capability/
+authority/limit arguments; no code path lets a worker pass raw spawn
+arguments. Roles, KB entries, CLI flags are inert inputs to the gate, never
+replacements of it.
+
+** Exports
+
+#+begin_example
+rlm_swarm_admission_create/2, rlm_swarm_admission_destroy/1
+rlm_swarm_spawn_peer/4       % gate + rlm_agent:agent_spawn/5 with gate-narrowed args
+rlm_swarm_spawn_child/4      % gate + rlm_subagent-shaped delegation
+rlm_swarm_admission_check/4  % pure decision; exported for tests/CLI
+rlm_swarm_admission_commit/3 % trusted host only
+rlm_swarm_spawn_record/2, rlm_swarm_spawn_lineage/3, rlm_swarm_spawn_release/4
+#+end_example
+
+Request0 closed dict: profile (trusted profile table — declarative-profile
+pattern of rlm_mcp_policy.pl), requested_capabilities, requested_authority
+(inherit|none|mode), budget, role, depth_request.
+
+** Admission checks (mandatory, in order)
+
+1. Caller legitimacy: parent resolves via agent_status/3 to a live agent;
+   effective capabilities/authority read from agent_record/7 / rlm_authority
+   state, never the request.
+2. Allowed profiles: profile must match a trusted profile declaration.
+3. Population / concurrency / width / depth: under the handle mutex — live
+   agents vs swarm population ceiling; per-parent width (agent_children/3);
+   per-child depth (parent-link walk); depth-aware recursive delegation keeps
+   failing closed until slice 8 ships its binding.
+4. Resource budgets / total spend / rates: slice-2 ledger consulted before
+   spawn commit; projected child budget must fit the swarm total-spend
+   ceiling; spawn rate under ceiling. The 0.10 swarm cap is the swarm
+   admission ceiling here; rlm_completion's 0.25 default stays the per-run
+   budget — separate quantities, both apply.
+5. Guardrails: slice-9 evaluation at admission (swarm_spawn operation class);
+   denials recorded.
+6. Required verification: profiles may require a post-completion acceptance
+   gate (rlm_result_accept-shaped) before the child result is resumable;
+   a profile requiring verification with no trusted verifier fails closed at
+   profile load.
+7. Narrowing commit: capabilities_narrow/3 and rlm_authority_child/4 executed
+   with gate-computed sets; widening aborts canonically and releases the
+   population slot.
+8. Spawn execution: only after 1–7 pass, calling the canonical API. Children
+   through any API path share accounting because the gate is the only swarm
+   entry point; swarm workers hold only gate-mediated tool capabilities; a
+   reconciliation drift check (spawn records vs agent_children/3) surfaces
+   any unmediated spawn.
+
+** State ownership
+
+Runtime-local: admission handles, live counters (derivable from rlm_agent
+state), rate windows. Durable: spawn ownership/lineage records (parent, child
+id, profile, narrowed capabilities/authority, budget reservation, timestamp)
+via the persistency pattern — the substrate slice 11 needs.
+
+** Fail-closed and concurrency
+
+Typed swarm_admission_error{phase, kind,...}; no reservation retained on any
+failure. Exact-cap spawn race: both checks pass with a reserved slot under
+the handle mutex; spawn_locked/7's own registry mutex admits exactly one; the
+loser gets agent_limit_reached and releases its reservation — the canonical
+layer stays the single source of truth for live counts, the swarm counter is
+an advisory pre-filter only.
+
+** Crash/restart
+
+Spawn reservations reconcile to committed records when the child is
+registered in rlm_agent; reservations without a live child are reaped as
+abandoned (terminal, not retry authorization — effect-store discipline).
+Lineage persists for slice 11 supervision rebuild.
+
+** Verification gates
+
+- Population ceiling determinism (stricter than rlm_agent's own max_agents);
+  fresh-process lineage reload fixture.
+- No self-grant path: role dict, KB entry, and CLI flag each requesting
+  capabilities/authority the parent lacks → capability_denied /
+  authority_widening_denied; synthetic parent-capability fields rejected at
+  normalization.
+- Exact-cap race (deterministic barrier): exactly one success, one
+  agent_limit_reached, zero net reservations.
+- Shared accounting across API paths: peer + child spawns both appear in the
+  ledger; a third spawn crossing the ceiling is denied citing the combined
+  reservation.
+- Spawn-rate window: next spawn denied with spawn_rate_exceeded.
+- Cleanup/restart: parent cancel recursively releases width/population;
+  restart fixture shows lineage intact and abandoned reservations reaped, not
+  re-executed.
+
+** Rejected alternatives
+
+- Bypassing spawn_locked/7 with a swarm-level registry: second supervision
+  authority; canonical layer stays the sole admission point.
+- Roles/KB entries as first-class authority applied without narrowing:
+  workers cannot self-grant; roles remain profile selectors.
+- Post-hoc kill-based over-admission: spends before revocation; reservation
+  must precede spawn.
+
+** Open questions
+
+1. Depth-aware recursive binding lands in slice 7 or 8? (Assumed: slice 8.)
+2. Spawn-rate algorithm: consume slice 2's ledger primitive, do not
+   re-implement; slice 2 must pin one algorithm.
+3. Width/depth limits per-runtime vs cross-runtime once slice 3's
+   cross-runtime identity lands.
+
+* Slice 9 — guardrails and host authority integration (prolog/rlm_guardrail.pl + rlm_guardrail_loader.pl)
+
+** Safe --kb loader contract
+
+consult/1 is forbidden (executes directives). The loader reads guardrail KB
+files as inert terms (open/4 + read_term/3, variable_names([])); every term
+must be ground, acyclic, and one of the closed clause shapes:
+
+#+begin_example
+guardrail(Name, when(Condition), action(Action), Options)
+  Condition: closed vocabulary — effect/1, capability/1, name/1,
+             authority_mode/1, subject/1, total_spend/1, request_rate/1,
+             kb_namespace/1
+  Action: deny(Reason) | require_approval | narrow(Capabilities) |
+          rate_limit(Name)   % closed set; no allow(...)
+  Options: severity/1, owner/1, source/1 (bounded)
+guardrail_set(Name, Members)
+#+end_example
+
+Any directive, variable, callable-shaped payload outside the closed
+vocabulary, cyclic term, unknown predicate, or duplicate name fails the
+ENTIRE load — a partial policy never takes effect
+(swarm_guardrail_error{kind:invalid_guardrail_clause}). The loader never
+calls rlm_set_authority/3, never touches authority dynamic predicates,
+cannot raise any capability — loading grants nothing (rlm_tool_loader.pl
+rule).
+
+** CLI grammar (slice-9 entries into the slice-1 config registry)
+
+- --kb <PATH>: repeatable; queues guardrail KB files for the safe loader;
+  bare --kb fails closed.
+- --enable-gaurdrail: bare enables the default built-in guardrail set;
+  selected form with NAME list enables declared sets; unknown name fails
+  closed at config validation. Both forms are additive deny-only policy;
+  neither can disable an authority gate. No disable_authority or yolo knob
+  exists; dangerous still cannot bypass hard validation/capability/
+  confinement/accounting.
+
+** Evaluation boundary (prolog/rlm_guardrail.pl)
+
+#+begin_example
+rlm_guardrail_ready/0
+rlm_guardrail_attach/3      % trusted host only
+rlm_guardrail_check/3       % deny/allow(no_policy)/require_approval; pure
+rlm_guardrail_events/2      % bounded ledger-bound history
+#+end_example
+
+Two fixed hook points, both after normalization and capability
+authorization: (1) pre-execution check inside tool_invoke_/14's pipeline and
+inside the slice-7 spawn admission — deny short-circuits with a typed trace
+and no execution, no pending record; require_approval maps onto the canonical
+pending path (rlm_authorize_operation/5 → approval_required) — guardrails
+never invent a second approval mechanism. (2) Ledger binding: every check
+outcome appends to the shared ledger with the operation fingerprint; repeated
+denial rates are themselves guardrail conditions (request_rate over ledger
+events), closing the loop with slice 2's rate admission.
+
+Non-weakening invariant: guardrails are additive over existing
+capability/authority/effect boundaries — they can deny or narrow anything,
+never permit an operation those boundaries would deny. Enforced structurally:
+allow(...) is not in the action vocabulary; narrow/1 results are fed through
+capabilities_narrow/3 (widening yields widening_denied). Worker-supplied data
+(including slice-6 KB entries) may reference guardrail names but cannot
+define, edit, unload, or reorder policies; attach is trusted-host-only and
+policies are immutable for the handle's lifetime (replace = new handle + new
+fingerprint; old fingerprint stays in history).
+
+Expert-KB guardrails: expert library publishes guardrail_manifest/2
+(multifile, declarative, inert data) modeled on rlm_tool_loader.pl's
+tool_pack_manifest/2; validated with the same closed grammar; the expert
+brain (dotfiles-owned) is never executed by this slice.
+
+** State ownership, concurrency, restart
+
+Runtime-local: attached policies and bounded evaluation history. Durable:
+guardrail configuration provenance only (files loaded, sha256 fingerprints,
+CLI selections) via slice 1's config layer; policy semantics re-derived at
+every startup; individual denials are ledger events (slice 2). Policy attach
+is atomic under a handle mutex; check reads one immutable attached set
+(dict swap — a concurrent re-attach cannot present a torn policy). In-memory
+policies vanish on crash; startup reloads from --kb files with
+fingerprint re-verification; a modified file yields a new fingerprint, never
+silent reuse.
+
+** Verification gates
+
+- Loader injection rejection (fresh process): :- initialization(...),
+  action(call(shutdown)), unbound variable, cyclic term — each load fails
+  closed with the offending clause identified and NO policy attached.
+- consult/1 negative test: static grep gate + runtime test that a file whose
+  only content is a valid directive loads as an error, not as state.
+- Gate immutability: config claiming to disable authority mediation fails
+  closed; a dangerous-tier context still routes through
+  rlm_authorize_operation/5 with hard validation — dangerous cannot bypass
+  accounting.
+- Deny-before-execute: guarded write tool never runs its handler (externally
+  observable counter unchanged), denial event with fingerprint in the ledger,
+  no approval record created.
+- No-weakening probe: widened narrow list → widening_denied; expert manifest
+  claiming allow(...) rejected at validation.
+- Ledger binding: one event per check with matching fingerprints and
+  sequence order; request_rate guardrail over ledger events fires at
+  threshold.
+- Concurrent re-attach vs check (deterministic barrier): exactly one
+  complete policy set observed.
+
+** Rejected alternatives
+
+- consult/1 with a sandbox: still code loading, not data loading.
+- Guardrails as authority-tier extensions (fifth mode or granting
+  permissions): breaks the closed tier order; guardrails are veto/narrow-only.
+- Per-callsite policy re-read from worker-readable data: non-atomic,
+  unaccountable; evaluation must read one atomically-attached immutable set.
+
+** Open questions
+
+1. --enable-guardrail alias: exact-parity-only or corrected alias accepted?
+2. Do total_spend/request_rate conditions need a slice-2 snapshot primitive
+   (read API must be pinned)?
+3. Guardrail policies as a special slice-6 KB namespace vs separate handle?
+   (Design keeps them separate — class separation outweighs uniformity.)
+4. Is require_approval's canonical-pending mapping sufficient at swarm scale,
+   or does slice 11 need approval batching/ownership transfer?
+
+* Cross-slice dependency notes
+
+Slice 6's kb(Name) capability and slice 9's attach boundary both extend
+trusted host vocabulary; both changes are approve_diff-gated by design.
+Slice 7 consumes slice 2's ledger contract and slice 3's scoped identity;
+where those contracts are unsettled, slice 7 fails closed rather than
+guessing. Slice 9 binds to slice 2's ledger and slice 1's config registry;
+slice 10 will consume slice 7's required_verification profiles and slice 9's
+require_approval trace.

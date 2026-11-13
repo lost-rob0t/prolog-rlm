@@ -1,0 +1,329 @@
+#+title: RLM-DESIGN-574-b — rlm-swarm scoped identity, peer messaging, durable board (slices 3–5)
+#+status: DRAFT
+#+approval_schema: prolog-rlm.research-approval.v1
+#+approval_state: PENDING
+#+approval_actor: NONE
+#+approval_evidence: NONE
+#+approval_base_commit: NONE
+#+approval_base_blob: NONE
+#+approval_decided_at: NONE
+#+SOURCE: design subagent session ses_e2ce7ada5ffe4VCW15W9hGbI63 from the approved research RLM-RESEARCH-574-swarm-core.org; grounded in prolog/rlm_agent.pl, rlm_authority.pl, rlm_async.pl, rlm_closed_data.pl, rlm_conversation_persist.pl, rlm_artifact_persist.pl, rlm_subagent.pl
+
+* Scope
+
+Design for issue #574 slices 3 (scoped_identity_and_discovery), 4
+(peer_and_group_messaging), 5 (durable_searchable_message_board). Invariants:
+rlm_async only scheduler; artifacts/conversations/policy remain distinct
+semantic classes; tool availability is not capability; child capabilities
+narrow by default; discovery and delivery are not execution authority;
+delivery is not task acceptance.
+
+* Slice 3 — scoped identity and discovery (prolog/rlm_swarm_identity.pl)
+
+** Exports
+
+#+begin_example
+swarm_identity_register/4    % +Runtime, +agent(Id), +Options, -Identity
+swarm_identity_lookup/3      % caller's own read purposes (host tooling)
+swarm_identity_resolve/3     % +Runtime, +peer_ref(Exact), -Identity
+swarm_identity_retire/4, swarm_identity_incarnation/3
+swarm_discover/4             % +Runtime, +agent(Me), +Options, -Outcome
+swarm_peer_metadata/3, swarm_identity_count/2
+#+end_example
+
+Identity term:
+swarm_identity{scope:swarm_scope{runtime_id, run_id, project_id},
+agent:agent(GensymId), name, incarnation:PositiveInteger, parent, role,
+registered_at, status:active|retired(Reason)}.
+
+Addressing term used by all peer layers:
+peer_ref{agent:agent(GensymId), name, incarnation:I} — all ground, match on
+all three.
+
+** Semantics
+
+- Scoped stable identity keyed by (runtime_id, run_id, project_id, name);
+  the opaque gensym handle always carried alongside.
+- Incarnation advances on re-registration of a retired name; resolve matches
+  all three fields; mismatch throws swarm_fault(stale_identity(peer_ref,
+  current_incarnation)) — a stale sender can never address a replacement.
+- No guessed names: peer sends require a fully ground peer_ref; unbound
+  incarnation fails closed with swarm_fault(incarnation_required).
+- No caller-provided capabilities: metadata derived from agent_record/7 and
+  agent_status/3 only; message-carried capability claims never consulted.
+  Sanitized projection swarm_peer_meta{name, incarnation, agent, role,
+  availability, capability_classes} — coarse class list (rlm_effect_class/1
+  vocabulary), never raw capability terms or authority mode; engine/queue
+  handles, pending calls, checkpoints excluded.
+- Discovery is not execution authority: pure read of peers the caller is
+  permitted to address; the messaging layer re-validates at send; disagreement
+  fails closed at send.
+- Enumeration prevention: scope filtered from rlm_async async_metadata, never
+  caller arguments; visibility:private agents discoverable only by supervisor
+  ancestry; out-of-scope queries return empty results so probing cannot
+  distinguish "no such scope" from "no visible peers".
+- Registration is called by the swarm spawn path after a successful
+  agent_spawn/5 outcome, under the registry mutex; no change to
+  spawn_locked/7 semantics.
+
+** State ownership and concurrency
+
+Runtime-local tables swarm_identity/2 and swarm_name/3 under a new mutex
+with_mutex(rlm_swarm_identity), mirroring rlm_agent's registry discipline;
+nothing persists; destruction mirrors agent_runtime_destroy/1 teardown.
+Retire+re-register is atomic w.r.t. resolvers; cancelled spawns can never
+register; discovery snapshots are torn-free.
+
+** Crash/restart
+
+All identity state dies with the process; post-restart old peer_refs fail
+stale_identity (verified by fresh-process fixture).
+
+** Verification gates
+
+- register/lookup/resolve round-trip; duplicate name permission_error;
+  incarnation advance; stale-identity fault after re-register.
+- Private agents invisible to non-ancestors; metadata contains only class
+  atoms.
+- Discovery-visible-but-roster-absent send → not_permitted at send time.
+- Forged capabilities field in envelope changes nothing.
+- Two runtimes with identical names cannot resolve each other.
+- Fresh-process fixture: stale peer_ref fails closed after restart,
+  swarm_identity_count/2 = 0.
+
+** Rejected alternatives
+
+- Persisting the identity registry: phantom identities across restarts let
+  stale processes address replacements — the exact bug this slice forbids.
+- Gensym-only identity: replacement agents indistinguishable to name-oriented
+  senders.
+- Discovery as permission source: collapses visibility with authority.
+
+** Open questions
+
+1. Expose capability_classes at all, or only role + availability?
+2. Supervisor "any incarnation" resolution without enumeration bypass?
+3. Does slice 11 need identity hand-off metadata on the board for re-binding
+   senders (a slice-5 schema addition)?
+
+* Slice 4 — peer and group messaging (prolog/rlm_swarm_messaging.pl)
+
+** Exports
+
+#+begin_example
+swarm_msg_send_async/6, swarm_msg_send/6            % direct peer sends
+swarm_msg_fanout_async/6, swarm_msg_fanout/6        % group/broadcast
+swarm_msg_reply_async/5, swarm_msg_status/3
+swarm_group_create/4, swarm_group_members/3, swarm_group_join/4, swarm_group_leave/4
+#+end_example
+
+One additive change to rlm_agent.pl: a single new mailbox_message_shape/1
+clause accepting peer_msg(Envelope). Bounded mailboxes, mailbox_full
+backpressure, agent_pump/4, engine state loop unchanged — no scheduler
+change, no second transport.
+
+Envelope: swarm_peer_msg{id:gensym(swarm_msg_) host-assigned,
+from:peer_ref, to:peer_ref|group_ref, thread, correlation, seq (per (from,to)
+monotone), created_at, body:ClosedBody (closed_data_normalize/2, bounded)}.
+
+** Semantics
+
+- Direct addressing: any roster-permitted peer_ref validated via
+  swarm_identity_resolve/3 + send roster; parent/child flows use the same
+  path as peer-to-peer.
+- Group fanout: host-owned groups (swarm_group_create/4 by host policy
+  context, not model data); roster snapshot under mutex; one send per member
+  through rlm_async; per-recipient outcomes composed via rlm_future_all/2
+  into ok(fanout{delivered, backpressured, stale, not_permitted}) — partial
+  failure reported per recipient, never silently dropped.
+- Bounded payloads: ground closed body, max_msg_size cap; oversized →
+  error(agent_error{kind:payload_too_large}).
+- Correlation/replies: reply envelope carries inbound thread + correlation =
+  inbound id; correlation is routing metadata only, never pre-authorization.
+- Explicit status: queued/processed/rejected/duplicate/stale/expired.
+  Delivery ≠ acceptance: ok(agent_send{status:queued}) only means the bounded
+  mailbox accepted the message; acceptance is a recipient-side act requiring
+  task-layer evidence (slice 10).
+- Backpressure: thread_send_message timeout failure → explicit
+  error(agent_error{kind:mailbox_full,...}) plus trace; retries are the
+  sender's explicit new attempt.
+
+** Ordering, duplicates, cancellation, offline, restart
+
+- Ordering: per-recipient FIFO mailbox order; per-(from,to) seq for senders;
+  global cross-recipient ordering explicitly not guaranteed.
+- Duplicates: recipient transition checks a bounded delivered-id set; a
+  repeated id is a no-op with ledger status duplicate; caller-supplied id
+  fields are a fault (swarm_fault(host_assigned_id_required)) so duplicates
+  only arise from real double delivery.
+- Cancellation: in-flight send futures cancel via rlm_future_cancel/2; a
+  queued message to a cancelled agent is terminally lost and recorded as
+  stale(cancelled_recipient), observable via swarm_msg_status/3.
+- Offline: no durable spool in slice 4; senders needing durability publish to
+  the board (slice 5) and reference it. Mailboxes = transient signaling;
+  board = durable content.
+- Restart: all pre-restart peer_refs fail stale_identity; durable threads
+  resume from the board.
+
+** Concurrency
+
+seq assignment and id generation under the messaging mutex before queue
+send; fanout roster snapshot makes each fanout deterministic; late joiners
+read the board, not mailboxes; permission churn yields explicit statuses,
+never grandfathered trust; pump-time rejection does not fail the send future
+(delivery and acceptance statuses stay causally separate).
+
+** Verification gates
+
+- Direct send → queued → pumped processed; wrong incarnation →
+  stale_identity.
+- Duplicate injection → second is duplicate, no double side effect (external
+  counter).
+- Backpressure: explicit mailbox_full with queue_size; deterministic.
+- Fanout partial failure: per-recipient outcome lists, composed future
+  resolves.
+- Delivery ≠ acceptance: malformed body → queued then rejected; no export
+  ever reports accepted.
+- Permission churn race (deterministic barrier): explicit statuses both
+  sides.
+- Fresh-process fixture: pre-restart peer_ref → stale_identity; empty ledger
+  and no groups in the new runtime.
+
+** Rejected alternatives
+
+- Separate swarm queues/broker threads: second transport and scheduling
+  surface; violates one-scheduler invariant. One new
+  mailbox_message_shape/1 clause only.
+- Durable offline inbox in slice 4: duplicates the board's semantic class.
+- Caller-supplied ids/seq: forgeable dedup keys; host-assigned gensyms only.
+
+** Open questions
+
+1. Rejected-but-enqueued messages: return notification to sender (durable,
+   via board) or status-ledger poll sufficient?
+2. Durable group-membership projection for slice 11 restart — board or own
+   persistency class?
+3. Board references inside envelopes: dangling-reference class needing a
+   shared validity predicate with slice 5?
+
+* Slice 5 — durable searchable message board (prolog/rlm_swarm_board.pl + rlm_swarm_board_persist.pl)
+
+** Modules
+
+Two modules, following the rlm_conversation/rlm_artifact split.
+rlm_swarm_board_persist.pl: own db file (distinct from artifact and
+conversation dbs), library(persistency):
+
+#+begin_example
+:- persistent
+    board_record(board_key, created_at, policy),
+    board_post_record(board_key, cursor, post),
+    board_cursor_record(board_key, next_cursor),
+    board_audit_record(board_key, sequence, event).
+board_persist_open/1, board_persist_close/0,
+board_persist_post/3, board_persist_retract/3, board_persist_read/5,
+board_persist_list/2, board_persist_thread/4,
+board_persist_trace_append/3, board_persist_trace/2, board_persist_delete_board/1
+#+end_example
+
+rlm_swarm_board.pl: policy/authorization facade (swarm_board_open_async/4 +
+sync facade, post/reply/retract/read/search/subscribe/cursor/status).
+
+Post record: swarm_post{id:gensym(swarm_post_), board, scope:
+topic(Key)|task(TaskId)|swarm_global, thread, reply_to, author:peer_ref,
+body:ClosedBody, cursor (monotone per board), created_at,
+status:active|retracted{at,reason}, provenance:board_provenance{runtime_id,
+agent_id, msg_id, authority_context}}.
+
+** Distinct semantic class (hard boundary)
+
+Board posts are not durable artifacts, not conversation messages, not MCP
+config, not trusted operator policy: separate persistency file and record
+vocabulary; no export converts a post into an artifact or conversation
+message; a post id is invisible to artifact_persist_get/4. Posts are
+observations/communication — evidence input, never self-certifying accepted
+knowledge (slice 6/10 own that gate).
+
+** Semantics
+
+- Post/reply/thread/scope validation: board exists; author is a live
+  registered identity with exact incarnation (stale_identity otherwise);
+  writer ACL for the scope; body closed and bounded; reply_to exists and is
+  active.
+- Version/cursor identity: cursor allocation and post insertion atomic under
+  the store mutex (persistency sequence pattern); readers get exact delta
+  semantics; NextCursor is a stable resumption token across restarts.
+- Read/write authorization: host-owned board policy from swarm_board_open/4
+  HostContext (trusted binding rule); authorization context from rlm_async
+  async_metadata.authority_context, never caller arguments.
+- Bounded storage: max_posts, max_post_size, retention_age; eviction removes
+  only fully-retracted/expired posts and appends an audit event; active posts
+  never silently dropped; search bounded with deterministic keysort.
+- Searchability: over normalized closed-data keys, not arbitrary Prolog
+  execution (no call/1 on post content).
+- Safe retraction: tombstone status, never audit deletion; original post
+  retrievable via the audit read path with retraction attached; only the
+  author identity (same incarnation) or a host admin may retract — a
+  replacement agent with the same name but higher incarnation cannot retract
+  the predecessor's post.
+- Subscriptions/fanout: runtime-local subscribers; new posts trigger
+  notification fanout through slice-4 swarm_msg_fanout_async/6 carrying only
+  (board, cursor range) pointers; notification is best-effort delivery, never
+  acceptance; the post is durable regardless and cursor re-read heals lost
+  notifications.
+- Audit history: every authorization-relevant event appends to
+  board_persist_trace/2 (bounded, ordered).
+
+** Invariants, concurrency, restart
+
+Typed errors at the persistency/facade boundary (instantiation_error,
+payload_too_large, existence_error, stale_identity, permission_error).
+Single-writer-process-per-board-file documented constraint (same limitation
+as existing persistency stores); multi-process swarm is out of scope for the
+core. Cursor allocation, insertion, retraction, audit append atomic; post-vs-
+retract race yields post-or-tombstone, never neither; replies to one thread
+get distinct monotone cursors. Crash: posts/cursors/tombstones/audit survive
+(sync(close)); subscriptions die; fresh-process fixture verifies identical
+cursor/status/audit state.
+
+** Verification gates
+
+- open/post/read/reply/thread round-trip; cursor monotonicity; NextCursor
+  exact deltas.
+- ACL: denied writer → permission_error, nothing written; denied reader sees
+  empty results without scope-probing error distinction.
+- Stale identity cannot post; higher-incarnation replacement cannot retract
+  predecessor's post.
+- Retraction: invisible on default read, present on audit read; reply to
+  retracted post fails.
+- Bounded storage: evict retracted-only, audit appended, active intact.
+- Distinct-class conformance: disjoint db paths; post id invisible to
+  artifact_persist_get/4.
+- Fresh-process restart fixture + search determinism across fresh processes.
+- Notification fanout with backpressured subscriber while the post stays
+  durable.
+
+** Rejected alternatives
+
+- Reusing the conversation store as the board: violates distinct-class
+  invariant; would surface posts in provider context.
+- Reusing artifact namespaces: posts would masquerade as durable artifacts;
+  artifact version-per-key semantics are wrong for append streams.
+- In-memory board with periodic flush: reimplements persistency durability
+  worse; second persistence mechanism.
+
+** Open questions
+
+1. Single-writer-process-per-board acceptable for the core, or does slice 11
+   need an explicit cross-process story?
+2. Notifications at-least-once (durable, duplicates) vs best-effort + cursor
+   polling (proposed)?
+3. Retention eviction vs audit immutability: may evicted retracted posts
+   disappear from audit-body retention, and how bounded?
+
+* Cross-slice notes
+
+Slice 3's registry is the prerequisite for slice 4 addressing and slice 5
+author validation; slice 4 fanout is slice 5's notification transport. None
+of the three adds a scheduler, a persistency store outside the established
+pattern, or a new authority tier.
