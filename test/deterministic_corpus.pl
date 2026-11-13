@@ -156,6 +156,7 @@ corpus_entry('rlm_deep_experiment_test.pl', include(rlm_deep_experiment)).
 corpus_entry('rlm_trace_test.pl', include(rlm_trace)).
 corpus_entry('rlm_demo_test.pl', include(rlm_demo)).
 corpus_entry('rlm_cli_test.pl', include(rlm_cli)).
+corpus_entry('rlm_swarm_config_test.pl', include(rlm_swarm_config)).
 corpus_entry('rlm_zara_runtime_test.pl', include(rlm_zara_runtime)).
 corpus_entry('rlm_async_test.pl', include(rlm_async)).
 corpus_entry('rlm_async_canonical_test.pl', include(rlm_async_canonical)).
