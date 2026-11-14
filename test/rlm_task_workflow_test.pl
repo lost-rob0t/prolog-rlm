@@ -84,4 +84,43 @@ test(snapshot_validation_rejects_duplicate_ids) :-
     task_workflow_create(project,r1,ok(A)),
     task_workflow_add(A,task{id:x,title:"x",dependencies:[]},ok(B)),B.tasks=[T],
     put_dict(tasks,B,[T,T],Bad),task_workflow_validate(Bad,error(_)).
+
+test(restored_spec_must_obey_binding_contract) :-
+    bound(S,_,R),
+    spec_validate(_{schema_version:1,subject:_{project:project},requirements:[_{id:check,
+        assertion:assertion(check,_{}),severity:optional}]},R,ok(V)),
+    spec_freeze(V,[],ok(OptionalSpec)),
+    S.tasks=[T],put_dict(spec,T,OptionalSpec,BadTask),put_dict(tasks,S,[BadTask],Bad),
+    task_workflow_validate(Bad,error(_)),
+    task_workflow_verify(Bad,x,[],R,error(_),_).
+test(restored_title_bound) :-
+    task_workflow_create(project,r1,ok(A)),
+    task_workflow_add(A,task{id:x,title:"x",dependencies:[]},ok(B)),B.tasks=[T],
+    length(Cs,4097),maplist(=(0'x),Cs),string_codes(Long,Cs),
+    put_dict(title,T,Long,U),put_dict(tasks,B,[U],Bad),task_workflow_validate(Bad,error(_)).
+test(restored_closed_keys) :-
+    task_workflow_create(project,r1,ok(A)),put_dict(override,A,true,Bad),
+    task_workflow_validate(Bad,error(_)).
+
+test(restored_report_must_match_spec) :-
+    bound(S,F,R),spec_observe(F,[true],R,[],ok(Obs)),
+    task_workflow_verify(S,x,Obs,R,ok(Done),ok(Report)),
+    put_dict(spec_ref,Report,wrong,Wrong),Done.tasks=[T],
+    put_dict(verification,T,Wrong,U),put_dict(tasks,Done,[U],Bad),
+    task_workflow_validate(Bad,error(_)).
+test(restored_reason_bound) :-
+    bound(S,_,_),S.tasks=[T],length(Cs,4097),maplist(=(0'x),Cs),string_codes(Long,Cs),
+    put_dict(reason,T,Long,U),put_dict(tasks,S,[U],Bad),task_workflow_validate(Bad,error(_)).
+test(restored_task_closed_keys) :-
+    bound(S,_,_),S.tasks=[T],put_dict(override,T,true,U),put_dict(tasks,S,[U],Bad),
+    task_workflow_validate(Bad,error(_)).
+test(restored_duplicate_dependencies) :-
+    task_workflow_create(project,r1,ok(A)),
+    task_workflow_add(A,task{id:x,title:"x",dependencies:[]},ok(B)),
+    task_workflow_add(B,task{id:y,title:"y",dependencies:[x]},ok(C)),C.tasks=[X,Y],
+    put_dict(dependencies,Y,[x,x],U),put_dict(tasks,C,[X,U],Bad),task_workflow_validate(Bad,error(_)).
+test(restored_event_revision_coherence) :-
+    bound(S,_,_),put_dict(revision,S,999,Bad),task_workflow_validate(Bad,error(_)),
+    put_dict(events,S,[event(99,added(x)),event(2,bound(x,ref))],Other),
+    task_workflow_validate(Other,error(_)).
 :- end_tests(rlm_task_workflow).

@@ -40,15 +40,7 @@ task_workflow_ready(State, Outcome) :-
     result((validate(State),findall(Id,(task(State,Id,T),T.status==pending,
                                      dependencies_done(State,T)),Ids)),Ids,Outcome).
 task_workflow_bind(State, Id, Frozen, Outcome) :-
-    result((validate(State), task(State,Id,T), spec_inspect(Frozen,ok(Inspection)),
-      Inspection.required_ids\==[], Frozen.subject.project==State.project,
-      % Completion requires observed evidence bound to this exact project state.
-      forall((member(R,Frozen.requirements),R.severity==required),
-        (R.evidence_policy.required_evidence==true,
-         R.evidence_policy.freshness==current,
-         R.evidence_policy.state_ref==State.state_ref,
-         R.evidence_policy.trust_classes\==all,
-         forall(member(C,R.evidence_policy.trust_classes),memberchk(C,[observed,trusted])))),
+    result((validate(State), task(State,Id,T), valid_bound_spec(State,Frozen),
       put_dict(_{spec:Frozen,status:pending,verification:none},T,U),
       replace_task(State,Id,U,Tasks),invalidate_dependents(Tasks,Id,Invalidated),
       advance(State,Invalidated,bound(Id,Frozen.ref),Next)),Next,Outcome).
@@ -82,16 +74,54 @@ invalidate(T,U) :-
     put_dict(_{status:Status,verification:none,spec:none},T,U).
 
 validate(S) :-
-    ground(S),acyclic_term(S),is_dict(S,task_workflow),S.version==1,
-    identity(S.project),S.state_ref=project_state(S.project,_),identity(S.state_ref),integer(S.revision),S.revision>=0,
-    is_list(S.tasks),length(S.tasks,N),N=<256,is_list(S.events),length(S.events,E),E=<4096,
-    maplist(valid_task,S.tasks),findall(Id,task(S,Id,_),Ids),sort(Ids,Unique),length(Unique,N),
+    ground(S),acyclic_term(S),is_dict(S,task_workflow),
+    closed_keys(S,[version,project,state_ref,revision,tasks,events]),S.version==1,
+    identity(S.project),S.state_ref=project_state(S.project,_),identity(S.state_ref),
+    integer(S.revision),S.revision>=0,
+    is_list(S.tasks),length(S.tasks,N),N=<256,
+    is_list(S.events),length(S.events,E),E=<4096,E=:=S.revision,
+    valid_events(S.events,1),
+    maplist(valid_task(S),S.tasks),findall(Id,task(S,Id,_),Ids),sort(Ids,Unique),length(Unique,N),
     ordered_dependencies(S.tasks,[]),
-    forall((task(S,_,T),T.status==done),(dependencies_done(S,T),T.verification\==none,
-      T.verification.status==passed,T.spec\==none)).
-valid_task(T) :- is_dict(T,task),identity(T.id),string(T.title),string(T.reason),
-    is_list(T.dependencies),memberchk(T.status,[pending,active,blocked,done,cancelled]),
-    get_dict(spec,T,_),get_dict(verification,T,_).
+    forall((task(S,_,T),T.status==done),
+      (dependencies_done(S,T),T.verification\==none,T.verification.status==passed)).
+valid_task(S,T) :-
+    is_dict(T,task),closed_keys(T,[id,title,dependencies,status,reason,spec,verification]),
+    identity(T.id),bounded_text(T.title),bounded_text(T.reason),
+    is_list(T.dependencies),sort(T.dependencies,Deps),length(Deps,N),length(T.dependencies,N),
+    memberchk(T.status,[pending,active,blocked,done,cancelled]),
+    (T.spec==none -> T.verification==none ; valid_bound_spec(S,T.spec)),
+    (T.verification==none -> true
+     ; memberchk(T.status,[done,blocked]),valid_report(S,T.spec,T.verification)).
+valid_bound_spec(S,Frozen) :-
+    spec_inspect(Frozen,ok(Inspection)),Inspection.required_ids\==[],
+    Frozen.subject.project==S.project,
+    forall((member(R,Frozen.requirements),R.severity==required),
+      (R.evidence_policy.required_evidence==true,
+       R.evidence_policy.freshness==current,
+       R.evidence_policy.state_ref==S.state_ref,
+       R.evidence_policy.trust_classes\==all,
+       forall(member(C,R.evidence_policy.trust_classes),memberchk(C,[observed,trusted])))).
+valid_report(S,F,R) :-
+    is_dict(R,verification_report),R.spec_ref==F.ref,
+    memberchk(R.status,[passed,rejected]),is_list(R.requirements),
+    findall(Id,(member(Q,F.requirements),Id=Q.id),Ids),
+    findall(Id,(member(Q,R.requirements),Id=Q.id),Ids),
+    maplist(current_observation(S.state_ref),R.observations),
+    (R.status==passed
+     -> forall((member(Q,F.requirements),Q.severity==required),
+          (member(Check,R.requirements),Check.id==Q.id,Check.status==passed)),
+        R.evidence_refs\==[]
+     ; true).
+bounded_text(T) :- string(T),string_length(T,N),N=<4096.
+valid_events([],_).
+valid_events([event(N,E)|Es],N) :- valid_event(E),Next is N+1,valid_events(Es,Next).
+valid_event(added(Id)) :- identity(Id).
+valid_event(transition(Id,Status,Reason)) :- identity(Id),
+    memberchk(Status,[pending,active,blocked,cancelled]),bounded_text(Reason).
+valid_event(bound(Id,Ref)) :- identity(Id),identity(Ref).
+valid_event(verified(Id,Status)) :- identity(Id),memberchk(Status,[passed,rejected]).
+valid_event(state_changed(Old,New)) :- identity(Old),identity(New).
 ordered_dependencies([], _).
 ordered_dependencies([T|Ts], Seen) :- forall(member(D,T.dependencies),memberchk(D,Seen)),
     ordered_dependencies(Ts,[T.id|Seen]).

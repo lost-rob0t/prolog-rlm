@@ -38,3 +38,11 @@ legacy `.prolog` files, promote knowledge, infer diagnoses or implement a shared
 knowledge store. Those remain explicit product adapters/follow-on work.
 
 Tests: `swipl -q -s test/rlm_task_workflow_test.pl -g run_tests -t halt`.
+
+Restored snapshots must obey the same frozen-spec binding contract as newly
+bound tasks, including project/revision, nonempty required checks and current
+evidence policy. Reports must match the bound spec and its requirement IDs;
+completed tasks need passed required results. Restore also validates closed
+journal/task fields, text limits, unique dependencies and sequential event/revision
+coherence. These checks reject malformed state; they do not authenticate a file
+against a malicious writer. Host checkpoint ownership remains necessary.
