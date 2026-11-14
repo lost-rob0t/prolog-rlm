@@ -125,12 +125,11 @@ valid_check(Observations,Q,C) :-
     forall(member(K,[id,assertion,severity,evidence_policy,verifier,collector,provenance]),
       (get_dict(K,Q,V),get_dict(K,C,V))),
     (C.observation==none
-     -> C.status\==passed,C.evidence_refs==[],
-        \+ (member(O,Observations),O.requirement_id==Q.id)
+     -> C.status\==passed,C.evidence_refs==[]
      ; member(O,Observations),O==C.observation,O.requirement_id==Q.id,
-       O.assertion==Q.assertion,O.verifier==Q.verifier,O.collector==Q.collector,
        C.evidence_refs==O.evidence_refs,
        (C.status==passed -> O.status==passed,
+         O.assertion==Q.assertion,O.verifier==Q.verifier,O.collector==Q.collector,
          evidence_policy_accepts(Q.evidence_policy,O,ok(accepted)) ; true)).
 bounded_text(T) :- string(T),string_length(T,N),N=<4096.
 valid_events([],_).

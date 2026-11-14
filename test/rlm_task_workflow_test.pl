@@ -141,4 +141,22 @@ test(restored_report_evidence_refs_match_checks) :-
     task_workflow_verify(S,x,Obs,R,ok(Done),ok(Report)),
     put_dict(evidence_refs,Report,[unrelated],Fake),Done.tasks=[T],
     put_dict(verification,T,Fake,U),put_dict(tasks,Done,[U],Bad),task_workflow_validate(Bad,error(_)).
+
+test(rejected_verifier_mismatch_remains_resumable) :-
+    bound(S,F,R),spec_observe(F,[true],R,[],ok([O])),
+    put_dict(verifier,O,verifier{id:wrong,version:1},Mismatch),
+    task_workflow_verify(S,x,[Mismatch],R,ok(Blocked),ok(Report)),
+    assertion(Report.status==rejected),task_workflow_validate(Blocked,ok(_)),
+    task_workflow_transition(Blocked,x,pending,"recollect",ok(_)).
+test(rejected_assertion_mismatch_remains_resumable) :-
+    bound(S,F,R),spec_observe(F,[true],R,[],ok([O])),
+    put_dict(assertion,O,assertion(other,assertion_args{}),Mismatch),
+    task_workflow_verify(S,x,[Mismatch],R,ok(Blocked),ok(Report)),
+    assertion(Report.status==rejected),task_workflow_validate(Blocked,ok(_)).
+test(rejected_registry_mismatch_remains_resumable) :-
+    bound(S,F,R),spec_observe(F,[true],R,[],ok(Obs)),
+    R=[assertion_provider(K,V,A,E,C,M)],put_dict(verifier,M,_{id:changed,version:2},NewM),
+    NewR=[assertion_provider(K,V,A,E,C,NewM)],
+    task_workflow_verify(S,x,Obs,NewR,ok(Blocked),ok(Report)),
+    assertion(Report.status==rejected),task_workflow_validate(Blocked,ok(_)).
 :- end_tests(rlm_task_workflow).
