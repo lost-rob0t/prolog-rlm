@@ -60,6 +60,15 @@ waits for human input. There is a process bound of 64 outstanding cursors.
 Hosts must keep the tool registry and effect store alive until completion or
 cancellation, and must not persist a cursor as a restartable execution recipe.
 
+Pending tool continuations carry the original cancellation token, absolute
+deadline, and transient direct-run lifetime as a trusted execution guard. The
+guard runs before effect admission in the approval worker, including after a
+queued approval or an edit/reapproval. Cancelled, expired, or closed runs cannot
+gain fresh dispatch authority merely because the host later approves a pending
+operation. During execution the worker registers with the same token and uses
+the remaining original deadline. Cancellation after dispatch still cannot undo
+an external effect; its existing durable accounting remains authoritative.
+
 The following predicates are exported by `rlm_direct`:
 
 ```prolog
@@ -83,6 +92,11 @@ invoked again, and its observation is appended before the remaining batch and
 model loop continue. Multiple approvals return a new cursor each time. Reusing
 a consumed or unknown cursor returns `stale_cursor`; repeated awaits of one
 resume Future return the same outcome. Denial terminates as `approval_denied`.
+Each outstanding cursor owns a retained authoritative approval resolution, so
+ordinary terminal-history pruning cannot discard an observation it still needs.
+Ownership is released on terminal resume, cancellation, error, or transfer to a
+successor cursor. Resolution ownership is bounded globally to 64 owner pairs;
+it retains no executable continuation after the approval becomes terminal.
 Owned contexts and tokens are released on terminal resume, cancellation, or
 error; borrowed input context and caller-owned registry lifetime remain with
 the host. The original absolute deadline includes approval waiting time and is

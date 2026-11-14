@@ -738,11 +738,12 @@ invoke_read_operation(Context,
                     details:Details,
                     correlation:Correlation
                 },
-    Continuation = rlm_tool:tool_pending_execute(Schema,
+    BaseContinuation = rlm_tool:tool_pending_execute(Schema,
                                                  Binding,
                                                  NormalizedArgs,
                                                  Limits,
                                                  Context),
+    pending_tool_continuation(Options, BaseContinuation, Continuation),
     EditValidator = rlm_tool:tool_edit_validate(Schema,
                                                  Binding,
                                                  Options,
@@ -926,7 +927,7 @@ invoke_after_effect_prepare(execute(Ticket),
                             NormalizedArgs,
                             Details,
                             Limits,
-                            _Options,
+                            Options,
                             Correlation,
                             Request,
                             EffectOptions,
@@ -947,9 +948,10 @@ invoke_after_effect_prepare(execute(Ticket),
                     },
     rlm_effect_authority:effect_authority_operation(Ticket, BaseOperation,
                                                      Correlation, Operation),
-    Continuation = rlm_tool:tool_effect_pending_execute(Context,
+    BaseContinuation = rlm_tool:tool_effect_pending_execute(Context,
                                                         Schema,
                                                         Ticket),
+    pending_tool_continuation(Options, BaseContinuation, Continuation),
     EditValidator = rlm_tool:tool_effect_edit_validate(Context,
                                                        Registry,
                                                        Schema,
@@ -957,7 +959,8 @@ invoke_after_effect_prepare(execute(Ticket),
                                                        Limits,
                                                        Correlation,
                                                        Request,
-                                                       EffectOptions),
+                                                       EffectOptions,
+                                                       Options),
     rlm_authority:rlm_authorize_operation(Context,
                                           Operation,
                                           Continuation,
@@ -1053,6 +1056,18 @@ replay_metadata(error(Error), Bytes, Fingerprint) :-
         Fingerprint = none
     ).
 replay_metadata(_, 0, none).
+
+% Host-owned admission/lifetime guard. Keep it outside the executable payload
+% and carry it through edits; it can narrow execution but is never model data.
+pending_tool_continuation(Options, Base, Continuation) :-
+    ( memberchk(pending_execution_guard(Guard), Options)
+    -> ( ground(Guard), callable(Guard) -> true
+       ; throw(tool_fault(invalid_pending_execution_guard)) ),
+       Continuation = rlm_tool:guard_pending_execution(Guard, Base)
+    ; Continuation = Base ).
+
+guard_pending_execution(Guard, Base, Resolution) :-
+    call(Guard, Base, Resolution).
 
 tool_pending_execute(Schema, Binding, Args, Limits, _Context, Resolution) :-
     get_time(Start),
@@ -1338,7 +1353,7 @@ rlm_effect_executor:effect_adapter_submit(rlm_tool, Attempt, Request,
    continuation from that ticket. The old attempt ticket can never execute. */
 
 tool_effect_edit_validate(Context, Registry, Schema, Binding, Limits,
-                          Correlation, _OldRequest, _OldEffectOptions,
+                          Correlation, _OldRequest, _OldEffectOptions, Options,
                           Edited0, Operation, Continuation) :-
     edited_args(Edited0, EditedArgs),
     validate_schema(Schema.arguments, EditedArgs, args, ok),
@@ -1363,9 +1378,10 @@ tool_effect_edit_validate(Context, Registry, Schema, Binding, Limits,
                     },
     rlm_effect_authority:effect_authority_operation(Ticket, BaseOperation,
                                                      Correlation, Operation),
-    Continuation = rlm_tool:tool_effect_pending_execute(Context,
+    BaseContinuation = rlm_tool:tool_effect_pending_execute(Context,
                                                         Schema,
-                                                        Ticket).
+                                                        Ticket),
+    pending_tool_continuation(Options, BaseContinuation, Continuation).
 
 perform_tool_effect(Schema,
                     tool_binding(_, Handler),
@@ -1499,12 +1515,12 @@ tool_edit_validate(Schema,
                     details:Details,
                     correlation:Correlation
                 },
-    Continuation = rlm_tool:tool_pending_execute(Schema,
+    BaseContinuation = rlm_tool:tool_pending_execute(Schema,
                                                  Binding,
                                                  NormalizedArgs,
                                                  Limits,
                                                  Context),
-    (Options = _ -> true).
+    pending_tool_continuation(Options, BaseContinuation, Continuation).
 
 edited_args(Edited, Args) :-
     is_dict(Edited),
