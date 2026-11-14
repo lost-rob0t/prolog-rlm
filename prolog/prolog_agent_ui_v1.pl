@@ -69,6 +69,11 @@ known_event_type("approval_required").
 known_event_type("approval_resolved").
 known_event_type("question_required").
 known_event_type("question_answered").
+known_event_type("proposal_started").
+known_event_type("proposal_delta").
+known_event_type("proposal_finished").
+known_event_type("proposal_accepted").
+known_event_type("proposal_discarded").
 known_event_type("subagent_started").
 known_event_type("subagent_finished").
 known_event_type("verification").
@@ -297,6 +302,7 @@ ui_v1_initial_view(SessionId,
                            tools:[],
                            approvals:[],
                            questions:[],
+                           proposals:[],
                            subagents:[],
                            verification:[],
                            usage:_{},
@@ -305,12 +311,17 @@ ui_v1_initial_view(SessionId,
                            extensions:[]}).
 
 ui_v1_snapshot_state(View, State) :-
+    (   get_dict(proposals, View, Proposals)
+    ->  true
+    ;   Proposals = []
+    ),
     Raw = ui_snapshot_state{status:View.status,
                             run:View.run,
                             messages:View.messages,
                             tools:View.tools,
                             approvals:View.approvals,
                             questions:View.questions,
+                            proposals:Proposals,
                             subagents:View.subagents,
                             verification:View.verification,
                             usage:View.usage,
@@ -408,6 +419,7 @@ state_to_view(SessionId, AtSeq, State, View) :-
     required_state_field(State, tools, Tools),
     required_state_field(State, approvals, Approvals),
     required_state_field(State, questions, Questions),
+    optional_state_field(State, proposals, [], Proposals),
     required_state_field(State, subagents, Subagents),
     required_state_field(State, verification, Verification),
     required_state_field(State, usage, Usage),
@@ -423,6 +435,7 @@ state_to_view(SessionId, AtSeq, State, View) :-
                    tools:Tools,
                    approvals:Approvals,
                    questions:Questions,
+                   proposals:Proposals,
                    subagents:Subagents,
                    verification:Verification,
                    usage:Usage,
@@ -434,6 +447,12 @@ required_state_field(State, Key, Value) :-
     (   get_dict(Key, State, Value)
     ->  true
     ;   throw(ui_fault(invalid_snapshot_state, _{missing:Key}))
+    ).
+
+optional_state_field(State, Key, Default, Value) :-
+    (   get_dict(Key, State, Found)
+    ->  Value = Found
+    ;   Value = Default
     ).
 
 reduce_event(Frame, View0, View) :-
@@ -496,6 +515,29 @@ reduce_known_or_extension("question_answered", Payload, _, View0, View) :- !,
     put_dict(_{status:"answered"}, Payload, Fields),
     update_item_fields(Id, Fields, View0.questions, Questions),
     put_dict(questions, View0, Questions, View).
+reduce_known_or_extension("proposal_started", Payload, _, View0, View) :- !,
+    required_payload_id(Payload, proposal_id, Id),
+    put_dict(_{id:Id, status:"streaming", text:""}, Payload, Proposal),
+    upsert_by_id(Proposal, View0.proposals, Proposals),
+    put_dict(proposals, View0, Proposals, View).
+reduce_known_or_extension("proposal_delta", Payload, _, View0, View) :- !,
+    required_payload_id(Payload, proposal_id, Id),
+    require_payload_field(Payload, delta, Delta),
+    update_proposal_text(Id, Delta, View0.proposals, Proposals),
+    put_dict(proposals, View0, Proposals, View).
+reduce_known_or_extension("proposal_finished", Payload, _, View0, View) :- !,
+    required_payload_id(Payload, proposal_id, Id),
+    update_item_fields(Id, _{status:"finished"}, View0.proposals, Proposals),
+    put_dict(proposals, View0, Proposals, View).
+reduce_known_or_extension("proposal_accepted", Payload, _, View0, View) :- !,
+    required_payload_id(Payload, proposal_id, Id),
+    update_item_fields(Id, _{status:"accepted"}, View0.proposals, Proposals),
+    put_dict(proposals, View0, Proposals, View).
+reduce_known_or_extension("proposal_discarded", Payload, _, View0, View) :- !,
+    required_payload_id(Payload, proposal_id, Id),
+    put_dict(_{status:"discarded"}, Payload, Fields),
+    update_item_fields(Id, Fields, View0.proposals, Proposals),
+    put_dict(proposals, View0, Proposals, View).
 reduce_known_or_extension("subagent_started", Payload, _, View0, View) :- !,
     required_payload_id(Payload, subagent_id, Id),
     put_dict(_{id:Id, status:"running"}, Payload, Subagent),
@@ -544,6 +586,12 @@ update_item_fields(Id, Fields, Items0, Items) :-
     select_item(Id, Items0, Item0, Before, After),
     put_dict(Fields, Item0, Item),
     append(Before, [Item|After], Items).
+
+update_proposal_text(ProposalId, Delta, Proposals0, Proposals) :-
+    select_item(ProposalId, Proposals0, Proposal0, Before, After),
+    string_concat(Proposal0.text, Delta, Text),
+    put_dict(text, Proposal0, Text, Proposal),
+    append(Before, [Proposal|After], Proposals).
 
 select_item(Id, Items, Item, Before, After) :-
     existing_item(Id, Items, Item, Before, After),

@@ -1,9 +1,9 @@
 % Ground task/control facts. Evidence is isolated by task and run.
-task('question-resolution-576').
-verification_context('question-resolution-576', 'cbafc1f2b20b4a539fadc0d348b7fc7f').
-repo_state('05455bba3ee58b6a0a7a6d4242c8b64e8fe8af68', 'a8761e7351e56153632fa67d24d2bc1a5375e41c77abcf846fcd1276c851304d').
+task('inline-completion-575').
+verification_context('inline-completion-575', 'de5c1376ee014dad9c0ee12ee08102a8').
+repo_state('48d804837fcafa36a9d7264ad800d01f3f2bfcc2', '97a7e9d93bdad65271dfc511731b2ff9816c95427987c48211f144176c745778').
 research_required(false).
-requirement('question-suite-green', command(['swipl', '--on-error=status', '-q', '-s', 'test/rlm_question_test.pl', '-g', 'run_tests', '-t', 'halt'])).
-claim('question-suite-green', requirement('question-suite-green')).
+requirement('inline-suite-green', command(['swipl', '--on-error=status', '-q', '-s', 'test/rlm_inline_test.pl', '-g', 'run_tests', '-t', 'halt'])).
+claim('inline-suite-green', requirement('inline-suite-green')).
 requirement('aggregate-suite-green', command(['swipl', '--on-error=status', '-q', '-s', 'test/run_tests.pl'])).
 claim('aggregate-suite-green', requirement('aggregate-suite-green')).

@@ -96,6 +96,7 @@ corpus_entry('rlm_skill_graph_test.pl', include(rlm_skill_graph)).
 corpus_entry('rlm_skill_symlink_test.pl',
              include(rlm_skill_symlink_confinement)).
 corpus_entry('rlm_authority_test.pl', include(rlm_authority)).
+corpus_entry('rlm_inline_test.pl', include(rlm_inline)).
 corpus_entry('rlm_question_test.pl', include(rlm_question)).
 corpus_entry('rlm_authority_hardening_test.pl',
              include(rlm_authority_hardening)).
