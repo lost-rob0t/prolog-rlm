@@ -494,6 +494,12 @@ expert_invoke_entry(Id, ExpertId, Goal, Context0, Outcome) :-
 invoke_root(Id, ExpertId, Goal, Context0, Outcome) :-
     normalize_public_context(Context0, Context, Capabilities, _),
     expert_registry_state(Id, ExpectedGeneration, RegistryOptions),
+    ( get_dict(expected_registry_generation, Context0, PinnedGeneration)
+    -> ( integer(PinnedGeneration), PinnedGeneration =:= ExpectedGeneration
+       -> true
+       ; throw(expert_fault(stale_registry_generation(PinnedGeneration,
+                                                      ExpectedGeneration))) )
+    ; true ),
     new_run_token(Token),
     setup_call_cleanup(
         assertz(expert_run_state(Token,
@@ -651,7 +657,24 @@ invoke_handler(Contract, Goal, Context, RawOutcome) :-
           ;   RawOutcome = error(handler_failed)
           ),
           Exception,
-          RawOutcome = error(handler_exception(Exception))).
+          expert_handler_exception(Exception, RawOutcome)).
+
+expert_handler_exception(Exception, _) :-
+    expert_control_exception(Exception), !, throw(Exception).
+expert_handler_exception(Exception, error(handler_exception(Exception))).
+
+% Interrupts must cross all expert wrappers to the canonical tool/async owner.
+expert_control_exception(rlm_async_cancelled(_)).
+expert_control_exception(rlm_cancelled(_)).
+expert_control_exception(chain_cancelled(_)).
+expert_control_exception(graph_cancelled(_)).
+expert_control_exception(cancelled(_)).
+expert_control_exception('$aborted').
+expert_control_exception(abort).
+expert_control_exception(time_limit_exceeded).
+expert_control_exception(inference_limit_exceeded).
+expert_control_exception(time_limit_exceeded(_)).
+expert_control_exception(error(Inner,_)) :- expert_control_exception(Inner).
 
 admit_handler_outcome(Id,
                       Contract,
@@ -1046,6 +1069,8 @@ safe_exception(Exception, Safe) :-
                     [quoted(true), max_depth(8)])
     ).
 
+expert_exception(_, Exception, _) :-
+    expert_control_exception(Exception), !, throw(Exception).
 expert_exception(_Phase,
                  expert_fault(stale_registry_generation(ExpectedGeneration,
                                                         CurrentGeneration)),

@@ -1,6 +1,7 @@
 :- module(rlm,
           [ rlm_version/1,
             rlm_ready/0,
+            expert_tool_register/5,
             rlm_completion/4,
              rlm_completion_async/4,
              rlm_direct/4,
@@ -200,6 +201,7 @@ latency is represented by a deferred pending-operation Future; no shared
 `rlm_async` worker waits for a person.
 */
 
+:- use_module(rlm_expert_tool, [expert_tool_register/5]).
 :- use_module(rlm_chain).
 :- use_module(rlm_context).
 :- use_module(rlm_plan).
