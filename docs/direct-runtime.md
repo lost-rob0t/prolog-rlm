@@ -44,6 +44,81 @@ provider-native direct session through `rlm_direct_execute/4` and reports a
 `native_model_execution{response,responses,iterations,model_calls,tool_calls,
 context_calls,observation_bytes}`. It is never model-supplied data.
 
+## Opt-in approval continuation
+
+Top-level direct hosts may pass `suspend_on_approval(true)`. Instead of the
+legacy terminal approval error, a tool needing approval returns:
+
+```prolog
+approval_required(direct_pending{cursor:Cursor, approval:Pending}).
+```
+
+`Pending` is the canonical authority record, including its `id`. The opaque,
+process-local `Cursor` retains the original messages, remaining native-call
+batch, already-charged counters, deadline, and owned context handles. No worker
+waits for human input. There is a process bound of 64 outstanding cursors.
+Hosts must keep the tool registry and effect store alive until completion or
+cancellation, and must not persist a cursor as a restartable execution recipe.
+
+Pending tool continuations carry the original cancellation token, absolute
+deadline, and transient direct-run lifetime as a trusted execution guard. The
+guard runs before effect admission in the approval worker, including after a
+queued approval or an edit/reapproval. Cancelled, expired, or closed runs cannot
+gain fresh dispatch authority merely because the host later approves a pending
+operation. During execution the worker registers with the same token and uses
+the remaining original deadline. Cancellation after dispatch still cannot undo
+an external effect; its existing durable accounting remains authoritative.
+
+The following predicates are exported by `rlm_direct`:
+
+```prolog
+rlm_direct_resume(+Cursor, -Outcome).
+rlm_direct_resume_async(+Cursor, -Future).
+rlm_direct_resume_execute(+Cursor, -Outcome).
+rlm_direct_cancel(+Cursor, -Outcome).
+```
+
+Use `rlm_authority:rlm_approve(Pending.id, Outcome)` or `rlm_deny/3` to decide
+the operation. Approval schedules its existing exact continuation through the
+authority/effect boundary. Observe the resolution Future returned by
+`rlm_pending_resolution_async/2`, then resume the cursor. Use a callback or
+`rlm_future_then/3` to schedule resume without occupying a worker while waiting.
+An early resume returns the same pending cursor without consuming it. Resume
+reads only that stored approval's authoritative resolution; it accepts no
+caller-supplied tool result, replacement capabilities, provider, or budget.
+
+A terminal resolution atomically consumes the cursor. The approved tool is not
+invoked again, and its observation is appended before the remaining batch and
+model loop continue. Multiple approvals return a new cursor each time. Reusing
+a consumed or unknown cursor returns `stale_cursor`; repeated awaits of one
+resume Future return the same outcome. Denial terminates as `approval_denied`.
+Each outstanding cursor owns a retained authoritative approval resolution, so
+ordinary terminal-history pruning cannot discard an observation it still needs.
+Ownership is released on terminal resume, cancellation, error, or transfer to a
+successor cursor. Resolution ownership is bounded globally to 64 owner pairs;
+it retains no executable continuation after the approval becomes terminal.
+Owned contexts and tokens are released on terminal resume, cancellation, or
+error; borrowed input context and caller-owned registry lifetime remain with
+the host. The original absolute deadline includes approval waiting time and is
+never reset by resume. Hosts should choose an appropriate original time budget.
+
+`rlm_direct_cancel/2` cancels a still-suspended cursor and its one approval,
+without cancelling siblings in a shared authority context. Once resume claims
+the cursor, cancel active execution through its resume Future or the original
+host `cancel_token`. During the queued-to-running race, a host can cancel the
+Future and call cursor cancellation, tolerating `stale_cursor` when it has
+already been claimed. Cancellation cannot undo an effect already dispatched;
+the durable effect boundary retains authoritative outcomes or uncertainty.
+
+The canonical `rlm_pending_cancel/2` authority API supports cancellation by one
+approval ID, including scheduled/executing operations; owner-wide cancellation
+remains available separately. Unknown or terminal ground IDs are idempotent.
+
+Without opt-in, the existing error contract is unchanged. Embedded
+`rlm_direct_model_step/10` explicitly disables suspension because its typed-plan
+parent does not own a direct cursor. Process restart discards cursors; hosts
+must report interruption and inspect durable effects, never replay implicitly.
+
 Provider-neutral native data is exposed by `rlm_native_tool`:
 
 ```prolog

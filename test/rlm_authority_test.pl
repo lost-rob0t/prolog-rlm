@@ -583,4 +583,78 @@ test(owner_cancellation_resolves_pending_without_target_mutation,
           assertion(Record.state == denied) ),
         cleanup_registry_context(Registry, Context)).
 
+test(single_pending_cancel_preserves_sibling_approval,
+     [setup(reset_mutations)]) :-
+    Context = session(single_pending_cancel),
+    setup_call_cleanup(
+        setup_write_registry(Registry),
+        ( invoke_write(Registry, Context, 201, approval_required(First), _),
+          invoke_write(Registry, Context, 202, approval_required(Second), _),
+          rlm_pending_resolution_async(First.id, FirstFuture),
+          rlm_pending_cancel(First.id, cursor_discarded),
+          rlm_pending_cancel(First.id, cursor_discarded),
+          rlm_pending_cancel(deliberately_unknown_approval, cursor_discarded),
+          rlm_future_await(FirstFuture, 1.0, denied(Denial)),
+          assertion(Denial.reason == cancelled(cursor_discarded)),
+          rlm_pending_approval(Context, Second.id, Sibling),
+          assertion(Sibling.state == pending),
+          await_approved(Second.id, Resolution),
+          assertion(Resolution.outcome = ok(_)),
+          mutation_count(Count), assertion(Count == 1)
+        ),
+        cleanup_registry_context(Registry, Context)).
+
+single_cancel_blocker(Ready, Release, released) :-
+    thread_send_message(Ready, ready),
+    thread_get_message(Release, release).
+
+single_cancel_submit(Ready, Release, _, Future) :-
+    rlm_async_submit(plunit_rlm_authority:single_cancel_blocker(Ready, Release),
+                     Future).
+
+single_cancel_destroy(Future) :-
+    rlm_future_cancel(Future, _),
+    rlm_future_destroy(Future).
+
+test(single_scheduled_cancel_prevents_dispatch_and_preserves_sibling,
+     [setup(reset_mutations)]) :-
+    Context = session(single_scheduled_cancel),
+    setup_call_cleanup(
+        setup_write_registry(Registry),
+        ( invoke_write(Registry, Context, 301, approval_required(First), _),
+          invoke_write(Registry, Context, 302, approval_required(Second), _),
+          rlm_pending_resolution_async(First.id, ResolutionFuture),
+          setup_call_cleanup(
+              (message_queue_create(Ready), message_queue_create(Release)),
+              ( rlm_async_runtime_status(Status), numlist(1, Status.worker_count, Ids),
+                maplist(single_cancel_submit(Ready, Release), Ids, Futures),
+                setup_call_cleanup(
+                    true,
+                    ( forall(member(_, Ids),
+                             thread_get_message(Ready, ready, [timeout(5)])),
+                      rlm_approve(First.id, ok(_)),
+                      rlm_pending_approval(Context, First.id, Scheduled),
+                      assertion(Scheduled.state == scheduled),
+                      rlm_pending_cancel(First.id, cursor_discarded),
+                      rlm_future_await(ResolutionFuture, 1.0, error(Error)),
+                      assertion(Error.kind == cancelled),
+                      assertion(Error.before_execution_claim == true),
+                      rlm_pending_approval(Context, Second.id, Sibling),
+                      assertion(Sibling.state == pending),
+                      forall(member(_, Ids), thread_send_message(Release, release)),
+                      forall(member(F, Futures), rlm_future_await(F, 5.0, released)),
+                      await_approved(Second.id, Resolution),
+                      assertion(Resolution.outcome = ok(_)),
+                      mutation_count(Count), assertion(Count == 1)
+                    ),
+                    maplist(single_cancel_destroy, Futures))
+              ),
+              (message_queue_destroy(Ready), message_queue_destroy(Release)))
+        ),
+        cleanup_registry_context(Registry, Context)).
+
+test(single_cancel_rejects_nonground_reason,
+     [throws(authority_fault(nonground(cancellation_reason, _)))]) :-
+    rlm_pending_cancel(deliberately_unknown_approval, _).
+
 :- end_tests(rlm_authority).
