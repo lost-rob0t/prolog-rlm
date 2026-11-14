@@ -516,7 +516,7 @@ invoke_after_args(ok,
                   Bytes,
                   Fingerprint,
                   ApprovalId) :-
-    authorize_tool(Capabilities, Schema.capability, CapabilityOutcome),
+    authorize_tool_schema(Capabilities, Schema, CapabilityOutcome),
     invoke_after_capability(CapabilityOutcome,
                             Registry,
                             Schema,
@@ -530,6 +530,17 @@ invoke_after_args(ok,
                             Bytes,
                             Fingerprint,
                             ApprovalId).
+
+authorize_tool_schema(Capabilities, Schema, Outcome) :-
+    capabilities_normalize(Capabilities, CapsOutcome),
+    ( CapsOutcome = error(Error) -> Outcome = error(Error)
+    ; CapsOutcome = ok(Caps),
+      ( get_dict(requires, Schema, Requires) -> true ; Requires = [] ),
+      ( memberchk(Schema.capability, Caps),
+        forall(member(Required, Requires), memberchk(Required, Caps))
+      -> Outcome = ok
+      ; Outcome = denied )
+    ).
 
 authorize_tool(Capabilities, Capability, Outcome) :-
     capabilities_normalize(Capabilities, CapsOutcome),
@@ -1782,7 +1793,7 @@ normalize_tool_schema(Schema0, Schema) :-
     normalize_authority_value(Result0, Result),
     schema_description(Schema0, Description),
     schema_limits(Schema0, Limits),
-    Schema = tool_schema{
+    BaseSchema = tool_schema{
                  name:Name,
                  description:Description,
                  capability:Capability,
@@ -1790,7 +1801,13 @@ normalize_tool_schema(Schema0, Schema) :-
                  arguments:Arguments,
                  result:Result,
                  limits:Limits
-             }.
+             },
+    ( get_dict(requires, Schema0, Requires0)
+    -> capabilities_normalize(Requires0, RequiresOutcome),
+       ( RequiresOutcome = ok(Requires)
+       -> put_dict(requires, BaseSchema, Requires, Schema)
+       ; throw(tool_fault(invalid_required_capabilities(RequiresOutcome))) )
+    ; Schema = BaseSchema ).
 
 require_effect(Effect) :-
     rlm_authority:rlm_effect_class(Effect),
