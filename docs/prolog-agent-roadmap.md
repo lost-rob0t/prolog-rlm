@@ -8,6 +8,12 @@ This roadmap tracks the shortest path from the current runtime to a useful codin
 
 ## How far are we?
 
+Top-level direct hosts can opt into worker-free native approval suspension with
+`suspend_on_approval(true)`, retain the registry, and resume the original direct
+cursor after canonical authority resolution. Single-ID approval cancellation
+preserves sibling operations. Hosts must adopt cursor/Future cleanup; this does
+not itself complete AgentProlog's end-to-end or real-model acceptance gate.
+
 Async host profiles can use the exported MCP lifecycle/client execute APIs and
 `mcp_import_tools_execute/5` for their entire setup and cleanup lifetime without
 waiting for nested scheduler work. Import has canonical synchronous/asynchronous

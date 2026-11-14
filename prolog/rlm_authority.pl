@@ -21,6 +21,7 @@
             rlm_ask/4,
             rlm_pending_questions/2,
             rlm_answer/3,
+            rlm_pending_cancel/2,
             rlm_pending_cancel_owner/2
           ]).
 
@@ -1104,6 +1105,39 @@ apply_answer_transition(unknown(QuestionId), QuestionId, _, _,
                               })).
 
 /* Ownership, cancellation and teardown -------------------------------- */
+
+%! rlm_pending_cancel(+ApprovalId, +Reason) is det.
+%
+%  Cancel only this approval, including an already scheduled execution.
+%  The transition shares the approval mutex with execution admission. Terminal
+%  and unknown ground IDs are idempotent no-ops. Other approvals in the same
+%  authority context are unaffected. Executing effects retain best-effort
+%  cancellation and conservative effect accounting.
+rlm_pending_cancel(ApprovalId, Reason) :-
+    require_ground(ApprovalId, approval_id),
+    require_ground(Reason, cancellation_reason),
+    with_mutex(rlm_authority,
+               cancel_single_transition_locked(ApprovalId, Reason, Transition)),
+    apply_cancel_single_transition(Transition, ApprovalId, Reason).
+
+cancel_single_transition_locked(ApprovalId, Reason,
+                                pending(Record, ResolutionFuture, Pruned)) :-
+    authority_pending(ApprovalId, _, Existing),
+    Existing.state == pending,
+    !,
+    deny_transition_locked(ApprovalId, cancelled(Reason), deny, Record,
+                           ResolutionFuture, Pruned).
+cancel_single_transition_locked(ApprovalId, Reason, Transition) :-
+    cancel_transition_locked(ApprovalId, Reason, Transition).
+
+apply_cancel_single_transition(pending(Record, ResolutionFuture, Pruned),
+                               ApprovalId, Reason) :-
+    !,
+    apply_deny_transition(deny, ApprovalId, cancelled(Reason), Record,
+                          ResolutionFuture, _),
+    destroy_futures(Pruned).
+apply_cancel_single_transition(Transition, ApprovalId, Reason) :-
+    apply_cancel_owned_transition(Transition, ApprovalId, Reason).
 
 rlm_pending_cancel_owner(Context, Reason) :-
     require_context(Context),
