@@ -494,6 +494,12 @@ expert_invoke_entry(Id, ExpertId, Goal, Context0, Outcome) :-
 invoke_root(Id, ExpertId, Goal, Context0, Outcome) :-
     normalize_public_context(Context0, Context, Capabilities, _),
     expert_registry_state(Id, ExpectedGeneration, RegistryOptions),
+    ( get_dict(expected_registry_generation, Context0, PinnedGeneration)
+    -> ( integer(PinnedGeneration), PinnedGeneration =:= ExpectedGeneration
+       -> true
+       ; throw(expert_fault(stale_registry_generation(PinnedGeneration,
+                                                      ExpectedGeneration))) )
+    ; true ),
     new_run_token(Token),
     setup_call_cleanup(
         assertz(expert_run_state(Token,
@@ -587,490 +593,1285 @@ invoke_frame(Id,
                      MaxInvocations),
     term_hash(Goal, GoalHash),
     Frame = ExpertId-GoalHash,
-    (   memberchk(Frame, Stack)
-    ->  Outcome = expert_outcome{
-                      status:blocked,
-                      expert_id:ExpertId,
-                      expert_version:Contract.version,
-                      reason:recursion_cycle(Frame),
-                      evidence:[],
-                      usage:expert_usage{model_calls:0, cost:0}
-                  }
-    ;   new_invocation_id(InvocationId),
-        run_expected_generation(Token, Id, Generation),
-        record_event(Id,
-                     expert_invocation{
-                         event:started,
-                         invocation_id:InvocationId,
-                         expert_id:ExpertId,
-                         expert_version:Contract.version,
-                         registry_generation:Generation,
-                         depth:Depth
-                     }),
-        put_dict(expert_runtime,
-                 Context,
-                 expert_runtime(Token,
-                                Depth,
-                                [Frame|Stack],
-                                Capabilities,
-                                Contract.child_policy,
-                                MaxDepth,
-                                MaxInvocations),
-                 Context1),
-        put_dict(_{expert_registry:expert_registry(Id),
-                   expert_invocation_id:InvocationId,
-                   capabilities:Capabilities},
-                 Context1,
-                 HandlerContext),
-        invoke_handler(Contract,
-                       Goal,
-                       HandlerContext,
-                       RawOutcome),
-        admit_handler_outcome(Id,
-                              Contract,
-                              InvocationId,
-                              Generation,
-                              RawOutcome,
-                              Outcome),
-        record_event(Id,
-                     expert_invocation{
-                         event:finished,
-                         invocation_id:InvocationId,
-                         expert_id:ExpertId,
-                         expert_version:Contract.version,
-                         registry_generation:Generation,
-                         depth:Depth,
-                         status:Outcome.status
-                     })
-    ).
+    (   memberchk(Frame, Stac…15361 tokens truncated…              Ticket),
+    EditValidator = rlm_tool:tool_effect_edit_validate(Context,
+                                                       Registry,
+                                                       Schema,
+                                                       Binding,
+                                                       Limits,
+                                                       Correlation,
+                                                       Request,
+                                                       EffectOptions),
+    rlm_authority:rlm_authorize_operation(Context,
+                                          Operation,
+                                          Continuation,
+                                          EditValidator,
+                                          AuthorityOutcome),
+    invoke_after_authority_effect(AuthorityOutcome,
+                                  Context,
+                                  Schema,
+                                  Ticket,
+                                  Outcome,
+                                  Authorization,
+                                  AuthorityMode,
+                                  Status,
+                                  Bytes,
+                                  Fingerprint,
+                                  ApprovalId).
 
-invoke_handler(Contract, Goal, Context, RawOutcome) :-
-    Handler = Contract.handler,
-    catch(( call(Handler, Goal, Context, RawOutcome)
-          ->  true
-          ;   RawOutcome = error(handler_failed)
-          ),
-          Exception,
-          RawOutcome = error(handler_exception(Exception))).
-
-admit_handler_outcome(Id,
-                      Contract,
-                      InvocationId,
-                      ExpectedGeneration,
-                      RawOutcome,
-                      Outcome) :-
-    expert_registry_state(Id, CurrentGeneration, _),
-    (   CurrentGeneration =:= ExpectedGeneration
-    ->  normalize_handler_outcome(Contract,
-                                  InvocationId,
-                                  ExpectedGeneration,
-                                  RawOutcome,
-                                  Outcome)
-    ;   stale_generation_outcome(ExpectedGeneration,
-                                 CurrentGeneration,
-                                 Outcome)
-    ).
-
-normalize_handler_outcome(Contract,
-                          InvocationId,
-                          Generation,
-                          succeeded(Result, Evidence),
-                          Outcome) :-
+invoke_after_authority(error(Error), _, _, _, _, _, error(ToolError),
+                       denied, _AuthorityMode, authority_denied, 0, none, none) :-
     !,
-    require_safe_data(result, Result),
-    require_safe_list(evidence, Evidence),
-    base_outcome(Contract,
-                 InvocationId,
-                 Generation,
-                 succeeded,
-                 Outcome0),
-    put_dict(_{result:Result, evidence:Evidence}, Outcome0, Outcome).
-normalize_handler_outcome(Contract,
-                          InvocationId,
-                          Generation,
-                          failed(Reason, Evidence),
-                          Outcome) :-
+    ToolError = tool_error{
+                    phase:authority,
+                    kind:authority_denied,
+                    cause:Error,
+                    message:"host authority rejected the normalized tool operation"
+                }.
+invoke_after_authority(approval_required(Pending), _, _, _, _, _,
+                       approval_required(Pending),
+                       pending,
+                       _AuthorityMode,
+                       approval_required,
+                       0,
+                       Fingerprint,
+                       ApprovalId) :-
     !,
-    require_safe_data(reason, Reason),
-    require_safe_list(evidence, Evidence),
-    base_outcome(Contract, InvocationId, Generation, failed, Outcome0),
-    put_dict(_{reason:Reason, evidence:Evidence}, Outcome0, Outcome).
-normalize_handler_outcome(Contract,
-                          InvocationId,
-                          Generation,
-                          unknown(Reason, Evidence),
-                          Outcome) :-
+    Fingerprint = Pending.fingerprint,
+    ApprovalId = Pending.id.
+invoke_after_authority(replay(Replay), _, _, _, _, _,
+                       Replay,
+                       allowed,
+                       allow_once,
+                       replayed,
+                       Bytes,
+                       Fingerprint,
+                       none) :-
     !,
-    require_safe_data(reason, Reason),
-    require_safe_list(evidence, Evidence),
-    base_outcome(Contract, InvocationId, Generation, unknown, Outcome0),
-    put_dict(_{reason:Reason, evidence:Evidence}, Outcome0, Outcome).
-normalize_handler_outcome(Contract,
-                          InvocationId,
-                          Generation,
-                          blocked(Reason, Evidence),
-                          Outcome) :-
-    !,
-    require_safe_data(reason, Reason),
-    require_safe_list(evidence, Evidence),
-    base_outcome(Contract, InvocationId, Generation, blocked, Outcome0),
-    put_dict(_{reason:Reason, evidence:Evidence}, Outcome0, Outcome).
-normalize_handler_outcome(Contract,
-                          InvocationId,
-                          Generation,
-                          unsupported(Reason),
-                          Outcome) :-
-    !,
-    require_safe_data(reason, Reason),
-    base_outcome(Contract, InvocationId, Generation, unsupported, Outcome0),
-    put_dict(_{reason:Reason, evidence:[]}, Outcome0, Outcome).
-normalize_handler_outcome(Contract,
-                          InvocationId,
-                          Generation,
-                          cancelled(Token),
-                          Outcome) :-
-    !,
-    require_safe_data(cancellation_token, Token),
-    base_outcome(Contract, InvocationId, Generation, cancelled, Outcome0),
-    put_dict(_{cancellation_token:Token, evidence:[]}, Outcome0, Outcome).
-normalize_handler_outcome(Contract,
-                          InvocationId,
-                          Generation,
-                          error(Error),
-                          Outcome) :-
-    !,
-    safe_exception(Error, Safe),
-    base_outcome(Contract, InvocationId, Generation, error, Outcome0),
-    put_dict(_{error:Safe, evidence:[]}, Outcome0, Outcome).
-normalize_handler_outcome(Contract,
-                          InvocationId,
-                          Generation,
-                          Raw,
-                          Outcome) :-
-    base_outcome(Contract, InvocationId, Generation, error, Outcome0),
-    put_dict(_{error:invalid_expert_outcome(Raw), evidence:[]},
-             Outcome0,
-             Outcome).
+    replay_metadata(Replay, Bytes, Fingerprint).
+invoke_after_authority(execute(Permit),
+                       Schema,
+                       Binding,
+                       Args,
+                       Limits,
+                       Context,
+                       Outcome,
+                       allowed,
+                       _AuthorityMode,
+                       Status,
+                       Bytes,
+                       Fingerprint,
+                       none) :-
+    Fingerprint = Permit.fingerprint,
+    perform_tool_effect(Schema,
+                        Binding,
+                        Args,
+                        Limits,
+                        CoreOutcome,
+                        Status,
+                        Bytes),
+    complete_allow_once(Permit,
+                        Context,
+                        Fingerprint,
+                        CoreOutcome),
+    Outcome = CoreOutcome.
 
-base_outcome(Contract, InvocationId, Generation, Status,
-             expert_outcome{
-                 status:Status,
-                 expert_id:Contract.id,
-                 expert_version:Contract.version,
-                 invocation_id:InvocationId,
-                 registry_generation:Generation,
-                 usage:expert_usage{model_calls:0, cost:0}
-             }).
-
-stale_generation_outcome(ExpectedGeneration,
-                         CurrentGeneration,
-                         expert_outcome{
-                             status:blocked,
-                             reason:stale_registry_generation(ExpectedGeneration,
-                                                              CurrentGeneration),
-                             evidence:[],
-                             registry_generation:ExpectedGeneration,
-                             usage:expert_usage{model_calls:0, cost:0}
-                         }).
-
-run_expected_generation(Token, Id, ExpectedGeneration) :-
-    (   expert_run_state(Token,
-                         Id,
-                         run_generation(ExpectedGeneration, _),
-                         _,
-                         _)
-    ->  true
-    ;   throw(expert_fault(stale_runtime(Token)))
-    ).
-
-require_registry_generation_current(Id, ExpectedGeneration) :-
-    expert_registry_state(Id, CurrentGeneration, _),
-    (   CurrentGeneration =:= ExpectedGeneration
-    ->  true
-    ;   throw(expert_fault(stale_registry_generation(ExpectedGeneration,
-                                                      CurrentGeneration)))
-    ).
-
-require_run_generation_current(Token, Id) :-
-    run_expected_generation(Token, Id, ExpectedGeneration),
-    require_registry_generation_current(Id, ExpectedGeneration).
-
-run_budget_admit(Token,
-                 Contract,
-                 ParentDepth,
-                 InheritedMaxDepth,
-                 InheritedMaxInvocations,
-                 Depth,
-                 MaxDepth,
-                 MaxInvocations) :-
-    expert_run_state(Token,
-                     RegistryId,
-                     run_generation(ExpectedGeneration, RegistryMaxDepth),
-                     RegistryMaxInvocations,
-                     Count0),
-    Depth is ParentDepth+1,
-    ContractMaxDepth is min(RegistryMaxDepth, Contract.limits.max_depth),
-    MaxDepth is min(InheritedMaxDepth, ContractMaxDepth),
-    (   Depth =< MaxDepth
-    ->  true
-    ;   throw(expert_fault(depth_exceeded(Depth, MaxDepth)))
-    ),
-    ContractMaxInvocations is min(RegistryMaxInvocations,
-                                  Contract.limits.max_invocations),
-    MaxInvocations is min(InheritedMaxInvocations,
-                          ContractMaxInvocations),
-    Count is Count0+1,
-    (   Count =< MaxInvocations
-    ->  with_mutex(rlm_expert_run,
-                   ( retract(expert_run_state(Token,
-                                              RegistryId,
-                                              run_generation(ExpectedGeneration,
-                                                             RegistryMaxDepth),
-                                              RegistryMaxInvocations,
-                                              Count0)),
-                     assertz(expert_run_state(Token,
-                                             RegistryId,
-                                             run_generation(ExpectedGeneration,
-                                                            RegistryMaxDepth),
-                                             RegistryMaxInvocations,
-                                             Count))
-                   ))
-    ;   throw(expert_fault(invocation_budget_exceeded(Count,
-                                                      MaxInvocations)))
-    ).
-
-require_narrowing(Parent, Requested, Child) :-
-    (   capabilities_narrow(Parent, Requested, ok(Child))
-    ->  true
-    ;   capabilities_narrow(Parent, Requested, error(Error)),
-        throw(expert_fault(capability_widening(Error)))
-    ).
-
-capabilities_satisfy(Capabilities, Requires) :-
-    forall(member(Required, Requires), memberchk(Required, Capabilities)).
-
-capabilities_satisfy_or_throw(Capabilities, Requires) :-
-    findall(Missing,
-            ( member(Missing, Requires),
-              \+ memberchk(Missing, Capabilities)
-            ),
-            Missing),
-    (   Missing == []
-    ->  true
-    ;   throw(expert_fault(required_capabilities_missing(Missing)))
-    ).
-
-goal_matches_contract(Goal, Contract) :-
-    goal_indicator(Goal, Indicator),
-    memberchk(Indicator, Contract.accepts).
-
-goal_matches_contract_or_throw(Goal, Contract) :-
-    (   goal_matches_contract(Goal, Contract)
-    ->  true
-    ;   goal_indicator(Goal, Indicator),
-        throw(expert_fault(goal_not_accepted(Contract.id, Indicator)))
-    ).
-
-goal_indicator(Goal, Name/Arity) :-
-    callable(Goal),
-    functor(Goal, Name, Arity).
-
-normalize_public_context(Context0, Context, Capabilities, Preferred) :-
-    require_dict(expert_context, Context0),
-    dict_get_default(Context0, capabilities, [], Caps0),
-    normalize_capabilities(Caps0, Capabilities),
-    dict_get_default(Context0, preferred_expert, none, Preferred),
-    (   Preferred == none
-    ->  true
-    ;   require_nonempty_atom(preferred_expert, Preferred)
-    ),
-    Context = Context0.
-
-/* Inspection ---------------------------------------------------------- */
-
-expert_explain(Value, Explanation) :-
-    require_safe_data(explain_value, Value),
-    (   is_dict(Value),
-        get_dict(registry_generation, Value, Generation)
-    ->  Explanation = expert_explanation{
-                              value:Value,
-                              registry_generation:Generation,
-                              chain_of_thought:false,
-                              usage:expert_usage{model_calls:0, cost:0}
-                          }
-    ;   Explanation = expert_explanation{
-                              value:Value,
-                              chain_of_thought:false,
-                              usage:expert_usage{model_calls:0, cost:0}
-                          }
-    ).
-
-expert_invocations(expert_registry(Id), Events) :-
-    require_registry_id(Id),
-    findall(Seq-Event,
-            expert_invocation_event(Id, Seq, Event),
-            Pairs0),
-    keysort(Pairs0, Pairs),
-    pairs_values(Pairs, Events).
-
-record_event(Id, Event) :-
-    with_mutex(rlm_expert_events,
-               ( retract(expert_registry_sequence(Id, Seq0)),
-                 Seq is Seq0+1,
-                 assertz(expert_registry_sequence(Id, Seq)),
-                 assertz(expert_invocation_event(Id, Seq, Event))
-               )).
-
-new_run_token(expert_run(Id)) :-
-    with_mutex(rlm_expert_run, gensym(run_, Id)).
-
-new_invocation_id(expert_invocation(Id)) :-
-    with_mutex(rlm_expert_run, gensym(invocation_, Id)).
-
-/* Validation helpers -------------------------------------------------- */
-
-require_registry_id(Id) :-
-    (   expert_registry_state(Id, _, _)
-    ->  true
-    ;   throw(expert_fault(unknown_registry(Id)))
-    ).
-
-require_goal_data(Goal) :-
-    (   ground(Goal),
-        acyclic_term(Goal),
-        callable(Goal)
-    ->  true
-    ;   throw(expert_fault(invalid_goal_data(Goal)))
-    ).
-
-require_dict(_, Value) :-
-    is_dict(Value),
-    !.
-require_dict(Label, Value) :-
-    throw(expert_fault(expected_dict(Label, Value))).
-
-require_key(Label, Dict, Key, Value) :-
-    (   get_dict(Key, Dict, Value)
-    ->  true
-    ;   throw(expert_fault(missing_key(Label, Key)))
-    ).
-
-dict_get_default(Dict, Key, Default, Value) :-
-    (   get_dict(Key, Dict, Value)
-    ->  true
-    ;   Value = Default
-    ).
-
-reject_unknown_keys(Label, Dict, Allowed) :-
-    dict_pairs(Dict, _, Pairs),
-    pairs_keys(Pairs, Keys),
-    (   member(Key, Keys),
-        \+ memberchk(Key, Allowed)
-    ->  throw(expert_fault(unknown_key(Label, Key)))
+complete_allow_once(Permit, Context, Fingerprint, Outcome) :-
+    (   Permit.kind == allow_once
+    ->  rlm_authority:rlm_authority_complete_once(Context,
+                                                  Fingerprint,
+                                                  Outcome)
     ;   true
     ).
 
-require_nonempty_atom(_, Value) :-
-    atom(Value),
-    Value \== '',
-    !.
-require_nonempty_atom(Label, Value) :-
-    throw(expert_fault(invalid_atom(Label, Value))).
-
-require_version(Value) :-
-    atomic(Value),
-    Value \== '',
-    !.
-require_version(Value) :-
-    throw(expert_fault(invalid_version(Value))).
-
-require_integer(_, Value) :-
-    integer(Value),
-    !.
-require_integer(Label, Value) :-
-    throw(expert_fault(invalid_integer(Label, Value))).
-
-require_positive_integer(_, Value) :-
-    integer(Value),
-    Value > 0,
-    !.
-require_positive_integer(Label, Value) :-
-    throw(expert_fault(invalid_positive_integer(Label, Value))).
-
-require_callable(_, Value) :-
-    callable(Value),
-    !.
-require_callable(Label, Value) :-
-    throw(expert_fault(invalid_callable(Label, Value))).
-
-require_atom_list(_, Values) :-
-    is_list(Values),
-    forall(member(Value, Values), atom(Value)),
-    !.
-require_atom_list(Label, Values) :-
-    throw(expert_fault(invalid_atom_list(Label, Values))).
-
-require_safe_list(_, Values) :-
-    is_list(Values),
-    forall(member(Value, Values), safe_data(Value)),
-    !.
-require_safe_list(Label, Values) :-
-    throw(expert_fault(unsafe_list(Label, Values))).
-
-require_safe_data(_, Value) :-
-    safe_data(Value),
-    !.
-require_safe_data(Label, Value) :-
-    throw(expert_fault(unsafe_data(Label, Value))).
-
-safe_data(Value) :-
-    ground(Value),
-    acyclic_term(Value),
-    (   atomic(Value)
-    ->  true
-    ;   is_list(Value)
-    ->  forall(member(Item, Value), safe_data(Item))
-    ;   is_dict(Value)
-    ->  dict_pairs(Value, _, Pairs),
-        forall(member(Key-Item, Pairs),
-               (atom(Key), safe_data(Item)))
-    ;   compound(Value),
-        Value =.. [_|Args],
-        forall(member(Arg, Args), safe_data(Arg))
+replay_metadata(ok(tool_execution{trace:Trace}), Bytes, Fingerprint) :-
+    !,
+    dict_value_default(output_bytes, Trace, 0, Bytes),
+    dict_value_default(fingerprint, Trace, none, Fingerprint).
+replay_metadata(error(Error), Bytes, Fingerprint) :-
+    !,
+    (   is_dict(Error), get_dict(trace, Error, Trace)
+    ->  dict_value_default(output_bytes, Trace, 0, Bytes),
+        dict_value_default(fingerprint, Trace, none, Fingerprint)
+    ;   Bytes = 0,
+        Fingerprint = none
     ).
+replay_metadata(_, 0, none).
+
+tool_pending_execute(Schema, Binding, Args, Limits, _Context, Resolution) :-
+    get_time(Start),
+    perform_tool_effect(Schema,
+                        Binding,
+                        Args,
+                        Limits,
+                        CoreOutcome,
+                        Status,
+                        Bytes),
+    get_time(End),
+    ElapsedMs is round((End-Start)*1000),
+    Resolution = tool_pending_resolution{
+                     outcome:CoreOutcome,
+                     status:Status,
+                     output_bytes:Bytes,
+                     elapsed_ms:ElapsedMs
+                 }.
+
+/* The continuation above deliberately does not call tool_invoke/7 or
+   tool_invoke_async/6. Approval resumes the already-validated operation at the
+   authoritative side-effect boundary exactly once. */
+
+/* -------------------------------------------------------------------------
+ * #57 effect-boundary integration for effectful tools
+ *
+ * Effectful tools (effect \== read) no longer jump from authority to
+ * perform_tool_effect. They prepare a durable #57 ticket before authority
+ * composition, preserve that exact ground ticket into the authorized
+ * continuation, and validate/admit/dispatch/observe that same ticket through
+ * rlm_effect_executor on approval. The tool handler itself runs as a static
+ * code-owned adapter submit hook. Only a stable code-owned binding digest
+ * participates in executable semantics; the ephemeral registry identity
+ * remains metadata for live dispatch lookup. Read tools retain the direct
+ * fresh-read path above.
+ * ---------------------------------------------------------------------- */
+
+invoke_after_authority_effect(error(Error), _Context, _Schema, _Ticket,
+                              error(ToolError),
+                              denied, _AuthorityMode, authority_denied,
+                              0, none, none) :-
+    !,
+    ToolError = tool_error{
+                    phase:authority,
+                    kind:authority_denied,
+                    cause:Error,
+                    message:"host authority rejected the normalized effectful tool operation"
+                }.
+invoke_after_authority_effect(approval_required(Pending), _Context, _Schema,
+                              _Ticket,
+                              approval_required(Pending),
+                              pending, _AuthorityMode, approval_required,
+                              0, Fingerprint, ApprovalId) :-
+    !,
+    Fingerprint = Pending.fingerprint,
+    ApprovalId = Pending.id.
+invoke_after_authority_effect(replay(Replay), _Context, _Schema, _Ticket,
+                              Replay,
+                              allowed, allow_once, replayed,
+                              0, Fingerprint, none) :-
+    !,
+    replay_metadata(Replay, _Bytes, Fingerprint).
+invoke_after_authority_effect(execute(Permit),
+                              Context,
+                              Schema,
+                              Ticket,
+                              Outcome,
+                              allowed,
+                              _AuthorityMode,
+                              Status,
+                              Bytes,
+                              Fingerprint,
+                              none) :-
+    !,
+    Fingerprint = Permit.fingerprint,
+    AuthorityRef = authority_ref{context:Context, permit:Permit},
+    tool_effect_dispatch(Ticket, AuthorityRef, EffectOutcome),
+    tool_outcome_from_effect(EffectOutcome, Schema, Outcome, Status, Bytes),
+    complete_allow_once(Permit, Context, Fingerprint, Outcome).
+
+tool_effect_pending_execute(Context, Schema, Ticket, Resolution) :-
+    get_time(Start),
+    AuthorityRef = authority_ref{context:Context},
+    tool_effect_dispatch(Ticket, AuthorityRef, EffectOutcome),
+    tool_outcome_from_effect(EffectOutcome, Schema, CoreOutcome, Status, Bytes),
+    get_time(End),
+    ElapsedMs is round((End-Start)*1000),
+    Resolution = tool_pending_resolution{
+                     outcome:CoreOutcome,
+                     status:Status,
+                     output_bytes:Bytes,
+                     elapsed_ms:ElapsedMs
+                 }.
+
+tool_effect_dispatch(Ticket, AuthorityRef, EffectOutcome) :-
+    catch(rlm_effect_executor:effect_execute_prepared(rlm_tool, Ticket,
+                                                      AuthorityRef,
+                                                      EffectOutcome),
+          Exception,
+          effect_dispatch_exception(Exception, EffectOutcome)).
+
+effect_dispatch_exception(rlm_async_cancelled(Id), _) :-
+    !,
+    throw(rlm_async_cancelled(Id)).
+effect_dispatch_exception(Exception,
+                          effect_result{state:indeterminate,
+                                        source:executor_exception,
+                                        attempt:none}) :-
+    safe_exception_term(Exception, _).
+
+tool_effect_request(Schema, NormalizedArgs, Details, Request) :-
+    Request = tool_effect_request{tool:Schema.name,
+                                  args:NormalizedArgs,
+                                  details:Details}.
+
+tool_effect_options(RegistryId, Schema, Binding, Limits, _Correlation,
+                    EffectOptions) :-
+    Tool = Schema.name,
+    tool_executor_identity(Binding, ExecutorIdentity),
+    Semantics = tool_effect_semantics{
+                    tool_executor:ExecutorIdentity,
+                    effect:Schema.effect,
+                    limits:Limits
+                },
+    EffectOptions = metadata_options{
+                        metadata:tool_effect_metadata{
+                            registry:RegistryId,
+                            tool:Tool,
+                            limits:Limits
+                        },
+                        semantics:Semantics
+                    }.
+
+tool_executor_identity(Binding,
+                       tool_executor_identity{version:1,
+                                              digest:Digest}) :-
+    tool_binding_entrypoints(Binding, Descriptor),
+    term_string(Descriptor, Serialized,
+                [quoted(true), numbervars(true), ignore_ops(true)]),
+    crypto_data_hash(Serialized, Hex,
+                     [algorithm(sha256), encoding(utf8)]),
+    atom_concat('sha256:', Hex, Digest).
+
+tool_binding_entrypoints(tool_binding(Preflight, Handler),
+                         tool_executor_descriptor{
+                             preflight:PreflightIdentity,
+                             handler:HandlerIdentity
+                         }) :-
+    trusted_callable_entrypoint(Preflight, 3, PreflightIdentity),
+    trusted_callable_entrypoint(Handler, 2, HandlerIdentity).
+
+trusted_callable_entrypoint(Callable, AddedArity,
+                            predicate_identity{module:Module,
+                                               name:Name,
+                                               arity:Arity}) :-
+    strip_module(Callable, Module, Plain),
+    functor(Plain, Name, BoundArity),
+    Arity is BoundArity+AddedArity.
+
+tool_outcome_from_effect(EffectOutcome, Schema, Outcome, Status, Bytes) :-
+    is_dict(EffectOutcome, effect_result),
+    !,
+    (   get_dict(state, EffectOutcome, observed),
+        get_dict(observation, EffectOutcome, Observation)
+    ->  tool_outcome_from_observation(Observation, Schema, Outcome, Status, Bytes)
+    ;   get_dict(state, EffectOutcome, indeterminate)
+    ->  Bytes = 0,
+        Outcome = error(tool_error{
+                            phase:effect,
+                            kind:effect_indeterminate,
+                            message:"effectful tool attempt is indeterminate and requires reconciliation"
+                        }),
+        Status = indeterminate
+    ;   get_dict(state, EffectOutcome, in_progress)
+    ->  Bytes = 0,
+        Outcome = error(tool_error{
+                            phase:effect,
+                            kind:effect_in_progress,
+                            message:"effectful tool attempt is still running"
+                        }),
+        Status = effect_in_progress
+    ;   get_dict(state, EffectOutcome, terminal)
+    ->  Bytes = 0,
+        Outcome = error(tool_error{
+                            phase:effect,
+                            kind:effect_terminal,
+                            message:"effectful tool attempt is in a terminal state"
+                        }),
+        Status = effect_terminal
+    ;   Bytes = 0,
+        Outcome = error(tool_error{
+                            phase:effect,
+                            kind:unknown_effect_result,
+                            detail:EffectOutcome
+                        }),
+        Status = unknown_effect_result
+    ).
+tool_outcome_from_effect(EffectError, _Schema, error(ToolError),
+                         effect_error, 0) :-
+    is_dict(EffectError, error),
+    !,
+    ToolError = tool_error{
+                    phase:effect,
+                    kind:effect_dispatch_failed,
+                    cause:EffectError,
+                    message:"effectful tool dispatch failed"
+                }.
+tool_outcome_from_effect(Other, _Schema,
+                         error(tool_error{phase:effect,
+                                          kind:unknown_effect_result,
+                                          detail:Other}),
+                         unknown_effect_result, 0).
+
+tool_outcome_from_observation(Observation, _Schema, Outcome, Status, Bytes) :-
+    observation_bytes(Observation, Bytes),
+    (   Observation.status == succeeded
+    ->  get_dict(value, Observation, Value),
+        Outcome = ok(Value),
+        Status = ok
+    ;   get_dict(value, Observation, Value),
+        Outcome = error(Value),
+        Status = failed
+    ).
+
+observation_bytes(Observation, Bytes) :-
+    (   get_dict(usage, Observation, Usage),
+        get_dict(output_bytes, Usage, Bytes)
+    ->  true
+    ;   Bytes = 0 ).
+
+tool_observation_from_outcome(ok(Value), _Status, Bytes, Schema,
+                              Observation) :-
+    !,
+    Observation = observation{status:succeeded,
+                              value:Value,
+                              usage:usage{units:1, output_bytes:Bytes},
+                              provenance:rlm_tool,
+                              tool:Schema.name}.
+tool_observation_from_outcome(error(Error), _Status, Bytes, Schema,
+                              Observation) :-
+    Observation = observation{status:failed,
+                              value:Error,
+                              usage:usage{units:1, output_bytes:Bytes},
+                              provenance:rlm_tool,
+                              tool:Schema.name}.
+
+/* Adapter submit: recover the trusted binding from the live registry, then
+   invoke the canonical tool handler boundary. The callable binding is never
+   persisted; the registry identity is metadata only and the stable executor
+   digest lives in executable semantics. */
+
+rlm_effect_executor:effect_adapter_submit(rlm_tool, Attempt, Request,
+                                          observed(Observation)) :-
+    get_dict(tool, Request, Name),
+    get_dict(args, Request, Args),
+    get_dict(metadata, Attempt, Metadata),
+    get_dict(registry, Metadata, RegistryId),
+    get_dict(limits, Metadata, Limits),
+    (   tool_registry_entry(RegistryId, Name, Schema, Binding)
+    ->  perform_tool_effect(Schema,
+                            Binding,
+                            Args,
+                            Limits,
+                            CoreOutcome,
+                            Status,
+                            Bytes),
+        tool_observation_from_outcome(CoreOutcome, Status, Bytes, Schema,
+                                      Observation)
+    ;   Observation = observation{status:failed,
+                                  value:tool_error{
+                                      phase:effect,
+                                      kind:tool_not_registered,
+                                      tool:Name,
+                                      message:"effectful tool binding is not available in this runtime"
+                                  },
+                                  usage:usage{units:0, output_bytes:0},
+                                  provenance:rlm_tool,
+                                  tool:Name}
+    ).
+
+/* Edit validator for effectful tools: re-normalize the edited payload,
+   re-preflight, re-prepare a fresh #57 ticket, and build the new trusted
+   continuation from that ticket. The old attempt ticket can never execute. */
+
+tool_effect_edit_validate(Context, Registry, Schema, Binding, Limits,
+                          Correlation, _OldRequest, _OldEffectOptions,
+                          Edited0, Operation, Continuation) :-
+    edited_args(Edited0, EditedArgs),
+    validate_schema(Schema.arguments, EditedArgs, args, ok),
+    preflight_tool(Binding, EditedArgs, Limits.time_limit,
+                   ok(NormalizedArgs, Details)),
+    registry_id(Registry, RegistryId),
+    tool_effect_request(Schema, NormalizedArgs, Details, Request),
+    tool_effect_options(RegistryId, Schema, Binding, Limits,
+                        Correlation, EffectOptions),
+    rlm_effect_executor:effect_prepare(rlm_tool, tool, Request,
+                                       EffectOptions, PrepareDecision),
+    (   PrepareDecision = execute(Ticket)
+    ->  true
+    ;   throw(tool_fault(effect_prepare_failed_for_edit(PrepareDecision)))
+    ),
+    BaseOperation = authority_operation{
+                        name:Schema.name,
+                        effect:Schema.effect,
+                        capability:Schema.capability,
+                        args:NormalizedArgs,
+                        details:Details
+                    },
+    rlm_effect_authority:effect_authority_operation(Ticket, BaseOperation,
+                                                     Correlation, Operation),
+    Continuation = rlm_tool:tool_effect_pending_execute(Context,
+                                                        Schema,
+                                                        Ticket).
+
+perform_tool_effect(Schema,
+                    tool_binding(_, Handler),
+                    Args,
+                    Limits,
+                    Outcome,
+                    Status,
+                    Bytes) :-
+    call_tool_with_limit(Handler, Args, Limits.time_limit, CallOutcome),
+    invoke_after_call(CallOutcome, Schema, Limits, Outcome, Status, Bytes).
+
+call_tool_with_limit(Handler, Args, TimeLimit, Outcome) :-
+    catch(call_with_time_limit(TimeLimit,
+                               call_tool_handler(Handler, Args, Outcome)),
+          Exception,
+          timed_tool_exception(Exception, Outcome)).
+
+call_tool_handler(Handler, Args, Outcome) :-
+    (   call(Handler, Args, Value)
+    ->  Outcome = ok(Value)
+    ;   Outcome = error(tool_error{
+                            phase:invoke,
+                            kind:handler_failed,
+                            message:"tool handler failed without returning a value"
+                        })
+    ).
+
+timed_tool_exception(Exception, _) :-
+    tool_control_exception(Exception),
+    !,
+    throw(Exception).
+timed_tool_exception(time_limit_exceeded,
+                     error(tool_error{
+                               phase:invoke,
+                               kind:timeout,
+                               message:"tool invocation exceeded its wall-time limit"
+                           })) :- !.
+timed_tool_exception(time_limit_exceeded(_),
+                     error(tool_error{
+                               phase:invoke,
+                               kind:timeout,
+                               message:"tool invocation exceeded its wall-time limit"
+                           })) :- !.
+timed_tool_exception(Exception,
+                     error(tool_error{
+                               phase:invoke,
+                               kind:handler_exception,
+                               exception:Safe,
+                               message:"tool handler raised an exception"
+                           })) :-
+    safe_exception(Exception, Safe).
+
+invoke_after_call(error(Error), _, _, error(Error), Status, 0) :-
+    !,
+    error_status(Error, Status).
+invoke_after_call(ok(Value), Schema, Limits, Outcome, Status, Bytes) :-
+    validate_schema(Schema.result, Value, result, ResultOutcome),
+    invoke_after_result(ResultOutcome,
+                        Value,
+                        Schema,
+                        Limits,
+                        Outcome,
+                        Status,
+                        Bytes).
+
+invoke_after_result(error(Error), _, _, _, error(Error), invalid_result, 0) :- !.
+invoke_after_result(ok, Value, Schema, Limits, Outcome, Status, Bytes) :-
+    value_bytes(Value, Bytes0),
+    (   Bytes0 =< Limits.max_output_bytes
+    ->  Bytes = Bytes0,
+        Status = ok,
+        Outcome = ok(Value)
+    ;   Bytes = Bytes0,
+        Status = oversized_output,
+        Outcome = error(tool_error{
+                            phase:normalize,
+                            kind:oversized_output,
+                            tool:Schema.name,
+                            output_bytes:Bytes0,
+                            limit:Limits.max_output_bytes,
+                            message:"tool output exceeds its byte limit"
+                        })
+    ).
+
+error_status(Error, Status) :-
+    (   is_dict(Error), get_dict(kind, Error, Kind)
+    ->  Status = Kind
+    ;   Status = error
+    ).
+
+attach_trace(ok(Value), Trace,
+             ok(tool_execution{value:Value, trace:Trace})) :- !.
+attach_trace(error(Error0), Trace, error(Error)) :-
+    !,
+    (   is_dict(Error0)
+    ->  put_dict(trace, Error0, Trace, Error)
+    ;   Error = tool_error{
+                    phase:invoke,
+                    kind:tool_error,
+                    cause:Error0,
+                    trace:Trace,
+                    message:"tool invocation failed"
+                }
+    ).
+attach_trace(approval_required(Pending0), Trace,
+             approval_required(Pending)) :-
+    put_dict(trace, Pending0, Trace, Pending).
+
+/* -------------------------------------------------------------------------
+ * Exact operation construction, editing and context
+ * ---------------------------------------------------------------------- */
+
+tool_edit_validate(Schema,
+                   Binding,
+                   Options,
+                   Limits,
+                   Context,
+                   Correlation,
+                   Edited0,
+                   Operation,
+                   Continuation) :-
+    edited_args(Edited0, EditedArgs),
+    validate_schema(Schema.arguments, EditedArgs, args, ok),
+    preflight_tool(Binding, EditedArgs, Limits.time_limit,
+                   ok(NormalizedArgs, Details)),
+    Operation = authority_operation{
+                    name:Schema.name,
+                    effect:Schema.effect,
+                    capability:Schema.capability,
+                    args:NormalizedArgs,
+                    details:Details,
+                    correlation:Correlation
+                },
+    Continuation = rlm_tool:tool_pending_execute(Schema,
+                                                 Binding,
+                                                 NormalizedArgs,
+                                                 Limits,
+                                                 Context),
+    (Options = _ -> true).
+
+edited_args(Edited, Args) :-
+    is_dict(Edited),
+    get_dict(args, Edited, Args),
+    !.
+edited_args(Args, Args) :- is_dict(Args), !.
+edited_args(Edited, _) :- throw(tool_fault(invalid_edited_operation(Edited))).
+
+tool_authority_context(Registry, Options, Context) :-
+    (   option_ground(authority_context, Options, Explicit), Explicit \== none
+    ->  Context = Explicit
+    ;   rlm_async:rlm_async_current_metadata(Current),
+        metadata_context(Current, CurrentContext),
+        CurrentContext \== none
+    ->  Context = CurrentContext
+    ;   option_ground(session_id, Options, Session), Session \== none
+    ->  Context = session(Session)
+    ;   option_ground(runtime_id, Options, Runtime), Runtime \== none
+    ->  Context = runtime(Runtime)
+    ;   Registry = tool_registry(Id),
+        Context = tool_registry(Id)
+    ).
+
+metadata_context(Current, Context) :-
+    is_dict(Current),
+    get_dict(authority_context, Current, Found),
+    Found \== none,
+    !,
+    Context = Found.
+metadata_context(Current, session(Session)) :-
+    is_dict(Current),
+    get_dict(session_id, Current, Session),
+    Session \== none,
+    !.
+metadata_context(Current, agent(Runtime, Agent)) :-
+    is_dict(Current),
+    get_dict(runtime_id, Current, Runtime),
+    get_dict(agent_id, Current, Agent),
+    Runtime \== none,
+    Agent \== none,
+    !.
+metadata_context(Current, graph(Runtime, Graph, Run)) :-
+    is_dict(Current),
+    get_dict(runtime_id, Current, Runtime),
+    get_dict(graph_id, Current, Graph),
+    get_dict(run_id, Current, Run),
+    Runtime \== none,
+    Graph \== none,
+    Run \== none,
+    !.
+metadata_context(Current, runtime(Runtime)) :-
+    is_dict(Current),
+    get_dict(runtime_id, Current, Runtime),
+    Runtime \== none,
+    !.
+metadata_context(_, none).
+
+tool_correlation(Options, Correlation) :-
+    rlm_async:rlm_async_current_metadata(Current),
+    correlation_field(trace_id, Options, Current, TraceId),
+    correlation_field(session_id, Options, Current, SessionId),
+    correlation_field(runtime_id, Options, Current, RuntimeId),
+    correlation_field(agent_id, Options, Current, AgentId),
+    correlation_field(graph_id, Options, Current, GraphId),
+    correlation_field(run_id, Options, Current, RunId),
+    Correlation = correlation{trace_id:TraceId,
+                              session_id:SessionId,
+                              runtime_id:RuntimeId,
+                              agent_id:AgentId,
+                              graph_id:GraphId,
+                              run_id:RunId}.
+
+correlation_field(Name, Options, Current, Value) :-
+    (   option_ground(Name, Options, Found), Found \== none
+    ->  Value = Found
+    ;   is_dict(Current), get_dict(Name, Current, CurrentFound)
+    ->  Value = CurrentFound
+    ;   Value = none
+    ).
+
+option_ground(Name, Options, Value) :-
+    metadata_option(Name, Options, none, Value).
+
+/* -------------------------------------------------------------------------
+ * Plan-runtime adapter
+ * ---------------------------------------------------------------------- */
+
+tool_registry_runtime_tools(Registry, Capabilities, Tools) :-
+    tool_registry_runtime_tools(Registry, Capabilities, [], Tools).
+
+tool_registry_runtime_tools(Registry, Capabilities, InvocationOptions, Tools) :-
+    registry_id(Registry, Id),
+    findall(tool(Name,
+                 rlm_tool:registry_plan_handler(Registry,
+                                                Capabilities,
+                                                InvocationOptions,
+                                                Name)),
+            tool_registry_entry(Id, Name, _, _),
+            Tools).
+
+registry_plan_handler(Registry, Capabilities, InvocationOptions, Name, Args,
+                      Envelope) :-
+    tool_invoke_execute(Registry,
+                        Capabilities,
+                        Name,
+                        Args,
+                        InvocationOptions,
+                        Result),
+    Outcome = Result.outcome,
+    Trace = Result.trace,
+    plan_envelope(Outcome, Trace, Envelope).
+
+plan_envelope(ok(Execution), Trace,
+              tool_result{value:Execution.value,
+                          authorization:Trace.authorization,
+                          authority:Trace.authority,
+                          status:Trace.status,
+                          fingerprint:Trace.fingerprint,
+                          approval_id:Trace.approval_id,
+                          output_bytes:Trace.output_bytes,
+                          elapsed_ms:Trace.elapsed_ms}) :- !.
+plan_envelope(approval_required(Pending), Trace,
+              tool_result{value:Pending,
+                          authorization:pending,
+                          authority:Trace.authority,
+                          status:approval_required,
+                          fingerprint:Trace.fingerprint,
+                          approval_id:Trace.approval_id,
+                          output_bytes:0,
+                          elapsed_ms:Trace.elapsed_ms}) :- !.
+plan_envelope(error(Error), _, _) :-
+    throw(error(rlm_tool(Error), _)).
+
+/* -------------------------------------------------------------------------
+ * Built-in read-only project tool
+ * ---------------------------------------------------------------------- */
+
+register_project_read_tool(Registry, Root0, Options, Outcome) :-
+    catch(register_project_read_tool_(Registry, Root0, Options, Outcome),
+          Exception,
+          tool_api_exception(register_project_read, Exception, Outcome)).
+
+register_project_read_tool_(Registry, Root0, Options, Outcome) :-
+    normalize_root(Root0, Root),
+    option_value(max_file_bytes, Options, 8192, MaxFileBytes),
+    option_value(time_limit, Options, 1.0, TimeLimit),
+    require_positive_integer(MaxFileBytes, max_file_bytes),
+    require_positive_number(TimeLimit, time_limit),
+    project_read_schema(MaxFileBytes, TimeLimit, Schema),
+    Preflight = rlm_tool:project_read_preflight(Root, MaxFileBytes),
+    Handler = rlm_tool:project_read_handler,
+    tool_register(Registry,
+                  Schema,
+                  tool_handler(Preflight, Handler),
+                  Outcome).
+
+project_read_schema(MaxBytes, TimeLimit, Schema) :-
+    MaxOutputBytes is MaxBytes+1024,
+    Schema = tool_schema{
+                 name:project_read,
+                 description:"Read one UTF-8 regular file beneath an explicitly registered project root",
+                 capability:tool(project_read),
+                 effect:read,
+                 arguments:_{
+                     type:object,
+                     required:[path],
+                     additional_properties:false,
+                     properties:_{path:_{type:string}}
+                 },
+                 result:_{
+                     type:object,
+                     required:[path,content,bytes,truncated],
+                     additional_properties:false,
+                     properties:_{
+                         path:_{type:string},
+                         content:_{type:string},
+                         bytes:_{type:integer},
+                         truncated:_{type:boolean}
+                     }
+                 },
+                 limits:tool_limits{
+                     time_limit:TimeLimit,
+                     max_output_bytes:MaxOutputBytes
+                 }
+             }.
+
+project_read_preflight(Root, MaxFileBytes, Args,
+                       json{path:Relative, absolute:Absolute, bytes:Size},
+                       operation_details{target_path:Absolute,
+                                         project_root:Root}) :-
+    get_dict(path, Args, Path0),
+    text_string(Path0, Relative),
+    safe_relative_path(Relative, Segments),
+    reject_symlink_components(Root, Segments),
+    absolute_file_name(Relative,
+                       Absolute,
+                       [ relative_to(Root),
+                         access(read),
+                         file_type(regular),
+                         file_errors(fail),
+                         solutions(first)
+                       ]),
+    path_within_root(Root, Absolute),
+    size_file(Absolute, Size),
+    Size =< MaxFileBytes.
+
+project_read_handler(Args, Result) :-
+    Relative = Args.path,
+    Absolute = Args.absolute,
+    Size = Args.bytes,
+    setup_call_cleanup(open(Absolute, read, Stream, [encoding(utf8)]),
+                       read_string(Stream, _, Content),
+                       close(Stream)),
+    Result = json{path:Relative,
+                  content:Content,
+                  bytes:Size,
+                  truncated:false}.
+
+normalize_root(Root0, Root) :-
+    absolute_file_name(Root0,
+                       Root0Abs,
+                       [ file_type(directory),
+                         access(read),
+                         file_errors(fail),
+                         solutions(first)
+                       ]),
+    strip_trailing_slash(Root0Abs, Root).
+
+safe_relative_path(Path, Segments) :-
+    string(Path),
+    Path \== "",
+    \+ sub_string(Path, 0, 1, _, "/"),
+    \+ sub_string(Path, _, _, _, "\\"),
+    \+ sub_string(Path, _, _, _, "\u0000"),
+    split_string(Path, "/", "", Segments),
+    Segments \== [],
+    maplist(safe_path_segment, Segments).
+
+safe_path_segment(Segment) :-
+    Segment \== "",
+    Segment \== ".",
+    Segment \== "..".
+
+reject_symlink_components(Root, Segments) :-
+    reject_symlink_components_(Segments, Root).
+
+reject_symlink_components_([], _).
+reject_symlink_components_([Segment|Segments], Parent) :-
+    atom_string(SegmentAtom, Segment),
+    directory_file_path(Parent, SegmentAtom, Candidate),
+    \+ read_link(Candidate, _, _),
+    reject_symlink_components_(Segments, Candidate).
+
+path_within_root('/', Absolute) :-
+    sub_atom(Absolute, 0, 1, _, '/'),
+    !.
+path_within_root(Root, Absolute) :-
+    atom_concat(Root, '/', Prefix),
+    sub_atom(Absolute, 0, _, _, Prefix).
+
+strip_trailing_slash('/', '/') :- !.
+strip_trailing_slash(Path0, Path) :-
+    (   atom_concat(Path, '/', Path0), Path \== ''
+    ->  true
+    ;   Path = Path0
+    ).
+
+/* -------------------------------------------------------------------------
+ * Schema validation
+ * ---------------------------------------------------------------------- */
+
+normalize_tool_schema(Schema0, Schema) :-
+    require_schema_container(Schema0),
+    require_schema_key(Schema0, name, Name),
+    require_tool_name(Name),
+    require_schema_key(Schema0, capability, Capability),
+    must_be_capability(Capability),
+    require_matching_tool_capability(Name, Capability),
+    require_schema_key(Schema0, effect, Effect),
+    require_effect(Effect),
+    require_schema_key(Schema0, arguments, Arguments0),
+    require_schema_key(Schema0, result, Result0),
+    validate_schema_definition(Arguments0),
+    validate_schema_definition(Result0),
+    normalize_authority_value(Arguments0, Arguments),
+    normalize_authority_value(Result0, Result),
+    schema_description(Schema0, Description),
+    schema_limits(Schema0, Limits),
+    BaseSchema = tool_schema{
+                 name:Name,
+                 description:Description,
+                 capability:Capability,
+                 effect:Effect,
+                 arguments:Arguments,
+                 result:Result,
+                 limits:Limits
+             },
+    ( get_dict(requires, Schema0, Requires0)
+    -> capabilities_normalize(Requires0, RequiresOutcome),
+       ( RequiresOutcome = ok(Requires)
+       -> put_dict(requires, BaseSchema, Requires, Schema)
+       ; throw(tool_fault(invalid_required_capabilities(RequiresOutcome))) )
+    ; Schema = BaseSchema ).
+
+require_effect(Effect) :-
+    rlm_authority:rlm_effect_class(Effect),
+    !.
+require_effect(Effect) :-
+    throw(tool_fault(invalid_effect_class(Effect))).
+
+require_schema_container(Schema) :- is_dict(Schema), !.
+require_schema_container(Schema) :-
+    throw(tool_fault(invalid_schema_container(Schema))).
+
+require_tool_name(Name) :- atom(Name), Name \== '', !.
+require_tool_name(Name) :- throw(tool_fault(invalid_tool_name(Name))).
+
+require_matching_tool_capability(Name, tool(Name)) :- !.
+require_matching_tool_capability(Name, Capability) :-
+    throw(tool_fault(tool_capability_mismatch(Name, Capability))).
+
+schema_description(Schema, Description) :-
+    (   get_dict(description, Schema, Value)
+    ->  ( text_string(Value, Description)
+        -> true
+        ;  throw(tool_fault(invalid_description(Value)))
+        )
+    ;   Description = ""
+    ).
+
+schema_limits(Schema, Limits) :-
+    (   get_dict(limits, Schema, Limits0)
+    ->  require_limits_dict(Limits0)
+    ;   Limits0 = _{}
+    ),
+    limit_value(time_limit, Limits0, 1.0, TimeLimit),
+    limit_value(max_output_bytes, Limits0, 4096, MaxBytes),
+    require_positive_number(TimeLimit, time_limit),
+    require_positive_integer(MaxBytes, max_output_bytes),
+    Limits = tool_limits{time_limit:TimeLimit,
+                         max_output_bytes:MaxBytes}.
+
+require_limits_dict(Limits) :- is_dict(Limits), !.
+require_limits_dict(Limits) :- throw(tool_fault(invalid_limits(Limits))).
+
+validate_schema_definition(Schema) :-
+    (   is_dict(Schema),
+        get_dict(type, Schema, Type),
+        memberchk(Type, [any,string,integer,number,boolean,list,array,object])
+    ->  validate_schema_definition_type(Type, Schema)
+    ;   throw(tool_fault(invalid_schema(Schema)))
+    ).
+
+validate_schema_definition_type(integer, Schema) :-
+    !,
+    validate_numeric_schema_definition(Schema).
+validate_schema_definition_type(number, Schema) :-
+    !,
+    validate_numeric_schema_definition(Schema).
+validate_schema_definition_type(object, Schema) :-
+    !,
+    validate_object_schema_properties(Schema),
+    validate_object_schema_required(Schema).
+validate_schema_definition_type(list, Schema) :-
+    !,
+    (   get_dict(items, Schema, ItemSchema)
+    ->  validate_schema_definition(ItemSchema)
+    ;   true
+    ).
+validate_schema_definition_type(array, Schema) :-
+    !,
+    (   get_dict(items, Schema, ItemSchema)
+    ->  validate_schema_definition(ItemSchema)
+    ;   true
+    ).
+validate_schema_definition_type(_, _).
+
+validate_numeric_schema_definition(Schema) :-
+    numeric_bound_keys(Keys),
+    maplist(validate_numeric_bound_definition(Schema), Keys),
+    numeric_bounds(Schema, [minimum, exclusiveMinimum], LowerBounds),
+    numeric_bounds(Schema, [maximum, exclusiveMaximum], UpperBounds),
+    validate_numeric_intervals(LowerBounds, UpperBounds).
+
+numeric_bound_keys([minimum, maximum, exclusiveMinimum, exclusiveMaximum]).
+
+validate_numeric_bound_definition(Schema, Key) :-
+    (   get_dict(Key, Schema, Bound)
+    ->  ( number(Bound)
+        -> true
+        ;  throw(tool_fault(invalid_numeric_bound(Key, Bound)))
+        )
+    ;   true
+    ).
+
+numeric_bounds(_, [], []).
+numeric_bounds(Schema, [Key|Keys], Bounds) :-
+    (   get_dict(Key, Schema, Value)
+    ->  Bounds = [bound(Key, Value)|Rest]
+    ;   Bounds = Rest
+    ),
+    numeric_bounds(Schema, Keys, Rest).
+
+validate_numeric_intervals([], _).
+validate_numeric_intervals([Lower|Lowers], Uppers) :-
+    maplist(validate_numeric_interval(Lower), Uppers),
+    validate_numeric_intervals(Lowers, Uppers).
+
+validate_numeric_interval(bound(LowerKey, Lower), bound(UpperKey, Upper)) :-
+    numeric_interval_nonempty(LowerKey, Lower, UpperKey, Upper),
+    !.
+validate_numeric_interval(bound(LowerKey, Lower), bound(UpperKey, Upper)) :-
+    throw(tool_fault(contradictory_numeric_bounds(LowerKey,
+                                                  Lower,
+                                                  UpperKey,
+                                                  Upper))).
+
+numeric_interval_nonempty(minimum, Lower, maximum, Upper) :- Lower =< Upper.
+numeric_interval_nonempty(minimum, Lower, exclusiveMaximum, Upper) :-
+    Lower < Upper.
+numeric_interval_nonempty(exclusiveMinimum, Lower, maximum, Upper) :-
+    Lower < Upper.
+numeric_interval_nonempty(exclusiveMinimum, Lower, exclusiveMaximum, Upper) :-
+    Lower < Upper.
+
+validate_object_schema_properties(Schema) :-
+    (   get_dict(properties, Schema, Properties)
+    ->  ( is_dict(Properties)
+        -> dict_pairs(Properties, _, Pairs),
+           maplist(validate_property_schema, Pairs)
+        ;  throw(tool_fault(invalid_properties(Properties)))
+        )
+    ;   true
+    ).
+
+validate_object_schema_required(Schema) :-
+    (   get_dict(required, Schema, Required)
+    ->  ( is_list(Required), maplist(atom, Required)
+        -> true
+        ;  throw(tool_fault(invalid_required_fields(Required)))
+        )
+    ;   true
+    ).
+
+validate_property_schema(_-Schema) :- validate_schema_definition(Schema).
+
+validate_schema(Schema, Value, Path, Outcome) :-
+    catch(( validate_schema_value(Schema, Value, Path), Outcome = ok ),
+          tool_fault(Fault),
+          schema_fault(Path, Fault, Outcome)).
+
+validate_schema_value(Schema, Value, Path) :-
+    get_dict(type, Schema, Type),
+    validate_type(Type, Schema, Value, Path).
+
+validate_type(any, _, _, _) :- !.
+validate_type(string, _, Value, _) :- text_string(Value, _), !.
+validate_type(integer, Schema, Value, Path) :-
+    integer(Value),
+    !,
+    validate_numeric_value_bounds(Schema, Value, Path).
+validate_type(number, Schema, Value, Path) :-
+    number(Value),
+    !,
+    validate_numeric_value_bounds(Schema, Value, Path).
+validate_type(boolean, _, Value, _) :- memberchk(Value, [true,false]), !.
+validate_type(list, Schema, Value, Path) :-
+    is_list(Value),
+    !,
+    (   get_dict(items, Schema, ItemSchema)
+    ->  validate_list_items(Value, ItemSchema, Path, 0)
+    ;   true
+    ).
+validate_type(array, Schema, Value, Path) :-
+    is_list(Value),
+    !,
+    (   get_dict(items, Schema, ItemSchema)
+    ->  validate_list_items(Value, ItemSchema, Path, 0)
+    ;   true
+    ).
+validate_type(object, Schema, Value, Path) :-
+    is_dict(Value),
+    !,
+    validate_object(Schema, Value, Path).
+validate_type(Type, _, Value, Path) :-
+    throw(tool_fault(schema_type_mismatch(Path, Type, Value))).
+
+validate_numeric_value_bounds(Schema, Value, Path) :-
+    validate_numeric_value_bound(Schema, minimum, Value, Path),
+    validate_numeric_value_bound(Schema, maximum, Value, Path),
+    validate_numeric_value_bound(Schema, exclusiveMinimum, Value, Path),
+    validate_numeric_value_bound(Schema, exclusiveMaximum, Value, Path).
+
+validate_numeric_value_bound(Schema, Key, Value, Path) :-
+    (   get_dict(Key, Schema, Bound)
+    ->  validate_numeric_bound(Key, Value, Bound, Path)
+    ;   true
+    ).
+
+validate_numeric_bound(minimum, Value, Bound, _) :- Value >= Bound, !.
+validate_numeric_bound(maximum, Value, Bound, _) :- Value =< Bound, !.
+validate_numeric_bound(exclusiveMinimum, Value, Bound, _) :- Value > Bound, !.
+validate_numeric_bound(exclusiveMaximum, Value, Bound, _) :- Value < Bound, !.
+validate_numeric_bound(Key, Value, Bound, Path) :-
+    throw(tool_fault(numeric_bound_violation(Path, Key, Bound, Value))).
+
+validate_list_items([], _, _, _).
+validate_list_items([Value|Values], Schema, Path, Index) :-
+    validate_schema_value(Schema, Value, Path-Index),
+    Next is Index+1,
+    validate_list_items(Values, Schema, Path, Next).
+
+validate_object(Schema, Value, Path) :-
+    (   get_dict(required, Schema, Required)
+    ->  maplist(require_object_key(Value, Path), Required)
+    ;   true
+    ),
+    (   get_dict(properties, Schema, Properties)
+    ->  validate_object_properties(Properties, Value, Path),
+        validate_additional_properties(Schema, Properties, Value, Path)
+    ;   true
+    ).
+
+require_object_key(Value, Path, Key) :-
+    (   get_dict(Key, Value, _)
+    ->  true
+    ;   throw(tool_fault(missing_required_field(Path, Key)))
+    ).
+
+validate_object_properties(Properties, Value, Path) :-
+    dict_pairs(Properties, _, Pairs),
+    maplist(validate_present_property(Value, Path), Pairs).
+
+validate_present_property(Value, Path, Key-Schema) :-
+    (   get_dict(Key, Value, FieldValue)
+    ->  validate_schema_value(Schema, FieldValue, Path-Key)
+    ;   true
+    ).
+
+validate_additional_properties(Schema, Properties, Value, Path) :-
+    (   get_dict(additional_properties, Schema, false)
+    ->  dict_keys(Properties, Allowed),
+        dict_keys(Value, Actual),
+        subtract(Actual, Allowed, Extra),
+        ( Extra == []
+        -> true
+        ;  throw(tool_fault(unexpected_fields(Path, Extra)))
+        )
+    ;   true
+    ).
+
+schema_fault(Path, Fault,
+             error(tool_error{
+                       phase:schema,
+                       kind:schema_validation_failed,
+                       path:Path,
+                       detail:Fault,
+                       message:"tool value does not match its declared schema"
+                   })).
+
+/* -------------------------------------------------------------------------
+ * Authority-value normalization and helpers
+ * ---------------------------------------------------------------------- */
+
+normalize_authority_value(Value, _) :-
+    var(Value),
+    !,
+    throw(tool_fault(nonground_authority_value)).
+normalize_authority_value(Value0, Value) :-
+    is_dict(Value0),
+    !,
+    dict_pairs(Value0, Tag0, Pairs0),
+    normalize_dict_tag(Tag0, Tag),
+    maplist(normalize_authority_pair, Pairs0, Pairs),
+    dict_pairs(Value, Tag, Pairs).
+normalize_authority_value(Value0, Value) :-
+    is_list(Value0),
+    !,
+    maplist(normalize_authority_value, Value0, Value).
+normalize_authority_value(Value0, Value) :-
+    compound(Value0),
+    !,
+    Value0 =.. [Functor|Args0],
+    maplist(normalize_authority_value, Args0, Args),
+    Value =.. [Functor|Args].
+normalize_authority_value(Value, Value) :- atomic(Value), !.
+normalize_authority_value(Value, _) :-
+    throw(tool_fault(invalid_authority_value(Value))).
+
+normalize_dict_tag(Tag0, json) :- var(Tag0), !.
+normalize_dict_tag(Tag, Tag) :- atom(Tag), !.
+normalize_dict_tag(Tag, _) :- throw(tool_fault(invalid_dict_tag(Tag))).
+
+normalize_authority_pair(Key-Value0, Key-Value) :-
+    normalize_authority_value(Value0, Value).
+
+registry_id(tool_registry(Id), Id) :- tool_registry_alive(Id), !.
+registry_id(Registry, _) :-
+    throw(tool_fault(invalid_or_stale_registry(Registry))).
+
+require_schema_key(Dict, Key, Value) :-
+    (   get_dict(Key, Dict, Value)
+    ->  true
+    ;   throw(tool_fault(missing_schema_field(Key)))
+    ).
+
+effective_limits(Spec, Options,
+                 tool_limits{time_limit:TimeLimit,
+                             max_output_bytes:MaxBytes}) :-
+    option_value(time_limit, Options, Spec.time_limit, RequestedTime),
+    option_value(max_output_bytes, Options, Spec.max_output_bytes,
+                 RequestedBytes),
+    require_positive_number(RequestedTime, time_limit),
+    require_positive_integer(RequestedBytes, max_output_bytes),
+    TimeLimit is min(Spec.time_limit, RequestedTime),
+    MaxBytes is min(Spec.max_output_bytes, RequestedBytes).
+
+limit_value(Key, Dict, Default, Value) :-
+    (   is_dict(Dict), get_dict(Key, Dict, Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
+
+option_value(Name, Options, Default, Value) :-
+    (   is_list(Options),
+        member(Option, Options),
+        nonvar(Option),
+        Option =.. [Name, Found]
+    ->  Value = Found
+    ;   Value = Default
+    ).
+
+require_positive_integer(Value, _) :- integer(Value), Value > 0, !.
+require_positive_integer(Value, Field) :-
+    throw(tool_fault(invalid_positive_integer(Field, Value))).
+
+require_positive_number(Value, _) :- number(Value), Value > 0, !.
+require_positive_number(Value, Field) :-
+    throw(tool_fault(invalid_positive_number(Field, Value))).
+
+text_string(Value, String) :- string(Value), !, String = Value.
+text_string(Value, String) :- atom(Value), !, atom_string(Value, String).
+
+value_bytes(Value, Bytes) :-
+    term_string(Value, Text, [quoted(true), numbervars(true)]),
+    string_bytes(Text, Octets, utf8),
+    length(Octets, Bytes).
+
+value_shape(Value, Shape) :-
+    (   var(Value) -> Shape = variable
+    ;   is_dict(Value) -> Shape = dict
+    ;   is_list(Value) -> Shape = list
+    ;   compound(Value) -> functor(Value, Name, Arity), Shape = Name/Arity
+    ;   atom(Value) -> Shape = atom
+    ;   string(Value) -> Shape = string
+    ;   number(Value) -> Shape = number
+    ;   Shape = other
+    ).
+
+dict_value_default(Key, Dict, Default, Value) :-
+    (   is_dict(Dict), get_dict(Key, Dict, Found)
+    ->  Value = Found
+    ;   Value = Default
+    ).
+
+tool_api_exception(Phase, tool_fault(Fault), error(Error)) :-
+    !,
+    Error = tool_error{
+                phase:Phase,
+                kind:invalid_tool_operation,
+                detail:Fault,
+                message:"tool operation is invalid"
+            }.
+tool_api_exception(Phase, Exception, error(Error)) :-
+    safe_exception(Exception, Safe),
+    Error = tool_error{
+                phase:Phase,
+                kind:tool_runtime_error,
+                exception:Safe,
+                message:"tool operation failed"
+            }.
+
+invoke_exception(Exception, _, _, _, _, _, _, _) :-
+    tool_control_exception(Exception),
+    !,
+    throw(Exception).
+invoke_exception(tool_fault(Fault), error(Error), denied, unknown,
+                 invalid_tool, 0, none, none) :-
+    !,
+    Error = tool_error{
+                phase:invoke,
+                kind:invalid_tool_operation,
+                detail:Fault,
+                message:"tool invocation is invalid"
+            }.
+invoke_exception(capability_fault(Fault), error(Error), denied, unknown,
+                 invalid_capabilities, 0, none, none) :-
+    !,
+    Error = tool_error{
+                phase:authorize,
+                kind:invalid_capabilities,
+                detail:Fault,
+                message:"tool capability set is invalid"
+            }.
+invoke_exception(Exception, error(Error), denied, unknown,
+                 runtime_error, 0, none, none) :-
+    safe_exception(Exception, Safe),
+    Error = tool_error{
+                phase:invoke,
+                kind:tool_runtime_error,
+                exception:Safe,
+                message:"tool invocation failed"
+            }.
+
+tool_control_exception(rlm_async_cancelled(_)).
+tool_control_exception(rlm_cancelled(_)).
+tool_control_exception(chain_cancelled(_)).
+tool_control_exception(graph_cancelled(_)).
+tool_control_exception(cancelled(_)).
+tool_control_exception('$aborted').
+tool_control_exception(abort).
+tool_control_exception(error(Inner, _)) :-
+    tool_control_exception(Inner).
 
 safe_exception(Exception, Safe) :-
-    (   safe_data(Exception)
-    ->  Safe = Exception
-    ;   term_string(Exception, Safe,
-                    [quoted(true), max_depth(8)])
-    ).
-
-expert_exception(_Phase,
-                 expert_fault(stale_registry_generation(ExpectedGeneration,
-                                                        CurrentGeneration)),
-                 expert_outcome{
-                     status:blocked,
-                     reason:stale_registry_generation(ExpectedGeneration,
-                                                      CurrentGeneration),
-                     evidence:[],
-                     registry_generation:ExpectedGeneration,
-                     usage:expert_usage{model_calls:0, cost:0}
-                 }) :-
-    !.
-expert_exception(_Phase, expert_fault(Fault),
-                 expert_outcome{
-                     status:error,
-                     error:Fault,
-                     evidence:[],
-                     usage:expert_usage{model_calls:0, cost:0}
-                 }) :-
-    !.
-expert_exception(Phase, Exception,
-                 expert_outcome{
-                     status:error,
-                     error:expert_exception(Phase, Safe),
-                     evidence:[],
-                     usage:expert_usage{model_calls:0, cost:0}
-                 }) :-
-    safe_exception(Exception, Safe).
+    term_string(Exception, Safe, [quoted(true), numbervars(true)]).

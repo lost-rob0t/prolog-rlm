@@ -5,7 +5,8 @@
 ## Invariants
 
 - model output may select a registered tool name, but never supplies a callable;
-- every tool declares exactly one `tool(Name)` capability;
+- every tool declares exactly one `tool(Name)` capability; optional `requires`
+  lists additional capabilities that must all be present before preflight or dispatch;
 - invocation validates arguments before capability authorization, authority/effect admission, or handler execution, so malformed inputs fail at the canonical schema boundary even when the requested capability is absent;
 - child capability sets are narrowing-only with `capabilities_narrow/3`;
 - arguments and normalized results are checked against the registered schema;
@@ -117,3 +118,9 @@ tool_registry_runtime_tools(
 The typed plan is validated for `tool(project_read)` before execution. The registry adapter independently rechecks the same capability at invocation time. Successful plan tool results include non-secret authorization/status metadata, and the plan trajectory records the `tool(project_read)` transition.
 
 Deterministic CI covers allow/deny behavior, pre-invocation denial, narrowing, malformed arguments, numeric schema bounds, timeout, oversized output, project-root confinement, discovery, and typed-plan execution. Trusted same-repository CI additionally asks a real OpenRouter root controller, without a fixed plan or `planner_instruction`, to retrieve opaque context and execute the actual registered `project_read` tool against neutral repository fixture records. The live assertions use runtime transitions and independently inspect all bound evidence values rather than trusting model prose.
+
+## Expert projection
+
+See [Experts as tools](expert-tools.md) for `expert_tool_register/5`: provider-free
+expert projection through this same registry with frozen identity/generation,
+additional capability checks, inference/time/output bounds and preserved evidence.

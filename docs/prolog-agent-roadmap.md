@@ -14,6 +14,14 @@ waiting for nested scheduler work. Import has canonical synchronous/asynchronous
 facades for callers outside workers. Hosts must adopt these APIs; this substrate
 alone does not prove downstream product or live-provider acceptance.
 
+Provider-free experts can now be explicitly projected into the ordinary tool
+registry with `expert_tool_register/5`; direct/plan consumers reuse the existing
+tool execution path. Projections pin expert generation, enforce both tool and
+expert-required capabilities, preserve evidence/usage and bound inference/time/
+output. See [expert-tools.md](expert-tools.md). This is the read-only projection
+slice of #377/#459, not their completion: model-backed expert metering, effectful
+experts, automatic mode selection/advice, and downstream adoption remain open.
+
 The hard runtime substrate is mostly here. The product layer is not.
 
 Already available in core and the downstream application boundary:
