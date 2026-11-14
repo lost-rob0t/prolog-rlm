@@ -113,6 +113,25 @@ canonical_ui_event(agent_event(question_answered, QuestionId, Answer0),
                    "question_answered", Payload, none) :- !,
     safe_value(Answer0, Answer),
     Payload = _{question_id:QuestionId, answer:Answer}.
+canonical_ui_event(agent_event(proposal_started, ProposalId, Prompt),
+                   "proposal_started", Payload, none) :- !,
+    safe_value(Prompt, PromptValue),
+    Payload = _{proposal_id:ProposalId, prompt:PromptValue}.
+canonical_ui_event(agent_event(proposal_delta, ProposalId, Delta),
+                   "proposal_delta", Payload, none) :- !,
+    safe_value(Delta, DeltaValue),
+    Payload = _{proposal_id:ProposalId, delta:DeltaValue}.
+canonical_ui_event(agent_event(proposal_finished, ProposalId, Text0),
+                   "proposal_finished", Payload, none) :- !,
+    safe_value(Text0, Text),
+    Payload = _{proposal_id:ProposalId, text:Text}.
+canonical_ui_event(agent_event(proposal_accepted, ProposalId),
+                   "proposal_accepted", Payload, none) :- !,
+    Payload = _{proposal_id:ProposalId}.
+canonical_ui_event(agent_event(proposal_discarded, ProposalId, Reason0),
+                   "proposal_discarded", Payload, none) :- !,
+    safe_value(Reason0, Reason),
+    Payload = _{proposal_id:ProposalId, reason:Reason}.
 canonical_ui_event(agent_event(subagent_started, SubagentId, Meta0),
                    "subagent_started", Payload, none) :- !,
     safe_dict(Meta0, Meta),
