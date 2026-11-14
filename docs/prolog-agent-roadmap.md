@@ -339,3 +339,10 @@ skipping holes after partial summaries. Execution accounting preserves known
 usage even when another response lacks usage. These draft changes require the
 downstream exact pin and live-provider gates; they do not establish full
 semantic project-KB materialization or concurrent publication safety.
+
+### Native project-run TODO state
+
+`rlm_task_workflow` supplies bounded task dependencies, reasons/history, explicit
+project-state refresh, and completion via canonical Spec verification. See
+[task workflow](task-workflow.md). Product `.prolog` readers and private journals
+remain host adapters; this is not the complete diagnostic/promotion workflow.

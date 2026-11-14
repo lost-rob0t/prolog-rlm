@@ -75,3 +75,5 @@ main(_) :-
     ->  halt
     ;   halt(1)
     ).
+
+:- use_module('../prolog/rlm_task_workflow', []).

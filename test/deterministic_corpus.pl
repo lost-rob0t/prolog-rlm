@@ -175,6 +175,7 @@ corpus_entry('rlm_project_grammar_pack_test.pl',
 corpus_entry('rlm_research_approval_test.pl', include(research_approval)).
 corpus_entry('rlm_plan_graph_test.pl', include(rlm_plan_graph)).
 corpus_entry('rlm_expert_test.pl', include(rlm_expert)).
+corpus_entry('rlm_task_workflow_test.pl', include(rlm_task_workflow)).
 corpus_entry('rlm_expert_tool_test.pl', include(rlm_expert_tool)).
 corpus_entry('rlm_strange_loop_test.pl', include(rlm_strange_loop)).
 corpus_entry('rlm_expert_graph_test.pl', include(rlm_expert_graph)).
