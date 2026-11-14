@@ -123,4 +123,22 @@ test(restored_event_revision_coherence) :-
     bound(S,_,_),put_dict(revision,S,999,Bad),task_workflow_validate(Bad,error(_)),
     put_dict(events,S,[event(99,added(x)),event(2,bound(x,ref))],Other),
     task_workflow_validate(Other,error(_)).
+
+test(restored_fabricated_report_without_observations_rejected) :-
+    bound(S,F,R),spec_observe(F,[true],R,[],ok(Obs)),
+    task_workflow_verify(S,x,Obs,R,ok(Done),ok(_)),
+    Fake=verification_report{spec_ref:F.ref,status:passed,
+      requirements:[check{id:check,status:passed}],observations:[],evidence_refs:[unrelated_receipt]},
+    Done.tasks=[T],put_dict(verification,T,Fake,U),put_dict(tasks,Done,[U],Bad),
+    task_workflow_validate(Bad,error(_)).
+test(restored_passed_check_requires_linked_observation) :-
+    bound(S,F,R),spec_observe(F,[true],R,[],ok(Obs)),
+    task_workflow_verify(S,x,Obs,R,ok(Done),ok(Report)),
+    put_dict(observations,Report,[],Fake),Done.tasks=[T],
+    put_dict(verification,T,Fake,U),put_dict(tasks,Done,[U],Bad),task_workflow_validate(Bad,error(_)).
+test(restored_report_evidence_refs_match_checks) :-
+    bound(S,F,R),spec_observe(F,[true],R,[],ok(Obs)),
+    task_workflow_verify(S,x,Obs,R,ok(Done),ok(Report)),
+    put_dict(evidence_refs,Report,[unrelated],Fake),Done.tasks=[T],
+    put_dict(verification,T,Fake,U),put_dict(tasks,Done,[U],Bad),task_workflow_validate(Bad,error(_)).
 :- end_tests(rlm_task_workflow).

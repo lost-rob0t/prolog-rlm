@@ -12,7 +12,7 @@
 :- meta_predicate result(0,?,?).
 :- use_module(rlm_spec, [spec_inspect/2]).
 :- use_module(rlm_verify, [spec_verify/4]).
-:- use_module(rlm_evidence, [observation_normalize/2]).
+:- use_module(rlm_evidence, [observation_normalize/2, evidence_policy_accepts/3]).
 
 task_workflow_create(Project, Ref, Outcome) :-
     result((identity(Project), identity(Ref),
@@ -103,16 +103,35 @@ valid_bound_spec(S,Frozen) :-
        R.evidence_policy.trust_classes\==all,
        forall(member(C,R.evidence_policy.trust_classes),memberchk(C,[observed,trusted])))).
 valid_report(S,F,R) :-
-    is_dict(R,verification_report),R.spec_ref==F.ref,
+    is_dict(R,verification_report),
+    closed_keys(R,[spec_ref,status,requirements,observations,evidence_refs,provenance]),
+    R.spec_ref==F.ref,
+    R.provenance==verification_provenance{mode:pure,verifier:rlm_verify,version:1},
     memberchk(R.status,[passed,rejected]),is_list(R.requirements),
     findall(Id,(member(Q,F.requirements),Id=Q.id),Ids),
     findall(Id,(member(Q,R.requirements),Id=Q.id),Ids),
     maplist(current_observation(S.state_ref),R.observations),
-    (R.status==passed
-     -> forall((member(Q,F.requirements),Q.severity==required),
-          (member(Check,R.requirements),Check.id==Q.id,Check.status==passed)),
-        R.evidence_refs\==[]
-     ; true).
+    findall(Id,(member(O,R.observations),Id=O.requirement_id),ObsIds),
+    sort(ObsIds,Unique),length(ObsIds,N),length(Unique,N),
+    maplist(valid_check(R.observations),F.requirements,R.requirements),
+    findall(Ref,(member(C,R.requirements),member(Ref,C.evidence_refs)),Refs),
+    sort(Refs,R.evidence_refs),
+    (forall((member(C,R.requirements),C.severity==required),C.status==passed)
+     -> R.status==passed ; R.status==rejected).
+valid_check(Observations,Q,C) :-
+    is_dict(C,verification_requirement),
+    closed_keys(C,[id,assertion,severity,evidence_policy,verifier,collector,status,
+                   observation,evidence_refs,provenance]),
+    forall(member(K,[id,assertion,severity,evidence_policy,verifier,collector,provenance]),
+      (get_dict(K,Q,V),get_dict(K,C,V))),
+    (C.observation==none
+     -> C.status\==passed,C.evidence_refs==[],
+        \+ (member(O,Observations),O.requirement_id==Q.id)
+     ; member(O,Observations),O==C.observation,O.requirement_id==Q.id,
+       O.assertion==Q.assertion,O.verifier==Q.verifier,O.collector==Q.collector,
+       C.evidence_refs==O.evidence_refs,
+       (C.status==passed -> O.status==passed,
+         evidence_policy_accepts(Q.evidence_policy,O,ok(accepted)) ; true)).
 bounded_text(T) :- string(T),string_length(T,N),N=<4096.
 valid_events([],_).
 valid_events([event(N,E)|Es],N) :- valid_event(E),Next is N+1,valid_events(Es,Next).
