@@ -13,4 +13,6 @@ kb_file(File) :-
 :- initialization(( kb_file('tree-sitter-ffi.pl'),
                     kb_file('project-knowledge-pipeline.pl'),
                     kb_file('debugging-recipes.pl'),
+                    kb_file('remotes-mirroring.pl'),
+                    kb_file('plunit-and-runtime-lessons.pl'),
                     true ), now).
